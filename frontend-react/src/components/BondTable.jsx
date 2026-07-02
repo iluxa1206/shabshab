@@ -24,7 +24,9 @@ function PctileBar({ p }) {
 
 // Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align/nrd (стили шапки),
 // cell(b) — полный <td>. Порядок = порядок в таблице.
+// sep: true — начало блока (портфель / наша модель / НРД) → вертикальный разделитель слева.
 export const COLS = [
+  // ── статика бумаги ──
   { key: "short_name", label: "INSTRUMENT", align: "left",
     cell: (b) => (
       <td className="left" key="short_name">
@@ -38,14 +40,20 @@ export const COLS = [
     cell: (b) => <td className="rating-cell" key="rating">{b.rating || <D />}</td> },
   { key: "formula", label: "FORMULA", align: "left",
     cell: (b) => <td className="left bond-formula" key="formula">{b.formula || "—"}</td> },
-  { key: "qty", label: "ПОЗИЦИЯ", sub: "ШТ", align: "num", portfolio: true,
-    cell: (b) => <td className="num" key="qty">{b.qty == null ? <D /> : fmt.num(b.qty, 0)}</td> },
-  { key: "pos_value", label: "СТОИМОСТЬ", sub: "RUB", align: "num", portfolio: true,
-    cell: (b) => <td className="num" key="pos_value">{b.pos_value == null ? <D /> : fmt.num(b.pos_value, 0)}</td> },
   { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num",
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
-  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num",
-    cell: (b) => <td className="num" key="last_price_pct">{fmt.pct(b.last_price_pct) ?? <D />}</td> },
+  { key: "next_coupon_date", label: "COUPON", sub: "NEXT",
+    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
+  { key: "maturity_date", label: "MATURITY",
+    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
+  // ── портфель ──
+  { key: "qty", label: "ПОЗИЦИЯ", sub: "ШТ", align: "num", portfolio: true, sep: true,
+    cell: (b) => <td className="num col-sep" key="qty">{b.qty == null ? <D /> : fmt.num(b.qty, 0)}</td> },
+  { key: "pos_value", label: "СТОИМОСТЬ", sub: "RUB", align: "num", portfolio: true,
+    cell: (b) => <td className="num" key="pos_value">{b.pos_value == null ? <D /> : fmt.num(b.pos_value, 0)}</td> },
+  // ── НАША МОДЕЛЬ (цена → CHG → dirty → DM → Z → carry → z%ile → Δz) ──
+  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
+    cell: (b) => <td className="num col-sep" key="last_price_pct">{fmt.pct(b.last_price_pct) ?? <D />}</td> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num",
     cell: (b) => {
       const delta = b.delta_to_prev_close;
@@ -56,26 +64,23 @@ export const COLS = [
     cell: (b) => <td className="num" key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
   { key: "dm_bps", label: "DM", sub: "MODEL", align: "num",
     cell: (b) => <td className="num" key="dm_bps"><Chip value={b.dm_bps} /></td> },
-  { key: "next_coupon_date", label: "COUPON", sub: "NEXT",
-    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
-  { key: "maturity_date", label: "MATURITY",
-    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
-  { key: "carry_bps", label: "CARRY", sub: "vs БАЗА", align: "num",
-    cell: (b) => <td className="num" style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
-  { key: "nrd_price_pct", label: "NRD PX", sub: "CLN %", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" key="nrd_price_pct">{fmt.pct(b.nrd_price_pct) ?? <D />}</td> },
-  { key: "discount_margin_bps", label: "NRD DM", sub: "BPS", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" key="discount_margin_bps"><Chip value={b.discount_margin_bps} /></td> },
-  { key: "z_spread_bps", label: "NRD Z", sub: "SPRD", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" style={dmColor(b.z_spread_bps)} key="z_spread_bps">{fmt.bps(b.z_spread_bps) ?? <D />}</td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num",
     cell: (b) => <td className="num" style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
+  { key: "carry_bps", label: "CARRY", sub: "vs БАЗА", align: "num",
+    cell: (b) => <td className="num" style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
   { key: "z_pctile", label: "z%ile", sub: "RATING", align: "num",
     cell: (b) => <td className="num" key="z_pctile">{b.z_pctile == null ? <D /> : <PctileBar p={b.z_pctile} />}</td> },
   { key: "delta_z_dod", label: "Δz", sub: "D/D BPS", align: "num",
     cell: (b) => <td className="num" style={dzColor(b.delta_z_dod)} key="delta_z_dod">{b.delta_z_dod == null ? <D /> : fmt.bps(b.delta_z_dod)}</td> },
   { key: "delta_z_mom", label: "Δz", sub: "M/M BPS", align: "num",
     cell: (b) => <td className="num" style={dzColor(b.delta_z_mom)} key="delta_z_mom">{b.delta_z_mom == null ? <D /> : fmt.bps(b.delta_z_mom)}</td> },
+  // ── НРД (тот же порядок: цена → DM → Z) ──
+  { key: "nrd_price_pct", label: "NRD PX", sub: "CLN %", align: "num", nrd: true, sep: true,
+    cell: (b) => <td className="num nrd-col col-sep" key="nrd_price_pct">{fmt.pct(b.nrd_price_pct) ?? <D />}</td> },
+  { key: "discount_margin_bps", label: "NRD DM", sub: "BPS", align: "num", nrd: true,
+    cell: (b) => <td className="num nrd-col" key="discount_margin_bps"><Chip value={b.discount_margin_bps} /></td> },
+  { key: "z_spread_bps", label: "NRD Z", sub: "SPRD", align: "num", nrd: true,
+    cell: (b) => <td className="num nrd-col" style={dmColor(b.z_spread_bps)} key="z_spread_bps">{fmt.bps(b.z_spread_bps) ?? <D />}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)
@@ -125,6 +130,7 @@ function HeaderCell({ col, sort, onSort }) {
   const cls =
     (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
     (col.nrd ? "nrd-col " : "") +
+    (col.sep ? "col-sep " : "") +
     (active ? "sorted " + (sort.dir === "asc" ? "asc" : "") : "");
   return (
     <th
