@@ -1,8 +1,61 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { fmt, orDash, dmColor, vsFairColor } from "../format.js";
-import { fetchBondDetails } from "../api.js";
+import { fetchBondDetails, fetchFunds, putFundPosition, UnauthorizedError } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
+
+// Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
+// Список фондов тянется лениво при первом открытии drawer'а.
+function AddToFund({ isin }) {
+  const [funds, setFunds] = useState(null); // null = не загружено
+  const [code, setCode] = useState("");
+  const [qty, setQty] = useState("");
+  const [msg, setMsg] = useState(null); // {ok, text}
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetchFunds()
+      .then((fs) => { if (alive) { setFunds(fs); if (fs.length && !code) setCode(fs[0].code); } })
+      .catch(() => alive && setFunds([]));
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { setMsg(null); setQty(""); }, [isin]);
+
+  if (!funds || !funds.length) return null;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const n = parseFloat(String(qty).replace(/\s/g, "").replace(",", "."));
+    if (!Number.isFinite(n) || n <= 0) { setMsg({ ok: false, text: "Количество?" }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      await putFundPosition(code, isin, n);
+      setMsg({ ok: true, text: `${fmt.num(n, 0)} шт → ${code}` });
+      setQty("");
+    } catch (e2) {
+      if (e2 instanceof UnauthorizedError) throw e2;
+      setMsg({ ok: false, text: e2.message });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <div className="section-title">В фонд</div>
+      <form className="add-fund-row" onSubmit={submit}>
+        <select value={code} onChange={(e) => setCode(e.target.value)}>
+          {funds.map((f) => <option key={f.code} value={f.code}>{f.code}</option>)}
+        </select>
+        <input placeholder="Кол-во, шт" value={qty} onChange={(e) => setQty(e.target.value)} />
+        <button className="btn" type="submit" disabled={busy || !qty.trim()}>Добавить</button>
+        {msg && <span className={"admin-msg " + (msg.ok ? "admin-ok" : "admin-err")}>{msg.text}</span>}
+      </form>
+      <div className="fnote">Заменяет qty позиции в фонде (не суммирует).</div>
+    </>
+  );
+}
 
 function RefCell({ k, children }) {
   return (
@@ -202,6 +255,8 @@ function Content({ d }) {
         <RefCell k="НКД">{fmt.num(r.accrued_interest) + " ₽"}</RefCell>
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
+
+      <AddToFund isin={r.isin} />
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 

@@ -312,26 +312,74 @@ class MarketDataService:
         cls._load_sec_cache()
         missing = []
         for isin in isins:
-            if isin in cls._sec_cache:
-                out[isin] = cls._sec_cache[isin]
+            cached = cls._sec_cache.get(isin)
+            # записи старого формата (без secid) перефетчиваем разово: у них могла
+            # быть выбрана борд-строка с рублёвым НКД для валютной бумаги
+            if cached is not None and "secid" in cached:
+                out[isin] = cached
             else:
                 missing.append(isin)
         if not missing:
             return out
 
+        async def _resolve_secid(client: httpx.AsyncClient, isin: str):
+            """ISIN→SECID через q-поиск (ОФЗ: board-less endpoint ISIN не резолвит)."""
+            resp = await _moex_get(
+                client, "https://iss.moex.com/iss/securities.json",
+                params={"q": isin, "iss.meta": "off", "limit": 10}, timeout=8)
+            if resp is None or resp.status_code != 200:
+                return None
+            sec = resp.json().get("securities", {})
+            cols, rows = sec.get("columns", []), sec.get("data", [])
+            if "secid" not in cols or "isin" not in cols:
+                return None
+            si, ii = cols.index("secid"), cols.index("isin")
+            for r in rows:
+                if (r[ii] or "").upper() == isin:
+                    return r[si]
+            return None
+
         async def fetch_one(client: httpx.AsyncClient, isin: str):
             try:
                 url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{isin}.json"
                 resp = await _moex_get(client, url, timeout=8)
-                if resp is None or resp.status_code != 200:
-                    return
-                sec = resp.json().get("securities", {})
-                cols, rows = sec.get("columns", []), sec.get("data", [])
+                rows, cols, secid = [], [], isin
+                if resp is not None and resp.status_code == 200:
+                    sec = resp.json().get("securities", {})
+                    cols, rows = sec.get("columns", []), sec.get("data", [])
                 if not rows:
-                    return
+                    secid = await _resolve_secid(client, isin)
+                    if not secid:
+                        return
+                    resp = await _moex_get(
+                        client,
+                        f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{secid}.json",
+                        timeout=8)
+                    if resp is None or resp.status_code != 200:
+                        return
+                    sec = resp.json().get("securities", {})
+                    cols, rows = sec.get("columns", []), sec.get("data", [])
+                    if not rows:
+                        return
+                # среди борд-строк берём ту, где валюта расчётов совпадает с валютой
+                # номинала (у замещающих на TQCB НКД в рублях — миксует единицы);
+                # рублёвые бумаги: FACEUNIT=SUR ↔ CURRENCYID=SUR — совпадает.
+                gi = lambda r, n: r[cols.index(n)] if n in cols else None
                 row = rows[0]
+                for r in rows:
+                    if gi(r, "CURRENCYID") == gi(r, "FACEUNIT"):
+                        row = r
+                        break
                 g = lambda n: row[cols.index(n)] if n in cols else None
+                # цена в % от номинала одинакова на всех бордах — если на выбранном
+                # (валютном) борде prev пуст, берём с любого другого (TQCB торгуется чаще)
+                prev = g("PREVPRICE")
+                if prev is None and "PREVPRICE" in cols:
+                    pi = cols.index("PREVPRICE")
+                    prev = next((r[pi] for r in rows if r[pi] is not None), None)
                 out[isin] = {
+                    "secid": g("SECID") or secid,
+                    "trade_ccy": g("CURRENCYID"),
                     "name": g("SHORTNAME") or g("SECNAME"),
                     "face": g("FACEVALUE"),
                     "face_unit": g("FACEUNIT") or "RUB",
@@ -339,7 +387,7 @@ class MarketDataService:
                     "issue": g("ISSUEDATE"),
                     "coupon_period": g("COUPONPERIOD"),
                     "accrued": g("ACCRUEDINT"),
-                    "prev": g("PREVPRICE"),
+                    "prev": prev,
                     "coupon_type": g("COUPONTYPE"),
                 }
             except Exception:

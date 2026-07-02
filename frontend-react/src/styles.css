@@ -425,3 +425,77 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .admin-btn-sm { padding: 4px 8px; font-size: 11px; }
 .admin-btn-danger { color: var(--neg); border-color: var(--neg); }
 .admin-btn-danger:disabled { opacity: 0.4; cursor: default; }
+
+/* ===== Модуль «Фонды» ===== */
+.module-seg { margin-left: 18px; }
+.module-seg .seg-btn { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
+
+.fund-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; align-content: start; }
+.fund-card { border: 1px solid var(--line); padding: 16px 20px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }
+.fund-card:hover, .fund-card:focus-visible { border-color: var(--fg); outline: none; }
+.fund-card-head { display: flex; align-items: center; justify-content: space-between; }
+.fund-code { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.fund-name { font-size: 12px; color: var(--mut); }
+.fund-name-inline { font-size: 13px; color: var(--mut); }
+.fund-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.fund-metric { display: flex; flex-direction: column; gap: 3px; }
+.fund-metric-val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fund-card-foot { font-size: 11px; letter-spacing: 0.04em; }
+.fund-card-new { align-items: center; justify-content: center; min-height: 160px; border-style: dashed; color: var(--mut-2); }
+.fund-card-new:hover { color: var(--fg); }
+.fund-new-plus { font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em; }
+
+.funds-state { padding: 32px 24px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; font-size: 13px; }
+
+.funds-toolbar { display: flex; align-items: center; gap: 14px; padding: 10px 24px; border-bottom: 1px solid var(--line); }
+.ccy-switch { display: inline-flex; align-items: center; gap: 10px; }
+.ccy-switch .seg-btn { min-width: 34px; padding: 5px 10px; }
+.ccy-switch .seg-btn:disabled { opacity: 0.35; cursor: default; }
+
+.fund-head { display: flex; align-items: center; gap: 14px; padding: 12px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.fund-head .fund-code { font-size: 18px; }
+.btn-danger { color: var(--neg); border-color: var(--neg); }
+
+.kpis-funds { grid-template-columns: repeat(7, 1fr); }
+.kpis-funds .kpi-val.sm { font-size: 17px; }
+.kpi-click { cursor: pointer; }
+.kpi-click:hover { background: var(--hover); }
+
+.fund-classes { padding: 12px 24px; border-bottom: 1px solid var(--line); }
+.fund-classes .admin-table tbody tr { cursor: pointer; }
+.fund-classes .admin-table tbody tr:hover td { background: var(--hover); }
+.fund-classes .admin-table tbody tr.row-on td { background: var(--fg); color: var(--bg); }
+.fund-classes .admin-table td { font-variant-numeric: tabular-nums; }
+.fund-classes .admin-table th.left { text-align: left; }
+.fund-classes .admin-table th, .fund-classes .admin-table td { text-align: right; }
+.fund-classes .admin-table th.left, .fund-classes .admin-table td.left { text-align: left; }
+
+.fund-table-wrap { flex: none; max-height: 52vh; }
+.warn-badge { font-size: 9px; font-weight: 600; border: 1px solid var(--down); color: var(--down); padding: 1px 5px; margin-left: 8px; letter-spacing: 0.08em; vertical-align: 2px; }
+.row-x { background: transparent; border: none; color: var(--mut-2); cursor: pointer; font-size: 14px; padding: 2px 8px; font-family: var(--mono); }
+.row-x:hover { color: var(--neg); }
+
+.fund-repo { border-top: 1px solid var(--line); }
+.fund-sec-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.18em; color: var(--mut); margin-bottom: 10px; }
+.fund-repo-form { flex-direction: row !important; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.fund-repo-form input, .fund-repo-form select { width: auto; min-width: 110px; }
+
+.add-fund-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.add-fund-row select, .add-fund-row input { font-family: var(--mono); font-size: 13px; padding: 7px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.add-fund-row input { width: 130px; }
+.add-fund-row select:focus, .add-fund-row input:focus { outline: none; border-color: var(--fg); }
+
+.fund-cf { border-top: 1px solid var(--line); }
+
+.modal-wide { max-width: 640px; }
+.snap-ta { width: 100%; min-height: 200px; font-family: var(--mono); font-size: 12px; padding: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; box-sizing: border-box; }
+.snap-ta:focus { border-color: var(--fg); outline: none; }
+
+@media (max-width: 1100px) {
+  .kpis-funds { grid-template-columns: repeat(4, 1fr); }
+  .kpis-funds .kpi { border-bottom: 1px solid var(--line); }
+}
+@media (max-width: 760px) {
+  .kpis-funds { grid-template-columns: repeat(2, 1fr); }
+  .fund-cards { grid-template-columns: 1fr; padding: 16px; }
+}

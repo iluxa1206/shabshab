@@ -17,11 +17,23 @@ function Clock() {
   );
 }
 
-export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, user, onLogout, onOpenSettings }) {
+export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, user, onLogout, onOpenSettings, module, onSetModule }) {
   return (
     <header className="menubar">
       <div className="brand-row">
         <span className="wordmark">DESK</span>
+        {onSetModule && (
+          <span className="seg module-seg" role="tablist" aria-label="Модуль">
+            <button
+              className={"seg-btn" + (module === "floaters" ? " active" : "")}
+              onClick={() => onSetModule("floaters")}
+            >Флоатеры</button>
+            <button
+              className={"seg-btn" + (module === "funds" ? " active" : "")}
+              onClick={() => onSetModule("funds")}
+            >Фонды</button>
+          </span>
+        )}
       </div>
       <div className="topbar-right">
         <span className="meta-chip">

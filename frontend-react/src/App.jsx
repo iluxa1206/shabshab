@@ -9,6 +9,7 @@ import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
+import FundsModule from "./components/funds/FundsModule.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard({ user, onLogout }) {
@@ -29,6 +30,8 @@ function Dashboard({ user, onLogout }) {
   const [drawerIsin, setDrawerIsin] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
+  // активный модуль: флоатеры (дефолт) | фонды; хуки флоатеров не размонтируются
+  const [module, setModule] = useState(() => localStorage.getItem("module") || "floaters");
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch") || "[]"); } catch { return []; }
   });
@@ -46,6 +49,7 @@ function Dashboard({ user, onLogout }) {
   const lastTriggerRef = useRef(null);
 
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
+  useEffect(() => { localStorage.setItem("module", module); }, [module]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("positions", JSON.stringify(positions)); }, [positions]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
@@ -188,38 +192,46 @@ function Dashboard({ user, onLogout }) {
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
+        module={module}
+        onSetModule={setModule}
       />
-      <Kpis bonds={filtered} />
-      <Toolbar
-        onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
-        basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
-        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
-        query={query} setQuery={setQuery}
-        watchCount={watch.length}
-        shown={filtered.length} total={bonds.length}
-        showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
-        onImportCsv={importCsv}
-        posCount={Object.keys(positions).length} onClearPositions={clearPositions}
-        visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
-      />
-      {showAnalytics && <AnalyticsPanel rows={filtered} />}
-      <BondTable
-        rows={filtered}
-        status={status}
-        errMsg={errMsg}
-        sort={sort}
-        onSort={onSort}
-        onOpen={openDrawer}
-        watch={watch}
-        onToggleStar={(isin) => (watch.includes(isin) ? removeBond(isin) : addBond(isin))}
-        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
-        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
-        onRetry={loadBonds}
-        visibleCols={visibleCols}
-      />
-      <Drawer isin={drawerIsin} onClose={closeDrawer} />
+      {module === "funds" ? (
+        <FundsModule onLogout={onLogout} />
+      ) : (
+        <>
+          <Kpis bonds={filtered} />
+          <Toolbar
+            onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
+            basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
+            ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+            query={query} setQuery={setQuery}
+            watchCount={watch.length}
+            shown={filtered.length} total={bonds.length}
+            showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
+            onImportCsv={importCsv}
+            posCount={Object.keys(positions).length} onClearPositions={clearPositions}
+            visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
+          />
+          {showAnalytics && <AnalyticsPanel rows={filtered} />}
+          <BondTable
+            rows={filtered}
+            status={status}
+            errMsg={errMsg}
+            sort={sort}
+            onSort={onSort}
+            onOpen={openDrawer}
+            watch={watch}
+            onToggleStar={(isin) => (watch.includes(isin) ? removeBond(isin) : addBond(isin))}
+            filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
+            onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
+            onRetry={loadBonds}
+            visibleCols={visibleCols}
+          />
+          <Drawer isin={drawerIsin} onClose={closeDrawer} />
+          <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
+        </>
+      )}
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
-      <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
     </div>
   );
 }

@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -72,13 +72,30 @@ async def universe_price_poller():
             print(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
 
+async def fund_nav_snapshotter():
+    """Раз в час пишет дневной снапшот метрик фондов в nav_daily (перезапись за
+    сегодня идемпотентна) — история NAV для графиков паёв/бенчмарков (Ф2).
+    Стартует после прогрева universe poller'а, чтобы флоатерные метрики уже были."""
+    from services.portfolio import snapshot_all_navs
+    await asyncio.sleep(900)
+    while True:
+        try:
+            await snapshot_all_navs()
+        except Exception as e:
+            print(f"NAV snapshotter error: {e}")
+        await asyncio.sleep(3600)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from services.portfolio_db import init_db
+    init_db()  # схема + сид фондов R5/D5/Y5 (идемпотентно)
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
+    nav_snap = asyncio.create_task(fund_nav_snapshotter())
     yield
     task.cancel()
     poller.cancel()
+    nav_snap.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
@@ -116,6 +133,7 @@ app.include_router(meta.router, prefix="/api", dependencies=_gate)
 app.include_router(bonds.router, prefix="/api/bonds", dependencies=_gate)
 app.include_router(curves.router, prefix="/api/curves", dependencies=_gate)
 app.include_router(orderbook.router, prefix="/api/orderbook", dependencies=_gate)
+app.include_router(funds.router, prefix="/api/funds", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

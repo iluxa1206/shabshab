@@ -123,6 +123,89 @@ export async function fetchBondDetails(isin) {
   return r.json();
 }
 
+// --- Модуль «Фонды» ---
+export async function fetchFunds() {
+  const r = await authFetch(`${API}/api/funds`);
+  return (await jsonOrThrow(r)).funds || [];
+}
+
+export async function createFund({ code, name, base_ccy }) {
+  const r = await authFetch(`${API}/api/funds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, name, base_ccy }),
+  });
+  return jsonOrThrow(r);
+}
+
+export async function patchFund(code, patch) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow(r);
+}
+
+export async function deleteFund(code) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}`, { method: "DELETE" });
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundSummary(code) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/summary`);
+  return jsonOrThrow(r);
+}
+
+export async function putFundSnapshot(code, csv, snapDate) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/snapshot`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ csv, snap_date: snapDate || null }),
+  });
+  return jsonOrThrow(r);
+}
+
+export async function putFundPosition(code, isin, qty) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/position`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ isin, qty }),
+  });
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundRepos(code) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo`);
+  return (await jsonOrThrow(r)).repos || [];
+}
+
+export async function addFundRepo(code, repo) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(repo),
+  });
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundCashflow(code, months = 12) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/cashflow?months=${months}`);
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundNavHistory(code, days = 120) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/nav_history?days=${days}`);
+  return (await jsonOrThrow(r)).items || [];
+}
+
+export async function deleteFundRepo(code, id) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo/${id}`, {
+    method: "DELETE",
+  });
+  return jsonOrThrow(r);
+}
+
 // WebSocket live-цен. onPrice(isin, price). Возвращает {close}.
 export function connectMarketWs(getIsins, onStatus, onPrice) {
   const WS_URL =
