@@ -9,7 +9,9 @@ from api.routes import health, meta, bonds, curves, orderbook, ws
 from services.exceptions import APIException
 from contextlib import asynccontextmanager
 import asyncio
+from datetime import datetime, timedelta, timezone
 from services.market_data import MarketDataService
+from services import nrd as nrd_service
 
 async def ws_market_data_broadcaster():
     """Background task to push updates to connected WS clients."""
@@ -25,14 +27,49 @@ async def ws_market_data_broadcaster():
                         await ws.manager.broadcast_market_data(isin, payload)
         except Exception as e:
             print(f"WS Broadcaster error: {e}")
-            
+
         await asyncio.sleep(5)  # Fetch and broadcast every 5 seconds
+
+
+# Опрос Alor по всему юниверсу флоатеров (вне watchlist) — редко, чтобы держать
+# колонку PRICE более-менее актуальной без нагрузки WS на 453 бумаги.
+UNIVERSE_POLL_INTERVAL = 600      # 10 минут
+UNIVERSE_POLL_CHUNK = 50          # ISIN за один WS-заход
+_MSK = timezone(timedelta(hours=3))
+
+def _in_moex_trading_hours() -> bool:
+    """Пн–Пт, ~07:00–23:50 МСК (охватывает утреннюю+основную+вечернюю сессии)."""
+    now = datetime.now(_MSK)
+    if now.weekday() >= 5:  # сб/вс
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 7 * 60 <= minutes <= 23 * 60 + 50
+
+async def universe_price_poller():
+    """Раз в UNIVERSE_POLL_INTERVAL тянет last-price Alor по всему юниверсу
+    чанками, наполняя market_cache['last_prices']. Юниверс-роут читает
+    cached_prices() → колонка PRICE наполняется для бумаг вне watchlist.
+    Неликвид не вернёт котировку — остаётся на НРД VWAP."""
+    await asyncio.sleep(30)  # прогрев: не конкурировать со стартом
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                uni = await nrd_service.fetch_floater_universe()  # кэш на день
+                isins = [u["isin"] for u in uni if u.get("isin")]
+                for i in range(0, len(isins), UNIVERSE_POLL_CHUNK):
+                    await MarketDataService.fetch_last_prices(isins[i:i + UNIVERSE_POLL_CHUNK])
+                    await asyncio.sleep(1)  # мягкий rate-limit между чанками
+        except Exception as e:
+            print(f"Universe poller error: {e}")
+        await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(ws_market_data_broadcaster())
+    poller = asyncio.create_task(universe_price_poller())
     yield
     task.cancel()
+    poller.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",

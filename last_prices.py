@@ -11,30 +11,61 @@ from rates import get_rates_curves
 from forwards import CurveBootstrapper, add_months
 from valuation import BondRefData, calculate_floater_metrics
 
+# Персистентный кэш isin→symbol (маппинг статичен). Режет REST-резолюцию символа
+# на каждый ISIN — критично для периодического опроса всего юниверса (~453 бумаги).
+_SYMBOL_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alor_symbols_cache.json")
+
+def _load_symbol_cache() -> dict:
+    try:
+        with open(_SYMBOL_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_symbol_cache(cache: dict) -> None:
+    try:
+        with open(_SYMBOL_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+_symbol_cache = _load_symbol_cache()  # isin -> symbol (только подтверждённые REST-резолюции)
+
+
 async def get_last_prices_dict(access_token: str, exchange: str, isins: List[str]) -> Dict[str, float]:
     """Возвращает словарь {isin: last_price} из WebSockets"""
     api_base = f"{BASE_API}/md/v2/Securities/{exchange}"
     headers = {"Authorization": f"Bearer {access_token}"}
-    
+
     isin_to_symbol = {}
     symbol_to_isin = {}
-    
+    unknown = []  # ISIN без кэшированного символа — резолвим по REST
+
+    for isin in isins:
+        sym = _symbol_cache.get(isin)
+        if sym:
+            isin_to_symbol[isin] = sym
+            symbol_to_isin[sym] = isin
+        else:
+            unknown.append(isin)
+
     async def get_info_for_isin(session: aiohttp.ClientSession, isin: str):
+        symbol = isin  # фолбэк: для большинства облигаций MOEX symbol == isin
         try:
             async with session.get(f"{api_base}/{isin}") as resp:
                 if resp.status == 200:
                     payload = await resp.json()
                     symbol = payload.get("symbol", isin)
-                    isin_to_symbol[isin] = symbol
-                    symbol_to_isin[symbol] = isin
-                else:
-                    symbol_to_isin[isin] = isin
+                    _symbol_cache[isin] = symbol  # кэшируем ТОЛЬКО успешную резолюцию
         except Exception:
-            symbol_to_isin[isin] = isin
+            pass
+        isin_to_symbol[isin] = symbol
+        symbol_to_isin[symbol] = isin
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        tasks = [get_info_for_isin(session, isin) for isin in isins]
-        await asyncio.gather(*tasks)
+    if unknown:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            await asyncio.gather(*(get_info_for_isin(session, isin) for isin in unknown))
+        _save_symbol_cache(_symbol_cache)
 
     ws_url = "wss://api.alor.ru/ws"
     symbols_to_fetch = list(symbol_to_isin.keys())
