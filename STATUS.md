@@ -91,6 +91,15 @@ tests/         только test_nrd.py (pytest)
 - **Drawer**: карточка любой бумаги (не только кэш) — референс (MOEX+НРД), cashflow-график (факт+прогноз, линия «сегодня»), НРД-блок, наш DM.
 - **Колонка RATING**, footer с источниками-статусами (● ALOR/CBONDS/NRD).
 
+## 💼 МОДУЛЬ «ФОНДЫ» (2026-07-02, Ф1 готов и закоммичен)
+Продукт стал мульти-модульным: переключатель «Флоатеры | Фонды» в Topbar (persist `module`). 3 хедж-фонда: **R5** (RUB: корп флоатеры 0.9× + длинные ОФЗ 2.2× капитала), **D5** (USD: + замещающие), **Y5** (CNY: + юаневые). Плечо = явные РЕПО-сделки; NAV = MV − РЕПО; net carry = купоны − funding.
+
+**Бэкенд** (SQLite `data/portfolio.db`, том в проде): `services/portfolio_db.py` (funds/positions/repo_deals/nav_daily), `services/instruments.py` (классификатор 7 классов; ISIN→SECID через q-поиск ISS — board-less endpoint ОФЗ не резолвит; борд-строка по CURRENCYID==FACEUNIT — иначе у замещающих рублёвый НКД с TQCB), `services/fixed_income.py` (YTM/dur/DV01/G-spread к КБД; yield-to-put), `services/fx.py` (**TOM с MOEX** LAST→WAPRICE→PREV TTL 60с + 15-мин stale-буфер + ЦБ-фолбэк), `services/portfolio.py` (агрегация; месячный кэшфлоу-календарь из bondization, флоатеры оценкой по current coupon; `snapshot_all_navs`). Фоновый `fund_nav_snapshotter` в main.py (раз в час, идемпотентно за день). API `api/routes/funds.py`: CRUD/snapshot CSV/repo/summary/cashflow/nav_history.
+
+**Фронт** `frontend-react/src/components/funds/`: карточки фондов, деталка (KPI-строка, классы с фильтром, таблица позиций WGT/warn-бейджи, РЕПО-секция, инлайн-редактор капитала — ввод в ₽), **тумблер валюты ₽|$|¥** (пересчёт всех метрик по TOM, подпись источника), 12-мес кэшфлоу-чарт (купоны/прогноз/принципал), экспорт позиций CSV (Excel-RU: BOM+`;`+запятая), форма «В фонд» в Drawer скринера (заменяет qty, не суммирует).
+
+**Валидировано**: ОФЗ 26238 G-spread −2бп; ГазКЗ-37Д YTM 8.0% USD, НКД в USD; РЖД 1Р-26R yield-to-put; микс-РЕПО WA по ₽-эквиваленту; cross-fund изоляция удаления. Ф2 план: паи+бенчмарки (RGBITR/RUCBTRNS/индекс ЗО), сделки+P&L, сценарии КС/кривая/FX, рейтинги НРД, двухвалютный NAV.
+
 ## 📊 ФЛОАТЕР-МЕТРИКИ + КРОСС-СЕКЦИЯ (2026-07-02)
 Реализован полный пакет метрик, специфичных для флоатеров (адаптация bond-аналитики под плавающий купон: rate duration≈до рефиксинга мала, spread duration≈до погашения — весь кредитный риск).
 - **Бэкенд**: `services/metrics.py` (чистые функции: `macaulay_years` spread duration, `days_to_refix`, `current_coupon_pct`, `carry_bps`, `breakeven_base_pct`, `base_level_pct` с короткого конца кривой, `rank_pct` перцентиль в бакете, `years_to`). `services/history.py` (ежедневный снапшот юниверса → `nrd_history.json`, `dod_map("z"/"dm"/"px")` день-к-дню, cap 40 дат — записывается на каждой загрузке юниверса; Δ появляется со 2-го дня).
