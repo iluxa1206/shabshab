@@ -219,10 +219,12 @@ async def _universe_bonds(extra_list, cache, limit, offset):
     if watch:
         live = list(watch)
         external_live = [i for i in live if i not in cache]
+        # Цену watch берём из cached_prices (фон-поллер 10мин + WS-broadcaster 5с
+        # держат её тёплой) — НЕ блокируем ответ свежим Alor WS на каждый запрос.
+        market_prices = cached_prices
         # независимые сетевые вызовы — параллельно (MOEX ISS ~3.5с/запрос,
         # последовательно давало ~17с; gather сводит к самому долгому)
-        market_prices, snapshot, schedules, moex_ref, curves, zctx, fulls = await asyncio.gather(
-            MarketDataService.fetch_last_prices(live),
+        snapshot, schedules, moex_ref, curves, zctx, fulls = await asyncio.gather(
             MarketDataService.fetch_moex_snapshot(live),
             MarketDataService.fetch_coupon_schedules(live),
             MarketDataService.fetch_moex_securities(external_live) if external_live else _aempty(),

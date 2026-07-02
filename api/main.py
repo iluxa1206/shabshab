@@ -34,7 +34,7 @@ async def ws_market_data_broadcaster():
 # Опрос Alor по всему юниверсу флоатеров (вне watchlist) — редко, чтобы держать
 # колонку PRICE более-менее актуальной без нагрузки WS на 453 бумаги.
 UNIVERSE_POLL_INTERVAL = 600      # 10 минут
-UNIVERSE_POLL_CHUNK = 50          # ISIN за один WS-заход
+UNIVERSE_POLL_CHUNK = 150         # ISIN за один WS-заход (меньше Alor WS-сессий: ~3 вместо 9)
 _MSK = timezone(timedelta(hours=3))
 
 def _in_moex_trading_hours() -> bool:
