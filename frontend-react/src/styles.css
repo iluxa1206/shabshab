@@ -348,6 +348,13 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .an-mut { fill: var(--mut-2); }
 .an-bar { fill: var(--mut); }
 .an-empty { font-size: 12px; color: var(--mut-2); padding: 24px 8px; text-align: center; }
+/* элементы графиков с тултипом (<title>) — курсор-подсказка */
+.an-svg circle, .an-svg rect.an-bar, .an-svg line[stroke] { cursor: help; }
+/* легенда цветов-рейтингов */
+.an-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 10px; color: var(--mut); font-family: var(--mono); }
+.an-leg-lbl { color: var(--mut-2); }
+.an-leg-item { display: inline-flex; align-items: center; gap: 4px; }
+.an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 
 /* ── Меню выбора столбцов (дропдаун) ── */
 .colmenu { position: relative; display: inline-flex; }

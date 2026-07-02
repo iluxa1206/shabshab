@@ -14,6 +14,15 @@ const BCOLOR = {
   BB: "#e03131", B: "#c92a2a", NR: "var(--mut-2)",
 };
 
+// склонение «бумага/бумаги/бумаг» по числу
+const plu = (n) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return "бумаг";
+  if (b === 1) return "бумага";
+  if (b >= 2 && b <= 4) return "бумаги";
+  return "бумаг";
+};
+
 const median = (a) => {
   if (!a.length) return null;
   const s = a.slice().sort((x, y) => x - y);
@@ -57,7 +66,7 @@ function ScatterZDur({ rows }) {
       })}
       {pts.map((p) => (
         <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}>
-          <title>{`${p.name}\nz=${p.y}bps · dur=${fmt.yrs(p.x)} · ${p.r}`}</title>
+          <title>{`${p.name} — один выпуск\nz-спред: ${p.y} bps (НРД, к кривой ОФЗ)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
         </circle>
       ))}
       <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">spread duration →</text>
@@ -91,8 +100,12 @@ function RatingDist({ rows }) {
         return (
           <g key={k}>
             <text x={pad.l - 6} y={y + 3} className="an-axis" textAnchor="end">{k}</text>
-            <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={BCOLOR[k]} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round" />
-            <circle cx={sx(md)} cy={y} r={4} fill={BCOLOR[k]} />
+            <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={BCOLOR[k]} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round">
+              <title>{`${k}: линия = разброс z-спреда, p25–p75 = ${Math.round(q1)}–${Math.round(q3)} bps`}</title>
+            </line>
+            <circle cx={sx(md)} cy={y} r={4} fill={BCOLOR[k]}>
+              <title>{`${k}: точка = медиана z-спреда ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}`}</title>
+            </circle>
             <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
           </g>
         );
@@ -121,7 +134,9 @@ function RefixProfile({ rows }) {
         const x = pad.l + i * bw + bw * 0.15;
         return (
           <g key={bin.lbl}>
-            <rect x={x} y={H - pad.b - h} width={bw * 0.7} height={h} className="an-bar" />
+            <rect x={x} y={H - pad.b - h} width={bw * 0.7} height={h} className="an-bar">
+              <title>{`рефиксинг через ${bin.lbl} дн.: ${counts[i]} ${plu(counts[i])}`}</title>
+            </rect>
             {counts[i] > 0 && <text x={x + bw * 0.35} y={H - pad.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
             <text x={x + bw * 0.35} y={H - pad.b + 14} className="an-axis" textAnchor="middle">{bin.lbl}</text>
           </g>
@@ -131,19 +146,34 @@ function RefixProfile({ rows }) {
   );
 }
 
+function RatingLegend() {
+  return (
+    <div className="an-legend">
+      <span className="an-leg-lbl">цвет:</span>
+      {BUCKETS.map((k) => (
+        <span key={k} className="an-leg-item">
+          <span className="an-leg-swatch" style={{ background: BCOLOR[k] }} />{k}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function AnalyticsPanel({ rows }) {
   return (
     <section className="analytics">
       <div className="an-card">
-        <div className="an-title">z-спред vs SPREAD DURATION <span className="an-hint">кривая доходности флоатеров · цвет = рейтинг</span></div>
+        <div className="an-title">z-спред vs SPREAD DURATION <span className="an-hint">точка = выпуск · цвет = рейтинг · наведи для деталей</span></div>
         <ScatterZDur rows={rows} />
+        <RatingLegend />
       </div>
       <div className="an-card">
-        <div className="an-title">z по РЕЙТИНГ-БАКЕТАМ <span className="an-hint">p25–медиана–p75 · (n)</span></div>
+        <div className="an-title">z по РЕЙТИНГ-БАКЕТАМ <span className="an-hint">линия p25–p75 · точка = медиана · (n)</span></div>
         <RatingDist rows={rows} />
+        <RatingLegend />
       </div>
       <div className="an-card">
-        <div className="an-title">ПРОФИЛЬ РЕФИКСИНГА <span className="an-hint">watchlist · дни до новой ставки</span></div>
+        <div className="an-title">ПРОФИЛЬ РЕФИКСИНГА <span className="an-hint">дни до новой ставки · бар = число бумаг</span></div>
         <RefixProfile rows={rows} />
       </div>
     </section>
