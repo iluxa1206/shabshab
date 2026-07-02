@@ -6,7 +6,6 @@ import os
 from typing import Dict, List, Any
 from datetime import date
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
-from readisins import read_isins_from_file
 
 from rates import get_rates_curves
 from forwards import CurveBootstrapper, add_months
@@ -42,8 +41,8 @@ async def get_last_prices_dict(access_token: str, exchange: str, isins: List[str
     
     collected_symbols = set()
     result = {}
-    timeout = 10.0
-    
+    timeout = 4.0  # неликвид никогда не пришлёт котировку — не ждём полные 10с
+
     async with aiohttp.ClientSession() as session:
         try:
             async with session.ws_connect(ws_url) as ws:
@@ -198,12 +197,12 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
         except Exception as e:
             print(f"Ошибка WebSocket: {e}")
 
-    # 3. Вычисление доходности (YTM) и спреда (DM)
+    # 3. Вычисление доходности (XIRR) и спреда к базе
     print("Рассчёт метрик доходности и спреда...\n")
     for sym, item in symbol_to_info.items():
         price = item["last_price"]
         item["yield_pct"] = None
-        item["dm_bps"] = None
+        item["spread_to_base_bps"] = None
 
         if price is None or not item["bond_data_cache"]:
             continue
@@ -230,6 +229,11 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
             
             step_months = 12 // freq
             first_coupon = add_months(start_date, step_months)
+            coupon_period_days = None
+            try:
+                coupon_period_days = int(data.get('COUPONPERIOD')) if data.get('COUPONPERIOD') else None
+            except (ValueError, TypeError):
+                coupon_period_days = None
             
             acc_str = data.get('ACCRUEDINT')
             accrued = float(acc_str) if acc_str is not None else 0.0
@@ -246,13 +250,14 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
                     maturity_date=mat_date,
                     first_coupon_date=first_coupon,
                     coupons_per_year=freq,
-                    issue_date=start_date
+                    issue_date=start_date,
+                    coupon_period_days=coupon_period_days,
                 )
                 curve = ruonia_curve if base == "RUONIA" else irs_curve
                 
                 metrics = calculate_floater_metrics(bond, float(price), curve, calc_date)
                 item["yield_pct"] = metrics.get('implied_yield_pct')
-                item["dm_bps"] = metrics.get('dm_bps')
+                item["spread_to_base_bps"] = metrics.get('spread_to_base_bps')
         except Exception as e:
             pass
 
@@ -260,37 +265,17 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
     data_list = list(symbol_to_info.values())
     data_list.sort(key=lambda x: x['shortname'])
     
-    print(f"{'ISIN':<15} | {'SHORTNAME':<20} | {'LAST PRICE':>12} | {'YIELD (%)':>10} | {'DM (bps)':>10}")
+    print(f"{'ISIN':<15} | {'SHORTNAME':<20} | {'LAST PRICE':>12} | {'YIELD (%)':>10} | {'SPREAD':>10}")
     print("-" * 77)
     for item in data_list:
         price_str = f"{item['last_price']:.2f}" if item['last_price'] is not None else "N/A"
         
         y_val = item.get("yield_pct")
-        dm_val = item.get("dm_bps")
+        spread_val = item.get("spread_to_base_bps")
         
         y_str = f"{y_val:.2f}%" if y_val is not None and y_val != 0.0 else "N/A"
-        dm_str = f"{dm_val}" if dm_val is not None else "N/A"
+        spread_str = f"{spread_val}" if spread_val is not None else "N/A"
         
-        print(f"{item['isin']:<15} | {item['shortname']:<20} | {price_str:>12} | {y_str:>10} | {dm_str:>10}")
+        print(f"{item['isin']:<15} | {item['shortname']:<20} | {price_str:>12} | {y_str:>10} | {spread_str:>10}")
     print()
 
-async def main():
-    access_token = get_access_token(REFRESH_TOKEN)
-    if not access_token:
-        print("Ошибка: не удалось получить токен авторизации.")
-        return
-
-    isins = read_isins_from_file()
-    if not isins:
-        print("Список ISIN пуст.")
-        return
-
-    print(f"Получение последних цен для {len(isins)} ISIN...")
-    await fetch_last_prices(
-        access_token=access_token,
-        exchange="MOEX",
-        isins=isins
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())

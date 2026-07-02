@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+*.pyc
+frontend-react/node_modules
+frontend-react/dist
+.claude
+tests
+docs
+*.md
+bondsearch_20_11_2025.xlsx
+.DS_Store

@@ -1,0 +1,30 @@
+# Prod-стек Floaters Desk для deskdeskdesk.ru.
+# Отдельный compose-проект (name: floaters-prod), подключён к внешней сети
+# astra-prod_default — чтобы Caddy (в astra-prod) резолвил сервис по имени `floaters`.
+#
+# Деплой:
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+#
+# Caddy: добавить блок deskdeskdesk.ru → reverse_proxy floaters:8000 в /root/catalog/Caddyfile.
+
+name: floaters-prod
+
+services:
+  floaters:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Лимит памяти: idle ~95MB, пик на pandas+юниверс НРД. 768MB — потолок,
+    # защищает соседний стек astra-prod от OOM-killer на общем 3.8GB VPS.
+    mem_limit: 768m
+    mem_reservation: 256m
+    networks:
+      - web
+    expose:
+      - "8000"
+
+networks:
+  web:
+    external: true
+    name: astra-prod_default

@@ -156,6 +156,93 @@ def save_cache(ois, irs):
     except Exception as e:
         print(f"Failed to save cache: {e}")
 
+# --- СПФИ МосБиржи: "RUB Key Rate NY Forward Curve" (Cbonds) ---
+# Форвардные значения КС по срокам — реальный вход методики НРД (met_float Прил.3).
+# Страница рендерится Vue/JS, но текущее значение есть в сыром HTML как embedded JSON:
+# "actual_value.numeric":X рядом с "actual_date".
+SPFI_INDEX_IDS = {"3M": 98488, "6M": 98490, "9M": 98492, "1Y": 98494, "2Y": 98496,
+                  "3Y": 98498, "4Y": 98500, "5Y": 98546, "6Y": 98502, "7Y": 98504,
+                  "8Y": 98506, "9Y": 98508, "10Y": 98510}
+SPFI_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spfi_cache.json")
+# Снапшот 2026-06-30 — фолбэк при недоступности Cbonds (стареет!)
+SPFI_KS_FALLBACK = {"3M": 14.0069, "6M": 13.7284, "9M": 13.0211, "1Y": 13.4592,
+                    "2Y": 13.0027, "3Y": 13.6501, "4Y": 13.5447, "5Y": 13.6249,
+                    "6Y": 13.5255, "7Y": 13.2692, "8Y": 13.7832, "9Y": 13.8422,
+                    "10Y": 13.8800}
+SPFI_FALLBACK_DATE = date(2026, 6, 30)
+
+_SPFI_VAL_RE = re.compile(r'"actual_value\.numeric"\s*:\s*"?([\d]+(?:[.,]\d+)?)')
+_SPFI_DATE_RE = re.compile(r'"actual_date"\s*:\s*"([^"]+)"')
+
+
+def _parse_spfi_date(raw: str) -> date | None:
+    raw = raw.strip()
+    try:
+        if "-" in raw:
+            return date.fromisoformat(raw[:10])
+        parts = raw.split(".")
+        if len(parts) == 3:
+            year = int(parts[2])
+            if year < 100:
+                year += 2000
+            return date(year, int(parts[1]), int(parts[0]))
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _spfi_fallback() -> list[Quote]:
+    print(f"WARNING: SPFI fallback hardcode as-of {SPFI_FALLBACK_DATE} (Cbonds недоступен)")
+    return [Quote(f"SPFI KEYRATE {t} (fallback)", t, v, SPFI_FALLBACK_DATE)
+            for t, v in SPFI_KS_FALLBACK.items()]
+
+
+def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
+    """Форвардная кривая КС МБ СПФИ с Cbonds (13 теноров). Кэш на день,
+    фолбэк на снапшот 2026-06-30 при недоступности/пейволле."""
+    import time as _time
+    if use_cache and os.path.exists(SPFI_CACHE_FILE):
+        try:
+            with open(SPFI_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("cache_date") == date.today().isoformat():
+                return [Quote(d["name"], d["tenor"], d["value"], date.fromisoformat(d["date"]))
+                        for d in data["quotes"]]
+        except Exception as e:
+            print(f"Failed to load SPFI cache: {e}")
+
+    quotes: list[Quote] = []
+    for tenor, idx in SPFI_INDEX_IDS.items():
+        try:
+            html = fetch(f"https://cbonds.ru/indexes/{idx}/")
+            vm = _SPFI_VAL_RE.search(html)
+            if not vm:
+                continue
+            value = float(vm.group(1).replace(",", "."))
+            dm = _SPFI_DATE_RE.search(html)
+            d = _parse_spfi_date(dm.group(1)) if dm else None
+            quotes.append(Quote(f"SPFI KEYRATE {tenor}", tenor, value, d or date.today()))
+        except Exception as e:
+            print(f"SPFI {tenor} (id {idx}) fetch error: {e}")
+        _time.sleep(0.3)
+
+    tenors = {q.tenor for q in quotes}
+    long_ok = any(tenor_to_days(t) >= 5 * 365 for t in tenors)
+    if len(quotes) < 6 or "3M" not in tenors or not long_ok:
+        return _spfi_fallback()
+
+    if use_cache:
+        try:
+            with open(SPFI_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"cache_date": date.today().isoformat(),
+                           "quotes": [{"name": q.name, "tenor": q.tenor, "value": q.value,
+                                       "date": q.date.isoformat()} for q in quotes]},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Failed to save SPFI cache: {e}")
+    return quotes
+
+
 def get_rates_curves(use_cache=True):
     """Fetches OIS RUONIA and IRS KEYRATE quotes from Cbonds, using cache if available."""
     if use_cache:

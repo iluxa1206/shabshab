@@ -34,6 +34,18 @@ def excel_implied_avg_rate(mid_rate_decimal: float, days_len: int) -> float:
         return 0.0
     return 365.0 * (math.pow(accrual, 1.0 / days_len) - 1.0)
 
+
+def excel_keyrate_implied_avg_rate(mid_rate_decimal: float, tenor: str) -> float:
+    """Implied average rate as on the IRS sheet for KEYRATE swaps."""
+    tenor = tenor.upper()
+    if tenor == "3M":
+        return mid_rate_decimal
+    if tenor == "6M":
+        return 4.0 * (math.pow(1.0 + mid_rate_decimal / 2.0, 1.0 / 2.0) - 1.0)
+    if tenor == "9M":
+        return 4.0 * (math.pow(1.0 + mid_rate_decimal * 3.0 / 4.0, 1.0 / 3.0) - 1.0)
+    return 4.0 * (math.pow(1.0 + mid_rate_decimal, 1.0 / 4.0) - 1.0)
+
 def add_months(d: date, months: int) -> date:
     """Точное прибавление календарных месяцев без сдвигов по выходным (CalendarMode = NONE)."""
     month = d.month - 1 + months
@@ -55,13 +67,13 @@ def get_maturity_date(start_date: date, tenor: str) -> date:
     if tenor == "SN": return start_date + timedelta(days=3)
     
     if tenor.endswith('D'):
-        return start_date + timedelta(days=int(float(tenor[:-1])))
+        return start_date + timedelta(days=int(float(tenor[:-1]))) + timedelta(days=1)
     if tenor.endswith('W'):
-        return start_date + timedelta(days=int(float(tenor[:-1]) * 7))
+        return start_date + timedelta(days=int(float(tenor[:-1]) * 7)) + timedelta(days=1)
     if tenor.endswith('M'):
-        return add_months(start_date, int(float(tenor[:-1])))
+        return add_months(start_date, int(float(tenor[:-1]))) + timedelta(days=1)
     if tenor.endswith('Y'):
-        return add_months(start_date, int(float(tenor[:-1]) * 12))
+        return add_months(start_date, int(float(tenor[:-1]) * 12)) + timedelta(days=1)
     
     raise ValueError(f"Unknown tenor format: {tenor}")
 
@@ -230,113 +242,130 @@ class DiscountCurve:
         return round(self.spot_daily_comp(d) * 10000)
 
 
+class ExcelForwardCurve(DiscountCurve):
+    def __init__(self, calc_date: date, nodes: List[Tuple[date, float]], segments: List[Tuple[date, date, float]], base_type: str):
+        super().__init__(calc_date, nodes)
+        self.segments = segments
+        self.base_type = base_type
+
+    def _equivalent_rate(self, factor: float, days: int) -> float:
+        if days <= 0:
+            return 0.0
+        if self.base_type == "RUONIA":
+            return 365.0 * (math.pow(factor, 1.0 / days) - 1.0)
+
+        alpha = days / 365.0
+        if alpha <= 0:
+            return 0.0
+        return 4.0 * (math.pow(factor, 1.0 / (4.0 * alpha)) - 1.0)
+
+    def _segment_factor(self, rate: float, days: int) -> float:
+        if self.base_type == "RUONIA":
+            return math.pow(1.0 + rate / 365.0, days)
+
+        alpha = days / 365.0
+        return math.pow(1.0 + rate / 4.0, 4.0 * alpha)
+
+    def forward(self, t1: date, t2: date) -> float:
+        if t1 >= t2:
+            raise ValueError("t2 must be strictly > t1")
+
+        total_days = (t2 - t1).days
+        factor = 1.0
+        covered_days = 0
+
+        for seg_start, seg_end, seg_rate in self.segments:
+            overlap_start = max(t1, seg_start)
+            overlap_end = min(t2, seg_end)
+            if overlap_end <= overlap_start:
+                continue
+
+            days = (overlap_end - overlap_start).days
+            factor *= self._segment_factor(seg_rate, days)
+            covered_days += days
+
+        if covered_days == 0:
+            seg_rate = self.segments[-1][2]
+            return seg_rate
+
+        if covered_days < total_days:
+            tail_days = total_days - covered_days
+            seg_rate = self.segments[-1][2]
+            factor *= self._segment_factor(seg_rate, tail_days)
+
+        return self._equivalent_rate(factor, total_days)
+
+
 class CurveBootstrapper:
+    @staticmethod
+    def _build_excel_forward_curve(quotes: List, calc_date: date, base_type: str) -> ExcelForwardCurve:
+        effective_start = calc_date + timedelta(days=1)
+        sorted_quotes = sorted(quotes, key=lambda x: get_maturity_date(effective_start, x.tenor))
+
+        nodes: List[Tuple[date, float]] = []
+        segments: List[Tuple[date, date, float]] = []
+        prev_end = None
+        prev_implied = None
+
+        for q in sorted_quotes:
+            end_date = get_maturity_date(effective_start, q.tenor)
+            if end_date <= effective_start:
+                continue
+
+            actual_days = (end_date - effective_start).days
+            if actual_days <= 0:
+                continue
+
+            mid_rate_decimal = q.value / 100.0
+            if base_type == "RUONIA":
+                days_len = excel_days_length(effective_start, end_date, q.tenor)
+                implied = excel_implied_avg_rate(mid_rate_decimal, days_len)
+                df = 1.0 / math.pow(1.0 + implied / 365.0, actual_days)
+            else:
+                implied = excel_keyrate_implied_avg_rate(mid_rate_decimal, q.tenor)
+                alpha = actual_days / 365.0
+                df = 1.0 / math.pow(1.0 + implied / 4.0, 4.0 * alpha)
+
+            if nodes and df > nodes[-1][1]:
+                df = max(nodes[-1][1] * (1.0 - 1e-12), 1e-12)
+
+            nodes.append((end_date, df))
+
+            seg_start = effective_start if prev_end is None else prev_end
+            if prev_end is None:
+                forward = implied
+            else:
+                t_prev = (prev_end - effective_start).days / 365.0
+                t_curr = (end_date - effective_start).days / 365.0
+                seg_days = (end_date - prev_end).days + 1
+                if seg_days <= 0:
+                    continue
+                forward = (implied * t_curr - prev_implied * t_prev) * 365.0 / seg_days
+
+            segments.append((seg_start, end_date, forward))
+            prev_end = end_date
+            prev_implied = implied
+
+        if not segments:
+            raise ValueError(f"No segments built for {base_type} curve")
+
+        return ExcelForwardCurve(effective_start, CurveBootstrapper._deduplicate_nodes(nodes), segments, base_type)
+
     @staticmethod
     def bootstrap_ruonia(quotes: List, calc_date: date) -> DiscountCurve:
         """
         Bootstrapping RUONIA OIS curve.
-        Daily compounding, 1 single payment at the end.
+        Uses the same implied-rate and forward logic as the IRS Excel sheet.
         """
-        # Excel logic (IRS sheet): quotes are treated as simple money-market rates over the whole period.
-        # Accrual factor A = 1 + R * (days/365). Discount factor DF = 1 / A.
-        # Then spot "daily-comp equivalent" is derived from DF via:
-        #   spot = 365 * (A^(1/days) - 1)  ==  365 * (DF^(-1/days) - 1)
-        effective_start = calc_date + timedelta(days=1)
-        nodes = []
-        for q in sorted(quotes, key=lambda x: get_maturity_date(calc_date, x.tenor)):
-            maturity = get_maturity_date(effective_start, q.tenor)
-            if maturity <= effective_start:
-                continue
-
-            days = excel_days_length(effective_start, maturity, q.tenor)
-            if days <= 0:
-                continue
-
-            rate_decimal = q.value / 100.0
-
-            # IMPORTANT: match Excel: simple interest over the whole period, NOT (1+R/365)^days.
-            accrual = 1.0 + rate_decimal * (days / 365.0)
-            if accrual <= 0:
-                raise ValueError(f"Invalid accrual factor {accrual} for tenor={q.tenor} days={days} rate={q.value}")
-
-            df = 1.0 / accrual
-
-            # Excel RUONIA swaps table is not a true bootstrapped discount curve.
-            # With Excel-style days length (all Y tenors -> 365), raw DF points can become non-monotonic
-            # if long-end quotes dip. DiscountCurve requires non-increasing DFs.
-            # Clamp to keep the curve usable.
-            if nodes:
-                prev_df = nodes[-1][1]
-                if df > prev_df:
-                    df = max(prev_df * (1.0 - 1e-12), 1e-12)
-
-            nodes.append((maturity, df))
-
-        return DiscountCurve(effective_start, CurveBootstrapper._deduplicate_nodes(nodes))
+        return CurveBootstrapper._build_excel_forward_curve(quotes, calc_date, "RUONIA")
 
     @staticmethod
     def bootstrap_keyrate(quotes: List, calc_date: date) -> DiscountCurve:
         """
         Bootstrapping IRS KEYRATE curve.
-        Quarterly copmaunding, payments in the end of period.
+        Uses the same implied-rate and forward logic as the IRS Excel sheet.
         """
-        curve = DiscountCurve(calc_date, [])
-        sorted_quotes = sorted(quotes, key=lambda x: get_maturity_date(calc_date, x.tenor))
-        
-        for q in sorted_quotes:
-            maturity = get_maturity_date(calc_date, q.tenor)
-            if maturity <= calc_date:
-                continue
-                
-            rate_decimal = q.value / 100.0
-            schedule = generate_quarterly_schedule(calc_date, maturity)
-            
-            t_prev = curve.nodes[-1][0]
-            df_prev = curve.nodes[-1][1]
-            
-            def df_at(tj: date, df_n_candidate: float) -> float:
-                if tj <= t_prev:
-                    return curve.df(tj)
-                else:
-                    if maturity == t_prev:
-                        return df_prev
-                        
-                    if df_prev <= 0 or df_n_candidate <= 0:
-                        return 0.0
-                        
-                    time_ratio = yf_act365(t_prev, tj) / yf_act365(t_prev, maturity)
-                    ln_df1 = math.log(df_prev)
-                    ln_df2 = math.log(df_n_candidate)
-                    return math.exp(ln_df1 + time_ratio * (ln_df2 - ln_df1))
-            
-            def swap_npv(df_n_candidate: float) -> float:
-                pv_fixed = 0.0
-                prev_date = calc_date
-                
-                for tj in schedule:
-                    alpha_j = yf_act365(prev_date, tj)
-                    # Формула квартального компаудинга: (1 + R/4)^(4*alpha_j) - 1
-                    coupon_factor = rate_decimal * alpha_j
-                    pv_fixed += coupon_factor * df_at(tj, df_n_candidate)
-                    prev_date = tj
-                    
-                pv_float = 1.0 - df_n_candidate
-                return pv_fixed - pv_float
-                
-            # Ищем df_n в (0, df_prev] с гарантированным брекетированием
-            a_bound = 1e-6
-            b_bound = min(df_prev, 0.999999)
-
-            a_br, b_br = CurveBootstrapper._bracket_root(swap_npv, a_bound, b_bound)
-            if a_br == b_br:
-                df_n = a_br
-            else:
-                df_n = CurveBootstrapper._bisection_solve(swap_npv, a_br, b_br)
-
-            curve.nodes.append((maturity, df_n))
-            
-        curve._validate_curve()
-        return curve
+        return CurveBootstrapper._build_excel_forward_curve(quotes, calc_date, "KEYRATE")
 
     @staticmethod
     def _bisection_solve(func: Callable[[float], float], a: float, b: float, tol: float = 1e-10, max_iter: int = 150) -> float:
@@ -445,7 +474,13 @@ if __name__ == "__main__":
           - далее forward = (r2*T2 - r1*T1) * 365 / (end2-end1), где Tn=(endn-anchor-1)/365
         Здесь anchor = base_date (effective start), как в Excel (TODAY()+1).
         """
-        spfi_tenors = ["1W", "2W", "1M", "2M", "3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y"]
+        if quotes_list:
+            spfi_tenors = sorted(
+                {q.tenor.upper() for q in quotes_list},
+                key=lambda t: get_maturity_date(base_date, t),
+            )
+        else:
+            spfi_tenors = ["1W", "2W", "1M", "2M", "3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y"]
 
         anchor_today = base_date - timedelta(days=1)
         print(f"\n--- {curve_name} Curve (Excel-style forwards) ---")

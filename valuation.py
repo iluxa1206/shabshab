@@ -1,7 +1,7 @@
 import logging
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 from forwards import DiscountCurve, add_months, yf_act365
@@ -29,6 +29,7 @@ class BondRefData:
     first_coupon_date: date
     coupons_per_year: int
     issue_date: Optional[date] = None
+    coupon_period_days: Optional[int] = None
 
 
 @dataclass
@@ -79,42 +80,76 @@ def generate_coupon_dates(first_coupon_date: date, maturity_date: date, coupons_
     return dates
 
 
-def build_cashflows_to_maturity(bond: BondRefData, curve: DiscountCurve, calc_date: date) -> List[Cashflow]:
+def generate_coupon_dates_by_period(issue_date: date, maturity_date: date, coupon_period_days: int) -> List[date]:
+    if coupon_period_days <= 0:
+        return []
+
+    dates = []
+    current = issue_date
+    while True:
+        current = current + timedelta(days=coupon_period_days)
+        if current > maturity_date:
+            break
+        dates.append(current)
+
+    if not dates or dates[-1] != maturity_date:
+        dates.append(maturity_date)
+
+    return dates
+
+
+def build_cashflows_to_maturity(
+    bond: BondRefData,
+    curve: DiscountCurve,
+    calc_date: date,
+    explicit_periods: Optional[List[tuple]] = None,
+) -> List[Cashflow]:
     """
     Строит ожидаемые cashflows: купоны (forward + spread) и номинал.
     Участвуют только CF с pay_date > calc_date.
+    explicit_periods — реальное расписание [(start,end),...] из MOEX (приоритет);
+    иначе генерация по issue+period_days / first_coupon (приближение, может дрейфовать).
     """
-    # 1. coupon_dates
-    coupon_dates = generate_coupon_dates(bond.first_coupon_date, bond.maturity_date, bond.coupons_per_year)
-    
-    # Validation
-    if any(d > bond.maturity_date for d in coupon_dates):
-        raise ValueError(f"Found coupon pay_date after maturity_date for ISIN: {bond.isin}")
+    if explicit_periods:
+        # Реальный календарь MOEX: периоды (start, end) уже готовы.
+        periods = [(s, e) for (s, e) in explicit_periods if e <= bond.maturity_date]
+    else:
+        if bond.coupon_period_days and bond.issue_date:
+            coupon_dates = generate_coupon_dates_by_period(bond.issue_date, bond.maturity_date, bond.coupon_period_days)
+            start_1 = bond.issue_date
+        else:
+            coupon_dates = generate_coupon_dates(bond.first_coupon_date, bond.maturity_date, bond.coupons_per_year)
+            step_months = 12 // bond.coupons_per_year
+            start_1 = add_months(bond.first_coupon_date, -step_months)
+            if bond.issue_date and start_1 < bond.issue_date:
+                start_1 = bond.issue_date
 
-    # 2. rebuild periods
-    step_months = 12 // bond.coupons_per_year
-    start_1 = add_months(bond.first_coupon_date, -step_months)
-    if bond.issue_date and start_1 < bond.issue_date:
-        start_1 = bond.issue_date
-        
-    periods = []
-    prev_end = start_1
-    for d in coupon_dates:
-        periods.append((prev_end, d))
-        prev_end = d
-        
+        # Validation
+        if any(d > bond.maturity_date for d in coupon_dates):
+            raise ValueError(f"Found coupon pay_date after maturity_date for ISIN: {bond.isin}")
+
+        # 2. rebuild periods
+        periods = []
+        prev_end = start_1
+        for d in coupon_dates:
+            periods.append((prev_end, d))
+            prev_end = d
+
     cfs = []
     
     # 3. generate coupons
     for start, end in periods:
         if end <= calc_date:
             continue
-            
+
         days = (end - start).days
         alpha = days / 365.0
-        
-        # F = curve.forward(start, end)
-        f_rate = curve.forward(start, end)
+
+        # F = curve.forward(start, end). Для ТЕКУЩЕГО купона start < calc_date —
+        # анкер форварда клэмпим к calc_date, иначе ExcelForwardCurve затыкает
+        # прошлый стаб ставкой последнего (длинного) сегмента = мусор на крутой кривой.
+        f_start = start if start > calc_date else calc_date
+        f_rate = curve.forward(f_start, end) if f_start < end else 0.0
         s_rate = bond.spread_issue_bps / 10000.0
         r_rate = f_rate + s_rate
         
@@ -136,6 +171,91 @@ def build_cashflows_to_maturity(bond: BondRefData, curve: DiscountCurve, calc_da
     # 5. Sort by pay_date
     cfs.sort(key=lambda cf: cf.pay_date)
     return cfs
+
+
+def build_cashflows_with_spread(
+    bond: BondRefData,
+    curve: DiscountCurve,
+    calc_date: date,
+    spread_bps: int,
+    explicit_periods: Optional[List[tuple]] = None,
+) -> List[Cashflow]:
+    bond_variant = BondRefData(
+        isin=bond.isin,
+        base=bond.base,
+        spread_issue_bps=spread_bps,
+        face_value=bond.face_value,
+        accrued_rub=bond.accrued_rub,
+        maturity_date=bond.maturity_date,
+        first_coupon_date=bond.first_coupon_date,
+        coupons_per_year=bond.coupons_per_year,
+        issue_date=bond.issue_date,
+        coupon_period_days=bond.coupon_period_days,
+    )
+    return build_cashflows_to_maturity(bond_variant, curve, calc_date, explicit_periods=explicit_periods)
+
+
+def xnpv(rate: float, cashflows: List[tuple[date, float]]) -> float:
+    if rate <= -1.0:
+        raise ValueError("rate must be > -1")
+    if not cashflows:
+        return 0.0
+
+    d0 = cashflows[0][0]
+    total = 0.0
+    for d, amount in cashflows:
+        years = (d - d0).days / 365.0
+        total += amount / math.pow(1.0 + rate, years)
+    return total
+
+
+def xirr(cashflows: List[tuple[date, float]], low: float = -0.9999, high: float = 10.0, tol: float = 1e-10) -> Optional[float]:
+    if not cashflows:
+        return None
+
+    amounts = [amount for _, amount in cashflows]
+    if not any(amount < 0 for amount in amounts) or not any(amount > 0 for amount in amounts):
+        return None
+
+    def f(rate: float) -> float:
+        return xnpv(rate, cashflows)
+
+    f_low = f(low)
+    f_high = f(high)
+
+    expand_count = 0
+    while f_low * f_high > 0 and expand_count < 20:
+        high *= 2.0
+        f_high = f(high)
+        expand_count += 1
+
+    if f_low * f_high > 0:
+        return None
+
+    for _ in range(200):
+        mid = (low + high) / 2.0
+        f_mid = f(mid)
+
+        if abs(f_mid) < tol or abs(high - low) < tol:
+            return mid
+
+        if f_low * f_mid <= 0:
+            high = mid
+            f_high = f_mid
+        else:
+            low = mid
+            f_low = f_mid
+
+    return (low + high) / 2.0
+
+
+def xirr_yield_pct(dirty_price_rub: float, cashflows: List[Cashflow], calc_date: date) -> Optional[float]:
+    dated_amounts = [(calc_date, -dirty_price_rub)]
+    dated_amounts.extend((cf.pay_date, cf.amount_rub) for cf in cashflows if cf.pay_date > calc_date)
+    rate = xirr(dated_amounts)
+    if rate is None:
+        return None
+    return rate * 100.0
 
 
 def pv_cashflows_with_dm(
@@ -304,20 +424,24 @@ def calculate_floater_metrics(
     """
     dirty_rub = dirty_price_rub(bond.face_value, price, bond.accrued_rub)
     
-    cfs = build_cashflows_to_maturity(bond, curve, calc_date)
-    
-    dm_bps_val = solve_dm_bps(bond, curve, cfs, calc_date, dirty_rub)
-    
-    impl_yield = 0.0
-    if dm_bps_val is not None:
-        impl_yield = implied_yield_pct(bond, curve, cfs, calc_date, dm_bps_val)
+    cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps)
+    base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0)
+
+    impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
+    base_yield = xirr_yield_pct(dirty_rub, base_cfs, calc_date)
+
+    spread_to_base_bps = None
+    if impl_yield is not None and base_yield is not None:
+        spread_to_base_bps = round((impl_yield - base_yield) * 100.0)
         
     return {
         "clean_price_pct": price,
         "accrued_rub": bond.accrued_rub,
         "dirty_rub": dirty_rub,
-        "dm_bps": dm_bps_val,
+        "dm_bps": spread_to_base_bps,
+        "spread_to_base_bps": spread_to_base_bps,
         "implied_yield_pct": impl_yield,
+        "base_yield_pct": base_yield,
         "spread_issue_bps": bond.spread_issue_bps,
         "yield_base_type": bond.base 
     }
@@ -355,7 +479,7 @@ if __name__ == "__main__":
         spread_issue_bps=150,
         face_value=1000.0,
         accrued_rub=8.5,
-        maturity_date=date(2025, 6, 1),
+        maturity_date=date(2030, 6, 1),
         first_coupon_date=date(2024, 9, 1),
         coupons_per_year=4,
         issue_date=date(2024, 6, 1)

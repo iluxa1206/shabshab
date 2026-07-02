@@ -3,8 +3,6 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from datetime import date, timedelta
-import glob
-
 import pandas as pd
 
 from rates import get_rates_curves
@@ -31,6 +29,37 @@ def save_cache(cache: dict, path: str):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+def get_local_excel_db(base_dir: str) -> dict[str, dict]:
+    pattern_prefix = "bondsearch_"
+    pattern_suffix = ".xlsx"
+    excel_files = [
+        os.path.join(base_dir, name)
+        for name in os.listdir(base_dir)
+        if name.startswith(pattern_prefix) and name.endswith(pattern_suffix)
+    ]
+    if not excel_files:
+        return {}
+
+    excel_path = max(excel_files, key=os.path.getmtime)
+    try:
+        df = pd.read_excel(excel_path)
+    except Exception:
+        return {}
+
+    if "ISIN" not in df.columns:
+        return {}
+
+    df = df[df["ISIN"].notna()].copy()
+    df["ISIN"] = df["ISIN"].astype(str).str.strip()
+    df = df[df["ISIN"] != ""]
+
+    result = {}
+    for _, row in df.iterrows():
+        isin = row["ISIN"]
+        result[isin] = row.to_dict()
+    return result
+
+
 def get_floater_params(isin: str):
     url = f"https://floaters.ru/securities/{isin}"
     try:
@@ -51,37 +80,9 @@ def get_floater_params(isin: str):
         return None
 
 
-def get_local_excel_db(search_dir: str) -> dict:
-    excel_files = glob.glob(os.path.join(search_dir, "bondsearch_*.xlsx"))
-    if not excel_files:
-        return {}
-    
-    # Take the most recently modified file
-    latest_file = max(excel_files, key=os.path.getmtime)
-    
-    try:
-        df = pd.read_excel(latest_file, dtype={'ISIN': str})
-        if 'ISIN' not in df.columns:
-            return {}
-            
-        df = df.drop_duplicates(subset=['ISIN'], keep='first')
-        df = df.set_index('ISIN')
-        cols_needed = ['Базовая ставка', 'Маржа', 'Начало размещения', 'Погашение', 'Периодичность купона']
-        cols_present = [c for c in cols_needed if c in df.columns]
-        
-        return df[cols_present].to_dict(orient='index')
-    except Exception:
-        return {}
-
-
 def get_moex_bond_params(isin: str):
-    search_url = f"https://iss.moex.com/iss/securities.json?q={isin}"
-    try:
-        resp = requests.get(search_url, timeout=5)
-        if resp.status_code != 200:
-            return None
-        secid = resp.json()["securities"]["data"][0][0]
-    except Exception:
+    secid = get_moex_secid(isin)
+    if not secid:
         return None
 
     url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{secid}.json"
@@ -97,6 +98,61 @@ def get_moex_bond_params(isin: str):
         return params
     except (KeyError, IndexError):
         return None
+
+
+def get_moex_secid(isin: str) -> str | None:
+    search_url = f"https://iss.moex.com/iss/securities.json?q={isin}"
+    try:
+        resp = requests.get(search_url, timeout=5)
+        if resp.status_code != 200:
+            return None
+        return resp.json()["securities"]["data"][0][0]
+    except Exception:
+        return None
+
+
+def get_moex_coupon_fallback(isin: str) -> dict | None:
+    secid = get_moex_secid(isin)
+    if not secid:
+        return None
+
+    url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{secid}/coupons.json"
+    resp = requests.get(url, timeout=5)
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+        cols = data["coupons"]["columns"]
+        rows = data["coupons"]["data"]
+    except (KeyError, TypeError):
+        return None
+
+    if not rows:
+        return None
+
+    today = date.today()
+    parsed = []
+    for row in rows:
+        rec = dict(zip(cols, row))
+        cdate_str = rec.get("COUPONDATE")
+        try:
+            cdate = date.fromisoformat(cdate_str) if cdate_str else None
+        except ValueError:
+            cdate = None
+        parsed.append((cdate, rec))
+
+    # pick nearest future coupon, else last available
+    future = [r for r in parsed if r[0] and r[0] >= today]
+    chosen = min(future, key=lambda x: x[0]) if future else parsed[-1]
+
+    cdate, rec = chosen
+    return {
+        "COUPONRATE": rec.get("COUPONRATE"),
+        "COUPONVALUE": rec.get("VALUE"),
+        "COUPONDATE": rec.get("COUPONDATE"),
+        "STARTDATE": rec.get("STARTDATE"),
+        "ENDDATE": rec.get("ENDDATE"),
+    }
 
 
 def adjust_following(d: date) -> date:
@@ -125,12 +181,6 @@ def parse_base_and_spread(formula: str, base_rate: str | None) -> tuple[str | No
             spread_bps = int(float(rhs.replace("%", "").strip()) * 100)
         except ValueError:
             spread_bps = 0
-            
-    # Fallback to pure base_rate parse (e.g. from Excel margin)
-    if base_rate:
-        if "RUONIA" in str(base_rate): base = "RUONIA"
-        elif "Ключевая ставка" in str(base_rate): base = "KEYRATE"
-    
     return base, spread_bps
 
 
@@ -210,19 +260,13 @@ def print_cashflow(
             start_fwd = max(prev_date, calc_date)
             if start_fwd < coup_date:
                 if base == "RUONIA" and ruonia_curve:
-                    df1 = ruonia_curve.df(start_fwd)
-                    df2 = ruonia_curve.df(coup_date)
-                    curve_compounding = df1 / df2 if df2 > 0 else 1.0
-                    
-                    spread_rate = spread_bps / 10000.0
-                    factor = curve_compounding * ((1.0 + spread_rate / 365.0) ** days) - 1.0
-                    computed_rate = factor / alpha if alpha > 0 else 0.0
-
+                    fwd = ruonia_curve.forward(start_fwd, coup_date)
+                    computed_rate = fwd + spread_bps / 10000.0
+                    factor = (1.0 + computed_rate / 365.0) ** days - 1.0
                 elif base == "KEYRATE" and keyrate_curve:
                     fwd = keyrate_curve.forward(start_fwd, coup_date)
                     computed_rate = fwd + spread_bps / 10000.0
-                    factor = computed_rate * alpha
-                    
+                    factor = (1.0 + computed_rate / 4.0) ** (4.0 * alpha) - 1.0
                 elif coupon_percent is not None:
                     computed_rate = coupon_percent / 100.0
                     factor = computed_rate * alpha
@@ -265,9 +309,6 @@ def main():
 
     cache = load_cache(cache_path)
     cache_updated = False
-    
-    local_db = get_local_excel_db(current_dir)
-    print(f"Loaded Excel DB parameters for {len(local_db)} bonds\n")
 
     for isin in isins:
         cached_indicator = ""
@@ -282,33 +323,11 @@ def main():
                 formula = floater_params.get("Купон", "Неизвестно")
                 base_rate = "Неизвестно"
                 margin = "0%"
-                
-                # Excel override
-                excel_data = local_db.get(isin, {})
-
                 if formula != "Неизвестно":
                     parts = formula.split("+")
                     base_rate = parts[0].strip()
                     if len(parts) > 1:
                         margin = parts[1].strip()
-                elif excel_data:
-                    base_rate = str(excel_data.get('Базовая ставка', "Неизвестно"))
-                    m_val = excel_data.get('Маржа', 0)
-                    if pd.notna(m_val):
-                        margin = f"{m_val}%"
-                    formula = f"{base_rate} + {margin}"
-
-                start_dt = floater_params.get("Размещение", "")
-                if not start_dt and excel_data.get('Начало размещения') and pd.notna(excel_data['Начало размещения']):
-                    start_dt = excel_data['Начало размещения'].strftime("%Y-%m-%d")
-                    
-                end_dt = floater_params.get("Погашение", "") or moex_params.get("MATDATE", "")
-                if not end_dt and excel_data.get('Погашение') and pd.notna(excel_data['Погашение']):
-                    end_dt = excel_data['Погашение'].strftime("%Y-%m-%d")
-                    
-                freq = floater_params.get("Купонов в год", "")
-                if not freq and excel_data.get('Периодичность купона') and pd.notna(excel_data['Периодичность купона']):
-                    freq = str(int(excel_data['Периодичность купона']))
 
                 data = {
                     "SHORTNAME": moex_params.get("SHORTNAME", ""),
@@ -322,9 +341,9 @@ def main():
                     "ACCRUEDINT": moex_params.get("ACCRUEDINT"),
                     "FACEVALUE": moex_params.get("FACEVALUE"),
                     "FACEUNIT": moex_params.get("FACEUNIT"),
-                    "STARTDATE": start_dt,
-                    "ENDDATE": end_dt,
-                    "FREQUENCY": freq,
+                    "STARTDATE": floater_params.get("Размещение", ""),
+                    "ENDDATE": floater_params.get("Погашение", "") or moex_params.get("MATDATE", ""),
+                    "FREQUENCY": floater_params.get("Купонов в год", ""),
                 }
                 cache[isin] = data
                 cache_updated = True
@@ -332,45 +351,6 @@ def main():
                 data = None
 
         if data:
-            excel_data = local_db.get(isin, {})
-            if excel_data:
-                orig_formula = data.get("FORMULA", "Неизвестно")
-                
-                # Update base_rate and formula if they are missing or unknown
-                if orig_formula == "Неизвестно" or orig_formula == "-" or orig_formula == "" or not data.get("BASE_RATE") or data.get("BASE_RATE") == "Неизвестно" or data.get("BASE_RATE") == "-":
-                    base_rate = str(excel_data.get('Базовая ставка', "Неизвестно"))
-                    m_val = excel_data.get('Маржа', 0)
-                    if pd.notna(m_val):
-                        margin_str = f"{m_val}%"
-                    else:
-                        margin_str = "0%"
-                    data["BASE_RATE"] = base_rate
-                    data["MARGIN"] = margin_str
-                    data["FORMULA"] = f"{base_rate} + {margin_str}"
-                    cache[isin] = data
-                    cache_updated = True
-                    
-                if not data.get("STARTDATE") and excel_data.get('Начало размещения'):
-                    if pd.notna(excel_data['Начало размещения']):
-                        data["STARTDATE"] = excel_data['Начало размещения'].strftime("%Y-%m-%d")
-                        cache[isin] = data
-                        cache_updated = True
-                        
-                if not data.get("ENDDATE") and excel_data.get('Погашение'):
-                    if pd.notna(excel_data['Погашение']):
-                        data["ENDDATE"] = excel_data['Погашение'].strftime("%Y-%m-%d")
-                        cache[isin] = data
-                        cache_updated = True
-
-                if not data.get("FREQUENCY") and excel_data.get('Периодичность купона'):
-                    if pd.notna(excel_data['Периодичность купона']):
-                        freq_val = int(excel_data['Периодичность купона'])
-                        data["FREQUENCY"] = str(freq_val)
-                        if not data.get("COUPONPERIOD") and freq_val > 0:
-                            data["COUPONPERIOD"] = str(round(365 / freq_val))
-                        cache[isin] = data
-                        cache_updated = True
-                        
             print(f"--- {isin} ({data.get('SHORTNAME', '')}){cached_indicator} ---")
             print(f"Дата погашения:     {data.get('MATDATE')}")
             print(f"Текущий купон (%):  {data.get('COUPONPERCENT')}%")
