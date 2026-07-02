@@ -227,7 +227,7 @@ function Dashboard({ user, onLogout }) {
             onRetry={loadBonds}
             visibleCols={visibleCols}
           />
-          <Drawer isin={drawerIsin} onClose={closeDrawer} />
+          <Drawer isin={drawerIsin} onClose={closeDrawer} onLogout={onLogout} />
           <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
         </>
       )}

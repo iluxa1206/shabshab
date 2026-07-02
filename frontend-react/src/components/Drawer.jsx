@@ -6,7 +6,7 @@ import CashflowChart from "./CashflowChart.jsx";
 
 // Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
 // Список фондов тянется лениво при первом открытии drawer'а.
-function AddToFund({ isin }) {
+function AddToFund({ isin, onLogout }) {
   const [funds, setFunds] = useState(null); // null = не загружено
   const [code, setCode] = useState("");
   const [qty, setQty] = useState("");
@@ -17,7 +17,10 @@ function AddToFund({ isin }) {
     let alive = true;
     fetchFunds()
       .then((fs) => { if (alive) { setFunds(fs); if (fs.length && !code) setCode(fs[0].code); } })
-      .catch(() => alive && setFunds([]));
+      .catch((e) => {
+        if (e instanceof UnauthorizedError) { onLogout?.(); return; }
+        if (alive) setFunds([]);
+      });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -36,7 +39,7 @@ function AddToFund({ isin }) {
       setMsg({ ok: true, text: `${fmt.num(n, 0)} шт → ${code}` });
       setQty("");
     } catch (e2) {
-      if (e2 instanceof UnauthorizedError) throw e2;
+      if (e2 instanceof UnauthorizedError) { onLogout?.(); return; }
       setMsg({ ok: false, text: e2.message });
     } finally { setBusy(false); }
   };
@@ -209,7 +212,7 @@ function StaleChips({ m, n }) {
   );
 }
 
-function Content({ d }) {
+function Content({ d, onLogout }) {
   const r = d.reference, m = d.market, v = d.valuation;
   const dc = dmColor(v.dm_bps);
   const warnings = [...(v.warnings || []), ...(d.warnings || [])];
@@ -256,7 +259,7 @@ function Content({ d }) {
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
 
-      <AddToFund isin={r.isin} />
+      <AddToFund isin={r.isin} onLogout={onLogout} />
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
@@ -293,7 +296,7 @@ function Content({ d }) {
   );
 }
 
-export default function Drawer({ isin, onClose }) {
+export default function Drawer({ isin, onClose, onLogout }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const reduce = useReducedMotion();
@@ -304,7 +307,10 @@ export default function Drawer({ isin, onClose }) {
     if (!isin) return;
     setData(null); setErr(null);
     let alive = true;
-    fetchBondDetails(isin).then((d) => alive && setData(d)).catch((e) => alive && setErr(e.message));
+    fetchBondDetails(isin).then((d) => alive && setData(d)).catch((e) => {
+      if (e instanceof UnauthorizedError) { onLogout?.(); return; }
+      if (alive) setErr(e.message);
+    });
     return () => { alive = false; };
   }, [isin]);
 
@@ -357,7 +363,7 @@ export default function Drawer({ isin, onClose }) {
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">LOADING</div>
-                : <Content d={data} />}
+                : <Content d={data} onLogout={onLogout} />}
             </div>
           </motion.aside>
         </>

@@ -3,7 +3,7 @@ import { putFundSnapshot, UnauthorizedError } from "../../api.js";
 
 // Загрузка снапшота позиций: CSV `ISIN;кол-во` (толерантный парсинг на бэке).
 // Заменяет позиции фонда ЦЕЛИКОМ.
-export default function SnapshotModal({ code, onClose, onDone }) {
+export default function SnapshotModal({ code, onClose, onDone, onLogout }) {
   const [csv, setCsv] = useState("");
   const [snapDate, setSnapDate] = useState("");
   const [errors, setErrors] = useState([]);
@@ -25,7 +25,7 @@ export default function SnapshotModal({ code, onClose, onDone }) {
       if (r.errors?.length) setErrors(r.errors);
       else onDone();
     } catch (e) {
-      if (e instanceof UnauthorizedError) { onClose(); return; }
+      if (e instanceof UnauthorizedError) { onLogout ? onLogout() : onClose(); return; }
       setErr(e.message);
     } finally { setBusy(false); }
   };

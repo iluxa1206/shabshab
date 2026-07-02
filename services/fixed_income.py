@@ -46,8 +46,10 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
         if current_face is None and c.get("face") is not None:
             current_face = float(c["face"])
         if c.get("value") is None:
-            # первый неизвестный купон → оценка к оферте: всё после отбрасываем
-            put_date = coupons[-1][0] if coupons else None
+            # первый неизвестный купон → оценка к оферте: всё после отбрасываем.
+            # если неизвестен уже ближайший купон (оферта вплотную) — путим на его
+            # дату (иначе бумага ошибочно оценилась бы к погашению по амортизациям)
+            put_date = coupons[-1][0] if coupons else end
             break
         coupons.append((end, float(c["value"])))
 
@@ -99,25 +101,24 @@ def fixed_metrics_from_schedule(
         return out
     out["ytm_pct"] = round(y * 100.0, 2)
 
-    # численная дюрация: PV при y±10бп (без цены в потоке)
+    # численная дюрация/выпуклость: PV при y±10бп. Якорим поток к calc_date
+    # (xnpv дисконтирует к дате ПЕРВОГО элемента) — иначе PV считается на дату
+    # первого купона и pv0≠dirty, что искажает знаменатель выпуклости.
     dy = 0.001
+    anchored = [(calc_date, 0.0)] + cfs
     try:
-        pv_dn = xnpv(y - dy, cfs)
-        pv_up = xnpv(y + dy, cfs)
+        pv_dn = xnpv(y - dy, anchored)
+        pv_up = xnpv(y + dy, anchored)
+        pv0 = xnpv(y, anchored)  # == dirty по построению xirr
     except ValueError:
         return out
-    if pv_dn <= 0 or pv_up <= 0:
+    if pv_dn <= 0 or pv_up <= 0 or pv0 <= 0:
         return out
-    mod_dur = (pv_dn - pv_up) / (2.0 * dirty * dy)
+    mod_dur = (pv_dn - pv_up) / (2.0 * pv0 * dy)
     out["mod_dur"] = round(mod_dur, 2)
     out["mac_dur"] = round(mod_dur * (1.0 + y), 2)  # Маколей при эффективной годовой
     out["dv01"] = round(mod_dur * dirty * 1e-4, 4)  # ₽(валюта)/бумагу на 1бп
-    try:
-        pv0 = xnpv(y, cfs)
-        if pv0 > 0:
-            out["convexity"] = round((pv_dn + pv_up - 2.0 * pv0) / (dirty * dy * dy), 2)
-    except ValueError:
-        pass
+    out["convexity"] = round((pv_dn + pv_up - 2.0 * pv0) / (pv0 * dy * dy), 2)
 
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)():
         tau = max(mod_dur, 0.01)

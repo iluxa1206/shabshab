@@ -251,6 +251,7 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
           code={code}
           onClose={() => setShowSnapshot(false)}
           onDone={() => { setShowSnapshot(false); reload(); }}
+          onLogout={onLogout}
         />
       )}
     </>
