@@ -2,6 +2,7 @@ import { useState } from "react";
 import { fmt, DASH } from "../../format.js";
 import { createFund, deleteFund, UnauthorizedError } from "../../api.js";
 import { CCYS, CCY_SIGN, dispRate, mlnCcy, numCcy } from "./ccy.js";
+import { CompareTable, BenchmarksRow, CalendarSection } from "./FundsOverviewExtras.jsx";
 
 function Metric({ label, value, cls }) {
   return (
@@ -14,6 +15,9 @@ function Metric({ label, value, cls }) {
 
 function FundCard({ f, rate, sign, onSelect }) {
   const carryCls = f.net_carry_rub == null ? "" : f.net_carry_rub >= 0 ? "pos" : "neg";
+  // NAV в базовой валюте фонда (D5→$, Y5→¥) — родная величина пая
+  const baseRate = f.base_ccy !== "RUB" ? f.fx?.[f.base_ccy] : null;
+  const navBase = baseRate ? mlnCcy(f.nav_rub, baseRate, CCY_SIGN[f.base_ccy]) : null;
   return (
     <div
       className="fund-card"
@@ -27,7 +31,7 @@ function FundCard({ f, rate, sign, onSelect }) {
       </div>
       <div className="fund-name">{f.name}</div>
       <div className="fund-metrics">
-        <Metric label="NAV" value={mlnCcy(f.nav_rub, rate, sign)} />
+        <Metric label={"NAV" + (navBase ? " · ≈" + navBase : "")} value={mlnCcy(f.nav_rub, rate, sign)} />
         <Metric label="MV Gross" value={mlnCcy(f.mv_rub, rate, sign)} />
         <Metric label="Leverage" value={f.leverage_gross != null ? fmt.num(f.leverage_gross, 2) + "×" : DASH} />
         <Metric label="DV01" value={f.dv01_rub != null ? numCcy(f.dv01_rub, rate, sign) : DASH} />
@@ -140,6 +144,9 @@ export default function FundCards({ funds, status, errMsg, dispCcy, onSetCcy, on
         {funds.map((f) => <FundCard key={f.code} f={f} rate={rate} sign={sign} onSelect={onSelect} />)}
         <CreateForm onDone={onReload} onLogout={onLogout} />
       </div>
+      <CompareTable funds={funds} rate={rate} sign={sign} />
+      <BenchmarksRow onLogout={onLogout} />
+      <CalendarSection rate={rate} sign={sign} onLogout={onLogout} />
     </>
   );
 }

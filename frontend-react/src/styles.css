@@ -486,6 +486,14 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .add-fund-row select:focus, .add-fund-row input:focus { outline: none; border-color: var(--fg); }
 
 .fund-cf { border-top: 1px solid var(--line); }
+.fund-scenarios { border-top: 1px solid var(--line); }
+.scen-table td, .scen-table th { font-variant-numeric: tabular-nums; }
+.fund-alerts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.risk-strip { display: flex; gap: 10px; flex-wrap: wrap; padding: 8px 24px; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: 0.03em; }
+.risk-strip .fg { color: var(--fg); font-weight: 600; }
+.compare-table th, .compare-table td { text-align: right; }
+.compare-table th.left, .compare-table td.left { text-align: left; }
+.ev-hot td { color: var(--down); }
 
 .modal-wide { max-width: 640px; }
 .snap-ta { width: 100%; min-height: 200px; font-family: var(--mono); font-size: 12px; padding: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; box-sizing: border-box; }

@@ -5,6 +5,7 @@ import FundPositionsTable from "./FundPositionsTable.jsx";
 import RepoSection from "./RepoSection.jsx";
 import SnapshotModal from "./SnapshotModal.jsx";
 import FundCashflow from "./FundCashflow.jsx";
+import ScenariosSection from "./ScenariosSection.jsx";
 import { CcySwitch } from "./FundCards.jsx";
 import { CCY_SIGN, dispRate, mlnCcy, numCcy, conv } from "./ccy.js";
 
@@ -71,6 +72,27 @@ function CapitalKpi({ s, rate, sign, onSave }) {
       <span className="kpi-label">Капитал</span>
       <span className="kpi-val sm">{mlnCcy(s.capital_rub, rate, sign)}</span>
       <span className="kpi-sub">{s.capital_is_derived ? "= NAV (derived)" : "задан вручную"}</span>
+    </div>
+  );
+}
+
+// Баланс процентного риска + валютная экспозиция — главный риск-взгляд хедж-фонда
+function RiskStrip({ s, rate, sign }) {
+  const rs = s.risk_split;
+  if (!rs) return null;
+  const mln = (v) => fmt.num(conv(v, rate) / 1e6, 1);
+  const fxs = (s.fx_split || []).filter((x) => x.ccy !== "RUB");
+  return (
+    <div className="risk-strip muted">
+      <span>RATE RISK: фиксы DV01 <b className="fg">{fmt.num(conv(rs.rub_fixed_dv01_rub, rate), 0)} {sign}</b>
+        {" "}(MV {mln(rs.fixed_mv_rub)} млн)</span>
+      <span>· флоатеры MV <b className="fg">{mln(rs.float_mv_rub)} млн</b> (rate dur ≈ 0, риск в carry)</span>
+      {rs.fx_mv_rub > 0 && (
+        <span>· валютные MV <b className="fg">{mln(rs.fx_mv_rub)} млн</b> DV01 {fmt.num(conv(rs.fx_dv01_rub, rate), 0)} {sign}</span>
+      )}
+      {fxs.map((x) => (
+        <span key={x.ccy}>· FX {x.ccy}: нетто <b className="fg">{mln(x.net_rub)} млн</b> ({fmt.pct(x.share_pct, 1)}% MV)</span>
+      ))}
     </div>
   );
 }
@@ -192,6 +214,8 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
         <CapitalKpi s={s} rate={rate} sign={sign} onSave={saveCapital} />
       </div>
 
+      <RiskStrip s={s} rate={rate} sign={sign} />
+
       <ClassBreakdown
         classes={s.classes || []}
         rate={rate} sign={sign}
@@ -209,6 +233,11 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
         onChanged={reload}
         onLogout={onLogout}
       />
+
+      {(s.positions || []).length > 0 && (
+        <ScenariosSection code={code} refreshKey={s.snap_date + ":" + s.n_positions}
+          rate={rate} sign={sign} onLogout={onLogout} />
+      )}
 
       {(s.positions || []).length > 0 && (
         <FundCashflow code={code} refreshKey={s.snap_date + ":" + s.n_positions}

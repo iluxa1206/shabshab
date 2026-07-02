@@ -74,8 +74,9 @@ async def _position_rows(positions: List[dict], info: Dict[str, dict],
             "ccy": ccy, "qty": qty, "price_pct": price, "face": face,
             "accrued": accrued, "fx": fx_rate, "maturity": sec.get("maturity"),
             "mv_rub": None, "ytm_pct": None, "dm_bps": None, "z_bps": None,
-            "mod_dur": None, "dv01_rub": None, "g_spread_bps": None,
-            "current_coupon_pct": None, "carry_bps": None, "warn": None,
+            "mod_dur": None, "mac_dur": None, "convexity": None, "dv01_rub": None,
+            "g_spread_bps": None, "current_coupon_pct": None, "carry_bps": None,
+            "put_date": None, "warn": None,
         }
 
         if cls in _FIXED_CLASSES:
@@ -87,7 +88,10 @@ async def _position_rows(positions: List[dict], info: Dict[str, dict],
                 row["face"] = face
             row["ytm_pct"] = fm.get("ytm_pct")
             row["mod_dur"] = fm.get("mod_dur")
+            row["mac_dur"] = fm.get("mac_dur")
+            row["convexity"] = fm.get("convexity")
             row["g_spread_bps"] = fm.get("g_spread_bps")
+            row["put_date"] = fm.get("put_date")
             if fm.get("dv01") is not None:
                 row["dv01_rub"] = round(fm["dv01"] * qty * fx_rate, 2)
             if fm.get("put_date"):
@@ -137,6 +141,46 @@ def _class_breakdown(rows: List[dict], capital: Optional[float]) -> List[dict]:
             "mod_dur": _wavg(rs, "mod_dur"),
             "dv01_rub": round(sum(r["dv01_rub"] or 0.0 for r in rs), 2),
         })
+    out.sort(key=lambda x: -x["mv_rub"])
+    return out
+
+
+_FLOAT_CLASSES = {"corp_float", "ofz_pk"}
+
+
+def _risk_split(rows: List[dict]) -> dict:
+    """Баланс процентного риска: рублёвый DV01 фиксов vs MV флоатеров
+    (у флоатеров rate duration ≈ 0 — их риск carry, не MtM) vs валютный DV01."""
+    rub_fix_dv01 = sum(r["dv01_rub"] or 0.0 for r in rows if r["cls"] in _RUB_FIXED)
+    fx_dv01 = sum(r["dv01_rub"] or 0.0 for r in rows
+                  if r["cls"] in _FIXED_CLASSES and r["cls"] not in _RUB_FIXED)
+    return {
+        "rub_fixed_dv01_rub": round(rub_fix_dv01, 2),
+        "fx_dv01_rub": round(fx_dv01, 2),
+        "float_mv_rub": round(sum(r["mv_rub"] or 0.0 for r in rows if r["cls"] in _FLOAT_CLASSES), 2),
+        "fixed_mv_rub": round(sum(r["mv_rub"] or 0.0 for r in rows if r["cls"] in _RUB_FIXED), 2),
+        "fx_mv_rub": round(sum(r["mv_rub"] or 0.0 for r in rows
+                               if r["cls"] in _FIXED_CLASSES and r["cls"] not in _RUB_FIXED), 2),
+    }
+
+
+def _fx_split(rows: List[dict], repos: List[dict], fx: Dict[str, float]) -> List[dict]:
+    """Разрез по валютам: MV активов − РЕПО в той же валюте = чистая экспозиция."""
+    by: Dict[str, dict] = {}
+    for r in rows:
+        b = by.setdefault(r["ccy"], {"ccy": r["ccy"], "mv_rub": 0.0, "repo_rub": 0.0, "n": 0})
+        b["mv_rub"] += r["mv_rub"] or 0.0
+        b["n"] += 1
+    for rp in repos:
+        b = by.setdefault(rp["ccy"], {"ccy": rp["ccy"], "mv_rub": 0.0, "repo_rub": 0.0, "n": 0})
+        b["repo_rub"] += rp["amount"] * fx.get(rp["ccy"], 1.0)
+    total = sum(b["mv_rub"] for b in by.values())
+    out = []
+    for b in by.values():
+        net = b["mv_rub"] - b["repo_rub"]
+        out.append({**{k: round(v, 2) if isinstance(v, float) else v for k, v in b.items()},
+                    "net_rub": round(net, 2),
+                    "share_pct": round(b["mv_rub"] / total * 100.0, 1) if total else None})
     out.sort(key=lambda x: -x["mv_rub"])
     return out
 
@@ -200,6 +244,8 @@ async def fund_summary(code: str, include_positions: bool = True) -> Optional[di
         "fx": {k: v for k, v in fx.items() if k != "RUB"},
         "fx_label": fx_info.get("label"),
         "classes": _class_breakdown(rows, capital),
+        "risk_split": _risk_split(rows),
+        "fx_split": _fx_split(rows, repos, fx),
         "n_no_price": sum(1 for r in rows if r["mv_rub"] is None),
     }
     if include_positions:
@@ -305,9 +351,178 @@ async def fund_cashflow(code: str, months: int = 12) -> Optional[dict]:
 
 
 async def snapshot_all_navs() -> int:
-    """Дневной снапшот метрик всех фондов в nav_daily (идемпотентно за день)."""
+    """Дневной снапшот всех фондов: nav_daily (+курсы) и pos_daily (позиционный
+    срез с ценами) — фундамент P&L-атрибуции (Ф5, сделки)."""
     n = 0
-    for s in await funds_overview():
-        db.save_nav(s["code"], s["calc_date"], s)
+    for f in db.list_funds():
+        s = await fund_summary(f["code"], include_positions=True)
+        if not s:
+            continue
+        db.save_nav(s["code"], s["calc_date"], {
+            **s, "fx_usd": (s.get("fx") or {}).get("USD"),
+            "fx_cny": (s.get("fx") or {}).get("CNY")})
+        db.save_positions_snapshot(s["code"], s["calc_date"], s.get("positions") or [])
         n += 1
     return n
+
+
+# ---------- сценарии (Ф4) ----------
+
+_SCENARIOS = [
+    {"key": "ks_m200", "name": "КС −200 бп", "kind": "ks", "x": -200},
+    {"key": "ks_m100", "name": "КС −100 бп", "kind": "ks", "x": -100},
+    {"key": "ks_p100", "name": "КС +100 бп", "kind": "ks", "x": +100},
+    {"key": "ks_p200", "name": "КС +200 бп", "kind": "ks", "x": +200},
+    {"key": "steepener", "name": "Наклон: короткие −50 / длинные +50", "kind": "twist", "x": 50},
+    {"key": "flattener", "name": "Наклон: короткие +50 / длинные −50", "kind": "twist", "x": -50},
+    {"key": "fx_m10", "name": "Рубль +10% (FX −10%)", "kind": "fx", "x": -10},
+    {"key": "fx_p10", "name": "Рубль −10% (FX +10%)", "kind": "fx", "x": +10},
+]
+
+
+def _twist_dy_bps(dur: Optional[float], mag: float) -> float:
+    """Δy(dur) для сценария наклона: −mag на dur≤1г, +mag на dur≥7л, линейно между."""
+    d = max(1.0, min(7.0, dur or 0.0))
+    return -mag + (d - 1.0) / 6.0 * 2.0 * mag
+
+
+def _scenario_impact(sc: dict, rows: List[dict], repos: List[dict],
+                     fx: Dict[str, float]) -> dict:
+    """ΔNAV (mark-to-market) и Δcarry (₽/год) сценария.
+
+    КС: фиксы RUB — ΔP=−DV01·Δ+½·conv·Δy²·MV; флоатеры — MtM≈0 (rate dur мала),
+    но купон перефиксируется → Δcarry=MV·Δ; РЕПО RUB дорожает/дешевеет с КС.
+    Наклон: Δy зависит от дюрации (только рублёвые фиксы; флоатеры/валютные вне).
+    FX: чистая валютная экспозиция (активы − валютное РЕПО) × Δ%, carry валютных ∝ Δ%.
+    """
+    kind, x = sc["kind"], sc["x"]
+    dnav = 0.0
+    dcarry = 0.0
+    if kind == "ks":
+        dy = x / 1e4
+        for r in rows:
+            mv = r.get("mv_rub") or 0.0
+            if r["cls"] in _RUB_FIXED:
+                dnav += -(r.get("dv01_rub") or 0.0) * x
+                if r.get("convexity") is not None and mv:
+                    dnav += 0.5 * r["convexity"] * dy * dy * mv
+            elif r["cls"] in _FLOAT_CLASSES:
+                dcarry += mv * dy  # перефиксинг купона на новую базу
+        for rp in repos:
+            if rp["ccy"] == "RUB":
+                dcarry -= rp["amount"] * dy  # funding ходит с КС
+    elif kind == "twist":
+        for r in rows:
+            if r["cls"] in _RUB_FIXED:
+                dnav += -(r.get("dv01_rub") or 0.0) * _twist_dy_bps(r.get("mod_dur"), x)
+    elif kind == "fx":
+        k = x / 100.0
+        for r in rows:
+            if r["ccy"] != "RUB":
+                mv = r.get("mv_rub") or 0.0
+                dnav += mv * k
+                if r.get("ytm_pct") is not None:
+                    dcarry += mv * r["ytm_pct"] / 100.0 * k
+        for rp in repos:
+            if rp["ccy"] != "RUB":
+                rub = rp["amount"] * fx.get(rp["ccy"], 1.0)
+                dnav -= rub * k
+                dcarry -= rub * rp["rate_pct"] / 100.0 * k
+    return {"key": sc["key"], "name": sc["name"],
+            "dnav_rub": round(dnav, 2), "dcarry_rub": round(dcarry, 2)}
+
+
+async def fund_scenarios(code: str) -> Optional[dict]:
+    s = await fund_summary(code, include_positions=True)
+    if s is None:
+        return None
+    rows = s.get("positions") or []
+    repos = db.list_repos(code)
+    fx = {**(s.get("fx") or {}), "RUB": 1.0}
+    capital = s.get("capital_rub")
+    items = []
+    for sc in _SCENARIOS:
+        it = _scenario_impact(sc, rows, repos, fx)
+        it["dnav_pct_capital"] = round(it["dnav_rub"] / capital * 100.0, 2) if capital else None
+        items.append(it)
+    return {"code": code, "calc_date": s["calc_date"], "capital_rub": capital,
+            "items": items}
+
+
+# ---------- календарь событий (Ф4) ----------
+
+async def funds_calendar(days: int = 90) -> dict:
+    """События по всем фондам на горизонте: купоны (суммой), амортизации,
+    погашения, оферты. Отсортировано по дате."""
+    calc_date = date.today()
+    horizon = calc_date.toordinal() + days
+    fx = (await get_fx())["rates"]
+    events: List[dict] = []
+
+    for f in db.list_funds():
+        code = f["code"]
+        positions = db.get_positions(code)
+        if not positions:
+            continue
+        info = await instruments.classify([p["isin"] for p in positions])
+        scheds = await asyncio.gather(
+            *(MarketDataService.fetch_bond_schedule_full(
+                info[p["isin"]]["sec"].get("secid") or p["isin"]) for p in positions))
+
+        for p, sched in zip(positions, scheds):
+            isin, qty = p["isin"], float(p["qty"])
+            meta = info[isin]
+            fx_rate = fx.get(meta["ccy"], 1.0)
+
+            def _in_horizon(ds: Optional[str]) -> bool:
+                d = None
+                try:
+                    d = date.fromisoformat(ds) if ds else None
+                except ValueError:
+                    return False
+                return d is not None and calc_date < d and d.toordinal() <= horizon
+
+            def _ev(day: str, typ: str, amount: Optional[float] = None):
+                events.append({
+                    "date": day, "type": typ, "fund": code, "isin": isin,
+                    "name": meta["name"], "cls": meta["cls"],
+                    "amount_rub": round(amount * qty * fx_rate, 2) if amount is not None else None})
+
+            coupons = (sched or {}).get("coupons") or []
+            amorts = (sched or {}).get("amorts") or []
+            maturity = meta["sec"].get("maturity")
+            # оферта = первый купон без value (после неё купон не определён)
+            for c in coupons:
+                if _in_horizon(c.get("end")):
+                    if c.get("value") is not None:
+                        _ev(c["end"], "coupon", float(c["value"]))
+            put = next((c.get("start") for c in coupons
+                        if c.get("value") is None and _in_horizon(c.get("start"))), None)
+            if put:
+                _ev(put, "put")
+            for a in amorts:
+                if _in_horizon(a.get("date")) and a.get("value") is not None:
+                    # финальная амортизация на дату погашения = редемпшен
+                    typ = "maturity" if maturity and a["date"] == maturity else "amort"
+                    _ev(a["date"], typ, float(a["value"]))
+
+    events.sort(key=lambda e: (e["date"], e["fund"], e["isin"]))
+    return {"calc_date": calc_date.isoformat(), "days": days, "items": events}
+
+
+# ---------- repricing-алерты (Ф4) ----------
+
+async def fund_alerts(code: str, threshold_bps: float = 20.0) -> Optional[dict]:
+    """Day-over-day repricing бумаг фонда из НРД-истории (services/history.py):
+    |Δz| или |Δdm| ≥ порога. Работает для бумаг, покрытых юниверсом НРД (флоатеры)."""
+    from services import history
+    fund = db.get_fund(code)
+    if fund is None:
+        return None
+    isins = {p["isin"] for p in db.get_positions(code)}
+    dz, ddm = history.dod_map("z"), history.dod_map("dm")
+    items = [
+        {"isin": i, "dz_bps": dz.get(i), "ddm_bps": ddm.get(i)}
+        for i in sorted(isins)
+        if abs(dz.get(i) or 0) >= threshold_bps or abs(ddm.get(i) or 0) >= threshold_bps]
+    return {"code": code, "threshold_bps": threshold_bps, "items": items}

@@ -79,8 +79,9 @@ def fixed_metrics_from_schedule(
     price_pct — чистая цена в % от остаточного номинала; accrued — НКД в валюте
     номинала на одну бумагу. dirty/dv01 — на одну бумагу в валюте номинала.
     """
-    out = {"ytm_pct": None, "mod_dur": None, "dv01": None,
-           "g_spread_bps": None, "dirty": None, "face_current": None, "put_date": None}
+    out = {"ytm_pct": None, "mod_dur": None, "mac_dur": None, "convexity": None,
+           "dv01": None, "g_spread_bps": None, "dirty": None, "face_current": None,
+           "put_date": None}
     cfs, face, put_date = build_fixed_cashflows(schedule, calc_date)
     out["face_current"] = face
     out["put_date"] = put_date.isoformat() if put_date else None
@@ -109,7 +110,14 @@ def fixed_metrics_from_schedule(
         return out
     mod_dur = (pv_dn - pv_up) / (2.0 * dirty * dy)
     out["mod_dur"] = round(mod_dur, 2)
+    out["mac_dur"] = round(mod_dur * (1.0 + y), 2)  # Маколей при эффективной годовой
     out["dv01"] = round(mod_dur * dirty * 1e-4, 4)  # ₽(валюта)/бумагу на 1бп
+    try:
+        pv0 = xnpv(y, cfs)
+        if pv0 > 0:
+            out["convexity"] = round((pv_dn + pv_up - 2.0 * pv0) / (dirty * dy * dy), 2)
+    except ValueError:
+        pass
 
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)():
         tau = max(mod_dur, 0.01)

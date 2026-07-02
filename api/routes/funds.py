@@ -143,6 +143,44 @@ async def get_nav_history(code: str, days: int = 120):
     return {"items": db.get_nav_history(code.upper(), days=max(1, min(days, 730)))}
 
 
+@router.get("/{code}/scenarios", tags=["Funds"])
+async def get_scenarios(code: str):
+    """Сценарный анализ: КС ±100/±200, наклон кривой, FX ±10% → ΔNAV и Δcarry."""
+    _fund_or_404(code)
+    return await portfolio.fund_scenarios(code.upper())
+
+
+@router.get("/{code}/alerts", tags=["Funds"])
+async def get_alerts(code: str, threshold: float = 20.0):
+    """Repricing-алерты D/D (Δz/Δdm из истории НРД) по бумагам фонда."""
+    _fund_or_404(code)
+    return await portfolio.fund_alerts(code.upper(), threshold_bps=threshold)
+
+
+# префикс _meta, чтобы не пересекаться с /{code}-путями
+@router.get("/_meta/calendar", tags=["Funds"])
+async def get_calendar(days: int = 90):
+    """События по всем фондам: купоны, амортизации, погашения, оферты."""
+    return await portfolio.funds_calendar(days=max(1, min(days, 365)))
+
+
+@router.get("/_meta/benchmarks", tags=["Funds"])
+async def get_benchmarks_route(days: int = 180):
+    from services.benchmarks import get_benchmarks, perf_pct
+    data = await get_benchmarks(days=max(30, min(days, 730)))
+    out = {}
+    for code, v in data.items():
+        items = v["items"]
+        out[code] = {
+            "label": v["label"],
+            "last": items[-1] if items else None,
+            "perf_1d": perf_pct(items, 1), "perf_30d": perf_pct(items, 30),
+            "perf_ytd": perf_pct(items, (date.today() - date(date.today().year, 1, 1)).days),
+            "items": items,
+        }
+    return out
+
+
 @router.put("/{code}/snapshot", tags=["Funds"])
 async def put_snapshot(code: str, body: SnapshotIn):
     """Заменяет снапшот позиций целиком из CSV `ISIN;кол-во`."""

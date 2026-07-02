@@ -199,6 +199,26 @@ export async function fetchFundNavHistory(code, days = 120) {
   return (await jsonOrThrow(r)).items || [];
 }
 
+export async function fetchFundScenarios(code) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/scenarios`);
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundAlerts(code, threshold = 20) {
+  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/alerts?threshold=${threshold}`);
+  return jsonOrThrow(r);
+}
+
+export async function fetchFundsCalendar(days = 90) {
+  const r = await authFetch(`${API}/api/funds/_meta/calendar?days=${days}`);
+  return jsonOrThrow(r);
+}
+
+export async function fetchBenchmarks(days = 180) {
+  const r = await authFetch(`${API}/api/funds/_meta/benchmarks?days=${days}`);
+  return jsonOrThrow(r);
+}
+
 export async function deleteFundRepo(code, id) {
   const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo/${id}`, {
     method: "DELETE",

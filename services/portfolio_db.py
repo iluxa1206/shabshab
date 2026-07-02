@@ -60,7 +60,23 @@ CREATE TABLE IF NOT EXISTS nav_daily(
   net_carry_rub REAL,
   PRIMARY KEY (fund, date)               -- перезапись за день идемпотентна
 );
+CREATE TABLE IF NOT EXISTS pos_daily(
+  fund  TEXT NOT NULL REFERENCES funds(code) ON DELETE CASCADE,
+  date  TEXT NOT NULL,
+  isin  TEXT NOT NULL,
+  qty   REAL,
+  price_pct REAL,
+  fx    REAL,
+  mv_rub REAL,
+  PRIMARY KEY (fund, date, isin)         -- дневной позиционный срез (P&L-атрибуция Ф5)
+);
 """
+
+# добивка колонок к существующим таблицам (ALTER не умеет IF NOT EXISTS)
+_MIGRATIONS = [
+    "ALTER TABLE nav_daily ADD COLUMN fx_usd REAL",
+    "ALTER TABLE nav_daily ADD COLUMN fx_cny REAL",
+]
 
 _SEED_FUNDS = [
     ("R5", "R5 · Рублёвый", "RUB"),
@@ -82,6 +98,11 @@ def init_db() -> None:
     """Схема + сид трёх фондов (идемпотентно). Зовётся на старте приложения."""
     with _lock, _connect() as conn:
         conn.executescript(_SCHEMA)
+        for mig in _MIGRATIONS:
+            try:
+                conn.execute(mig)
+            except sqlite3.OperationalError:
+                pass  # колонка уже есть
         now = datetime.now(timezone.utc).isoformat()
         for code, name, ccy in _SEED_FUNDS:
             conn.execute(
@@ -195,10 +216,21 @@ def save_nav(fund: str, day: str, m: dict) -> None:
     with _lock, _connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO nav_daily"
-            "(fund,date,nav_rub,mv_rub,repo_rub,dv01_rub,leverage,net_carry_rub) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            "(fund,date,nav_rub,mv_rub,repo_rub,dv01_rub,leverage,net_carry_rub,fx_usd,fx_cny) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (fund, day, m.get("nav_rub"), m.get("mv_rub"), m.get("repo_rub"),
-             m.get("dv01_rub"), m.get("leverage_gross"), m.get("net_carry_rub")))
+             m.get("dv01_rub"), m.get("leverage_gross"), m.get("net_carry_rub"),
+             m.get("fx_usd"), m.get("fx_cny")))
+
+
+def save_positions_snapshot(fund: str, day: str, rows: list[dict]) -> None:
+    """Дневной позиционный срез с ценами (перезапись за день)."""
+    with _lock, _connect() as conn:
+        conn.execute("DELETE FROM pos_daily WHERE fund=? AND date=?", (fund, day))
+        conn.executemany(
+            "INSERT INTO pos_daily(fund,date,isin,qty,price_pct,fx,mv_rub) VALUES(?,?,?,?,?,?,?)",
+            [(fund, day, r["isin"], r.get("qty"), r.get("price_pct"),
+              r.get("fx"), r.get("mv_rub")) for r in rows])
 
 
 def get_nav_history(fund: str, days: int = 120) -> list[dict]:
