@@ -1,6 +1,6 @@
 # FLOATERS DESK — статус проекта
 
-_Обновлено: 2026-07-01. Контекст для новых сессий: прочитай этот файл первым._
+_Обновлено: 2026-07-02. Контекст для новых сессий: прочитай этот файл первым._
 
 ## Что это
 Дашборд аналитики **облигаций с плавающим купоном (флоатеров, RUB)**. FastAPI-бэкенд + React-фронт (Vite). Показывает весь рынок флоатеров с оценкой: discount margin (DM), спред, доходности, рейтинги, cashflow.
@@ -13,6 +13,23 @@ cd /Users/ishabaev/python_projects/shabshab
 # открыть http://127.0.0.1:8000/app/
 ```
 Превью (Claude): `.claude/launch.json` server name `api`. React-правки требуют `npm run build` (FastAPI отдаёт статику из `frontend-react/dist`, не live src).
+
+## Прод / деплой (deskdeskdesk.ru)
+Живёт на **https://deskdeskdesk.ru/app/** (VPS 161.104.17.23, Ubuntu 24.04).
+
+**Деплой одной командой** (с этой машины): `./scripts/deploy.sh`
+— rsync кода в `/root/floaters` → `docker compose -f docker-compose.prod.yml --env-file .env up -d --build` → healthcheck. Фронт (`npm run build`) собирается ВНУТРИ Docker (multi-stage `Dockerfile`), пересборка вручную не нужна.
+
+**Инфра:** сервер НЕ выделенный — на нём уже стек `astra-prod` (`/root/catalog/`, сайт assetallocator.ru: Next.js+Postgres+**Caddy** на 80/443). Наш проект — отдельный compose-проект `floaters-prod`:
+- один контейнер `floaters` (uvicorn :8000), подключён к внешней docker-сети `astra-prod_default`, лимит `mem_limit: 768m`.
+- Caddy (чужой, `/root/catalog/Caddyfile`) проксирует наш домен: блок `deskdeskdesk.ru, www.deskdeskdesk.ru { reverse_proxy floaters:8000 }`, TLS Let's Encrypt авто. WS (`/api/ws/market`) проксируется как wss.
+
+**Доступ:** `ssh root@161.104.17.23` по ключу `~/.ssh/id_ed25519` (уже установлен).
+**Секреты:** `.env` (Alor/НРД креды) лежит в `/root/floaters/.env`, прокинут через `env_file` (в git/образ НЕ попадает).
+**Правка Caddy** (после ручного изменения Caddyfile): `docker exec astra-prod-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
+**DNS:** A-записи `@` и `www` deskdeskdesk.ru → 161.104.17.23.
+
+Файлы деплоя (в репо): `Dockerfile`, `.dockerignore`, `docker-compose.prod.yml`, `scripts/deploy.sh`.
 
 ## Архитектура
 ```
