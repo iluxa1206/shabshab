@@ -336,8 +336,8 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .stale-chip.off { opacity: .55; }
 
 /* ── аналитика (кросс-секция рынка) ── */
-.analytics { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;
-  padding: 0 16px 12px; }
+.analytics { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 460px)); gap: 12px;
+  justify-content: center; padding: 0 16px 12px; }
 .an-card { border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; background: var(--bg); }
 .an-title { font-size: 11px; letter-spacing: .05em; color: var(--fg); margin-bottom: 8px; text-transform: uppercase; }
 .an-hint { font-size: 10px; color: var(--mut-2); text-transform: none; letter-spacing: 0; margin-left: 6px; }
