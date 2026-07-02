@@ -16,6 +16,7 @@ from last_prices import get_last_prices_dict
 from cashflow import load_cache, get_local_excel_db
 
 SCHEDULE_CACHE_FILE = "schedule_cache.json"
+SCHEDULE_FULL_CACHE_FILE = "schedule_full_cache.json"
 
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.
@@ -59,6 +60,7 @@ market_cache = {
     "ruonia_curve": None,
     "keyrate_curve": None,
     "last_prices": {},
+    "universe_metrics": {},   # {isin: полные метрики вне watchlist} — наполняет фоновый поллер
     "rates_date": None,
     "calc_date": None
 }
@@ -211,10 +213,41 @@ class MarketDataService:
                 pass
         return cls._shortnames
 
+    _full_mem: Dict[str, dict] = {}
+    _full_mem_date: Optional[str] = None
+
+    @classmethod
+    def _ensure_full_mem(cls) -> None:
+        """Загружает дисковый кэш bondization в память один раз в день."""
+        today = date.today().isoformat()
+        if cls._full_mem_date == today:
+            return
+        cls._full_mem_date = today
+        try:
+            with open(SCHEDULE_FULL_CACHE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            cls._full_mem = raw.get("items", {}) if raw.get("date") == today else {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            cls._full_mem = {}
+
+    @classmethod
+    def _save_full_disk(cls) -> None:
+        try:
+            with open(SCHEDULE_FULL_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"date": cls._full_mem_date, "items": cls._full_mem}, f, ensure_ascii=False)
+        except OSError:
+            pass
+
     @classmethod
     async def fetch_bond_schedule_full(cls, isin: str) -> dict:
         """Полное расписание MOEX по одной бумаге: купоны (с реальными value/valueprc для
-        прошлых/зафиксированных) + амортизации (погашение принципала)."""
+        прошлых/зафиксированных) + амортизации (погашение принципала).
+        Кэш память+диск с TTL на день (bondization стабилен внутри дня; критично для
+        фонового расчёта метрик всего юниверса — иначе 453 запроса каждый цикл)."""
+        cls._ensure_full_mem()
+        if isin in cls._full_mem:
+            return cls._full_mem[isin]
+
         out = {"coupons": [], "amorts": []}
         try:
             async with httpx.AsyncClient() as client:
@@ -245,6 +278,10 @@ class MarketDataService:
                     out["amorts"].append({"date": d, "value": val})
         except Exception as e:
             print(f"bondization error {isin}: {e}")
+        # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем
+        if out.get("coupons"):
+            cls._full_mem[isin] = out
+            cls._save_full_disk()
         return out
 
     _sec_cache: Dict[str, dict] = {}
@@ -374,6 +411,53 @@ class MarketDataService:
             if isin in out:
                 cls._snap_cache[isin] = (out[isin], now)
         return out
+
+    _board_snap: Dict[str, dict] = {}
+    _board_snap_ts: float = 0.0
+
+    @classmethod
+    async def fetch_board_snapshot(cls) -> Dict[str, dict]:
+        """{isin: {'prev','accrued'}} по ВСЕМУ борду TQCB одним запросом — для
+        фонового расчёта метрик юниверса без 453 per-isin вызовов. Кэш TTL 120с."""
+        now = time.time()
+        if cls._board_snap and now - cls._board_snap_ts < _SNAP_TTL:
+            return cls._board_snap
+        out: Dict[str, dict] = {}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await _moex_get(
+                    client,
+                    "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
+                    params={"iss.only": "securities",
+                            "securities.columns": "ISIN,PREVPRICE,ACCRUEDINT"},
+                    timeout=15)
+            if resp is not None and resp.status_code == 200:
+                sec = resp.json().get("securities", {})
+                cols, rows = sec.get("columns", []), sec.get("data", [])
+                ii = cols.index("ISIN") if "ISIN" in cols else -1
+                pi = cols.index("PREVPRICE") if "PREVPRICE" in cols else -1
+                ai = cols.index("ACCRUEDINT") if "ACCRUEDINT" in cols else -1
+                for row in rows:
+                    isin = row[ii] if ii >= 0 else None
+                    if not isin:
+                        continue
+                    prev = row[pi] if pi >= 0 else None
+                    acc = row[ai] if ai >= 0 else None
+                    out[isin] = {
+                        "prev": float(prev) if prev is not None else None,
+                        "accrued": float(acc) if acc is not None else None,
+                    }
+        except Exception as e:
+            print(f"board snapshot error: {e}")
+        if out:
+            cls._board_snap = out
+            cls._board_snap_ts = now
+        return out
+
+    @classmethod
+    def universe_metrics(cls) -> Dict[str, dict]:
+        """Полные метрики юниверса вне watchlist (наполняет фоновый поллер)."""
+        return market_cache.get("universe_metrics", {})
 
     @classmethod
     async def fetch_prev_close_prices(cls, isins: List[str]) -> Dict[str, float]:

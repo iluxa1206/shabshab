@@ -46,10 +46,13 @@ def _in_moex_trading_hours() -> bool:
     return 7 * 60 <= minutes <= 23 * 60 + 50
 
 async def universe_price_poller():
-    """Раз в UNIVERSE_POLL_INTERVAL тянет last-price Alor по всему юниверсу
-    чанками, наполняя market_cache['last_prices']. Юниверс-роут читает
-    cached_prices() → колонка PRICE наполняется для бумаг вне watchlist.
-    Неликвид не вернёт котировку — остаётся на НРД VWAP."""
+    """Раз в UNIVERSE_POLL_INTERVAL: (1) тянет last-price Alor по всему юниверсу
+    чанками → market_cache['last_prices']; (2) считает полные метрики (dirty/DM/
+    z_model/carry/next_coupon) по всему юниверсу → market_cache['universe_metrics'].
+    Юниверс-роут читает эти кэши — бумаги вне watchlist получают live-цену И расчёт.
+    Данные MOEX кэшируются на день, поэтому тяжёлый прогрев (bondization) — раз/день."""
+    from api.routes.bonds import compute_universe_metrics
+    from services.market_data import market_cache
     await asyncio.sleep(30)  # прогрев: не конкурировать со стартом
     while True:
         try:
@@ -59,6 +62,10 @@ async def universe_price_poller():
                 for i in range(0, len(isins), UNIVERSE_POLL_CHUNK):
                     await MarketDataService.fetch_last_prices(isins[i:i + UNIVERSE_POLL_CHUNK])
                     await asyncio.sleep(1)  # мягкий rate-limit между чанками
+                # полные метрики после наполнения цен
+                metrics = await compute_universe_metrics(uni, isins)
+                if metrics:
+                    market_cache["universe_metrics"] = metrics
         except Exception as e:
             print(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)

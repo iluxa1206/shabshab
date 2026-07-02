@@ -21,3 +21,4 @@ spfi_cache.json
 nrd_history.json
 scripts/.probe_sched_cache.json
 alor_symbols_cache.json
+schedule_full_cache.json
