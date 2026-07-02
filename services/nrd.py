@@ -347,15 +347,23 @@ async def _fetch_method(client: httpx.AsyncClient, path: str, isins: List[str]) 
     return by_isin
 
 
+_universe_mem: dict = {"date": None, "items": None}
+
 async def fetch_floater_universe() -> List[dict]:
     """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA) из НРД valuationnewadd.
     Пагинация по 1000, фильтр coupon_type=float + база CBRATED/RUONIARATED. Кэш на день."""
     if not is_configured():
         return []
     today = date.today().isoformat()
+    # in-memory слой: юниверс запрашивается на каждый запрос дашборда — не читаем
+    # и не парсим 186KB JSON с диска каждый раз
+    if _universe_mem["date"] == today and _universe_mem["items"] is not None:
+        return _universe_mem["items"]
     cache = _load_json(UNIVERSE_FILE)
     if cache.get("calc_date") == today and cache.get("version") == CACHE_VERSION:
-        return cache.get("items", [])
+        _universe_mem["date"] = today
+        _universe_mem["items"] = cache.get("items", [])
+        return _universe_mem["items"]
 
     items: List[dict] = []
     try:
@@ -408,6 +416,8 @@ async def fetch_floater_universe() -> List[dict]:
     for x in items:
         x.pop("_val_date", None)
     _save_json(UNIVERSE_FILE, {"version": CACHE_VERSION, "calc_date": today, "items": items})
+    _universe_mem["date"] = today
+    _universe_mem["items"] = items
     return items
 
 

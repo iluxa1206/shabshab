@@ -175,20 +175,15 @@ def _uni_item(u, name, last, dirty=None, dm=None, delta=None, next_coupon=None, 
     )
 
 
-async def _universe_bonds(extra_list, cache, limit, offset):
-    """Весь рынок флоатеров из НРД (кэш на день). НРД-аналитика по всем;
-    live-цена Alor + наш DM — только для watchlist (extra), т.к. их мало."""
-    uni = await nrd_service.fetch_floater_universe()
-    if not uni:
-        return BondListResponse(items=[], total=0, limit=limit, offset=offset)
+_cross_cache = {"date": None, "map": {}}
 
-    cached_prices = MarketDataService.cached_prices()
-    uni_metrics = MarketDataService.universe_metrics()  # полные метрики вне watchlist (фон)
-    shortnames = await MarketDataService.fetch_moex_shortnames()
-    watch = set(extra_list)
-
-    # кросс-секция (по всему рынку, без сети): перцентиль z внутри рейтинг-бакета,
-    # spread duration ≈ срок до погашения, Δz день-к-дню из истории
+def _cross_section_map(uni: list) -> dict:
+    """{isin: (spread_dur_yrs, z_pctile, Δz_dod, Δz_mom)} по всему рынку.
+    Записывает снапшот истории и считает кросс-секцию РАЗ В ДЕНЬ — зависит только
+    от дневного НРД-юниверса, незачем повторять на каждый запрос дашборда."""
+    today = date.today().isoformat()
+    if _cross_cache["date"] == today and _cross_cache["map"]:
+        return _cross_cache["map"]
     try:
         history.record_snapshot(uni)
     except Exception:
@@ -203,13 +198,35 @@ async def _universe_bonds(extra_list, cache, limit, offset):
     for u in uni:
         bucket_z.setdefault(u.get("rating"), []).append(u.get("z_spread_bps"))
     today0 = date.today()
-
-    def _cross(u):
+    out: dict = {}
+    for u in uni:
         mat = u.get("maturity_date")
         sd = metrics.years_to(date.fromisoformat(mat), today0) if mat else None
         zp = metrics.rank_pct(u.get("z_spread_bps"), bucket_z.get(u.get("rating"), []))
-        isin = u.get("isin")
-        return sd, zp, dod_z.get(isin), mom_z.get(isin)
+        out[u.get("isin")] = (sd, zp, dod_z.get(u.get("isin")), mom_z.get(u.get("isin")))
+    _cross_cache["date"] = today
+    _cross_cache["map"] = out
+    return out
+
+
+async def _universe_bonds(extra_list, cache, limit, offset):
+    """Весь рынок флоатеров из НРД (кэш на день). НРД-аналитика по всем;
+    live-цена Alor + наш DM — только для watchlist (extra), т.к. их мало."""
+    uni = await nrd_service.fetch_floater_universe()
+    if not uni:
+        return BondListResponse(items=[], total=0, limit=limit, offset=offset)
+
+    cached_prices = MarketDataService.cached_prices()
+    uni_metrics = MarketDataService.universe_metrics()  # полные метрики вне watchlist (фон)
+    shortnames = await MarketDataService.fetch_moex_shortnames()
+    watch = set(extra_list)
+
+    # кросс-секция (z-перцентиль, spread duration, Δz d/d и m/m) + запись истории —
+    # зависят только от дневного НРД-юниверса, считаем раз в день (не на каждый запрос)
+    cross = _cross_section_map(uni)
+
+    def _cross(u):
+        return cross.get(u.get("isin"), (None, None, None, None))
 
     # live-данные + наш DM только для watchlist
     market_prices = snapshot = schedules = moex_ref = sched_full = {}

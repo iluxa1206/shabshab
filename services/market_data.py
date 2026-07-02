@@ -250,11 +250,14 @@ class MarketDataService:
 
         out = {"coupons": [], "amorts": []}
         try:
+            # через _moex_get (семафор 5) — иначе gather по всему юниверсу на прогреве
+            # даёт 453 одновременных коннекта к ISS → таймауты/дропы
             async with httpx.AsyncClient() as client:
-                resp = await client.get(
+                resp = await _moex_get(
+                    client,
                     f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
                     params={"iss.only": "coupons,amortizations", "limit": 1000}, timeout=10)
-            if resp.status_code != 200:
+            if resp is None or resp.status_code != 200:
                 return out
             j = resp.json()
             cp = j.get("coupons", {})
