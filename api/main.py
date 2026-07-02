@@ -5,7 +5,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth
+from api.routes.auth import require_user
+from fastapi import Depends
 from services.exceptions import APIException
 from contextlib import asynccontextmanager
 import asyncio
@@ -106,12 +108,15 @@ async def api_exception_handler(request: Request, exc: APIException):
         },
     )
 
+# health и auth открыты; всё остальное закрыто зависимостью require_user (401 без сессии).
 app.include_router(health.router, prefix="/api")
-app.include_router(meta.router, prefix="/api")
-app.include_router(bonds.router, prefix="/api/bonds")
-app.include_router(curves.router, prefix="/api/curves")
-app.include_router(orderbook.router, prefix="/api/orderbook")
-app.include_router(ws.router, prefix="/api/ws")
+app.include_router(auth.router, prefix="/api/auth")
+_gate = [Depends(require_user)]
+app.include_router(meta.router, prefix="/api", dependencies=_gate)
+app.include_router(bonds.router, prefix="/api/bonds", dependencies=_gate)
+app.include_router(curves.router, prefix="/api/curves", dependencies=_gate)
+app.include_router(orderbook.router, prefix="/api/orderbook", dependencies=_gate)
+app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---
 # Приоритет: React-билд (frontend-react/dist), фоллбэк — старый vanilla frontend/.

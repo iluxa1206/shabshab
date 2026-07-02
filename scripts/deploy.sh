@@ -12,6 +12,8 @@ cd "$(dirname "$0")/.."
 echo ">>> rsync → $SERVER:$REMOTE"
 rsync -az --delete \
   --exclude '.git' \
+  --exclude '.env' \
+  --exclude 'data' \
   --exclude '.venv' \
   --exclude 'frontend-react/node_modules' \
   --exclude 'frontend-react/dist' \

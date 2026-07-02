@@ -385,3 +385,43 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .colmenu-item input:checked { background: var(--fg); border-color: var(--fg); }
 .colmenu-item input:checked::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--bg); font-size: 10px; }
 .colmenu-item small { color: var(--mut-2); }
+
+/* --- Экран входа --- */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
+.login-card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 14px; border: 1px solid var(--line); padding: 28px 24px; background: var(--bg); }
+.login-sub { color: var(--mut); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 4px; }
+.login-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--mut); }
+.login-field input { font-family: var(--mono); font-size: 13px; padding: 9px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.login-field input:focus { outline: none; border-color: var(--fg); }
+.login-err { color: var(--neg); font-size: 12px; }
+.login-btn { justify-content: center; padding: 10px; background: var(--inv-bg); color: var(--inv-fg); border-color: var(--inv-bg); }
+.login-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* --- Модалка настроек / админ-панель --- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; z-index: 100; overflow-y: auto; }
+.modal-card { width: 100%; max-width: 440px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 8px 40px rgba(0,0,0,0.3); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.modal-title { font-size: 13px; text-transform: uppercase; letter-spacing: 2px; }
+.admin-sec { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.admin-sec:last-child { border-bottom: none; }
+.admin-h { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--mut); font-weight: 600; }
+.admin-h-sm { margin: 4px 0 6px; }
+.admin-form { display: flex; flex-direction: column; gap: 8px; }
+.admin-form input, .admin-form select { font-family: var(--mono); font-size: 13px; padding: 8px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.admin-form input:focus, .admin-form select:focus { outline: none; border-color: var(--fg); }
+.admin-btn-primary { justify-content: center; padding: 9px; background: var(--inv-bg); color: var(--inv-fg); border-color: var(--inv-bg); }
+.admin-btn-primary:disabled { opacity: 0.5; cursor: default; }
+.admin-add { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.admin-msg { font-size: 12px; padding: 2px 0; }
+.admin-err { color: var(--neg); }
+.admin-ok { color: var(--pos); }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 4px; }
+.admin-table th { text-align: left; color: var(--mut); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 11px; text-transform: uppercase; }
+.admin-table td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.admin-you { color: var(--mut); }
+.admin-role { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; text-transform: uppercase; }
+.admin-role:hover { border-color: var(--fg); }
+.admin-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.admin-btn-sm { padding: 4px 8px; font-size: 11px; }
+.admin-btn-danger { color: var(--neg); border-color: var(--neg); }
+.admin-btn-danger:disabled { opacity: 0.4; cursor: default; }

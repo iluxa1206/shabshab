@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchBonds, fetchMeta, connectMarketWs } from "./api.js";
+import { fetchBonds, fetchMeta, connectMarketWs, fetchMe, logout, UnauthorizedError } from "./api.js";
+import Login from "./components/Login.jsx";
+import AdminPanel from "./components/AdminPanel.jsx";
 import Topbar from "./components/Topbar.jsx";
 import Kpis from "./components/Kpis.jsx";
 import Toolbar from "./components/Toolbar.jsx";
@@ -9,7 +11,7 @@ import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
-export default function App() {
+function Dashboard({ user, onLogout }) {
   const [bonds, setBonds] = useState([]);
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [errMsg, setErrMsg] = useState("");
@@ -25,6 +27,7 @@ export default function App() {
   const [sort, setSort] = useState({ key: "dm_bps", dir: "asc" });
 
   const [drawerIsin, setDrawerIsin] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch") || "[]"); } catch { return []; }
@@ -92,10 +95,11 @@ export default function App() {
       wsRef.current?.resubscribe();
     } catch (e) {
       if (e.name === "AbortError") return;
+      if (e instanceof UnauthorizedError) { onLogout(); return; }
       setErrMsg(e.message);
       setStatus("error");
     }
-  }, []);
+  }, [onLogout]);
 
   useEffect(() => { fetchMeta().then(setMeta).catch(() => {}); }, []);
   useEffect(() => { loadBonds(); }, [loadBonds]);
@@ -181,6 +185,9 @@ export default function App() {
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        user={user}
+        onLogout={onLogout}
+        onOpenSettings={() => setShowSettings(true)}
       />
       <Kpis bonds={filtered} />
       <Toolbar
@@ -211,7 +218,39 @@ export default function App() {
         visibleCols={visibleCols}
       />
       <Drawer isin={drawerIsin} onClose={closeDrawer} />
+      {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
       <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
     </div>
   );
+}
+
+// Гейт авторизации: пока не проверили сессию — заглушка; нет сессии — Login; есть — дашборд.
+export default function App() {
+  const [auth, setAuth] = useState("checking"); // checking | anon | authed
+  const [user, setUser] = useState(null);
+  const [theme] = useState(() => localStorage.getItem("theme") || "light");
+
+  useEffect(() => {
+    fetchMe()
+      .then((u) => { setUser(u); setAuth("authed"); })
+      .catch(() => setAuth("anon"));
+  }, []);
+
+  const onLogout = useCallback(async () => {
+    try { await logout(); } catch { /* игнор — всё равно на логин */ }
+    setUser(null);
+    setAuth("anon");
+  }, []);
+
+  if (auth === "checking") {
+    return <div className={"login-wrap" + (theme === "dark" ? " theme-dark" : "")} />;
+  }
+  if (auth === "anon") {
+    return (
+      <div className={theme === "dark" ? "theme-dark" : ""}>
+        <Login onSuccess={(u) => { setUser(u); setAuth("authed"); }} />
+      </div>
+    );
+  }
+  return <Dashboard user={user} onLogout={onLogout} />;
 }

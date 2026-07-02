@@ -17,7 +17,7 @@ function Clock() {
   );
 }
 
-export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme }) {
+export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, user, onLogout, onOpenSettings }) {
   return (
     <header className="menubar">
       <div className="brand-row">
@@ -35,6 +35,12 @@ export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme }) 
         </span>
         <button className="btn" onClick={onToggleTheme}>{theme === "dark" ? "Light" : "Dark"}</button>
         <button className="btn" onClick={onRefresh}>Sync</button>
+        {user && (
+          <button className="btn" onClick={onOpenSettings} title="Настройки доступа">
+            {user.email}{user.role === "admin" ? " ⚙" : ""}
+          </button>
+        )}
+        {onLogout && <button className="btn" onClick={onLogout}>Выход</button>}
       </div>
     </header>
   );

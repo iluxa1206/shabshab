@@ -23,6 +23,9 @@ services:
       - web
     expose:
       - "8000"
+    volumes:
+      # Аккаунты дашборда (data/users.json) — переживают редеплой.
+      - ./data:/app/data
 
 networks:
   web:

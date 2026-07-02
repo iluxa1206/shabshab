@@ -17,8 +17,12 @@ MAX_DAYS = 40
 
 
 def _path() -> str:
+    # data/ монтируется как Docker-том (docker-compose.prod.yml) — история
+    # переживает редеплой, иначе Δz D/D обнулялся при каждой пересборке контейнера.
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, HISTORY_FILE)
+    data_dir = os.path.join(base, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, HISTORY_FILE)
 
 
 def _load() -> dict:

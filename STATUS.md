@@ -25,9 +25,32 @@ cd /Users/ishabaev/python_projects/shabshab
 - Caddy (чужой, `/root/catalog/Caddyfile`) проксирует наш домен: блок `deskdeskdesk.ru, www.deskdeskdesk.ru { reverse_proxy floaters:8000 }`, TLS Let's Encrypt авто. WS (`/api/ws/market`) проксируется как wss.
 
 **Доступ:** `ssh root@161.104.17.23` по ключу `~/.ssh/id_ed25519` (уже установлен).
-**Секреты:** `.env` (Alor/НРД креды) лежит в `/root/floaters/.env`, прокинут через `env_file` (в git/образ НЕ попадает).
+**Секреты:** `.env` (Alor/НРД/`AUTH_SECRET` креды) лежит в `/root/floaters/.env`, прокинут через `env_file` (в git/образ НЕ попадает). `deploy.sh` **исключает `.env` и `data/` из rsync** (`--exclude`) — прод-секреты и БД юзеров не затираются локальными; правятся вручную на сервере.
 **Правка Caddy** (после ручного изменения Caddyfile): `docker exec astra-prod-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
 **DNS:** A-записи `@` и `www` deskdeskdesk.ru → 161.104.17.23.
+
+## Авторизация (доступ по аккаунту)
+Весь сайт закрыт логином — самостоятельной регистрации НЕТ, аккаунты заводит только админ (CLI). Чужие аккаунты попасть не могут.
+
+**Как устроено:**
+- Гейт: зависимость `require_user` на роутерах данных (`meta`/`bonds`/`curves`/`orderbook`) в `api/main.py`. Открыты только `/api/health` и `/api/auth/*`. WS проверяет cookie на хендшейке (`api/routes/ws.py`).
+- Сессия: JWT (HS256, подпись `AUTH_SECRET`) в httpOnly-cookie `session`, срок 7 дней (`api/routes/auth.py`). Удаление юзера сразу лишает доступа (токен сверяется с хранилищем).
+- Хранилище: bcrypt-хеши в `data/users.json` (атомарная запись, `services/auth_users.py`). В проде — Docker-том `./data:/app/data` (переживает редеплой). Файл gitignored.
+- Фронт: `Login.jsx` + гейт в `App.jsx` (проверяет `/api/auth/me`), кнопка «Выход» в `Topbar`. 401 в любом запросе → редирект на логин.
+
+**Env (`.env`):** `AUTH_SECRET` — обязателен (без него все запросы 401, fail-closed). `AUTH_COOKIE_SECURE` — `1` в проде (HTTPS), `0` локально (HTTP). Генерация секрета: `openssl rand -hex 32`.
+
+**Управление доступом (CLI `scripts/useradd.py`):**
+```bash
+# локально
+python scripts/useradd.py add user@example.com --role admin   # спросит пароль
+python scripts/useradd.py list
+python scripts/useradd.py remove user@example.com
+# в проде — внутри контейнера (пишет в том data/):
+docker compose -f docker-compose.prod.yml exec floaters python scripts/useradd.py add user@example.com
+```
+
+**Первый деплой авторизации:** (1) добавить `AUTH_SECRET` (+ убрать/выставить `AUTH_COOKIE_SECURE=1`) в `/root/floaters/.env`; (2) `./scripts/deploy.sh`; (3) завести первого юзера через `docker compose ... exec`. Без юзеров сайт закрыт для всех.
 
 Файлы деплоя (в репо): `Dockerfile`, `.dockerignore`, `docker-compose.prod.yml`, `scripts/deploy.sh`.
 
@@ -109,7 +132,7 @@ tests/         только test_nrd.py (pytest)
 ### HIGH
 1. Блокировка event loop: `auth.py:39` (requests.post refresh, без timeout) + `rates.py` (Cbonds) — sync в async, вешают весь сервис. → httpx async / asyncio.to_thread.
 2. Гонки токен-кэша (нет lock, не атомарная запись) → дубль-логины/rate-limit.
-3. Нет auth на API + CORS `*` (спасает только host=127.0.0.1).
+3. ~~Нет auth на API~~ — **исправлено** (см. «Авторизация»): гейт `require_user` на всех роутерах данных + WS, JWT-cookie, аккаунты через CLI. CORS всё ещё `*` (не критично — same-origin, credentials не отдаём).
 4. DM смещён: сетка начисления купона (`forward(start,end)`, start м.б. в прошлом) ≠ сетка дисконта (`forward(pay_prev,d)` от calc_date) — valuation.py:149 vs 282. Часть остатка vs НРД.
 5. НРД масштаб спредов — эвристика ×10000/×100 без sanity-guard (nrd.py:116); нетипичные единицы → CF/DM ×100 врут.
 6. Фронт: WS reconnect-таймер не чистится (api.js:56,70) — зомби-сокеты.

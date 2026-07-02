@@ -83,6 +83,11 @@ manager = ConnectionManager()
 
 @router.websocket("/market")
 async def websocket_market_endpoint(websocket: WebSocket):
+    # Закрываем WS без валидной сессии (cookie уходит на хендшейке, same-origin).
+    from api.routes.auth import user_from_websocket
+    if not user_from_websocket(websocket):
+        await websocket.close(code=1008)  # policy violation
+        return
     await manager.connect(websocket)
     try:
         while True:

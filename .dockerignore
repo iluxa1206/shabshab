@@ -13,4 +13,5 @@ tests
 docs
 *.md
 bondsearch_20_11_2025.xlsx
+data
 .DS_Store
