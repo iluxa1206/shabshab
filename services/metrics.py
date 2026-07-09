@@ -99,7 +99,8 @@ def breakeven_base_pct(coupon_yield_pct: Optional[float], base_rate_pct: Optiona
 
 def base_level_pct(exp_curve) -> Optional[float]:
     """Текущий уровень базовой ставки (КС/RUONIA) с короткого конца кривой
-    ожиданий (spot на ~недельном сроке), %. Для KEYRATE-кривой это effective-annual."""
+    ожиданий (spot на ~недельном сроке), %, в конвенции самого индекса
+    (KEYRATE — quarterly-nominal ≈ уровень КС; RUONIA — daily-comp avg)."""
     if exp_curve is None:
         return None
     try:

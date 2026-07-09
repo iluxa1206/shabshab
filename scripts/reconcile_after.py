@@ -78,6 +78,9 @@ async def main():
         exp = exp_ru if ref.base == "RUONIA" else exp_ks
         price = nm["nrd_price_pct"]
         nrd_dm = nm["discount_margin_bps"]
+        if price is None or nrd_dm is None:
+            print(f"{isin:14} — пропуск: нет цены/DM НРД")
+            continue
         nrd_z = nm.get("z_spread_bps")
         nrd_ytm = nm.get("ytm_pct") or nm.get("yield_maturity_pct") or nm.get("current_yield_pct")
         rating = (nm.get("rating") or "")[:4]

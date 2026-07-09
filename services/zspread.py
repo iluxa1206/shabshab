@@ -1,7 +1,7 @@
 """
 z-спред над КБД ОФЗ (методика НРД) — наш расчётный аналог.
 
-Пайплайн: прогноз купонов на кривой ОЖИДАНИЙ индекса (кубич.сплайн из свопов) →
+Пайплайн: прогноз купонов на кривой ОЖИДАНИЙ индекса (bootstrap par-свопов) →
 дальше по базе:
   RUONIA  — met_rub п.4.9: дисконт по КБД непрерывно exp(-(r_g(τ)+z)τ) → solve z.
   KEYRATE — реверс-инжиниринг публикуемого z НРД (2026-07-02): для флоатеров
@@ -31,61 +31,38 @@ TENOR_Y = {"1W": 1/52, "2W": 2/52, "1M": 1/12, "2M": 2/12, "3M": .25, "6M": .5,
            "7Y": 7, "8Y": 8, "9Y": 9, "10Y": 10}
 
 
-def _natural_cubic_spline(xs, ys):
-    n = len(xs)
-    if n < 2:
-        y0 = ys[0] if ys else 0.0
-        return lambda x: y0
-    h = [xs[i+1]-xs[i] for i in range(n-1)]
-    a = [0.0]*n
-    for i in range(1, n-1):
-        a[i] = 3*((ys[i+1]-ys[i])/h[i] - (ys[i]-ys[i-1])/h[i-1])
-    l = [1.0]+[0.0]*(n-1); mu = [0.0]*n; z = [0.0]*n
-    for i in range(1, n-1):
-        l[i] = 2*(xs[i+1]-xs[i-1])-h[i-1]*mu[i-1]; mu[i] = h[i]/l[i]
-        z[i] = (a[i]-h[i-1]*z[i-1])/l[i]
-    c = [0.0]*n; b = [0.0]*n; d = [0.0]*n
-    for j in range(n-2, -1, -1):
-        c[j] = z[j]-mu[j]*c[j+1]
-        b[j] = (ys[j+1]-ys[j])/h[j]-h[j]*(c[j+1]+2*c[j])/3
-        d[j] = (c[j+1]-c[j])/(3*h[j])
-
-    def ev(x):
-        if x <= xs[0]:
-            return ys[0]
-        if x >= xs[-1]:
-            return ys[-1]
-        i = 0
-        while i < n-1 and xs[i+1] < x:
-            i += 1
-        dx = x-xs[i]
-        return ys[i]+b[i]*dx+c[i]*dx*dx+d[i]*dx**3
-    return ev
-
-
 class ExpCurve:
-    """Кривая ожиданий индекса: spot сплайном из par-свопов. base='KEYRATE' →
-    par-своп quarterly-nominal переводим в effective annual."""
+    """Кривая ожиданий индекса поверх честного bootstrap par-свопов (forwards.py).
+
+    fwd(d1,d2) — эквивалентная ставка индекса на период в его собственной конвенции:
+      RUONIA  — daily-comp average (project_cfs начисляет (1+r/365)^days − 1 →
+                factor DF воспроизводится точно);
+      KEYRATE — quarterly-nominal = уровень КС (простое начисление (КС+m)·days/365).
+    spot(t) — уровень индекса на горизонте t лет той же конвенцией
+    (короткий конец ≈ текущий фиксинг, заложенный в свопы)."""
     def __init__(self, calc_date: date, quotes, base: str = "RUONIA"):
-        def conv(v):
-            r = v/100.0
-            return (1+r/4)**4 - 1 if base == "KEYRATE" else r
-        pts = sorted((TENOR_Y[q.tenor.upper()], conv(q.value))
-                     for q in quotes if q.tenor.upper() in TENOR_Y)
+        from datetime import timedelta
+        from forwards import CurveBootstrapper
+        boot = (CurveBootstrapper.bootstrap_ruonia if base == "RUONIA"
+                else CurveBootstrapper.bootstrap_keyrate)
+        self.base = base
         self.calc_date = calc_date
-        self.xs = [p[0] for p in pts]; self.ys = [p[1] for p in pts]
-        self.spot = _natural_cubic_spline(self.xs, self.ys)
+        self._td = timedelta
+        self._curve = boot(quotes, calc_date)
 
     def t(self, d: date) -> float:
         return (d - self.calc_date).days / 365.0
 
+    def spot(self, t: float) -> float:
+        d2 = self.calc_date + self._td(days=max(2, round(t * 365)))
+        return self.fwd(self.calc_date, d2)
+
     def fwd(self, d1: date, d2: date) -> float:
-        t1, t2 = self.t(d1), self.t(d2)
-        if t2 <= t1:
-            return self.spot(max(t2, 0.0))
-        D1 = (1+self.spot(t1))**(-t1) if t1 > 0 else 1.0
-        D2 = (1+self.spot(t2))**(-t2)
-        return (D1/D2)**(1/(t2-t1)) - 1
+        c = self._curve
+        lo = max(d1, c.calc_date)          # кривая стартует с calc_date+1
+        if d2 <= lo:
+            d2 = lo + self._td(days=1)
+        return c.forward(lo, d2)
 
 
 class GCurve:
@@ -119,7 +96,8 @@ def _d(s):
         return None
 
 
-def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list = None):
+def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list = None,
+                offers: list = None):
     """Прогноз потоков: зафикс.купон = факт MOEX value; будущий = индекс(exp.fwd)+margin.
     KEYRATE простой (КС+m)·days/365; RUONIA daily-comp. + погашение номинала.
 
@@ -133,18 +111,29 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     T+1: платежи с датой <= settle (след. рабочий день) покупателю не достаются
     (ex-coupon, MOEX НКД уже 0) — исключаем, иначе накануне выплаты PV завышен
     на целый купон."""
-    from valuation import settle_date
+    from valuation import settle_date, first_offer_date, _offer_price_pct
     settle = settle_date(calc_date)
     sp = (ref.spread_issue_bps or 0) / 10000.0
+
+    # Оферта: режем поток (та же логика, что valuation.build_cashflows_to_maturity —
+    # спред после оферты не гарантирован, купоны за ней фикция)
+    put = first_offer_date(offers, settle)
+    eff_maturity = ref.maturity_date
+    if put and (eff_maturity is None or put < eff_maturity):
+        eff_maturity = put
+    else:
+        put = None
+
     future_am = sorted(
         (d, float(a["value"])) for a in amorts or []
         if a.get("value") is not None and (d := _d(a.get("date"))) and d > settle
+        and (eff_maturity is None or d <= eff_maturity)
     )
-    amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in future_am)
+    amortizing = any(eff_maturity and d < eff_maturity for d, _ in future_am)
     cfs = []
     for c in coupons or []:
         end = _d(c.get("end"))
-        if not end or end <= settle or (ref.maturity_date and end > ref.maturity_date):
+        if not end or end <= settle or (eff_maturity and end > eff_maturity):
             continue
         start = _d(c.get("start")) or end
         days = (end - start).days or 1
@@ -155,7 +144,8 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
         else:
             face = ref.face_value
             if amortizing:
-                face = sum(v for d, v in future_am if d > start) or face
+                paid_by_start = sum(v for d, v in future_am if d <= start)
+                face = (ref.face_value - paid_by_start) or face
             f = exp.fwd(max(start, calc_date), end)
             r = f + sp
             if ref.base == "RUONIA":
@@ -163,7 +153,12 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
             else:
                 amt = face * r * alpha
         cfs.append((end, amt))
-    if amortizing:
+    if put:
+        cfs.extend(future_am)
+        residual = ref.face_value - sum(v for _d2, v in future_am)
+        if residual > 1e-9:
+            cfs.append((put, residual * _offer_price_pct(offers, put) / 100.0))
+    elif amortizing:
         cfs.extend(future_am)
     elif ref.maturity_date and ref.maturity_date > calc_date:
         cfs.append((ref.maturity_date, ref.face_value))
@@ -239,7 +234,7 @@ def current_period_len(coupons: list, calc_date: date) -> float:
 
 def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
                   price_pct: float, accrued_rub: float, coupons: list,
-                  amorts: list = None) -> Optional[int]:
+                  amorts: list = None, offers: list = None) -> Optional[int]:
     """Высокоуровнево: наш z-спред для флоатера (bps), сопоставимый с НРД z_spread.
     RUONIA — п.4.9 (z по кривой КБД); KEYRATE — (e^y − 1) − G(τ_reset), см. докстринг модуля.
     Для амортизируемых бумаг ref.face_value = остаточный номинал на calc_date
@@ -247,7 +242,7 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     if ref.base not in ("RUONIA", "KEYRATE") or price_pct is None:
         return None
     dirty = ref.face_value * price_pct / 100.0 + (accrued_rub or 0.0)
-    cfs = project_cfs(ref, exp, calc_date, coupons, amorts)
+    cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers)
     if ref.base == "KEYRATE":
         if not g.ok():
             return None

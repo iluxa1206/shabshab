@@ -296,7 +296,117 @@ class ExcelForwardCurve(DiscountCurve):
         return self._equivalent_rate(factor, total_days)
 
 
+class BootstrappedForwardCurve(DiscountCurve):
+    """Кривая из честного bootstrap par-свопов (NPV=0 на каждом теноре).
+
+    DF интерполируется log-linear (унаследовано от DiscountCurve),
+    forward(t1,t2) возвращает эквивалентную ставку сегмента в конвенции индекса:
+      RUONIA  — daily-comp average: 365·(factor^(1/days) − 1)
+      KEYRATE — quarterly-nominal:  4·(factor^(1/(4·dt)) − 1)
+    где factor = DF(t1)/DF(t2). Потребители (cashflow, valuation) начисляют
+    купон обратно теми же конвенциями — factor воспроизводится точно.
+    """
+    def __init__(self, calc_date: date, nodes: List[Tuple[date, float]], base_type: str):
+        super().__init__(calc_date, nodes)
+        self.base_type = base_type
+
+    def _equivalent_rate(self, factor: float, days: int) -> float:
+        if days <= 0 or factor <= 0:
+            return 0.0
+        if self.base_type == "RUONIA":
+            return 365.0 * (math.pow(factor, 1.0 / days) - 1.0)
+        alpha = days / 365.0
+        return 4.0 * (math.pow(factor, 1.0 / (4.0 * alpha)) - 1.0)
+
+    def forward(self, t1: date, t2: date) -> float:
+        if t1 >= t2:
+            raise ValueError("t2 must be strictly > t1")
+        factor = self.df(t1) / self.df(t2)
+        return self._equivalent_rate(factor, (t2 - t1).days)
+
+
 class CurveBootstrapper:
+    @staticmethod
+    def _fixed_leg_schedule(start: date, end: date, months: int) -> List[date]:
+        """Даты платежей фикс-ноги каждые `months` месяцев; последняя = end."""
+        out: List[date] = []
+        i = 1
+        while True:
+            d = add_months(start, months * i)
+            if d >= end:
+                break
+            out.append(d)
+            i += 1
+        out.append(end)
+        return out
+
+    @staticmethod
+    def _bootstrap_par_curve(quotes: List, calc_date: date, base_type: str) -> BootstrappedForwardCurve:
+        """Честный bootstrap: для каждого тенора решаем DF(end) из условия
+        par-свопа S·Σ τ_i·DF_i = 1 − DF_n (single-curve: проекция = дисконт).
+
+        Фикс-нога: RUONIA — разовый платёж для теноров ≤1Y, годовая для длинных;
+        KEYRATE — квартальная (конвенция СПФИ МБ). Промежуточные DF при решении —
+        log-linear между известными узлами и кандидатом (бисекция, монотонный NPV).
+        """
+        effective_start = calc_date + timedelta(days=1)
+        sorted_quotes = sorted(quotes, key=lambda x: get_maturity_date(effective_start, x.tenor))
+        nodes: List[Tuple[date, float]] = []
+
+        def df_interp(d: date, trial: Tuple[date, float]) -> float:
+            pts = sorted([(effective_start, 1.0)] + nodes + [trial])
+            if d <= effective_start:
+                return 1.0
+            for i in range(1, len(pts)):
+                if pts[i][0] == d:
+                    return pts[i][1]
+                if pts[i][0] > d:
+                    (d1, f1), (d2, f2) = pts[i - 1], pts[i]
+                    w = yf_act365(d1, d) / yf_act365(d1, d2)
+                    return math.exp(math.log(f1) + w * (math.log(f2) - math.log(f1)))
+            # flat-forward хвост (нужен только для дат за кандидатом — не встречается)
+            (dp, fp), (dl, fl) = pts[-2], pts[-1]
+            fwd = (fp / fl - 1.0) / yf_act365(dp, dl)
+            return fl / (1.0 + fwd * yf_act365(dl, d))
+
+        for q in sorted_quotes:
+            end_date = get_maturity_date(effective_start, q.tenor)
+            if end_date <= effective_start:
+                continue
+            S = q.value / 100.0
+            days = (end_date - effective_start).days
+
+            if base_type == "RUONIA" and days <= 366:
+                df = 1.0 / (1.0 + S * yf_act365(effective_start, end_date))
+            else:
+                months = 12 if base_type == "RUONIA" else 3
+                sched = CurveBootstrapper._fixed_leg_schedule(effective_start, end_date, months)
+
+                def npv(df_end: float) -> float:
+                    trial = (end_date, df_end)
+                    pv_fix, prev = 0.0, effective_start
+                    for d in sched:
+                        pv_fix += yf_act365(prev, d) * df_interp(d, trial)
+                        prev = d
+                    return S * pv_fix - (1.0 - df_end)  # fix − float; растёт по df_end
+
+                lo, hi = 1e-6, 1.0
+                for _ in range(80):
+                    mid = (lo + hi) / 2.0
+                    if npv(mid) >= 0.0:
+                        hi = mid
+                    else:
+                        lo = mid
+                df = (lo + hi) / 2.0
+
+            if nodes and df > nodes[-1][1]:
+                df = max(nodes[-1][1] * (1.0 - 1e-12), 1e-12)
+            nodes.append((end_date, df))
+
+        if not nodes:
+            raise ValueError(f"No nodes built for {base_type} curve")
+        return BootstrappedForwardCurve(effective_start, CurveBootstrapper._deduplicate_nodes(nodes), base_type)
+
     @staticmethod
     def _build_excel_forward_curve(quotes: List, calc_date: date, base_type: str) -> ExcelForwardCurve:
         effective_start = calc_date + timedelta(days=1)
@@ -353,19 +463,13 @@ class CurveBootstrapper:
 
     @staticmethod
     def bootstrap_ruonia(quotes: List, calc_date: date) -> DiscountCurve:
-        """
-        Bootstrapping RUONIA OIS curve.
-        Uses the same implied-rate and forward logic as the IRS Excel sheet.
-        """
-        return CurveBootstrapper._build_excel_forward_curve(quotes, calc_date, "RUONIA")
+        """RUONIA OIS: честный bootstrap par-квот (фикс-нога single ≤1Y / годовая)."""
+        return CurveBootstrapper._bootstrap_par_curve(quotes, calc_date, "RUONIA")
 
     @staticmethod
     def bootstrap_keyrate(quotes: List, calc_date: date) -> DiscountCurve:
-        """
-        Bootstrapping IRS KEYRATE curve.
-        Uses the same implied-rate and forward logic as the IRS Excel sheet.
-        """
-        return CurveBootstrapper._build_excel_forward_curve(quotes, calc_date, "KEYRATE")
+        """IRS KEYRATE: честный bootstrap par-квот (фикс-нога квартальная)."""
+        return CurveBootstrapper._bootstrap_par_curve(quotes, calc_date, "KEYRATE")
 
     @staticmethod
     def _bisection_solve(func: Callable[[float], float], a: float, b: float, tol: float = 1e-10, max_iter: int = 150) -> float:
