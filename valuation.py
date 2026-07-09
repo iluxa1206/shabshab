@@ -513,17 +513,14 @@ def solve_discount_margin_bps(
 
 class FlatForwardCurve(DiscountCurve):
     """Кривая с ПЛОСКИМ форвардом = const (текущий индекс). Для проекции купонов
-    discount-margin: индекс не падает по форварду, держится на текущем уровне."""
+    discount-margin: индекс не падает по форварду, держится на текущем уровне.
+    Дисконт делает solve_discount_margin_bps сам — нужен только forward()."""
     def __init__(self, calc_date: date, level_pct: float):
         self.calc_date = calc_date
         self._r = level_pct / 100.0
 
     def forward(self, t1: date, t2: date) -> float:
         return self._r
-
-    def df(self, d: date) -> float:
-        days = (d - self.calc_date).days
-        return 1.0 / ((1.0 + self._r / 365.0) ** days) if days > 0 else 1.0
 
 
 def implied_yield_pct(
