@@ -196,6 +196,54 @@ def solve_z_bps(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Optiona
     return round((lo + hi) / 2 * 10000)
 
 
+def solve_z_moex(exp: ExpCurve, cfs, calc_date: date, dirty_target: float) -> Optional[int]:
+    """z-спред RUONIA-флоатера по ОФИЦИАЛЬНОЙ методике MOEX (met_rub):
+
+        P+A = Σ CF_i / (1 + R_i + Z)^(t_i/B),  B=365
+
+    где R_i — безрисковая zero-ставка RUONIA-КРИВОЙ на срок t_i (годовой
+    компаундинг), Z — искомый спред. Отличие от solve_z_bps (наш старый путь):
+    дисконт по САМОЙ RUONIA-кривой (не по КБД ОФЗ) и ДИСКРЕТНЫЙ годовой
+    компаундинг (не непрерывный exp). R_i берём из DF нашего bootstrap RUONIA:
+    R_i = DF(t_i)^(-365/t_i) − 1."""
+    curve = getattr(exp, "_curve", None)
+    if curve is None or not cfs:
+        return None
+
+    def zero(pay: date, t_days: int) -> float:
+        df = curve.df(pay)
+        if df <= 0:
+            return 0.0
+        return df ** (-365.0 / t_days) - 1.0
+
+    def pv(z: float) -> float:
+        tot = 0.0
+        for pay, amt in cfs:
+            t = (pay - calc_date).days
+            if t <= 0:
+                continue
+            base = 1.0 + zero(pay, t) + z
+            if base <= 0:
+                return float("inf")
+            tot += amt / base ** (t / 365.0)
+        return tot
+
+    lo, hi = -0.5, 0.5
+    flo, fhi = pv(lo) - dirty_target, pv(hi) - dirty_target
+    if flo != flo or fhi != fhi or flo * fhi > 0:
+        return None
+    for _ in range(90):
+        m = (lo + hi) / 2
+        fm = pv(m) - dirty_target
+        if abs(fm) < 1e-7:
+            return round(m * 10000)
+        if flo * fm < 0:
+            hi = m
+        else:
+            lo, flo = m, fm
+    return round((lo + hi) / 2 * 10000)
+
+
 def solve_flat_y(cfs, calc_date: date, dirty_target: float) -> Optional[float]:
     """Плоская непрерывная доходность y: Σ CF·exp(−y·τ) = dirty."""
     if not cfs:
@@ -251,4 +299,5 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
             return None
         tau = current_period_len(coupons, calc_date)
         return round((math.exp(y) - 1 - g.r(tau)) * 10000)
-    return solve_z_bps(g, cfs, calc_date, dirty)
+    # RUONIA — официальная методика MOEX (дисконт по RUONIA-кривой, годовой комп.)
+    return solve_z_moex(exp, cfs, calc_date, dirty)
