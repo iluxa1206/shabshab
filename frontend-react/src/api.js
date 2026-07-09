@@ -1,4 +1,6 @@
-const API = ""; // same origin
+// Префикс перед /app/ в URL страницы: "" на deskdeskdesk.ru, "/desk" на assetallocator.ru/desk
+// (Caddy срезает префикс до проксирования, но браузер должен слать запросы с ним).
+const API = location.pathname.replace(/\/app(\/.*)?$/, "");
 
 // Ошибка 401 — сессия истекла/отсутствует. App перехватывает и показывает логин.
 export class UnauthorizedError extends Error {
@@ -229,7 +231,7 @@ export async function deleteFundRepo(code, id) {
 // WebSocket live-цен. onPrice(isin, price). Возвращает {close}.
 export function connectMarketWs(getIsins, onStatus, onPrice) {
   const WS_URL =
-    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/ws/market";
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
   let ws;
   let closed = false;
   let reconnectTimer = null;
