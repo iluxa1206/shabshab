@@ -196,39 +196,31 @@ def solve_z_bps(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Optiona
     return round((lo + hi) / 2 * 10000)
 
 
-def solve_z_moex(exp: ExpCurve, cfs, calc_date: date, dirty_target: float) -> Optional[int]:
-    """z-спред RUONIA-флоатера по ОФИЦИАЛЬНОЙ методике MOEX (met_rub):
+def solve_z_discrete(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Optional[int]:
+    """z-спред по методике НРД (met_rub 4.2 + Прил.2): дисконт по КБД ОФЗ МБ,
+    ДИСКРЕТНЫЙ годовой компаундинг, ACT/365:
 
-        P+A = Σ CF_i / (1 + R_i + Z)^(t_i/B),  B=365
+        P+A = Σ CF_i / (1 + G(τ_i) + Z)^(τ_i)
 
-    где R_i — безрисковая zero-ставка RUONIA-КРИВОЙ на срок t_i (годовой
-    компаундинг), Z — искомый спред. Отличие от solve_z_bps (наш старый путь):
-    дисконт по САМОЙ RUONIA-кривой (не по КБД ОФЗ) и ДИСКРЕТНЫЙ годовой
-    компаундинг (не непрерывный exp). R_i берём из DF нашего bootstrap RUONIA:
-    R_i = DF(t_i)^(-365/t_i) − 1."""
-    curve = getattr(exp, "_curve", None)
-    if curve is None or not cfs:
+    где G(τ) — zero-ставка КБД Московской Биржи (G-curve). Отличие от старого
+    solve_z_bps: дискрет `(1+G+Z)^(-τ)` вместо непрерывного `exp(-(G+Z)τ)`.
+    Сверка RUONIA vs НРД z: median +15bp, mad 10 (n=25)."""
+    if not cfs or not g.ok():
         return None
-
-    def zero(pay: date, t_days: int) -> float:
-        df = curve.df(pay)
-        if df <= 0:
-            return 0.0
-        return df ** (-365.0 / t_days) - 1.0
 
     def pv(z: float) -> float:
         tot = 0.0
         for pay, amt in cfs:
-            t = (pay - calc_date).days
-            if t <= 0:
+            tau = (pay - calc_date).days / 365.0
+            if tau <= 0:
                 continue
-            base = 1.0 + zero(pay, t) + z
+            base = 1.0 + g.r(tau) + z
             if base <= 0:
                 return float("inf")
-            tot += amt / base ** (t / 365.0)
+            tot += amt / base ** tau
         return tot
 
-    lo, hi = -0.5, 0.5
+    lo, hi = -0.6, 0.9
     flo, fhi = pv(lo) - dirty_target, pv(hi) - dirty_target
     if flo != flo or fhi != fhi or flo * fhi > 0:
         return None
@@ -299,5 +291,5 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
             return None
         tau = current_period_len(coupons, calc_date)
         return round((math.exp(y) - 1 - g.r(tau)) * 10000)
-    # RUONIA — официальная методика MOEX (дисконт по RUONIA-кривой, годовой комп.)
-    return solve_z_moex(exp, cfs, calc_date, dirty)
+    # RUONIA — методика НРД: дисконт по КБД ОФЗ, дискретный годовой компаундинг
+    return solve_z_discrete(g, cfs, calc_date, dirty)
