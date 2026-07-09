@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { fmt, orDash, dmColor, vsFairColor } from "../format.js";
+import { fmt, dmColor, vsFairColor } from "../format.js";
 import { fetchBondDetails, fetchFunds, putFundPosition, UnauthorizedError } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 
@@ -85,7 +85,8 @@ function NrdSection({ n, v }) {
   const priceLbl = n.fair_value_pct != null ? "Fair value НРД" : "Цена НРД (VWAP)";
   const vf = vsFairColor(n.price_vs_nrd_pct);
   const vfLabel = n.price_vs_nrd_pct == null ? "—" : n.price_vs_nrd_pct < 0 ? "рынок дешевле НРД" : "рынок дороже НРД";
-  const ndc = dmColor(n.discount_margin_bps), odc = dmColor(v?.dm_bps);
+  const ndc = dmColor(n.discount_margin_bps), odc = dmColor(v?.disc_margin_bps);
+  const nsc = dmColor(n.simple_margin_bps), osc = dmColor(v?.sm_bps ?? v?.dm_bps);
   const r = n.ratings || {};
   const ragMap = { akra: "АКРА", expert_ra: "Эксперт РА", nkr: "НКР", nra: "НРА" };
   const lq = n.liquidity || {};
@@ -105,11 +106,20 @@ function NrdSection({ n, v }) {
           <div className="vc-sub">{vfLabel}</div>
         </div>
         <div className="vc">
+          <div className="vc-label">SM НРД vs наш</div>
+          <div className="vc-val">
+            <span style={{ color: nsc.color }}>{fmt.bps(n.simple_margin_bps) ?? "—"}</span>
+            <span style={{ fontSize: 12, color: "var(--mut-2)" }}> / </span>
+            <span style={{ color: osc.color }}>{fmt.bps(v?.sm_bps ?? v?.dm_bps) ?? "—"}</span>
+          </div>
+          <div className="vc-sub">simple margin, bps</div>
+        </div>
+        <div className="vc">
           <div className="vc-label">DM НРД vs наш</div>
           <div className="vc-val">
             <span style={{ color: ndc.color }}>{fmt.bps(n.discount_margin_bps) ?? "—"}</span>
             <span style={{ fontSize: 12, color: "var(--mut-2)" }}> / </span>
-            <span style={{ color: odc.color }}>{v?.dm_bps != null ? fmt.bps(v.dm_bps) : "—"}</span>
+            <span style={{ color: odc.color }}>{v?.disc_margin_bps != null ? fmt.bps(v.disc_margin_bps) : "—"}</span>
           </div>
           <div className="vc-sub">discount margin, bps</div>
         </div>
@@ -225,9 +235,14 @@ function Content({ d, onLogout }) {
       <StaleChips m={m} n={d.nrd} />
       <div className="val-cards">
         <div className="vc">
-          <div className="vc-label">DM ({orDash(v.dm_label)})</div>
-          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">дисконт-маржин</div>
+          <div className="vc-label">SM (simple)</div>
+          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">simple margin</div>
+        </div>
+        <div className="vc">
+          <div className="vc-label">DM (discount)</div>
+          <div className="vc-val" style={{ color: dmColor(v.disc_margin_bps).color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">discount margin</div>
         </div>
         <div className="vc">
           <div className="vc-label">Dirty price</div>

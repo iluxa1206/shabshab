@@ -24,8 +24,8 @@ const carryCls = (v) => (v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "");
 
 export default function Kpis({ bonds }) {
   const k = useMemo(() => {
-    // единый DM: наш расчётный, иначе НРД discount margin
-    const dmOf = (x) => (x.dm_bps != null ? x.dm_bps : x.discount_margin_bps);
+    // единый DM (discount margin): наш расчётный, иначе НРД discount margin
+    const dmOf = (x) => (x.disc_margin_bps != null ? x.disc_margin_bps : x.discount_margin_bps);
     const dms = bonds.map(dmOf).filter((v) => v != null);
     const avgDm = dms.length ? Math.round(dms.reduce((s, v) => s + v, 0) / dms.length) : null;
     const medDm = dms.length ? Math.round(median(dms)) : null;
