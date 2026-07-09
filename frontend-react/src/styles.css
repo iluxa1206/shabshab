@@ -445,6 +445,11 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .fund-card-new:hover { color: var(--fg); }
 .fund-new-plus { font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em; }
 
+/* Вкладка кривых: собственный скролл-контейнер. #app — flex-column 100vh,
+   body overflow:hidden → модуль должен скроллиться внутри, иначе контент
+   (график + таблица котировок) обрезается снизу. */
+.curves-wrap { flex: 1; min-height: 0; overflow-y: auto; }
+
 .funds-state { padding: 32px 24px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; font-size: 13px; }
 
 .funds-toolbar { display: flex; align-items: center; gap: 14px; padding: 10px 24px; border-bottom: 1px solid var(--line); }
