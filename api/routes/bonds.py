@@ -103,13 +103,13 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
         # цена для расчёта: live → prev-close → НРД (не зависим от момента WS-цены)
         price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
 
-        dirty = dm = z_model = None
+        dirty = dm = disc_dm = z_model = None
         if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
             try:
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                                 accrued_override=snap.get("accrued"), periods=periods,
                                                 amorts=full.get("amorts"))
-                dirty, dm = m.get("dirty_price_rub"), m.get("dm_bps")
+                dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             except Exception:
                 pass
 
@@ -148,7 +148,7 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
         except Exception:
             pass
 
-        out[isin] = {"last": last, "dirty": dirty, "dm": dm, "delta": delta,
+        out[isin] = {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "delta": delta,
                      "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
                      "refix": refix, "current_coupon": cur_cpn}
     return out
@@ -156,7 +156,7 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
 
 def _uni_item(u, name, last, dirty=None, dm=None, delta=None, next_coupon=None, z_model=None,
               spread_dur_yrs=None, z_pctile=None, delta_z_dod=None, delta_z_mom=None,
-              carry_bps=None, days_to_refix=None, current_coupon_pct=None):
+              carry_bps=None, days_to_refix=None, current_coupon_pct=None, disc_margin=None):
     base = u.get("base_rate_type", "UNKNOWN")
     spread = u.get("spread_issue_bps") or 0
     label = _BASE_LABEL.get(base, base)
@@ -169,7 +169,7 @@ def _uni_item(u, name, last, dirty=None, dm=None, delta=None, next_coupon=None, 
         next_coupon_date=next_coupon, last_price_pct=last, dirty_price_rub=dirty, dm_bps=dm,
         delta_to_prev_close=delta, nrd_price_pct=nrd_price, price_vs_nrd_pct=vs_nrd,
         nrd_duration=u.get("nrd_duration"), discount_margin_bps=u.get("discount_margin_bps"),
-        simple_margin_bps=u.get("simple_margin_bps"),
+        simple_margin_bps=u.get("simple_margin_bps"), disc_margin_bps=disc_margin,
         z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"), z_model_bps=z_model,
         spread_dur_yrs=spread_dur_yrs, z_pctile=z_pctile, delta_z_dod=delta_z_dod,
         delta_z_mom=delta_z_mom,
@@ -269,7 +269,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
                              next_coupon=mx.get("next_coupon"), z_model=mx.get("z_model"),
                              spread_dur_yrs=sd, z_pctile=zp, delta_z_dod=dz, delta_z_mom=dzm,
                              carry_bps=mx.get("carry"), days_to_refix=mx.get("refix"),
-                             current_coupon_pct=mx.get("current_coupon"))
+                             current_coupon_pct=mx.get("current_coupon"), disc_margin=mx.get("disc_dm"))
         last = market_prices.get(isin)
         prev = snapshot.get(isin, {}).get("prev") or (moex_ref.get(isin) or {}).get("prev")
         delta = round(last - float(prev), 4) if (last is not None and prev is not None) else None
@@ -283,13 +283,14 @@ async def _universe_bonds(extra_list, cache, limit, offset):
         # цена для расчёта dirty/DM: live → prev-close → НРД (модель не должна
         # зависеть от момента прихода WS-цены; при холодном Alor не обнуляемся)
         price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
+        disc_dm = None
         if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
             try:
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                                 accrued_override=snapshot.get(isin, {}).get("accrued"),
                                                 periods=schedules.get(isin),
                                                 amorts=(sched_full.get(isin) or {}).get("amorts"))
-                dirty, dm = m.get("dirty_price_rub"), m.get("dm_bps")
+                dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             except Exception:
                 pass
         # ближайший купон: из реального расписания MOEX (end > calc_date),
@@ -343,7 +344,8 @@ async def _universe_bonds(extra_list, cache, limit, offset):
             pass
         return _uni_item(u, name, last, dirty, dm, delta, next_cpn, z_model,
                          spread_dur_yrs=sd, z_pctile=zp, delta_z_dod=dz, delta_z_mom=dzm,
-                         carry_bps=carry, days_to_refix=refix, current_coupon_pct=cur_cpn)
+                         carry_bps=carry, days_to_refix=refix, current_coupon_pct=cur_cpn,
+                         disc_margin=disc_dm)
 
     items = [enrich(u) for u in uni]
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)

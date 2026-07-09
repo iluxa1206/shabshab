@@ -83,6 +83,13 @@ tests/         только test_nrd.py (pytest)
   - **Эмпирика:** near-par качественные флоатеры сходятся ±10bps уже сейчас; бумаги с большим НРД DM (дисконт/ниже рейтинг) недобираем на 100–250bps — ровно там, где играет кредитный z-спред над ОФЗ. `discount_margin` НРД — **производный аналитик, точная формула НЕ опубликована** (методики задают справедливую цену и z-спред).
   - **РЕШЕНИЕ (пивот):** НРД `discount_margin` — авторитетный (есть из API, колонка «NRD DM»). Наш DM — intraday model-оценка для live-цены watchlist, помечен «DM MODEL». Полный матч <10bps = воспроизвести весь NSS/Kalman-движок НРД (G-curve+z-спред) — отклонён (недели, новые данные, аналитик проприетарен). BUG-1 (форвард прошлого стаба) исправлен клэмпом анкера к calc_date.
 
+## 📐 ДВЕ МЕТРИКИ СПРЕДА: SM + DM (2026-07-09)
+НРД публикует 5 спред-метрик флоатера: `nominal_margin` (спред выпуска), `simple_margin`, `discount_margin`, `z_spread`, `g_spread`. Мы считаем **две** и привязываем каждую к своему полю НРД:
+- **`sm_bps` (simple margin)** = наш старый DM-солвер (`solve_dm_bps`, дисконт по форвард-кривой+спред). Воспроизводит НРД **`simple_margin`** (ликвид near-par med 0-2, off-par med +19, m\|Δ\|49). Поле `dm_bps` СОХРАНЕНО = `sm_bps` (обратная совместимость).
+- **`disc_margin_bps` (discount margin)** = НОВЫЙ настоящий FRN DM (`solve_discount_margin_bps` + `FlatForwardCurve`): индекс держим ПЛОСКИМ на текущем уровне (`current_index_pct` из зафикс. купона), money-market дисконт `Π 1/(1+(L+DM)·τ)`. Правильно дисконтирует pull-to-par → DM выше simple на дисконте, ниже на премии (как НРД). Воспроизводит НРД **`discount_margin`** (off-par ликвид med −20, m\|Δ\|46). Остаток — их проприетарная fair-value машина (NSS/Kalman), несводимо.
+- Стенд калибровки: `scripts/dm_calibrate.py` (перебор конвенций: flat/forward проекция × simple/comp/cont дисконт; FRN-simple-flat выиграл).
+- **Прокинуто**: `sm_bps`/`disc_margin_bps` в `calculate_valuation_metrics`, `BondValuation` (detail), `BondListItem` + `_uni_item` + watchlist enrich (список). НРД `simple_margin_bps` уже в юниверсе (v4). UI: колонка «наш SM» ↔ НРД simple, «наш DM» ↔ НРД discount.
+
 ## 🎯 КОРНЕВАЯ ПРИЧИНА DM-РАСХОЖДЕНИЯ — НАЙДЕНА (2026-07-09)
 **Мы сверялись НЕ с тем полем НРД.** Наш `dm_bps` (простой спред над проекцией при PV=цена) = НРД **`simple_margin`**, а НЕ `discount_margin`. Стенд `scripts/calc_isolation.py` (одна цена+дата+реальный НКД, независимый фильтр ликвидности по `trade_volume_rub`):
 

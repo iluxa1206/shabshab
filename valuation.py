@@ -421,6 +421,111 @@ def solve_dm_bps(
     return (low + high) // 2
 
 
+def current_index_pct(coupons, calc_date: date, margin_bps: int, face_value: float) -> Optional[float]:
+    """Текущий уровень базового индекса (КС/RUONIA), % — из зафиксированного купона:
+    ставка_купона = value·365/(days·face); индекс = ставка − маржа выпуска.
+    Берём купон, накрывающий calc_date; иначе последний зафиксированный.
+    Нужен для discount margin (плоский индекс на ТЕКУЩЕМ уровне, не форвард)."""
+    def _d(s):
+        if isinstance(s, date):
+            return s
+        try:
+            return date.fromisoformat(s) if s else None
+        except (ValueError, TypeError):
+            return None
+    fixed_last = None
+    for c in coupons or []:
+        if isinstance(c, (tuple, list)):          # тройка (start, end, value)
+            s, e = _d(c[0]), _d(c[1])
+            v = c[2] if len(c) > 2 else None
+        else:                                      # dict {start, end, value}
+            s, e = _d(c.get("start")), _d(c.get("end"))
+            v = c.get("value")
+        if not s or not e or v is None:
+            continue
+        rate = float(v) * 365.0 / (((e - s).days or 1) * face_value)
+        fixed_last = rate
+        if s <= calc_date < e:
+            return round((rate - margin_bps / 10000.0) * 100.0, 4)
+    if fixed_last is not None:
+        return round((fixed_last - margin_bps / 10000.0) * 100.0, 4)
+    return None
+
+
+def solve_discount_margin_bps(
+    cashflows: List[Cashflow],
+    calc_date: date,
+    dirty_target_rub: float,
+    index_flat_pct: float,
+) -> Optional[int]:
+    """Настоящий FRN discount margin (market-standard, met_float / Fabozzi).
+
+    В отличие от нашего simple-margin-солвера (solve_dm_bps, дисконт по форвард-кривой),
+    здесь индекс держим ПЛОСКИМ на текущем уровне и дисконтируем money-market
+    конвенцией: DF_i = Π_{k≤i} 1/(1 + (L + DM)·τ_k), τ ACT/365. Так pull-to-par
+    дисконтируется правильно → DM выше simple на дисконте, ниже на премии (как НРД
+    discount_margin). Купоны cashflows должны быть спроецированы на плоском L
+    (build_cashflows на FlatForwardCurve(L)).
+
+    Сверка с НРД discount_margin (scripts/dm_calibrate.py, off-par ликвид):
+    med −20, m|Δ|≈47bps. Остаток — проприетарная fair-value машина НРД (NSS/Kalman),
+    из публичных данных несводимо; направление и величина воспроизведены.
+    """
+    L = index_flat_pct / 100.0
+    grid = sorted({cf.pay_date for cf in cashflows if cf.pay_date > calc_date})
+    if not grid:
+        return None
+    amt_on = {}
+    for cf in cashflows:
+        if cf.pay_date > calc_date:
+            amt_on[cf.pay_date] = amt_on.get(cf.pay_date, 0.0) + cf.amount_rub
+
+    def pv(dm: float) -> float:
+        r = L + dm
+        df = 1.0
+        prev = calc_date
+        tot = 0.0
+        for d in grid:
+            tau = (d - prev).days / 365.0
+            denom = 1.0 + r * tau
+            if denom <= 0:
+                return float("inf")
+            df /= denom
+            tot += amt_on[d] * df
+            prev = d
+        return tot
+
+    lo, hi = -0.5, 2.5
+    flo, fhi = pv(lo) - dirty_target_rub, pv(hi) - dirty_target_rub
+    if flo != flo or fhi != fhi or flo * fhi > 0:  # NaN или нет корня
+        return None
+    for _ in range(90):
+        mid = (lo + hi) / 2.0
+        fm = pv(mid) - dirty_target_rub
+        if abs(fm) < 1e-8:
+            break
+        if flo * fm < 0:
+            hi = mid
+        else:
+            lo, flo = mid, fm
+    return round((lo + hi) / 2.0 * 10000)
+
+
+class FlatForwardCurve(DiscountCurve):
+    """Кривая с ПЛОСКИМ форвардом = const (текущий индекс). Для проекции купонов
+    discount-margin: индекс не падает по форварду, держится на текущем уровне."""
+    def __init__(self, calc_date: date, level_pct: float):
+        self.calc_date = calc_date
+        self._r = level_pct / 100.0
+
+    def forward(self, t1: date, t2: date) -> float:
+        return self._r
+
+    def df(self, d: date) -> float:
+        days = (d - self.calc_date).days
+        return 1.0 / ((1.0 + self._r / 365.0) ** days) if days > 0 else 1.0
+
+
 def implied_yield_pct(
     bond: BondRefData, 
     curve: DiscountCurve, 

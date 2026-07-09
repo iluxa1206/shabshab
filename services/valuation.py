@@ -8,7 +8,10 @@ from valuation import (
     build_cashflows_with_spread,
     xirr_yield_pct,
     solve_dm_bps,
-    implied_yield_pct
+    solve_discount_margin_bps,
+    current_index_pct,
+    FlatForwardCurve,
+    implied_yield_pct,
 )
 
 def calculate_valuation_metrics(
@@ -58,22 +61,40 @@ def calculate_valuation_metrics(
     if impl_yield is not None and base_yield is not None:
         spread_to_base_bps = round((impl_yield - base_yield) * 100.0)
         
-    # DM Calculation
-    dm_bps = None
+    # SIMPLE MARGIN (наш sm_bps): дисконт по форвард-кривей+спред. Воспроизводит
+    # НРД simple_margin (сверка: ликвид near-par med 0-2bps). Поле dm_bps сохранено
+    # для обратной совместимости = то же значение (это простая маржа, не discount).
+    sm_bps = None
     try:
         if curve and len(cfs) > 0:
-            dm_bps = solve_dm_bps(bond, curve, cfs, calc_date, dirty_rub)
+            sm_bps = solve_dm_bps(bond, curve, cfs, calc_date, dirty_rub)
     except Exception as e:
-        print(f"DM calculation error for {bond.isin}: {e}")
-        
+        print(f"SM calculation error for {bond.isin}: {e}")
+
+    # DISCOUNT MARGIN (наш disc_margin_bps): настоящий FRN DM — индекс плоский на
+    # ТЕКУЩЕМ уровне (из зафикс. купона), money-market дисконт (L+DM). Воспроизводит
+    # НРД discount_margin (med −20, m|Δ|≈47bps; остаток — их проприетарная машина).
+    disc_margin_bps = None
+    try:
+        L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value)
+        if L is not None:
+            flat = FlatForwardCurve(calc_date, L)
+            flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
+                                                   explicit_periods=periods, amorts=amorts)
+            disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
+    except Exception as e:
+        print(f"Discount margin error for {bond.isin}: {e}")
+
     return {
         "clean_price_pct": price,
         "dirty_price_rub": dirty_rub,
-        "dm_bps": dm_bps,
-        "dm_label": "to_maturity" if dm_bps is not None else None,
+        "dm_bps": sm_bps,                      # backward-compat (= simple margin)
+        "sm_bps": sm_bps,                      # simple margin (наш) ≈ НРД simple_margin
+        "disc_margin_bps": disc_margin_bps,    # discount margin (наш) ≈ НРД discount_margin
+        "dm_label": "simple_margin" if sm_bps is not None else None,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "base_yield_pct": round(base_yield, 4) if base_yield is not None else None,
         "spread_to_base_bps": spread_to_base_bps,
-        "pricing_status": "SUCCESS" if dm_bps is not None else "DM_FAILED",
+        "pricing_status": "SUCCESS" if sm_bps is not None else "DM_FAILED",
         "warnings": []
     }

@@ -61,7 +61,9 @@ class BondMarketData(BaseModel):
 class BondValuation(BaseModel):
     clean_price_pct: float
     dirty_price_rub: float
-    dm_bps: Optional[int]
+    dm_bps: Optional[int]                       # = sm_bps (backward-compat)
+    sm_bps: Optional[int] = None               # наш simple margin ≈ НРД simple_margin
+    disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
     dm_label: Optional[str]
     yield_xirr_pct: Optional[float]
     base_yield_pct: Optional[float]
@@ -185,9 +187,10 @@ class BondListItem(BaseModel):
     price_vs_nrd_pct: Optional[float] = None
     nrd_duration: Optional[float] = None
     discount_margin_bps: Optional[int] = None
-    # simple_margin — правильный like-for-like якорь для нашего dm_bps
-    # (наш DM ≈ НРД simple_margin; discount_margin — их fair-value метрика)
+    # simple_margin — like-for-like якорь для нашего dm_bps/sm_bps
+    # (наш dm_bps = simple margin ≈ НРД simple_margin)
     simple_margin_bps: Optional[int] = None
+    disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
     z_spread_bps: Optional[int] = None
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ (методика НРД)
     rating: Optional[str] = None
