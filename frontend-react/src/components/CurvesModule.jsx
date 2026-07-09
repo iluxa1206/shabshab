@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchCurvePlot, fetchKsPath } from "../api.js";
+import { fetchCurvePlot, fetchKsPath, fetchFloaterScenarios } from "../api.js";
 import { fmt } from "../format.js";
 
 // Вкладка кривых. Два вида:
@@ -17,9 +17,11 @@ export default function CurvesModule() {
             onClick={() => setView("curve")}>Кривая</button>
           <button className={"seg-btn" + (view === "kspath" ? " active" : "")}
             onClick={() => setView("kspath")}>Путь КС</button>
+          <button className={"seg-btn" + (view === "floater" ? " active" : "")}
+            onClick={() => setView("floater")}>Флоатер / сценарии</button>
         </span>
       </div>
-      {view === "curve" ? <CurveView /> : <KsPathView />}
+      {view === "curve" ? <CurveView /> : view === "kspath" ? <KsPathView /> : <FloaterScenariosView />}
     </div>
   );
 }
@@ -358,5 +360,95 @@ function LegLine({ color, dash, label }) {
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
       <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke={color} strokeWidth="2" strokeDasharray={dash} /></svg>{label}
     </span>
+  );
+}
+
+// ── Флоатер / сценарии: YTM бумаги под рынок vs сценарии ЦБ (метод 502_504) ──
+function FloaterScenariosView() {
+  const [isin, setIsin] = useState("");
+  const [data, setData] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle | loading | ready | error
+  const [err, setErr] = useState("");
+
+  const run = () => {
+    const v = isin.trim().toUpperCase();
+    if (!v) return;
+    setStatus("loading"); setErr("");
+    fetchFloaterScenarios(v)
+      .then((d) => { setData(d); setStatus("ready"); })
+      .catch((e) => { setErr(String(e.message || e)); setStatus("error"); });
+  };
+
+  const mkt = data?.scenarios?.find((s) => s.key === "market")?.ytm_pct;
+
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <input className="search" style={{ width: 200 }} placeholder="ISIN (KEYRATE-флоатер)"
+          value={isin} onChange={(e) => setIsin(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && run()} />
+        <button className="btn" onClick={run}>Оценить</button>
+        {data && (
+          <span className="muted" style={{ fontSize: 11 }}>
+            {data.name} · спред {data.spread_bps} бп · цена {data.price_flat_pct} · КС {data.current_ks_pct}%
+          </span>
+        )}
+      </div>
+
+      <div className="muted" style={{ fontSize: 11, marginBottom: 12, maxWidth: 720 }}>
+        Купон = среднее прогноза КС по окну рефиксинга + спред (метод листа Floater spread).
+        YTM (XIRR) под рынок (форвард СПФИ) и под ручные сценарии ЦБ — справедливая
+        доходность флоатера зависит от траектории ставки.
+      </div>
+
+      {status === "idle" && <div className="muted">Введи ISIN и нажми «Оценить».</div>}
+      {status === "loading" && <div className="muted">Считаю…</div>}
+      {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
+      {status === "ready" && data && (
+        <div style={{ display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ color: "var(--mut)", textAlign: "left" }}>
+                <th style={{ padding: "4px 14px 4px 0" }}>Сценарий КС</th>
+                <th style={{ padding: "4px 0", textAlign: "right" }}>YTM, %</th>
+                <th style={{ padding: "4px 0 4px 14px", textAlign: "right" }}>vs рынок</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.scenarios.map((s) => {
+                const isMkt = s.key === "market";
+                const diff = (mkt != null && s.ytm_pct != null && !isMkt) ? (s.ytm_pct - mkt) : null;
+                return (
+                  <tr key={s.key} style={{ borderTop: "1px solid var(--line-2)" }}>
+                    <td style={{ padding: "5px 14px 5px 0", fontWeight: isMkt ? 700 : 400 }}>{s.label}</td>
+                    <td style={{ padding: "5px 0", textAlign: "right", fontFamily: "var(--mono)", fontWeight: isMkt ? 700 : 400 }}>
+                      {s.ytm_pct != null ? s.ytm_pct.toFixed(2) : "—"}
+                    </td>
+                    <td style={{ padding: "5px 0 5px 14px", textAlign: "right", fontFamily: "var(--mono)",
+                      color: diff == null ? "var(--mut-2)" : diff >= 0 ? "var(--pos)" : "var(--neg)" }}>
+                      {diff == null ? "—" : `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div>
+            <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>Купоны (рынок), % от номинала</div>
+            <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+              <tbody>
+                {data.coupons_market.map((c, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid var(--line-2)" }}>
+                    <td style={{ padding: "3px 14px 3px 0", color: "var(--mut)" }}>{fmt.date(c.date)}</td>
+                    <td style={{ padding: "3px 0", textAlign: "right", fontFamily: "var(--mono)" }}>{c.amount_pct.toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

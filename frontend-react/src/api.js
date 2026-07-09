@@ -110,6 +110,16 @@ export async function fetchKsPath() {
   return r.json();
 }
 
+export async function fetchFloaterScenarios(isin) {
+  const r = await authFetch(`${API}/api/curves/floater-scenarios?isin=${encodeURIComponent(isin)}`);
+  if (!r.ok) {
+    let msg = "floater " + r.status;
+    try { const j = await r.json(); if (j.detail) msg = j.detail; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 export async function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
   let url;
   if (universe) {
