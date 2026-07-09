@@ -128,17 +128,23 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     амортизаций, а будущие купоны начисляются от остаточного номинала = сумма
     амортизаций после начала периода (поле face строк купонов MOEX ненадёжно:
     для будущих периодов не проецируется, бывает стейл). Иначе — прежний
-    bullet-путь (номинал целиком на maturity_date)."""
+    bullet-путь (номинал целиком на maturity_date).
+
+    T+1: платежи с датой <= settle (след. рабочий день) покупателю не достаются
+    (ex-coupon, MOEX НКД уже 0) — исключаем, иначе накануне выплаты PV завышен
+    на целый купон."""
+    from valuation import settle_date
+    settle = settle_date(calc_date)
     sp = (ref.spread_issue_bps or 0) / 10000.0
     future_am = sorted(
         (d, float(a["value"])) for a in amorts or []
-        if a.get("value") is not None and (d := _d(a.get("date"))) and d > calc_date
+        if a.get("value") is not None and (d := _d(a.get("date"))) and d > settle
     )
     amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in future_am)
     cfs = []
     for c in coupons or []:
         end = _d(c.get("end"))
-        if not end or end <= calc_date or (ref.maturity_date and end > ref.maturity_date):
+        if not end or end <= settle or (ref.maturity_date and end > ref.maturity_date):
             continue
         start = _d(c.get("start")) or end
         days = (end - start).days or 1

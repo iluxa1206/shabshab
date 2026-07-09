@@ -109,6 +109,17 @@ def _amort_date(a) -> Optional[date]:
         return None
 
 
+def settle_date(calc_date: date) -> date:
+    """Дата расчётов T+1 (скип выходных). Купон с pay_date <= settle покупателю
+    НЕ достаётся (MOEX НКД уже обнулён под эту конвенцию) — включать его в
+    cashflow нельзя: накануне выплаты PV завышается на целый купон
+    (наблюдалось: DM +530bps мусора в день перед купоном)."""
+    d = calc_date + timedelta(days=1)
+    while d.weekday() >= 5:  # Sat/Sun
+        d += timedelta(days=1)
+    return d
+
+
 def build_cashflows_to_maturity(
     bond: BondRefData,
     curve: DiscountCurve,
@@ -163,11 +174,14 @@ def build_cashflows_to_maturity(
             periods.append((prev_end, d, None))
             prev_end = d
 
-    # Амортизации: будущие погашения принципала (dates > calc_date).
+    # T+1: платежи с датой <= settle покупателю не достаются (ex-coupon, НКД=0)
+    settle = settle_date(calc_date)
+
+    # Амортизации: будущие погашения принципала (dates > settle).
     future_am = sorted(
         (d, float(a["value"]))
         for a in (amorts or [])
-        if a.get("value") is not None and (d := _amort_date(a)) and d > calc_date
+        if a.get("value") is not None and (d := _amort_date(a)) and d > settle
     )
     amortizing = any(bond.maturity_date and d < bond.maturity_date for d, _ in future_am)
 
@@ -175,7 +189,7 @@ def build_cashflows_to_maturity(
 
     # 3. generate coupons
     for start, end, value in periods:
-        if end <= calc_date:
+        if end <= settle:
             continue
 
         if value is not None:

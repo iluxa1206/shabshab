@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import date
 from typing import List, Optional, Tuple
 
-from valuation import xirr, xnpv
+from valuation import xirr, xnpv, settle_date
 from services.market_data import MarketDataService
 
 
@@ -37,10 +37,12 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
     coupons: List[tuple] = []      # (date, value) известных будущих купонов
     put_date: Optional[date] = None
     current_face = None
+    # T+1: купон с pay_date <= settle покупателю не достаётся (ex-coupon, НКД=0)
+    settle = settle_date(calc_date)
 
     for c in schedule.get("coupons", []):
         end = _d(c.get("end"))
-        if end is None or end <= calc_date:
+        if end is None or end <= settle:
             continue
         # первый будущий купон несёт face текущего периода (остаточный номинал)
         if current_face is None and c.get("face") is not None:
@@ -61,7 +63,7 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
     else:
         for a in schedule.get("amorts", []):
             d = _d(a.get("date"))
-            if d is None or d <= calc_date:
+            if d is None or d <= settle:
                 continue
             cfs.append((d, float(a["value"])))
 
