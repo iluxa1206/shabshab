@@ -32,6 +32,10 @@ export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, us
               className={"seg-btn" + (module === "funds" ? " active" : "")}
               onClick={() => onSetModule("funds")}
             >Фонды</button>
+            <button
+              className={"seg-btn" + (module === "curves" ? " active" : "")}
+              onClick={() => onSetModule("curves")}
+            >Кривые</button>
           </span>
         )}
       </div>

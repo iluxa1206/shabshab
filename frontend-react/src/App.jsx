@@ -10,6 +10,7 @@ import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import FundsModule from "./components/funds/FundsModule.jsx";
+import CurvesModule from "./components/CurvesModule.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard({ user, onLogout }) {
@@ -197,6 +198,8 @@ function Dashboard({ user, onLogout }) {
       />
       {module === "funds" ? (
         <FundsModule onLogout={onLogout} />
+      ) : module === "curves" ? (
+        <CurvesModule />
       ) : (
         <>
           <Kpis bonds={filtered} />

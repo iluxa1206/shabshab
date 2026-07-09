@@ -98,6 +98,12 @@ export async function fetchMeta() {
   return r.json();
 }
 
+export async function fetchCurvePlot(type) {
+  const r = await authFetch(`${API}/api/curves/plot?type=${type}`);
+  if (!r.ok) throw new Error("curve " + r.status);
+  return r.json();
+}
+
 export async function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
   let url;
   if (universe) {

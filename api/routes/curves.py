@@ -1,10 +1,60 @@
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, Literal
 from datetime import date, timedelta
-from api.schemas import CurveResponse, ForwardRateResponse, CurveNode, CurveSegment
-from services.market_data import MarketDataService
+from api.schemas import (CurveResponse, ForwardRateResponse, CurveNode, CurveSegment,
+                         CurvePlotResponse, CurveQuote, CurveSample)
+from services.market_data import MarketDataService, market_cache
+from forwards import get_maturity_date
+from rates import tenor_to_days
 
 router = APIRouter()
+
+
+@router.get("/plot", response_model=CurvePlotResponse, tags=["Curves"])
+async def get_curve_plot(
+    type: Literal["ruonia", "keyrate"] = Query(..., description="ruonia | keyrate")
+):
+    """Котировки СПФИ (что запарсилось) + построенная кривая (spot/forward-сэмплы)
+    для визуализации. spot_pct — средняя ставка индекса на срок (из DF, конвенция
+    индекса); forward_pct — мгновенный форвард ~30д вперёд."""
+    ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
+    curve = ruonia_curve if type == "ruonia" else keyrate_curve
+    quotes = market_cache.get("ois_quotes" if type == "ruonia" else "irs_quotes") or []
+    if not curve:
+        raise HTTPException(status_code=404, detail=f"Curve '{type}' unavailable")
+
+    start = curve.calc_date  # effective start (calc_date + 1)
+    q_out = []
+    for q in sorted(quotes, key=lambda x: tenor_to_days(x.tenor)):
+        end = get_maturity_date(start, q.tenor)
+        q_out.append(CurveQuote(tenor=q.tenor, days=(end - start).days,
+                                value_pct=round(q.value, 4), name=q.name))
+
+    # сэмплируем кривую до самого длинного тенора (плотнее на коротком конце)
+    max_days = max((c.days for c in q_out), default=3650)
+    grid = sorted(set(
+        list(range(7, min(max_days, 370), 14)) +
+        list(range(370, max_days + 1, 90)) + [max_days]
+    ))
+    samples = []
+    for dd in grid:
+        d = start + timedelta(days=dd)
+        try:
+            spot = curve.forward(start, d) * 100.0
+            fwd = curve.forward(d, d + timedelta(days=30)) * 100.0
+        except Exception:
+            continue
+        samples.append(CurveSample(days=dd, date=d, spot_pct=round(spot, 4),
+                                   forward_pct=round(fwd, 4)))
+
+    warnings = []
+    if rates_date and (date.today() - rates_date).days > 4:
+        warnings.append(f"Котировки устарели на {(date.today() - rates_date).days} дн.")
+
+    return CurvePlotResponse(
+        curve_type=type.upper(), calc_date=calc_date or date.today(),
+        rates_date=rates_date, quotes=q_out, samples=samples, warnings=warnings,
+    )
 
 @router.get("", response_model=CurveResponse, tags=["Curves"])
 async def get_curve(

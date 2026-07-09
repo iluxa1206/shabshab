@@ -14,6 +14,7 @@ class MetaResponse(BaseModel):
     sources: Dict[str, Any]
     source_status: Dict[str, bool] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    nrd_drift: Optional[Dict[str, Any]] = None   # срез дрейфа наших метрик vs НРД
 
 # --- Error Models ---
 class ErrorDetail(BaseModel):
@@ -239,6 +240,27 @@ class ForwardRateResponse(BaseModel):
     start_date: date
     end_date: date
     forward_pct: float
+    warnings: List[str] = Field(default_factory=list)
+
+# --- Curve plot (котировки + построенная кривая для вкладки) ---
+class CurveQuote(BaseModel):
+    tenor: str
+    days: int            # срок до даты погашения тенора от start
+    value_pct: float     # исходная par-котировка СПФИ (mid)
+    name: str
+
+class CurveSample(BaseModel):
+    days: int            # смещение от calc_date
+    date: date
+    spot_pct: float      # эквивалентная средняя ставка индекса на срок (из DF)
+    forward_pct: float   # мгновенный форвард на сегмент ~30д вперёд
+
+class CurvePlotResponse(BaseModel):
+    curve_type: str          # RUONIA | KEYRATE
+    calc_date: date
+    rates_date: Optional[date] = None
+    quotes: List[CurveQuote]
+    samples: List[CurveSample]
     warnings: List[str] = Field(default_factory=list)
 
 # --- Orderbook Models ---
