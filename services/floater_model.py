@@ -18,19 +18,16 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Callable, List, Optional, Tuple
 
-from services.ks_path import _MEETINGS
+from services import cbr
 from valuation import xirr
-
-# Факт КС по датам заседаний (ступенька) — из встроенной таблицы ks_path.
-_ACTUAL_KS = [(date.fromisoformat(d), a) for d, a, *_ in _MEETINGS]
 
 
 def actual_ks(d: date) -> Optional[float]:
-    """Факт КС на дату (decimal) — последнее заседание ≤ d."""
+    """Факт КС на дату (decimal) — последняя дневная КС ЦБ ≤ d."""
     val = None
-    for md, a in _ACTUAL_KS:
+    for md, r in cbr.ks_history():
         if md <= d:
-            val = a
+            val = r / 100.0
         else:
             break
     return val

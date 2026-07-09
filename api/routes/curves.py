@@ -71,20 +71,25 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
 
 
 @router.get("/ks-path", response_model=KsPathResponse, tags=["Curves"])
-async def get_ks_path():
-    """Путь ключевой ставки: рыночный форвард (СПФИ, наш bootstrap) vs ручные
-    сценарии ЦБ + факт по прошедшим заседаниям. Реплика листа «КС-прогноз»."""
-    from services.ks_path import build_ks_path, current_ks_pct
-    _ruonia, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
+async def get_ks_path(
+    series: Literal["ks", "ruonia"] = Query("ks", description="ks | ruonia")
+):
+    """Путь базовой ставки: факт живьём с ЦБ РФ (дневная история) + рыночный
+    форвард из СПФИ (наш bootstrap). series=ks — ключевая, ruonia — RUONIA."""
+    import asyncio
+    from services.ks_path import build_path, current_rate_pct
+    ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     cd = calc_date or date.today()
-    points = build_ks_path(keyrate_curve, cd)
+    curve = keyrate_curve if series == "ks" else ruonia_curve
+    points = await asyncio.to_thread(build_path, curve, cd, series)
+    cur = await asyncio.to_thread(current_rate_pct, series, cd)
     warnings = []
-    if keyrate_curve is None:
-        warnings.append("Кривая КС недоступна — рыночный путь не построен.")
+    if curve is None:
+        warnings.append("Кривая недоступна — рыночный форвард не построен.")
     if rates_date and (date.today() - rates_date).days > 4:
         warnings.append(f"Котировки устарели на {(date.today() - rates_date).days} дн.")
     return KsPathResponse(
-        calc_date=cd, current_ks_pct=current_ks_pct(cd),
+        calc_date=cd, current_ks_pct=cur,
         points=[KsPathPoint(**p) for p in points], warnings=warnings,
     )
 

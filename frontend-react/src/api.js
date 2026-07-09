@@ -104,8 +104,8 @@ export async function fetchCurvePlot(type) {
   return r.json();
 }
 
-export async function fetchKsPath() {
-  const r = await authFetch(`${API}/api/curves/ks-path`);
+export async function fetchKsPath(series = "ks") {
+  const r = await authFetch(`${API}/api/curves/ks-path?series=${series}`);
   if (!r.ok) throw new Error("ks-path " + r.status);
   return r.json();
 }

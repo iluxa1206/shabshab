@@ -16,7 +16,7 @@ export default function CurvesModule() {
           <button className={"seg-btn" + (view === "curve" ? " active" : "")}
             onClick={() => setView("curve")}>Кривая</button>
           <button className={"seg-btn" + (view === "kspath" ? " active" : "")}
-            onClick={() => setView("kspath")}>Путь КС</button>
+            onClick={() => setView("kspath")}>Путь ставки</button>
           <button className={"seg-btn" + (view === "floater" ? " active" : "")}
             onClick={() => setView("floater")}>Флоатер YTM</button>
         </span>
@@ -204,8 +204,9 @@ function QuoteTable({ data }) {
   );
 }
 
-// ── Путь КС: факт + рыночный форвард (СПФИ) ──────────────────────────────
+// ── Путь ставки: факт (ЦБ РФ) + рыночный форвард (СПФИ) ───────────────────
 function KsPathView() {
+  const [series, setSeries] = useState("ks"); // ks | ruonia
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("loading");
   const [err, setErr] = useState("");
@@ -213,38 +214,48 @@ function KsPathView() {
   useEffect(() => {
     let alive = true;
     setStatus("loading");
-    fetchKsPath()
+    fetchKsPath(series)
       .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
       .catch((e) => { if (alive) { setErr(String(e.message || e)); setStatus("error"); } });
     return () => { alive = false; };
-  }, []);
+  }, [series]);
 
-  if (status === "loading") return <div className="muted">Загрузка…</div>;
-  if (status === "error") return <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>;
-  if (!data) return null;
-
+  const label = series === "ks" ? "КС" : "RUONIA";
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-        <span className="muted" style={{ fontSize: 11 }}>
-          действующая КС: <b style={{ color: "var(--fg)" }}>{data.current_ks_pct ?? "—"}%</b> · calc {fmt.date(data.calc_date)}
+        <span className="seg" role="tablist" aria-label="Ставка">
+          <button className={"seg-btn" + (series === "ks" ? " active" : "")}
+            onClick={() => setSeries("ks")}>Ключевая</button>
+          <button className={"seg-btn" + (series === "ruonia" ? " active" : "")}
+            onClick={() => setSeries("ruonia")}>RUONIA</button>
         </span>
+        {data && (
+          <span className="muted" style={{ fontSize: 11 }}>
+            действующая {label}: <b style={{ color: "var(--fg)" }}>{data.current_ks_pct ?? "—"}%</b> · calc {fmt.date(data.calc_date)}
+          </span>
+        )}
       </div>
 
-      {data.warnings?.length > 0 && (
-        <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
+      {status === "loading" && <div className="muted">Загрузка…</div>}
+      {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
+      {status === "ready" && data && (
+        <>
+          {data.warnings?.length > 0 && (
+            <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
+          )}
+          <KsPathChart points={data.points} calcDate={data.calc_date} />
+          <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
+            <LegLine color="var(--fg)" dash="" label={`Факт ${label} (ЦБ РФ)`} />
+            <LegLine color="var(--up)" dash="" label="Рынок (СПФИ форвард)" />
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
+            Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — форвард нашей
+            bootstrap-кривой (что закладывают своп-котировки СПФИ).
+            {series === "ruonia" && " История RUONIA до 2025-08 — из сида 502_504, далее живьём с ЦБ."}
+          </div>
+        </>
       )}
-
-      <KsPathChart points={data.points} calcDate={data.calc_date} />
-
-      <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
-        <LegLine color="var(--fg)" dash="" label="Факт КС" />
-        <LegLine color="var(--up)" dash="" label="Рынок (СПФИ форвард)" />
-      </div>
-      <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
-        Ступенька по датам заседаний ЦБ. «Рынок» — форвард нашей bootstrap-кривой КС
-        (что закладывают своп-котировки СПФИ). Слева от «сегодня» — факт КС.
-      </div>
     </>
   );
 }
