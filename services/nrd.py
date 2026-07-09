@@ -66,7 +66,7 @@ UNIVERSE_FILE = Path("nrd_universe_cache.json")
 TOKEN_CACHE_FILE = Path("nrd_token_cache.json")
 HTTP_TIMEOUT = 30.0
 # Бамп при изменении маппинга/масштабов — старый кэш с другим scale инвалидируется
-CACHE_VERSION = 3  # v3: юниверс + current_yield_pct/nrd_calc_date (флоатер-метрики)
+CACHE_VERSION = 4  # v4: + simple_margin_bps в юниверс (like-for-like якорь нашего DM)
 
 # База купона НРД -> наш тип (для юниверса)
 _UNI_BASE = {"CBRATED": "KEYRATE", "KEYRATE": "KEYRATE", "RUONIARATED": "RUONIA", "RUONIA": "RUONIA"}
@@ -396,6 +396,11 @@ async def fetch_floater_universe() -> List[dict]:
                         "maturity_date": row.get("maturity"),
                         "nrd_price_pct": m.get("nrd_price_pct"),
                         "discount_margin_bps": m.get("discount_margin_bps"),
+                        # simple_margin — like-for-like якорь для нашего dm_bps:
+                        # наш DM = простой спред над проекцией = НРД simple_margin
+                        # (сверка 2026-07-09: KEYRATE med +2 m|Δ|36, RUONIA med 0 m|Δ|12).
+                        # discount_margin НРД — их проприетарная fair-value метрика.
+                        "simple_margin_bps": m.get("simple_margin_bps"),
                         "z_spread_bps": m.get("z_spread_bps"),
                         "nrd_duration": m.get("duration"),
                         "current_yield_pct": m.get("current_yield_pct"),

@@ -185,6 +185,9 @@ class BondListItem(BaseModel):
     price_vs_nrd_pct: Optional[float] = None
     nrd_duration: Optional[float] = None
     discount_margin_bps: Optional[int] = None
+    # simple_margin — правильный like-for-like якорь для нашего dm_bps
+    # (наш DM ≈ НРД simple_margin; discount_margin — их fair-value метрика)
+    simple_margin_bps: Optional[int] = None
     z_spread_bps: Optional[int] = None
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ (методика НРД)
     rating: Optional[str] = None

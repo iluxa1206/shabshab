@@ -169,6 +169,7 @@ def _uni_item(u, name, last, dirty=None, dm=None, delta=None, next_coupon=None, 
         next_coupon_date=next_coupon, last_price_pct=last, dirty_price_rub=dirty, dm_bps=dm,
         delta_to_prev_close=delta, nrd_price_pct=nrd_price, price_vs_nrd_pct=vs_nrd,
         nrd_duration=u.get("nrd_duration"), discount_margin_bps=u.get("discount_margin_bps"),
+        simple_margin_bps=u.get("simple_margin_bps"),
         z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"), z_model_bps=z_model,
         spread_dur_yrs=spread_dur_yrs, z_pctile=z_pctile, delta_z_dod=delta_z_dod,
         delta_z_mom=delta_z_mom,
@@ -447,12 +448,13 @@ async def get_bonds(
             except Exception:
                 pass
 
-        nrd_price_pct = price_vs_nrd_pct = nrd_duration = nrd_dm_bps = nrd_z_bps = None
+        nrd_price_pct = price_vs_nrd_pct = nrd_duration = nrd_dm_bps = nrd_z_bps = nrd_sm_bps = None
         nm = nrd_metrics.get(isin)
         if nm:
             nrd_price_pct = nm.get("fair_value_pct") or nm.get("nrd_price_pct")
             nrd_duration = nm.get("duration")
             nrd_dm_bps = nm.get("discount_margin_bps")
+            nrd_sm_bps = nm.get("simple_margin_bps")
             nrd_z_bps = nm.get("z_spread_bps")
             if last_price_pct is not None and nrd_price_pct is not None:
                 price_vs_nrd_pct = round(last_price_pct - nrd_price_pct, 4)
@@ -474,6 +476,7 @@ async def get_bonds(
                 price_vs_nrd_pct=price_vs_nrd_pct,
                 nrd_duration=nrd_duration,
                 discount_margin_bps=nrd_dm_bps,
+                simple_margin_bps=nrd_sm_bps,
                 z_spread_bps=nrd_z_bps,
             )
         )
