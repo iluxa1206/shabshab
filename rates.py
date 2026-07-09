@@ -127,16 +127,22 @@ def parse_cbonds_quotes(html: str, pattern: str) -> list[Quote]:
                 continue
     return sorted(quotes, key=lambda x: (x.date, tenor_to_days(x.tenor)))
 
-def load_cache():
+def load_cache(allow_stale: bool = False):
+    """Кэш котировок. allow_stale=True — last-known-good фолбэк: отдаёт кэш ЛЮБОЙ
+    даты (когда Cbonds недоступен/сломан парсер, вчерашние свопы лучше пустого прода)."""
     if not os.path.exists(CACHE_FILE):
         return None
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if data.get("cache_date") == date.today().isoformat():
-                def dicts_to_quotes(dicts):
-                    return [Quote(d["name"], d["tenor"], d["value"], date.fromisoformat(d["date"])) for d in dicts]
-                return dicts_to_quotes(data["ois"]), dicts_to_quotes(data["irs"])
+        cache_date = data.get("cache_date")
+        if cache_date == date.today().isoformat() or (allow_stale and cache_date):
+            if allow_stale and cache_date != date.today().isoformat():
+                age = (date.today() - date.fromisoformat(cache_date)).days
+                print(f"WARNING: rates cache STALE — возраст {age} дн. (cache_date={cache_date}), Cbonds недоступен")
+            def dicts_to_quotes(dicts):
+                return [Quote(d["name"], d["tenor"], d["value"], date.fromisoformat(d["date"])) for d in dicts]
+            return dicts_to_quotes(data["ois"]), dicts_to_quotes(data["irs"])
     except Exception as e:
         print(f"Failed to load cache: {e}")
     return None
@@ -244,24 +250,44 @@ def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
 
 
 def get_rates_curves(use_cache=True):
-    """Fetches OIS RUONIA and IRS KEYRATE quotes from Cbonds, using cache if available."""
+    """OIS RUONIA + IRS KEYRATE с Cbonds; кэш на день.
+    При недоступности Cbonds ИЛИ пустом/куцем парсе — last-known-good из кэша
+    любой даты (stale лучше пустого прода) с WARNING о возрасте."""
     if use_cache:
         cached = load_cache()
         if cached:
             print("Loaded rates from cache.")
             return cached
 
-    print("Fetching OIS RUONIA from Cbonds...")
-    ois_html = fetch(CBONDS_RUONIA_OIS_URL)
-    ois_quotes = parse_cbonds_quotes(ois_html, r"RUONIA\s+([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
-    
-    print("Fetching IRS KEYRATE from Cbonds...")
-    irs_html = fetch(CBONDS_KEYRATE_IRS_URL)
-    irs_quotes = parse_cbonds_quotes(irs_html, r"IRS RUB vs RUB KEYRATE.*?([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
-    
+    try:
+        print("Fetching OIS RUONIA from Cbonds...")
+        ois_html = fetch(CBONDS_RUONIA_OIS_URL)
+        ois_quotes = parse_cbonds_quotes(ois_html, r"RUONIA\s+([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
+
+        print("Fetching IRS KEYRATE from Cbonds...")
+        irs_html = fetch(CBONDS_KEYRATE_IRS_URL)
+        irs_quotes = parse_cbonds_quotes(irs_html, r"IRS RUB vs RUB KEYRATE.*?([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
+    except Exception as e:
+        print(f"WARNING: Cbonds fetch failed ({e}) — пробуем stale-кэш")
+        ois_quotes, irs_quotes = [], []
+
+    # Санити: сломанный парсер/пейволл отдаёт мало теноров — фолбэк на stale.
+    # Порог: минимум 6 котировок в каждой кривой и есть длинный конец (>=5Y).
+    def _ok(quotes):
+        return (len(quotes) >= 6
+                and any(tenor_to_days(q.tenor) >= 5 * 365 for q in quotes))
+
+    if not (_ok(ois_quotes) and _ok(irs_quotes)):
+        print(f"WARNING: Cbonds parse куцый (ois={len(ois_quotes)}, irs={len(irs_quotes)}) — фолбэк на stale-кэш")
+        stale = load_cache(allow_stale=True)
+        if stale:
+            return stale
+        print("WARNING: stale-кэша нет — возвращаем что распарсили")
+        return ois_quotes, irs_quotes
+
     if use_cache:
         save_cache(ois_quotes, irs_quotes)
-        
+
     return ois_quotes, irs_quotes
 
 if __name__ == "__main__":

@@ -15,6 +15,16 @@ async def get_meta():
     warnings = []
     if calc_date is None or rates_date is None:
         warnings.append("Market curves data is unavailable or stale.")
+    # возраст-алерт: rates_date — дата котировок СПФИ; > 1 торгового дня назад = stale
+    # (T-1 норма: клиринг вчерашний; допускаем до 4 дней на выходные+праздник)
+    elif (date.today() - rates_date).days > 4:
+        warnings.append(f"Rates quotes are {(date.today() - rates_date).days} days old (Cbonds stale fallback?).")
+
+    # дрейф наших метрик vs НРД (наполняет universe_price_poller)
+    from services.market_data import market_cache
+    drift = market_cache.get("nrd_drift")
+    if drift:
+        warnings.extend(drift.get("alerts", []))
 
     # статус источников: настроен ли доступ / загружены ли данные
     source_status = {
@@ -32,5 +42,6 @@ async def get_meta():
             "reference": "MOEX, floaters.ru, Excel Cache"
         },
         source_status=source_status,
-        warnings=warnings
+        warnings=warnings,
+        nrd_drift=drift,
     )

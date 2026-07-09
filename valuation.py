@@ -109,15 +109,62 @@ def _amort_date(a) -> Optional[date]:
         return None
 
 
+# Нерабочие дни MOEX (расчёты НКЦ): фиксированные федеральные праздники.
+# MOEX торгует большинство «мостов» и новогодних (3–6, 8 янв) — в списке только
+# дни, когда расчётов нет. Переносы правительства на мосты НЕ включаем.
+# Обновлять раз в год по календарю MOEX (https://www.moex.com/s371).
+_MOEX_HOLIDAYS_MD = {(1, 1), (1, 2), (1, 7), (2, 23), (3, 8), (5, 1), (5, 9), (6, 12), (11, 4)}
+
+
+def _is_settlement_day_off(d: date) -> bool:
+    return d.weekday() >= 5 or (d.month, d.day) in _MOEX_HOLIDAYS_MD
+
+
 def settle_date(calc_date: date) -> date:
-    """Дата расчётов T+1 (скип выходных). Купон с pay_date <= settle покупателю
-    НЕ достаётся (MOEX НКД уже обнулён под эту конвенцию) — включать его в
+    """Дата расчётов T+1 (скип выходных И праздников MOEX). Купон с pay_date <= settle
+    покупателю НЕ достаётся (MOEX НКД уже обнулён под эту конвенцию) — включать его в
     cashflow нельзя: накануне выплаты PV завышается на целый купон
-    (наблюдалось: DM +530bps мусора в день перед купоном)."""
+    (наблюдалось: DM +530bps мусора в день перед купоном; тот же эффект давали
+    праздники — например, 30 декабря T+1 попадал на 1 января)."""
     d = calc_date + timedelta(days=1)
-    while d.weekday() >= 5:  # Sat/Sun
+    while _is_settlement_day_off(d):
         d += timedelta(days=1)
     return d
+
+
+def first_offer_date(offers: Optional[List[dict]], settle: date) -> Optional[date]:
+    """Первая будущая оферта из MOEX bondization offers [{date,type,price},...].
+    Для флоатера купонные value после оферты в bondization не определены и спред
+    может быть пересмотрен — потоки за офертой фикция. Оцениваем к оферте
+    (yield-to-offer, как НРД): купоны до неё + выкуп остатка номинала."""
+    dates = []
+    for o in offers or []:
+        d = o.get("date")
+        if isinstance(d, str):
+            try:
+                d = date.fromisoformat(d)
+            except ValueError:
+                continue
+        if isinstance(d, date) and d > settle:
+            dates.append(d)
+    return min(dates) if dates else None
+
+
+def _offer_price_pct(offers: Optional[List[dict]], offer_date: date) -> float:
+    """Цена выкупа на оферте в % (обычно 100; MOEX может дать явную)."""
+    for o in offers or []:
+        d = o.get("date")
+        if isinstance(d, str):
+            try:
+                d = date.fromisoformat(d)
+            except ValueError:
+                continue
+        if d == offer_date and o.get("price") is not None:
+            try:
+                return float(o["price"])
+            except (ValueError, TypeError):
+                pass
+    return 100.0
 
 
 def build_cashflows_to_maturity(
@@ -126,6 +173,7 @@ def build_cashflows_to_maturity(
     calc_date: date,
     explicit_periods: Optional[List[tuple]] = None,
     amorts: Optional[List[dict]] = None,
+    offers: Optional[List[dict]] = None,
 ) -> List[Cashflow]:
     """
     Строит ожидаемые cashflows: купоны и погашение принципала.
@@ -177,13 +225,25 @@ def build_cashflows_to_maturity(
     # T+1: платежи с датой <= settle покупателю не достаются (ex-coupon, НКД=0)
     settle = settle_date(calc_date)
 
-    # Амортизации: будущие погашения принципала (dates > settle).
+    # Оферта: режем поток на первой будущей оферте (спред после неё не гарантирован,
+    # купоны за офертой в bondization не определены → прогноз фиктивен). Купон
+    # периода, накрывающего оферту, отбрасывается (оферты обычно совпадают с концом
+    # купонного периода). eff_maturity — горизонт оценки.
+    put = first_offer_date(offers, settle)
+    eff_maturity = bond.maturity_date
+    if put and (eff_maturity is None or put < eff_maturity):
+        eff_maturity = put
+    else:
+        put = None  # оферта не раньше погашения — обычный путь
+
+    # Амортизации: будущие погашения принципала (dates > settle, до горизонта).
     future_am = sorted(
         (d, float(a["value"]))
         for a in (amorts or [])
         if a.get("value") is not None and (d := _amort_date(a)) and d > settle
+        and (eff_maturity is None or d <= eff_maturity)
     )
-    amortizing = any(bond.maturity_date and d < bond.maturity_date for d, _ in future_am)
+    amortizing = any(eff_maturity and d < eff_maturity for d, _ in future_am)
 
     cfs = []
 
@@ -191,16 +251,20 @@ def build_cashflows_to_maturity(
     for start, end, value in periods:
         if end <= settle:
             continue
+        if eff_maturity and end > eff_maturity:
+            continue
 
         if value is not None:
             # #1: зафиксированный купон — факт MOEX, без перепрогноза форвардом
             coupon_amt = float(value)
         else:
-            # #3: для амортизируемых начисляем от остаточного номинала (сумма
-            # будущих амортизаций после начала периода), иначе — от полного номинала
+            # #3: для амортизируемых начисляем от остаточного номинала на начало
+            # периода = текущий номинал − амортизации до start (формула инвариантна
+            # к обрезке future_am на оферте, в отличие от Σ будущих после start)
             face = bond.face_value
             if amortizing:
-                face = sum(v for d, v in future_am if d > start) or face
+                paid_by_start = sum(v for d, v in future_am if d <= start)
+                face = (bond.face_value - paid_by_start) or face
 
             # Купон начисляется за ПОЛНЫЙ период [start, end] (покупатель платит НКД
             # за истёкший стаб и получает весь купон на дату выплаты) — days по полному
@@ -225,8 +289,17 @@ def build_cashflows_to_maturity(
 
         cfs.append(Cashflow(pay_date=end, amount_rub=coupon_amt, type="COUPON"))
 
-    # 4. redemption: амортизируемая — принципал по графику; иначе bullet на maturity
-    if amortizing:
+    # 4. redemption: амортизируемая — принципал по графику; оферта — выкуп остатка
+    # номинала на дату оферты (по цене оферты, обычно 100); иначе bullet на maturity
+    if put:
+        paid = sum(v for _d, v in future_am)   # амортизации до оферты остаются в потоке
+        for d, v in future_am:
+            cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION"))
+        residual = bond.face_value - paid
+        if residual > 1e-9:
+            px = _offer_price_pct(offers, put) / 100.0
+            cfs.append(Cashflow(pay_date=put, amount_rub=residual * px, type="REDEMPTION"))
+    elif amortizing:
         for d, v in future_am:
             cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION"))
     elif bond.maturity_date > calc_date:
@@ -244,6 +317,7 @@ def build_cashflows_with_spread(
     spread_bps: int,
     explicit_periods: Optional[List[tuple]] = None,
     amorts: Optional[List[dict]] = None,
+    offers: Optional[List[dict]] = None,
 ) -> List[Cashflow]:
     bond_variant = BondRefData(
         isin=bond.isin,
@@ -258,7 +332,8 @@ def build_cashflows_with_spread(
         coupon_period_days=bond.coupon_period_days,
     )
     return build_cashflows_to_maturity(bond_variant, curve, calc_date,
-                                       explicit_periods=explicit_periods, amorts=amorts)
+                                       explicit_periods=explicit_periods, amorts=amorts,
+                                       offers=offers)
 
 
 def xnpv(rate: float, cashflows: List[tuple[date, float]]) -> float:

@@ -123,7 +123,7 @@ class MarketDataService:
                     client, "https://iss.moex.com/iss/engines/stock/zcyc.json",
                     params={"iss.meta": "off", "iss.only": "yearyields"}, timeout=10)
             if resp is None or resp.status_code != 200:
-                return cls._gcurve
+                return cls._stale_gcurve("MOEX zcyc HTTP fail")
             yy = resp.json().get("yearyields", {})
             cols, data = yy.get("columns", []), yy.get("data", [])
             pi, vi = cols.index("period"), cols.index("value")
@@ -132,7 +132,17 @@ class MarketDataService:
                 cls._gcurve = GCurve(pts)
                 cls._gcurve_date = today
         except Exception as e:
-            print(f"G-curve fetch error: {e}")
+            return cls._stale_gcurve(f"G-curve fetch error: {e}")
+        return cls._gcurve
+
+    @classmethod
+    def _stale_gcurve(cls, reason: str):
+        """Отдаёт закэшированную КБД при сбое фетча — но ГРОМКО, с возрастом.
+        Раньше stale отдавался молча → z/G-спреды сутками на вчерашней КБД."""
+        if cls._gcurve is not None and cls._gcurve_date != date.today().isoformat():
+            print(f"WARNING: G-curve STALE (от {cls._gcurve_date}) — {reason}")
+        else:
+            print(f"G-curve unavailable: {reason}")
         return cls._gcurve
 
     @classmethod

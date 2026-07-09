@@ -108,7 +108,7 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
             try:
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                                 accrued_override=snap.get("accrued"), periods=periods,
-                                                amorts=full.get("amorts"))
+                                                amorts=full.get("amorts"), offers=full.get("offers"))
                 dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             except Exception:
                 pass
@@ -130,7 +130,8 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
                            if coupons_full else
                            [{"start": s.isoformat(), "end": e.isoformat(), "value": v} for (s, e, v) in (periods or [])])
                 z_model = compute_z_bps(ref, exp, g_curve, calc_date, price_calc,
-                                        snap.get("accrued") or ref.accrued_rub, coupons, full.get("amorts"))
+                                        snap.get("accrued") or ref.accrued_rub, coupons,
+                                        full.get("amorts"), full.get("offers"))
             except Exception:
                 pass
 
@@ -289,7 +290,8 @@ async def _universe_bonds(extra_list, cache, limit, offset):
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                                 accrued_override=snapshot.get(isin, {}).get("accrued"),
                                                 periods=schedules.get(isin),
-                                                amorts=(sched_full.get(isin) or {}).get("amorts"))
+                                                amorts=(sched_full.get(isin) or {}).get("amorts"),
+                                                offers=(sched_full.get(isin) or {}).get("offers"))
                 dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             except Exception:
                 pass
@@ -323,7 +325,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
                                for (s, e, v) in (sched or [])]
                 z_model = compute_z_bps(ref, exp, g_curve, calc_date, price_calc,
                                         snapshot.get(isin, {}).get("accrued") or ref.accrued_rub,
-                                        coupons, full.get("amorts"))
+                                        coupons, full.get("amorts"), full.get("offers"))
             except Exception:
                 pass
         # watch-метрики: carry vs база, срок до рефиксинга, текущая ставка купона
@@ -661,7 +663,7 @@ async def get_bond_details(isin: str = Path(...)):
             val_dict = calculate_valuation_metrics(
                 ref_obj, last_price, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
-                amorts=sched_full.get("amorts"),
+                amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
             )
         except Exception as e:
             val_dict["pricing_status"] = "CALCULATION_ERROR"
@@ -672,7 +674,7 @@ async def get_bond_details(isin: str = Path(...)):
             prev_metrics = calculate_valuation_metrics(
                 ref_obj, prev_close_pct, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
-                amorts=sched_full.get("amorts"),
+                amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
             )
             market_data.prev_close_dm_bps = prev_metrics.get("dm_bps")
         except Exception:

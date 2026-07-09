@@ -22,6 +22,7 @@ def calculate_valuation_metrics(
     accrued_override: float = None,
     periods=None,
     amorts=None,
+    offers=None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
@@ -42,9 +43,10 @@ def calculate_valuation_metrics(
     base_periods = [(p[0], p[1]) for p in periods] if periods else None
 
     cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
-                                      explicit_periods=periods, amorts=amorts)
+                                      explicit_periods=periods, amorts=amorts, offers=offers)
     base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0,
-                                           explicit_periods=base_periods, amorts=amorts)
+                                           explicit_periods=base_periods, amorts=amorts,
+                                           offers=offers)
 
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
@@ -80,7 +82,8 @@ def calculate_valuation_metrics(
         if L is not None:
             flat = FlatForwardCurve(calc_date, L)
             flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
-                                                   explicit_periods=periods, amorts=amorts)
+                                                   explicit_periods=periods, amorts=amorts,
+                                                   offers=offers)
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
     except Exception as e:
         print(f"Discount margin error for {bond.isin}: {e}")

@@ -68,6 +68,10 @@ async def universe_price_poller():
                 metrics = await compute_universe_metrics(uni, isins)
                 if metrics:
                     market_cache["universe_metrics"] = metrics
+                    # дрейф наших SM/DM/z против публикаций НРД (алерт в лог,
+                    # срез в /meta) — ловим молчаливую смену методики НРД
+                    from services.drift import compute_nrd_drift
+                    market_cache["nrd_drift"] = compute_nrd_drift(uni, metrics)
         except Exception as e:
             print(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
