@@ -347,7 +347,10 @@ async def _fetch_method(client: httpx.AsyncClient, path: str, isins: List[str]) 
     return by_isin
 
 
-_universe_mem: dict = {"date": None, "items": None}
+_universe_mem: dict = {"date": None, "items": None, "fetched_at": 0.0}
+# НРД публикует/обновляет valuationnewadd в течение дня — дневной кэш ловил
+# вчерашние wa_price/dm (подтверждено сверкой 2026-07-08). Внутри дня рефетчим раз в 4ч.
+_UNIVERSE_TTL_SEC = 4 * 3600
 
 async def fetch_floater_universe() -> List[dict]:
     """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA) из НРД valuationnewadd.
@@ -355,14 +358,18 @@ async def fetch_floater_universe() -> List[dict]:
     if not is_configured():
         return []
     today = date.today().isoformat()
+    now = time.time()
     # in-memory слой: юниверс запрашивается на каждый запрос дашборда — не читаем
-    # и не парсим 186KB JSON с диска каждый раз
-    if _universe_mem["date"] == today and _universe_mem["items"] is not None:
+    # и не парсим 186KB JSON с диска каждый раз. TTL 4ч: НРД обновляет данные днём.
+    if (_universe_mem["date"] == today and _universe_mem["items"] is not None
+            and now - _universe_mem["fetched_at"] < _UNIVERSE_TTL_SEC):
         return _universe_mem["items"]
     cache = _load_json(UNIVERSE_FILE)
-    if cache.get("calc_date") == today and cache.get("version") == CACHE_VERSION:
+    if (cache.get("calc_date") == today and cache.get("version") == CACHE_VERSION
+            and now - cache.get("fetched_at", 0) < _UNIVERSE_TTL_SEC):
         _universe_mem["date"] = today
         _universe_mem["items"] = cache.get("items", [])
+        _universe_mem["fetched_at"] = cache.get("fetched_at", now)
         return _universe_mem["items"]
 
     items: List[dict] = []
@@ -415,9 +422,11 @@ async def fetch_floater_universe() -> List[dict]:
     items = list(by_isin.values())
     for x in items:
         x.pop("_val_date", None)
-    _save_json(UNIVERSE_FILE, {"version": CACHE_VERSION, "calc_date": today, "items": items})
+    _save_json(UNIVERSE_FILE, {"version": CACHE_VERSION, "calc_date": today,
+                               "fetched_at": now, "items": items})
     _universe_mem["date"] = today
     _universe_mem["items"] = items
+    _universe_mem["fetched_at"] = now
     return items
 
 

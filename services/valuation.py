@@ -18,22 +18,30 @@ def calculate_valuation_metrics(
     calc_date: date,
     accrued_override: float = None,
     periods=None,
+    amorts=None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
     accrued_override — НКД на calc_date из MOEX (приоритет над стейл-кэшем).
-    periods — реальное расписание купонов [(start,end),...] из MOEX.
+    periods — реальное расписание купонов [(start,end,value),...] из MOEX;
+              value (зафикс. рублёвая сумма купона) прокидывается в DM-cashflow,
+              чтобы текущий/прошлый купон брался фактом, а не перепрогнозом.
+    amorts — график амортизаций MOEX [{date, value},...] для DM амортизируемых бумаг.
     Returns a dictionary suitable for formatting by Pydantic.
     """
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
     dirty_rub = dirty_price_rub(bond.face_value, price, accrued)
 
-    # fetch_coupon_schedules отдаёт тройки (start, end, value) — здесь нужны пары
-    if periods:
-        periods = [(p[0], p[1]) for p in periods]
+    # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
+    # (факт MOEX), амортизации учитываем. base_cfs (spread=0) — контрфактуал только
+    # для spread_to_base_bps: там купон проектируем (value не применим к spread=0),
+    # поэтому передаём стрипнутые пары без value.
+    base_periods = [(p[0], p[1]) for p in periods] if periods else None
 
-    cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps, explicit_periods=periods)
-    base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0, explicit_periods=periods)
+    cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
+                                      explicit_periods=periods, amorts=amorts)
+    base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0,
+                                           explicit_periods=base_periods, amorts=amorts)
 
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)

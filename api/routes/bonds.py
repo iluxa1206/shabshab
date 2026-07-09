@@ -107,7 +107,8 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
         if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
             try:
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
-                                                accrued_override=snap.get("accrued"), periods=periods)
+                                                accrued_override=snap.get("accrued"), periods=periods,
+                                                amorts=full.get("amorts"))
                 dirty, dm = m.get("dirty_price_rub"), m.get("dm_bps")
             except Exception:
                 pass
@@ -285,7 +286,8 @@ async def _universe_bonds(extra_list, cache, limit, offset):
             try:
                 m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                                 accrued_override=snapshot.get(isin, {}).get("accrued"),
-                                                periods=schedules.get(isin))
+                                                periods=schedules.get(isin),
+                                                amorts=(sched_full.get(isin) or {}).get("amorts"))
                 dirty, dm = m.get("dirty_price_rub"), m.get("dm_bps")
             except Exception:
                 pass
@@ -592,6 +594,22 @@ async def get_bond_details(isin: str = Path(...)):
         ref_obj.accrued_rub = accrued_live
         ref_dict["accrued_interest"] = accrued_live
 
+    # ближайшая будущая оферта (bondization offers) — информационный флаг.
+    # Оценку НЕ клэмпим: НРД dm тоже к погашению (сверка 2026-07-08 — клэмп
+    # к оферте ухудшает совпадение на всех горизонтах), но цена бумаги
+    # с близкой офертой может прайситься к ней → DM/z несопоставимы.
+    next_offer = None
+    try:
+        future_offers = [(date.fromisoformat(o["date"]), o.get("type"))
+                         for o in sched_full.get("offers", [])
+                         if o.get("date") and date.fromisoformat(o["date"]) > date.today()]
+        if future_offers:
+            next_offer = min(future_offers)
+            ref_dict["offer_date"] = next_offer[0]
+            ref_dict["offer_type"] = next_offer[1]
+    except (ValueError, TypeError):
+        pass
+
     if not calc_date:
         calc_date = rates_date or date.today()
     if not rates_date:
@@ -638,6 +656,7 @@ async def get_bond_details(isin: str = Path(...)):
             val_dict = calculate_valuation_metrics(
                 ref_obj, last_price, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
+                amorts=sched_full.get("amorts"),
             )
         except Exception as e:
             val_dict["pricing_status"] = "CALCULATION_ERROR"
@@ -648,6 +667,7 @@ async def get_bond_details(isin: str = Path(...)):
             prev_metrics = calculate_valuation_metrics(
                 ref_obj, prev_close_pct, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
+                amorts=sched_full.get("amorts"),
             )
             market_data.prev_close_dm_bps = prev_metrics.get("dm_bps")
         except Exception:
@@ -693,6 +713,10 @@ async def get_bond_details(isin: str = Path(...)):
 
     nrd_block = None
     warnings = []
+    if next_offer and (next_offer[0] - date.today()).days <= 180:
+        warnings.append(
+            f"Оферта {next_offer[0].isoformat()}: рынок может прайсить бумагу к оферте, "
+            "DM/z-модель считает к погашению (как НРД)")
     # nrd_metrics уже получен в начале хендлера — не дёргаем НРД повторно
     try:
         nrd_block = build_bond_nrd(nrd_metrics.get(isin, {}), last_price)

@@ -226,7 +226,9 @@ class MarketDataService:
         try:
             with open(SCHEDULE_FULL_CACHE_FILE, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            cls._full_mem = raw.get("items", {}) if raw.get("date") == today else {}
+            # v2: добавлен блок offers — старый формат без версии сбрасываем (regen)
+            cls._full_mem = (raw.get("items", {})
+                             if raw.get("date") == today and raw.get("version") == 2 else {})
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             cls._full_mem = {}
 
@@ -234,21 +236,23 @@ class MarketDataService:
     def _save_full_disk(cls) -> None:
         try:
             with open(SCHEDULE_FULL_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"date": cls._full_mem_date, "items": cls._full_mem}, f, ensure_ascii=False)
+                json.dump({"date": cls._full_mem_date, "version": 2, "items": cls._full_mem},
+                          f, ensure_ascii=False)
         except OSError:
             pass
 
     @classmethod
     async def fetch_bond_schedule_full(cls, isin: str) -> dict:
         """Полное расписание MOEX по одной бумаге: купоны (с реальными value/valueprc для
-        прошлых/зафиксированных) + амортизации (погашение принципала).
+        прошлых/зафиксированных) + амортизации (погашение принципала) + оферты
+        (offerdate/offertype/price — тот же запрос bondization, бесплатно).
         Кэш память+диск с TTL на день (bondization стабилен внутри дня; критично для
         фонового расчёта метрик всего юниверса — иначе 453 запроса каждый цикл)."""
         cls._ensure_full_mem()
         if isin in cls._full_mem:
             return cls._full_mem[isin]
 
-        out = {"coupons": [], "amorts": []}
+        out = {"coupons": [], "amorts": [], "offers": []}
         try:
             # через _moex_get (семафор 5) — иначе gather по всему юниверсу на прогреве
             # даёт 453 одновременных коннекта к ISS → таймауты/дропы
@@ -256,7 +260,7 @@ class MarketDataService:
                 resp = await _moex_get(
                     client,
                     f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
-                    params={"iss.only": "coupons,amortizations", "limit": 1000}, timeout=10)
+                    params={"iss.only": "coupons,amortizations,offers", "limit": 1000}, timeout=10)
             if resp is None or resp.status_code != 200:
                 return out
             j = resp.json()
@@ -279,6 +283,14 @@ class MarketDataService:
                 d, val = ag(row, "amortdate"), ag(row, "value")
                 if d and val is not None:
                     out["amorts"].append({"date": d, "value": val})
+            off = j.get("offers", {})
+            ocols = off.get("columns", [])
+            og = lambda row, n: row[ocols.index(n)] if n in ocols else None
+            for row in off.get("data", []):
+                d = og(row, "offerdate") or og(row, "offerdateend")
+                if d:
+                    out["offers"].append({"date": d, "type": og(row, "offertype"),
+                                          "price": og(row, "price")})
         except Exception as e:
             print(f"bondization error {isin}: {e}")
         # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем

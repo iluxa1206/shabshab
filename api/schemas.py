@@ -40,6 +40,11 @@ class BondReference(BaseModel):
     coupons_per_year: Optional[int]
     next_coupon_date: Optional[date]
     accrued_interest: float
+    # ближайшая будущая оферта (MOEX bondization offers). Информационный флаг:
+    # DM/z считаются к погашению (НРД тоже — клэмп к оферте ухудшает сверку на
+    # всех горизонтах), но рынок может прайсить бумагу к оферте.
+    offer_date: Optional[date] = None
+    offer_type: Optional[str] = None
 
 # --- 5.2 BondMarketData ---
 class BondMarketData(BaseModel):

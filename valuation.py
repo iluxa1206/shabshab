@@ -98,21 +98,49 @@ def generate_coupon_dates_by_period(issue_date: date, maturity_date: date, coupo
     return dates
 
 
+def _amort_date(a) -> Optional[date]:
+    """Парсит дату амортизации (ISO-строка из MOEX bondization) → date | None."""
+    d = a.get("date")
+    if isinstance(d, date):
+        return d
+    try:
+        return date.fromisoformat(d) if d else None
+    except (ValueError, TypeError):
+        return None
+
+
 def build_cashflows_to_maturity(
     bond: BondRefData,
     curve: DiscountCurve,
     calc_date: date,
     explicit_periods: Optional[List[tuple]] = None,
+    amorts: Optional[List[dict]] = None,
 ) -> List[Cashflow]:
     """
-    Строит ожидаемые cashflows: купоны (forward + spread) и номинал.
+    Строит ожидаемые cashflows: купоны и погашение принципала.
     Участвуют только CF с pay_date > calc_date.
-    explicit_periods — реальное расписание [(start,end),...] из MOEX (приоритет);
-    иначе генерация по issue+period_days / first_coupon (приближение, может дрейфовать).
+
+    explicit_periods — реальное расписание из MOEX (приоритет), тройки
+    [(start, end, value|None),...]; value — зафиксированная рублёвая сумма купона
+    (bondization). Если value задан — купон берётся ФАКТОМ (не перепрогнозируется
+    форвардом): текущий/прошлый купон флоатера фиксируется на старте периода и
+    известен (та же логика, что в services/zspread.project_cfs). Пары (start,end)
+    тоже принимаются (value=None). Иначе — генерация по issue+period_days /
+    first_coupon (приближение, может дрейфовать).
+
+    amorts — график амортизаций MOEX [{date, value},...]. Если есть погашение
+    принципала ДО maturity (амортизируемая бумага), принципал платится по датам
+    амортизаций, а прогнозные купоны начисляются от ОСТАТОЧНОГО номинала (сумма
+    амортизаций после начала периода). Иначе — bullet (номинал целиком на maturity).
     """
     if explicit_periods:
-        # Реальный календарь MOEX: периоды (start, end) уже готовы.
-        periods = [(s, e) for (s, e) in explicit_periods if e <= bond.maturity_date]
+        # Реальный календарь MOEX: тройки (start, end, value) или пары (start, end).
+        periods = []
+        for p in explicit_periods:
+            s, e = p[0], p[1]
+            v = p[2] if len(p) > 2 else None
+            if e <= bond.maturity_date:
+                periods.append((s, e, v))
     else:
         if bond.coupon_period_days and bond.issue_date:
             coupon_dates = generate_coupon_dates_by_period(bond.issue_date, bond.maturity_date, bond.coupon_period_days)
@@ -128,46 +156,68 @@ def build_cashflows_to_maturity(
         if any(d > bond.maturity_date for d in coupon_dates):
             raise ValueError(f"Found coupon pay_date after maturity_date for ISIN: {bond.isin}")
 
-        # 2. rebuild periods
+        # 2. rebuild periods (генерация — value неизвестен, всегда прогноз)
         periods = []
         prev_end = start_1
         for d in coupon_dates:
-            periods.append((prev_end, d))
+            periods.append((prev_end, d, None))
             prev_end = d
 
+    # Амортизации: будущие погашения принципала (dates > calc_date).
+    future_am = sorted(
+        (d, float(a["value"]))
+        for a in (amorts or [])
+        if a.get("value") is not None and (d := _amort_date(a)) and d > calc_date
+    )
+    amortizing = any(bond.maturity_date and d < bond.maturity_date for d, _ in future_am)
+
     cfs = []
-    
+
     # 3. generate coupons
-    for start, end in periods:
+    for start, end, value in periods:
         if end <= calc_date:
             continue
 
-        days = (end - start).days
-        alpha = days / 365.0
-
-        # F = curve.forward(start, end). Для ТЕКУЩЕГО купона start < calc_date —
-        # анкер форварда клэмпим к calc_date, иначе ExcelForwardCurve затыкает
-        # прошлый стаб ставкой последнего (длинного) сегмента = мусор на крутой кривой.
-        f_start = start if start > calc_date else calc_date
-        f_rate = curve.forward(f_start, end) if f_start < end else 0.0
-        s_rate = bond.spread_issue_bps / 10000.0
-        r_rate = f_rate + s_rate
-        
-        # Compounding factors
-        if bond.base == "RUONIA":
-            factor = (1.0 + r_rate / 365.0)**days - 1.0
-        elif bond.base == "KEYRATE":
-            factor = (1.0 + r_rate / 4.0)**(4.0 * alpha) - 1.0
+        if value is not None:
+            # #1: зафиксированный купон — факт MOEX, без перепрогноза форвардом
+            coupon_amt = float(value)
         else:
-            raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
-            
-        coupon_amt = bond.face_value * factor
+            # #3: для амортизируемых начисляем от остаточного номинала (сумма
+            # будущих амортизаций после начала периода), иначе — от полного номинала
+            face = bond.face_value
+            if amortizing:
+                face = sum(v for d, v in future_am if d > start) or face
+
+            # Купон начисляется за ПОЛНЫЙ период [start, end] (покупатель платит НКД
+            # за истёкший стаб и получает весь купон на дату выплаты) — days по полному
+            # периоду. Форвард-ставку для прошлого стаба клэмпим к calc_date, иначе
+            # ExcelForwardCurve затыкает его ставкой последнего (длинного) сегмента =
+            # мусор на крутой кривой. Для зафикс. купона этот прогноз не используется (#1).
+            days = (end - start).days
+            alpha = days / 365.0
+            f_start = start if start > calc_date else calc_date
+            f_rate = curve.forward(f_start, end) if f_start < end else 0.0
+            r_rate = f_rate + bond.spread_issue_bps / 10000.0
+
+            # Compounding factors
+            if bond.base == "RUONIA":
+                factor = (1.0 + r_rate / 365.0)**days - 1.0
+            elif bond.base == "KEYRATE":
+                factor = (1.0 + r_rate / 4.0)**(4.0 * alpha) - 1.0
+            else:
+                raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
+
+            coupon_amt = face * factor
+
         cfs.append(Cashflow(pay_date=end, amount_rub=coupon_amt, type="COUPON"))
-        
-    # 4. redemption
-    if bond.maturity_date > calc_date:
+
+    # 4. redemption: амортизируемая — принципал по графику; иначе bullet на maturity
+    if amortizing:
+        for d, v in future_am:
+            cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION"))
+    elif bond.maturity_date > calc_date:
         cfs.append(Cashflow(pay_date=bond.maturity_date, amount_rub=bond.face_value, type="REDEMPTION"))
-        
+
     # 5. Sort by pay_date
     cfs.sort(key=lambda cf: cf.pay_date)
     return cfs
@@ -179,6 +229,7 @@ def build_cashflows_with_spread(
     calc_date: date,
     spread_bps: int,
     explicit_periods: Optional[List[tuple]] = None,
+    amorts: Optional[List[dict]] = None,
 ) -> List[Cashflow]:
     bond_variant = BondRefData(
         isin=bond.isin,
@@ -192,7 +243,8 @@ def build_cashflows_with_spread(
         issue_date=bond.issue_date,
         coupon_period_days=bond.coupon_period_days,
     )
-    return build_cashflows_to_maturity(bond_variant, curve, calc_date, explicit_periods=explicit_periods)
+    return build_cashflows_to_maturity(bond_variant, curve, calc_date,
+                                       explicit_periods=explicit_periods, amorts=amorts)
 
 
 def xnpv(rate: float, cashflows: List[tuple[date, float]]) -> float:
