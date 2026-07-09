@@ -158,6 +158,18 @@ def current_ks() -> Optional[float]:
     return h[-1][1] if h else None
 
 
+def ks_rate_at(d: date) -> Optional[float]:
+    """Факт КС (decimal, напр. 0.1425) на дату d — последнее значение ЦБ ≤ d.
+    Для фиксинга купона KEYRATE-флоатера: ставка купона = КС(дата фиксинга)+маржа."""
+    val = None
+    for md, r in ks_history():
+        if md <= d:
+            val = r
+        else:
+            break
+    return (val / 100.0) if val is not None else None
+
+
 def current_ruonia() -> Optional[float]:
     h = ruonia_history()
     return h[-1][1] if h else None

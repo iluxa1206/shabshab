@@ -273,17 +273,27 @@ def build_cashflows_to_maturity(
             # мусор на крутой кривой. Для зафикс. купона этот прогноз не используется (#1).
             days = (end - start).days
             alpha = days / 365.0
-            f_start = start if start > calc_date else calc_date
-            f_rate = curve.forward(f_start, end) if f_start < end else 0.0
-            r_rate = f_rate + bond.spread_issue_bps / 10000.0
-
-            # Compounding factors
-            if bond.base == "RUONIA":
-                factor = (1.0 + r_rate / 365.0)**days - 1.0
-            elif bond.base == "KEYRATE":
-                factor = (1.0 + r_rate / 4.0)**(4.0 * alpha) - 1.0
+            # KEYRATE: если фиксинг (начало − лаг) прошёл, купон определён по факту
+            # КС ЦБ (MOEX ещё не выложил сумму). На спаде КС — купон по прежней,
+            # более высокой ставке. Иначе — проекция форвардом.
+            fixed_ks = None
+            if bond.base == "KEYRATE":
+                from services.cbr import ks_rate_at
+                from services.zspread import KS_FIXING_LAG_DAYS
+                if (start - timedelta(days=KS_FIXING_LAG_DAYS)) <= calc_date:
+                    fixed_ks = ks_rate_at(start - timedelta(days=KS_FIXING_LAG_DAYS))
+            if fixed_ks is not None:
+                factor = (fixed_ks + bond.spread_issue_bps / 10000.0) * alpha
             else:
-                raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
+                f_start = start if start > calc_date else calc_date
+                f_rate = curve.forward(f_start, end) if f_start < end else 0.0
+                r_rate = f_rate + bond.spread_issue_bps / 10000.0
+                if bond.base == "RUONIA":
+                    factor = (1.0 + r_rate / 365.0)**days - 1.0
+                elif bond.base == "KEYRATE":
+                    factor = (1.0 + r_rate / 4.0)**(4.0 * alpha) - 1.0
+                else:
+                    raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
 
             coupon_amt = face * factor
 

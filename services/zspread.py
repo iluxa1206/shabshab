@@ -30,6 +30,11 @@ TENOR_Y = {"1W": 1/52, "2W": 2/52, "1M": 1/12, "2M": 2/12, "3M": .25, "6M": .5,
            "9M": .75, "1Y": 1, "2Y": 2, "3Y": 3, "4Y": 4, "5Y": 5, "6Y": 6,
            "7Y": 7, "8Y": 8, "9Y": 9, "10Y": 10}
 
+# Лаг фиксинга КС-купона: ставка = КС на (начало периода − лаг) + маржа.
+# Типовая конвенция КС-флоатеров — КС на дату определения купона ≈ начало периода;
+# точный лаг per-issue пока не тянем, дефолт 0 (КС на начало периода).
+KS_FIXING_LAG_DAYS = 0
+
 
 class ExpCurve:
     """Кривая ожиданий индекса поверх честного bootstrap par-свопов (forwards.py).
@@ -146,12 +151,26 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
             if amortizing:
                 paid_by_start = sum(v for d, v in future_am if d <= start)
                 face = (ref.face_value - paid_by_start) or face
-            f = exp.fwd(max(start, calc_date), end)
-            r = f + sp
-            if ref.base == "RUONIA":
-                amt = face * ((1 + r/365.0)**days - 1)
+            # KEYRATE: если фиксинг купона (начало периода − лаг) уже прошёл, ставка
+            # УЖЕ определена по факту КС ЦБ на дату фиксинга (MOEX ещё не выложил
+            # рублёвую сумму). Важно на спаде КС: купон зафиксирован по прежней,
+            # более высокой ставке. Иначе — проекция по кривой ожиданий.
+            fixed_ks = None
+            if ref.base == "KEYRATE":
+                from services.cbr import ks_rate_at
+                from datetime import timedelta as _td
+                fix_date = start - _td(days=KS_FIXING_LAG_DAYS)
+                if fix_date <= calc_date:
+                    fixed_ks = ks_rate_at(fix_date)
+            if fixed_ks is not None:
+                amt = face * (fixed_ks + sp) * alpha
             else:
-                amt = face * r * alpha
+                f = exp.fwd(max(start, calc_date), end)
+                r = f + sp
+                if ref.base == "RUONIA":
+                    amt = face * ((1 + r/365.0)**days - 1)
+                else:
+                    amt = face * r * alpha
         cfs.append((end, amt))
     if put:
         cfs.extend(future_am)
