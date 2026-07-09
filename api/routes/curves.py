@@ -2,12 +2,33 @@ from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, Literal
 from datetime import date, timedelta
 from api.schemas import (CurveResponse, ForwardRateResponse, CurveNode, CurveSegment,
-                         CurvePlotResponse, CurveQuote, CurveSample)
+                         CurvePlotResponse, CurveQuote, CurveSample,
+                         KsPathResponse, KsPathPoint)
 from services.market_data import MarketDataService, market_cache
 from forwards import get_maturity_date
 from rates import tenor_to_days
 
 router = APIRouter()
+
+
+@router.get("/ks-path", response_model=KsPathResponse, tags=["Curves"])
+async def get_ks_path():
+    """Путь ключевой ставки: рыночный форвард (СПФИ, наш bootstrap) vs ручные
+    сценарии ЦБ + факт по прошедшим заседаниям. Реплика листа «КС-прогноз»."""
+    from services.ks_path import build_ks_path, current_ks_pct, SCENARIO_LABELS
+    _ruonia, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
+    cd = calc_date or date.today()
+    points = build_ks_path(keyrate_curve, cd)
+    warnings = []
+    if keyrate_curve is None:
+        warnings.append("Кривая КС недоступна — рыночный путь не построен.")
+    if rates_date and (date.today() - rates_date).days > 4:
+        warnings.append(f"Котировки устарели на {(date.today() - rates_date).days} дн.")
+    return KsPathResponse(
+        calc_date=cd, current_ks_pct=current_ks_pct(cd),
+        scenario_labels=SCENARIO_LABELS,
+        points=[KsPathPoint(**p) for p in points], warnings=warnings,
+    )
 
 
 @router.get("/plot", response_model=CurvePlotResponse, tags=["Curves"])

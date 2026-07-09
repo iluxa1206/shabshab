@@ -104,6 +104,12 @@ export async function fetchCurvePlot(type) {
   return r.json();
 }
 
+export async function fetchKsPath() {
+  const r = await authFetch(`${API}/api/curves/ks-path`);
+  if (!r.ok) throw new Error("ks-path " + r.status);
+  return r.json();
+}
+
 export async function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
   let url;
   if (universe) {

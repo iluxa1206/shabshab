@@ -1,16 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchCurvePlot } from "../api.js";
+import { fetchCurvePlot, fetchKsPath } from "../api.js";
 import { fmt } from "../format.js";
 
-// Вкладка кривых: par-котировки СПФИ (что запарсилось) + построенная кривая
-// (spot = средняя ставка индекса на срок из DF; forward = мгновенный ~30д вперёд).
+// Вкладка кривых. Два вида:
+//  «Кривая» — par-котировки СПФИ + построенная кривая (spot/forward).
+//  «Путь КС» — рыночный форвард-путь ставки vs ручные сценарии ЦБ + факт
+//              (реплика листа «КС-прогноз» из 502_504.xlsm).
 // SVG без внешних либ, тема через CSS-переменные.
 export default function CurvesModule() {
+  const [view, setView] = useState("curve"); // curve | kspath
+  return (
+    <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
+      <div style={{ marginBottom: 14 }}>
+        <span className="seg" role="tablist" aria-label="Вид">
+          <button className={"seg-btn" + (view === "curve" ? " active" : "")}
+            onClick={() => setView("curve")}>Кривая</button>
+          <button className={"seg-btn" + (view === "kspath" ? " active" : "")}
+            onClick={() => setView("kspath")}>Путь КС</button>
+        </span>
+      </div>
+      {view === "curve" ? <CurveView /> : <KsPathView />}
+    </div>
+  );
+}
+
+function CurveView() {
   const [type, setType] = useState("ruonia");
   const [data, setData] = useState(null);
-  const [status, setStatus] = useState("loading"); // loading | ready | error
+  const [status, setStatus] = useState("loading");
   const [err, setErr] = useState("");
-  const [hover, setHover] = useState(null); // {x,y,label}
+  const [hover, setHover] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -22,7 +41,7 @@ export default function CurvesModule() {
   }, [type]);
 
   return (
-    <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
+    <>
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12 }}>
         <span className="seg" role="tablist" aria-label="Кривая">
           <button className={"seg-btn" + (type === "ruonia" ? " active" : "")}
@@ -52,7 +71,7 @@ export default function CurvesModule() {
           <QuoteTable data={data} />
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -180,5 +199,164 @@ function QuoteTable({ data }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ── Путь КС: рыночный форвард vs сценарии ЦБ + факт ──────────────────────
+function KsPathView() {
+  const [data, setData] = useState(null);
+  const [status, setStatus] = useState("loading");
+  const [err, setErr] = useState("");
+  const [scenario, setScenario] = useState("base"); // flat | base | fast
+
+  useEffect(() => {
+    let alive = true;
+    setStatus("loading");
+    fetchKsPath()
+      .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
+      .catch((e) => { if (alive) { setErr(String(e.message || e)); setStatus("error"); } });
+    return () => { alive = false; };
+  }, []);
+
+  if (status === "loading") return <div className="muted">Загрузка…</div>;
+  if (status === "error") return <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>;
+  if (!data) return null;
+
+  const scKey = scenario + "_pct";
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+        <span className="seg" role="tablist" aria-label="Сценарий ЦБ">
+          {Object.entries(data.scenario_labels).map(([k, label]) => (
+            <button key={k} className={"seg-btn" + (scenario === k ? " active" : "")}
+              onClick={() => setScenario(k)}>{label}</button>
+          ))}
+        </span>
+        <span className="muted" style={{ fontSize: 11 }}>
+          действующая КС: <b style={{ color: "var(--fg)" }}>{data.current_ks_pct ?? "—"}%</b> · calc {fmt.date(data.calc_date)}
+        </span>
+      </div>
+
+      {data.warnings?.length > 0 && (
+        <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
+      )}
+
+      <KsPathChart points={data.points} scKey={scKey} calcDate={data.calc_date} />
+
+      <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
+        <LegLine color="var(--fg)" dash="" label="Факт КС" />
+        <LegLine color="var(--up)" dash="" label="Рынок (СПФИ форвард)" />
+        <LegLine color="var(--down)" dash="5 4" label={`Сценарий: ${data.scenario_labels[scenario]}`} />
+      </div>
+      <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
+        Ступенька по датам заседаний ЦБ. «Рынок» — форвард нашей bootstrap-кривой КС
+        (что закладывают своп-котировки СПФИ); «Сценарий» — ручная траектория из
+        502_504.xlsm. Расхождение = разница взгляда рынка и ручного прогноза.
+      </div>
+    </>
+  );
+}
+
+function KsPathChart({ points, scKey, calcDate }) {
+  const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
+  const iw = W - L - R, ih = H - T - B;
+  const [hover, setHover] = useState(null);
+
+  const g = useMemo(() => {
+    const xs = points.map((p) => new Date(p.date).getTime());
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const ys = [];
+    points.forEach((p) => {
+      if (p.actual_pct != null) ys.push(p.actual_pct);
+      if (p.market_pct != null) ys.push(p.market_pct);
+      ys.push(p[scKey]);
+    });
+    let ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const pad = (ymax - ymin) * 0.1 || 1;
+    ymin -= pad; ymax += pad;
+    const X = (t) => L + ((t - xmin) / (xmax - xmin)) * iw;
+    const Y = (v) => T + (1 - (v - ymin) / (ymax - ymin)) * ih;
+    return { X, Y, xmin, xmax, ymin, ymax };
+  }, [points, scKey]);
+
+  const { X, Y, ymin, ymax, xmin, xmax } = g;
+  // ступенчатый путь: горизонт до след. точки, потом вертикаль
+  const stepPath = (key) => {
+    const pts = points.filter((p) => p[key] != null);
+    if (!pts.length) return "";
+    let d = "";
+    pts.forEach((p, i) => {
+      const x = X(new Date(p.date).getTime()), y = Y(p[key]);
+      if (i === 0) d += `M${x.toFixed(1)},${y.toFixed(1)}`;
+      else {
+        const px = X(new Date(pts[i - 1].date).getTime());
+        d += `L${x.toFixed(1)},${Y(pts[i - 1][key]).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)}`;
+      }
+    });
+    return d;
+  };
+
+  const yticks = [];
+  for (let i = 0; i <= 5; i++) yticks.push(ymin + ((ymax - ymin) * i) / 5);
+  // X-годовые тики
+  const years = [];
+  const y0 = new Date(xmin).getFullYear(), y1 = new Date(xmax).getFullYear();
+  for (let y = y0; y <= y1; y++) years.push(new Date(`${y}-01-01`).getTime());
+  const todayX = X(new Date(calcDate).getTime());
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}
+        onMouseLeave={() => setHover(null)}
+        onMouseMove={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const px = ((e.clientX - r.left) / r.width) * W;
+          const t = xmin + ((px - L) / iw) * (xmax - xmin);
+          let best = null, bd = 1e18;
+          points.forEach((p) => { const d = Math.abs(new Date(p.date).getTime() - t); if (d < bd) { bd = d; best = p; } });
+          if (best) setHover(best);
+        }}>
+        {yticks.map((v, i) => (
+          <g key={i}>
+            <line x1={L} y1={Y(v)} x2={W - R} y2={Y(v)} stroke="var(--line-2)" />
+            <text x={L - 6} y={Y(v) + 3} textAnchor="end" fontSize="10" fill="var(--mut)">{v.toFixed(1)}</text>
+          </g>
+        ))}
+        {years.map((t, i) => t >= xmin && t <= xmax && (
+          <text key={i} x={X(t)} y={H - B + 14} textAnchor="middle" fontSize="9" fill="var(--mut)">{new Date(t).getFullYear()}</text>
+        ))}
+        {/* линия "сегодня" */}
+        <line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke="var(--mut)" strokeDasharray="2 3" />
+        <text x={todayX + 3} y={T + 10} fontSize="9" fill="var(--mut)">сегодня</text>
+        {/* сценарий (пунктир) */}
+        <path d={stepPath(scKey)} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
+        {/* рынок */}
+        <path d={stepPath("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
+        {/* факт */}
+        <path d={stepPath("actual_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
+        {hover && (
+          <line x1={X(new Date(hover.date).getTime())} y1={T} x2={X(new Date(hover.date).getTime())} y2={H - B}
+            stroke="var(--mut)" strokeDasharray="1 2" />
+        )}
+      </svg>
+      {hover && (
+        <div style={{
+          position: "absolute", left: `${(X(new Date(hover.date).getTime()) / W) * 100}%`, top: 4,
+          transform: "translate(-50%, 0)", fontSize: 11, background: "var(--inv-bg)", color: "var(--inv-fg)",
+          padding: "3px 7px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
+        }}>
+          {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
+            `рынок ${hover.market_pct ?? "—"}% · сцен ${hover[scKey]}%`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LegLine({ color, dash, label }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+      <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke={color} strokeWidth="2" strokeDasharray={dash} /></svg>{label}
+    </span>
   );
 }
