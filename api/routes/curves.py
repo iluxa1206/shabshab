@@ -11,16 +11,14 @@ from rates import tenor_to_days
 router = APIRouter()
 
 
-@router.get("/floater-scenarios", tags=["Curves"])
-async def floater_scenarios(isin: str = Query(..., description="ISIN KEYRATE-флоатера")):
+@router.get("/floater-yield", tags=["Curves"])
+async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-флоатера")):
     """YTM/купоны флоатера по методу 502_504 (Floater spread): проекция купона =
-    среднее пути КС по окну рефиксинга + спред, XIRR. Считает под РЫНОК (форвард
-    свопов) и под 3 ручных сценария ЦБ — фаза 1. Пока только KEYRATE."""
+    среднее рыночного пути КС (форвард СПФИ) по окну рефиксинга + спред, XIRR.
+    Пока только KEYRATE."""
     from services import nrd as nrd_service
     from services.bonds import build_ref_external
     from services.floater_model import make_ks_path, project_floater, floater_xirr_pct, actual_ks
-    from services.ks_path import SCENARIO_LABELS
-    from valuation import dirty_price_rub
 
     _ruonia, keyrate_curve, calc_date, _rd = await MarketDataService.get_curves()
     cd = calc_date or date.today()
@@ -58,25 +56,17 @@ async def floater_scenarios(isin: str = Query(..., description="ISIN KEYRATE-ф�
     dirty_pct = price + (accrued or 0.0) / ref.face_value * 100.0
     mat = ref.maturity_date
 
-    def run(mode, scen):
-        path = make_ks_path(keyrate_curve, cd, mode, scen)
-        cfs = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
-        return floater_xirr_pct(cfs, dirty_pct, cd), cfs
-
-    out_scen = []
-    y_mkt, cfs_mkt = run("market", "base")
-    out_scen.append({"key": "market", "label": "Рынок (СПФИ форвард)", "ytm_pct": y_mkt})
-    for k, lbl in SCENARIO_LABELS.items():
-        y, _ = run("scenario", k)
-        out_scen.append({"key": k, "label": lbl, "ytm_pct": y})
+    path = make_ks_path(keyrate_curve, cd)
+    cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
+    y_mkt = floater_xirr_pct(cfs_mkt, dirty_pct, cd)
 
     return {
         "isin": isin, "name": u.get("name") or isin, "base": base,
         "spread_bps": u.get("spread_issue_bps") or 0,
         "calc_date": cd.isoformat(), "price_flat_pct": round(price, 4),
         "current_ks_pct": round((actual_ks(cd) or 0) * 100, 2),
+        "ytm_pct": y_mkt,
         "coupons_market": [{"date": d.isoformat(), "amount_pct": a} for d, a in cfs_mkt[:12]],
-        "scenarios": out_scen,
     }
 
 
@@ -84,7 +74,7 @@ async def floater_scenarios(isin: str = Query(..., description="ISIN KEYRATE-ф�
 async def get_ks_path():
     """Путь ключевой ставки: рыночный форвард (СПФИ, наш bootstrap) vs ручные
     сценарии ЦБ + факт по прошедшим заседаниям. Реплика листа «КС-прогноз»."""
-    from services.ks_path import build_ks_path, current_ks_pct, SCENARIO_LABELS
+    from services.ks_path import build_ks_path, current_ks_pct
     _ruonia, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     cd = calc_date or date.today()
     points = build_ks_path(keyrate_curve, cd)
@@ -95,7 +85,6 @@ async def get_ks_path():
         warnings.append(f"Котировки устарели на {(date.today() - rates_date).days} дн.")
     return KsPathResponse(
         calc_date=cd, current_ks_pct=current_ks_pct(cd),
-        scenario_labels=SCENARIO_LABELS,
         points=[KsPathPoint(**p) for p in points], warnings=warnings,
     )
 

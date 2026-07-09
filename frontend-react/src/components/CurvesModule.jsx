@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchCurvePlot, fetchKsPath, fetchFloaterScenarios } from "../api.js";
+import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
 import { fmt } from "../format.js";
 
 // Вкладка кривых. Два вида:
@@ -18,7 +18,7 @@ export default function CurvesModule() {
           <button className={"seg-btn" + (view === "kspath" ? " active" : "")}
             onClick={() => setView("kspath")}>Путь КС</button>
           <button className={"seg-btn" + (view === "floater" ? " active" : "")}
-            onClick={() => setView("floater")}>Флоатер / сценарии</button>
+            onClick={() => setView("floater")}>Флоатер YTM</button>
         </span>
       </div>
       {view === "curve" ? <CurveView /> : view === "kspath" ? <KsPathView /> : <FloaterScenariosView />}
@@ -204,12 +204,11 @@ function QuoteTable({ data }) {
   );
 }
 
-// ── Путь КС: рыночный форвард vs сценарии ЦБ + факт ──────────────────────
+// ── Путь КС: факт + рыночный форвард (СПФИ) ──────────────────────────────
 function KsPathView() {
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("loading");
   const [err, setErr] = useState("");
-  const [scenario, setScenario] = useState("base"); // flat | base | fast
 
   useEffect(() => {
     let alive = true;
@@ -224,16 +223,9 @@ function KsPathView() {
   if (status === "error") return <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>;
   if (!data) return null;
 
-  const scKey = scenario + "_pct";
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-        <span className="seg" role="tablist" aria-label="Сценарий ЦБ">
-          {Object.entries(data.scenario_labels).map(([k, label]) => (
-            <button key={k} className={"seg-btn" + (scenario === k ? " active" : "")}
-              onClick={() => setScenario(k)}>{label}</button>
-          ))}
-        </span>
         <span className="muted" style={{ fontSize: 11 }}>
           действующая КС: <b style={{ color: "var(--fg)" }}>{data.current_ks_pct ?? "—"}%</b> · calc {fmt.date(data.calc_date)}
         </span>
@@ -243,23 +235,21 @@ function KsPathView() {
         <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
       )}
 
-      <KsPathChart points={data.points} scKey={scKey} calcDate={data.calc_date} />
+      <KsPathChart points={data.points} calcDate={data.calc_date} />
 
       <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
         <LegLine color="var(--fg)" dash="" label="Факт КС" />
         <LegLine color="var(--up)" dash="" label="Рынок (СПФИ форвард)" />
-        <LegLine color="var(--down)" dash="5 4" label={`Сценарий: ${data.scenario_labels[scenario]}`} />
       </div>
       <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
         Ступенька по датам заседаний ЦБ. «Рынок» — форвард нашей bootstrap-кривой КС
-        (что закладывают своп-котировки СПФИ); «Сценарий» — ручная траектория из
-        502_504.xlsm. Расхождение = разница взгляда рынка и ручного прогноза.
+        (что закладывают своп-котировки СПФИ). Слева от «сегодня» — факт КС.
       </div>
     </>
   );
 }
 
-function KsPathChart({ points, scKey, calcDate }) {
+function KsPathChart({ points, calcDate }) {
   const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
   const iw = W - L - R, ih = H - T - B;
   const [hover, setHover] = useState(null);
@@ -271,7 +261,6 @@ function KsPathChart({ points, scKey, calcDate }) {
     points.forEach((p) => {
       if (p.actual_pct != null) ys.push(p.actual_pct);
       if (p.market_pct != null) ys.push(p.market_pct);
-      ys.push(p[scKey]);
     });
     let ymin = Math.min(...ys), ymax = Math.max(...ys);
     const pad = (ymax - ymin) * 0.1 || 1;
@@ -279,7 +268,7 @@ function KsPathChart({ points, scKey, calcDate }) {
     const X = (t) => L + ((t - xmin) / (xmax - xmin)) * iw;
     const Y = (v) => T + (1 - (v - ymin) / (ymax - ymin)) * ih;
     return { X, Y, xmin, xmax, ymin, ymax };
-  }, [points, scKey]);
+  }, [points]);
 
   const { X, Y, ymin, ymax, xmin, xmax } = g;
   // ступенчатый путь: горизонт до след. точки, потом вертикаль
@@ -330,8 +319,6 @@ function KsPathChart({ points, scKey, calcDate }) {
         {/* линия "сегодня" */}
         <line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke="var(--mut)" strokeDasharray="2 3" />
         <text x={todayX + 3} y={T + 10} fontSize="9" fill="var(--mut)">сегодня</text>
-        {/* сценарий (пунктир) */}
-        <path d={stepPath(scKey)} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
         {/* рынок */}
         <path d={stepPath("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
         {/* факт */}
@@ -348,7 +335,7 @@ function KsPathChart({ points, scKey, calcDate }) {
           padding: "3px 7px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
         }}>
           {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
-            `рынок ${hover.market_pct ?? "—"}% · сцен ${hover[scKey]}%`}
+            `рынок ${hover.market_pct ?? "—"}%`}
         </div>
       )}
     </div>
@@ -374,12 +361,10 @@ function FloaterScenariosView() {
     const v = isin.trim().toUpperCase();
     if (!v) return;
     setStatus("loading"); setErr("");
-    fetchFloaterScenarios(v)
+    fetchFloaterYield(v)
       .then((d) => { setData(d); setStatus("ready"); })
       .catch((e) => { setErr(String(e.message || e)); setStatus("error"); });
   };
-
-  const mkt = data?.scenarios?.find((s) => s.key === "market")?.ytm_pct;
 
   return (
     <>
@@ -396,9 +381,8 @@ function FloaterScenariosView() {
       </div>
 
       <div className="muted" style={{ fontSize: 11, marginBottom: 12, maxWidth: 720 }}>
-        Купон = среднее прогноза КС по окну рефиксинга + спред (метод листа Floater spread).
-        YTM (XIRR) под рынок (форвард СПФИ) и под ручные сценарии ЦБ — справедливая
-        доходность флоатера зависит от траектории ставки.
+        Купон = среднее рыночного пути КС (форвард СПФИ) по окну рефиксинга + спред
+        (метод листа Floater spread). YTM — XIRR по спроецированным потокам.
       </div>
 
       {status === "idle" && <div className="muted">Введи ISIN и нажми «Оценить».</div>}
@@ -406,33 +390,12 @@ function FloaterScenariosView() {
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
         <div style={{ display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ color: "var(--mut)", textAlign: "left" }}>
-                <th style={{ padding: "4px 14px 4px 0" }}>Сценарий КС</th>
-                <th style={{ padding: "4px 0", textAlign: "right" }}>YTM, %</th>
-                <th style={{ padding: "4px 0 4px 14px", textAlign: "right" }}>vs рынок</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.scenarios.map((s) => {
-                const isMkt = s.key === "market";
-                const diff = (mkt != null && s.ytm_pct != null && !isMkt) ? (s.ytm_pct - mkt) : null;
-                return (
-                  <tr key={s.key} style={{ borderTop: "1px solid var(--line-2)" }}>
-                    <td style={{ padding: "5px 14px 5px 0", fontWeight: isMkt ? 700 : 400 }}>{s.label}</td>
-                    <td style={{ padding: "5px 0", textAlign: "right", fontFamily: "var(--mono)", fontWeight: isMkt ? 700 : 400 }}>
-                      {s.ytm_pct != null ? s.ytm_pct.toFixed(2) : "—"}
-                    </td>
-                    <td style={{ padding: "5px 0 5px 14px", textAlign: "right", fontFamily: "var(--mono)",
-                      color: diff == null ? "var(--mut-2)" : diff >= 0 ? "var(--pos)" : "var(--neg)" }}>
-                      {diff == null ? "—" : `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}`}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div>
+            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>YTM (рынок, СПФИ)</div>
+            <div style={{ fontSize: 30, fontWeight: 700, fontFamily: "var(--mono)", letterSpacing: "-0.02em" }}>
+              {data.ytm_pct != null ? `${data.ytm_pct.toFixed(2)}%` : "—"}
+            </div>
+          </div>
 
           <div>
             <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>Купоны (рынок), % от номинала</div>

@@ -5,9 +5,8 @@
 рефиксинга [купон − лаг − интервал, купон − лаг] (поля «лаг»/«интервал» СПФИ-
 конвенции). База берётся со СКЛЕЕННОГО пути: факт (прошлое) + прогноз (будущее).
 
-Прогноз пути — два режима (переключатель T1 в файле):
-  mode="market"   — рыночный форвард нашей bootstrap-кривой КС (что в свопах);
-  mode="scenario" — ручной сценарий ЦБ (flat/base/fast из ks_path).
+Прогноз пути = рыночный форвард нашей bootstrap-кривой КС (что закладывают свопы
+СПФИ). Ручные сценарии ЦБ убраны — путь объективно из рынка.
 
 Купон[i] = (base_avg + spread) · days_i/365 · 100  (+100 в погашение).
 Доходность = XIRR(потоки, даты) c dirty-ценой как оттоком в t0.
@@ -24,7 +23,6 @@ from valuation import xirr
 
 # Факт КС по датам заседаний (ступенька) — из встроенной таблицы ks_path.
 _ACTUAL_KS = [(date.fromisoformat(d), a) for d, a, *_ in _MEETINGS]
-_SCEN_IDX = {"flat": 2, "base": 3, "fast": 4}
 
 
 def actual_ks(d: date) -> Optional[float]:
@@ -38,32 +36,13 @@ def actual_ks(d: date) -> Optional[float]:
     return val
 
 
-def scenario_ks(d: date, scenario: str) -> float:
-    """Сценарный КС на дату (decimal) — последнее заседание ≤ d, колонка сценария."""
-    idx = _SCEN_IDX.get(scenario, 3)
-    val = _MEETINGS[0][idx]
-    for row in _MEETINGS:
-        if date.fromisoformat(row[0]) <= d:
-            val = row[idx]
-        else:
-            break
-    return val
-
-
-def make_ks_path(curve, calc_date: date, mode: str = "market",
-                 scenario: str = "base") -> Callable[[date], float]:
-    """Возвращает функцию date→КС(decimal): факт до calc_date, прогноз после.
-
-    mode="market"  — прогноз = форвард кривой КС на ~30д от даты (в конвенции КС);
-    mode="scenario"— прогноз = ступенька выбранного сценария ЦБ.
-    """
+def make_ks_path(curve, calc_date: date) -> Callable[[date], float]:
+    """Возвращает функцию date→КС(decimal): факт до calc_date, рыночный форвард
+    кривой КС (СПФИ) после — на ~30д окне, в конвенции КС."""
     def path(d: date) -> float:
         a = actual_ks(d)
         if d <= calc_date and a is not None:
             return a
-        if mode == "scenario":
-            return scenario_ks(d, scenario)
-        # market: форвард кривой (конвенция КС ≈ уровень ставки)
         if curve is not None:
             try:
                 end = d + timedelta(days=30)

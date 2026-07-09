@@ -61,9 +61,6 @@ _MEETINGS = [
     ("2031-12-26", 0.09, 0.16, 0.09, 0.10),
 ]
 
-SCENARIO_LABELS = {"flat": "Флэт 21", "base": "База", "fast": "Быстрый спад"}
-
-
 def current_ks_pct(calc_date: date) -> Optional[float]:
     """Действующая КС, %. Авторитетно из CURRENT_KS_PCT (на CURRENT_KS_ASOF);
     для дат в прошлом — факт последнего прошедшего заседания."""
@@ -79,15 +76,9 @@ def current_ks_pct(calc_date: date) -> Optional[float]:
 
 
 def build_ks_path(curve, calc_date: date) -> List[dict]:
-    """Ступенчатый путь КС по заседаниям.
-
-    curve — bootstrap-кривая КС (forward() в конвенции КС ≈ уровень ставки).
-    Для каждого заседания:
-      actual_pct — факт (прошедшие);
-      market_pct — рыночный форвард на окно [заседание, следующее] (будущие);
-      flat/base/fast_pct — ручные сценарии.
-    Возвращает точки с горизонтом до последнего узла кривой (обрезаем длинный
-    хвост, где форвард уже экстраполяция)."""
+    """Ступенчатый путь КС по заседаниям: факт (прошедшие) + рыночный форвард из
+    СПФИ (будущие). Форвард берётся на межзаседательное окно [заседание, следующее]
+    в конвенции КС. Горизонт — до последнего узла кривой (дальше экстраполяция)."""
     horizon_days = 0
     try:
         horizon_days = (curve.nodes[-1][0] - curve.calc_date).days if curve else 0
@@ -95,9 +86,9 @@ def build_ks_path(curve, calc_date: date) -> List[dict]:
         horizon_days = 3650
     max_date = calc_date.replace(year=calc_date.year + min(11, max(1, horizon_days // 365)))
 
-    meetings = [(date.fromisoformat(d), a, f, b, s) for d, a, f, b, s in _MEETINGS]
+    meetings = [(date.fromisoformat(d), a) for d, a, *_ in _MEETINGS]
     out = []
-    for i, (mdate, actual, flat, base, fast) in enumerate(meetings):
+    for i, (mdate, actual) in enumerate(meetings):
         if mdate > max_date:
             break
         past = mdate <= calc_date
@@ -114,8 +105,5 @@ def build_ks_path(curve, calc_date: date) -> List[dict]:
             "date": mdate.isoformat(),
             "actual_pct": round(actual * 100, 3) if past else None,
             "market_pct": market,
-            "flat_pct": round(flat * 100, 3),
-            "base_pct": round(base * 100, 3),
-            "fast_pct": round(fast * 100, 3),
         })
     return out

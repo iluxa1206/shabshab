@@ -268,14 +268,10 @@ class KsPathPoint(BaseModel):
     date: date
     actual_pct: Optional[float] = None    # факт КС (прошедшие заседания)
     market_pct: Optional[float] = None    # рыночный форвард (СПФИ), будущие
-    flat_pct: float
-    base_pct: float
-    fast_pct: float
 
 class KsPathResponse(BaseModel):
     calc_date: date
     current_ks_pct: Optional[float] = None
-    scenario_labels: Dict[str, str]
     points: List[KsPathPoint]
     warnings: List[str] = Field(default_factory=list)
 
