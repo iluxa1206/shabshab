@@ -11,6 +11,75 @@ from rates import tenor_to_days
 router = APIRouter()
 
 
+@router.get("/floater-scenarios", tags=["Curves"])
+async def floater_scenarios(isin: str = Query(..., description="ISIN KEYRATE-флоатера")):
+    """YTM/купоны флоатера по методу 502_504 (Floater spread): проекция купона =
+    среднее пути КС по окну рефиксинга + спред, XIRR. Считает под РЫНОК (форвард
+    свопов) и под 3 ручных сценария ЦБ — фаза 1. Пока только KEYRATE."""
+    from services import nrd as nrd_service
+    from services.bonds import build_ref_external
+    from services.floater_model import make_ks_path, project_floater, floater_xirr_pct, actual_ks
+    from services.ks_path import SCENARIO_LABELS
+    from valuation import dirty_price_rub
+
+    _ruonia, keyrate_curve, calc_date, _rd = await MarketDataService.get_curves()
+    cd = calc_date or date.today()
+    uni = await nrd_service.fetch_floater_universe()
+    u = next((x for x in uni if x.get("isin") == isin), None)
+    if u is None:
+        raise HTTPException(status_code=404, detail=f"{isin} не найден в юниверсе флоатеров")
+    base = "KEYRATE" if u.get("base_rate_type") == "KEYRATE" else u.get("base_rate_type")
+    if base != "KEYRATE":
+        raise HTTPException(status_code=400, detail="Фаза 1 — только KEYRATE-флоатеры")
+    if keyrate_curve is None:
+        raise HTTPException(status_code=503, detail="Кривая КС недоступна")
+
+    secs = await MarketDataService.fetch_moex_securities([isin])
+    full = await MarketDataService.fetch_bond_schedule_full(isin)
+    snap = (await MarketDataService.fetch_moex_snapshot([isin])).get(isin, {})
+    ref = build_ref_external(isin, secs.get(isin, {}),
+                             {"base_coupon_index": "CBRATED",
+                              "nominal_margin_bps": u.get("spread_issue_bps") or 0})
+    spread_pct = (u.get("spread_issue_bps") or 0) / 10000.0
+
+    # будущие периоды (start,end) из расписания MOEX
+    periods = []
+    for c in full.get("coupons", []):
+        s, e = c.get("start"), c.get("end")
+        if s and e:
+            sd, ed = date.fromisoformat(s), date.fromisoformat(e)
+            if ed > cd:
+                periods.append((sd, ed))
+    if not periods:
+        raise HTTPException(status_code=422, detail="Нет будущих купонов")
+
+    price = snap.get("prev") or u.get("nrd_price_pct") or 100.0
+    accrued = snap.get("accrued") if snap.get("accrued") is not None else ref.accrued_rub
+    dirty_pct = price + (accrued or 0.0) / ref.face_value * 100.0
+    mat = ref.maturity_date
+
+    def run(mode, scen):
+        path = make_ks_path(keyrate_curve, cd, mode, scen)
+        cfs = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
+        return floater_xirr_pct(cfs, dirty_pct, cd), cfs
+
+    out_scen = []
+    y_mkt, cfs_mkt = run("market", "base")
+    out_scen.append({"key": "market", "label": "Рынок (СПФИ форвард)", "ytm_pct": y_mkt})
+    for k, lbl in SCENARIO_LABELS.items():
+        y, _ = run("scenario", k)
+        out_scen.append({"key": k, "label": lbl, "ytm_pct": y})
+
+    return {
+        "isin": isin, "name": u.get("name") or isin, "base": base,
+        "spread_bps": u.get("spread_issue_bps") or 0,
+        "calc_date": cd.isoformat(), "price_flat_pct": round(price, 4),
+        "current_ks_pct": round((actual_ks(cd) or 0) * 100, 2),
+        "coupons_market": [{"date": d.isoformat(), "amount_pct": a} for d, a in cfs_mkt[:12]],
+        "scenarios": out_scen,
+    }
+
+
 @router.get("/ks-path", response_model=KsPathResponse, tags=["Curves"])
 async def get_ks_path():
     """Путь ключевой ставки: рыночный форвард (СПФИ, наш bootstrap) vs ручные
