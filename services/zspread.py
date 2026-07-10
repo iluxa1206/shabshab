@@ -300,7 +300,8 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     (цена в % котируется от него), amorts — график погашения принципала."""
     if ref.base not in ("RUONIA", "KEYRATE") or price_pct is None:
         return None
-    dirty = ref.face_value * price_pct / 100.0 + (accrued_rub or 0.0)
+    from valuation import face_for_pricing
+    dirty = face_for_pricing(ref.face_value, amorts, calc_date) * price_pct / 100.0 + (accrued_rub or 0.0)
     cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers)
     if ref.base == "KEYRATE":
         if not g.ok():

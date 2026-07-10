@@ -34,7 +34,10 @@ def calculate_valuation_metrics(
     Returns a dictionary suitable for formatting by Pydantic.
     """
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
-    dirty_rub = dirty_price_rub(bond.face_value, price, accrued)
+    # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
+    from valuation import face_for_pricing
+    _pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
+    dirty_rub = dirty_price_rub(_pricing_face, price, accrued)
 
     # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
     # (факт MOEX), амортизации учитываем. base_cfs (spread=0) — контрфактуал только

@@ -63,6 +63,21 @@ def dirty_price_rub(face_value: float, clean_price_pct: float, accrued_rub: floa
     return face_value * (clean_price_pct / 100.0) + accrued_rub
 
 
+def face_for_pricing(face_value: float, amorts: Optional[List[dict]], calc_date: date) -> float:
+    """Номинал, от которого котируется цена при T+1: амортизация с датой в окне
+    (calc_date, settle] достаётся ПРОДАВЦУ (ex-date), покупатель платит цену от
+    остатка ПОСЛЕ неё. MOEX FACEVALUE до выплаты ещё полный → вычитаем сами.
+    Наблюдалось (БалтЛизП10 накануне амортизации): без вычета dirty на 100₽ выше
+    реальной → SM −1593 вместо ≈ +1084."""
+    settle = settle_date(calc_date)
+    cut = 0.0
+    for a in amorts or []:
+        d = _amort_date(a)
+        if d and calc_date < d <= settle and a.get("value") is not None:
+            cut += float(a["value"])
+    return max(face_value - cut, 0.0) or face_value
+
+
 def generate_coupon_dates(first_coupon_date: date, maturity_date: date, coupons_per_year: int) -> List[date]:
     """
     Генерирует сетку дат купонов строго по шагу (без бизнес-сдвигов).
