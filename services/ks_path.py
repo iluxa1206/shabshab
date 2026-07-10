@@ -46,14 +46,25 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     if out:
         out[-1]["market_pct"] = out[-1]["actual_pct"]  # стыковка факт→прогноз
 
-    # --- КС: методика НРД Прил.3 (сплайн + затухание к нейтрали) + прогноз ЦБ ---
+    # --- КС: рыночная траектория = форвардные сегменты СПФИ (логика Excel-файла:
+    # лист IRS кол.K — маржинальный форвард КС между тенорами), ступени по сегментам.
+    # + прогноз ЦБ (ступени на заседаниях) ---
     if series == "ks" and ks_quotes:
-        from services.implied_curve import KsExpectationCurve
+        from forwards import CurveBootstrapper
         from services import cbr_forecast
-        ksc = KsExpectationCurve(ks_quotes)
+        ec = CurveBootstrapper._build_excel_forward_curve(ks_quotes, calc_date, "KEYRATE")
+        segs = ec.segments  # [(start, end, forward)], до последнего свопа (~10Y)
         cur_ks = cbr.current_ks() or 0.0
-        # прогноз ЦБ: ступенчатый путь на заседаниях (средняя за год = прогнозной)
         fc_path = cbr_forecast.meeting_step_path(calc_date, cur_ks)
+
+        def _step(seq, d, default=None):
+            v = default
+            for a, b, x in seq:
+                if a <= d:
+                    v = x
+                else:
+                    break
+            return v
 
         def fc_level(d: date) -> Optional[float]:
             if not fc_path:
@@ -66,16 +77,13 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
                     break
             return v
 
-        # горизонт — ровно до последнего свопа (~10Y): показываем сплайн из свопов,
-        # без правого decay-хвоста к нейтрали (экстраполяция за 10Y читалась криво)
-        hy = int(getattr(ksc, "t_last", 10))
-        horizon = date(calc_date.year + hy, calc_date.month, min(calc_date.day, 28))
+        horizon = segs[-1][1] if segs else (calc_date + timedelta(days=3650))
         d = calc_date
         while d < horizon:
-            t = (d - calc_date).days / 365.0
+            mv = _step(segs, d)
             fcv = fc_level(d)
             out.append({"date": d.isoformat(), "actual_pct": None,
-                        "market_pct": round(ksc.ks(t) * 100.0, 3),
+                        "market_pct": round(mv * 100.0, 3) if mv is not None else None,
                         "forecast_pct": round(fcv, 3) if fcv is not None else None})
             d = _add_month(d)
         return out
