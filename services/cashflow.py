@@ -26,15 +26,29 @@ def build_cashflow_from_moex(
     sp = (ref.spread_issue_bps or 0) / 10000.0
     items: List[CashflowItem] = []
     n = 0
+    # амортизируемая: остаточный номинал на начало периода. Считаем сами (поле face
+    # строк купонов MOEX ненадёжно, всегда 1000). Берём ПОЛНЫЙ график погашений
+    # (не только будущие: погашение ~сегодня уже уменьшило остаток) относительно
+    # исходного номинала = текущий + уже погашенное.
+    _am_all = sorted(
+        (_d(a.get("date")), float(a.get("value") or 0))
+        for a in (amorts or []) if _d(a.get("date"))
+    )
+    _amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in _am_all)
+    _orig_face = ref.face_value + sum(v for d, v in _am_all if d <= calc_date)
     for c in coupons:
         end = _d(c.get("end"))
         if not end:
             continue
         start = _d(c.get("start")) or end
-        try:
-            face = float(c.get("face")) if c.get("face") is not None else ref.face_value
-        except (ValueError, TypeError):
-            face = ref.face_value
+        if _amortizing:
+            paid = sum(v for d, v in _am_all if d <= start)
+            face = (_orig_face - paid) or ref.face_value
+        else:
+            try:
+                face = float(c.get("face")) if c.get("face") is not None else ref.face_value
+            except (ValueError, TypeError):
+                face = ref.face_value
         days = (end - start).days or 1
         alpha = days / 365.0
         val = c.get("value")
