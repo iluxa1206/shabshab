@@ -81,7 +81,8 @@ async def get_ks_path(
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     cd = calc_date or date.today()
     curve = keyrate_curve if series == "ks" else ruonia_curve
-    points = await asyncio.to_thread(build_path, curve, cd, series)
+    ks_quotes = market_cache.get("irs_quotes") if series == "ks" else None
+    points = await asyncio.to_thread(build_path, curve, cd, series, 3, ks_quotes)
     cur = await asyncio.to_thread(current_rate_pct, series, cd)
     warnings = []
     if curve is None:

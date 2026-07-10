@@ -1,9 +1,12 @@
 """Путь базовой ставки (КС или RUONIA): исторический факт (живьём с ЦБ РФ) +
-рыночный форвард из СПФИ (наш bootstrap).
+рыночная траектория ожиданий из СПФИ.
 
-Факт и текущее значение — из services.cbr (cbr.ru, дневная история). Рыночный
-форвард — помесячная выборка forward() нашей кривой (КС в конвенции КС, RUONIA в
-daily-comp). Ручные сценарии ЦБ убраны — траектория объективно из рынка.
+Факт — из services.cbr (дневная история). Траектория ожиданий:
+  КС    — по методике НРД met_float Прил.3: натуральный кубический сплайн через
+          ставки СПФИ IRS KeyRate (проходит точно через свопы, C²), за последним
+          свопом — экспо-затухание к долгосрочной нейтральной ставке ЦБ
+          (services.implied_curve.KsExpectationCurve). Это и есть «ожидаемая КС(t)».
+  RUONIA — форвард нашей bootstrap-кривы (Смита-Уилсона Прил.2 пока не реализован).
 """
 from __future__ import annotations
 from datetime import date, timedelta
@@ -24,12 +27,14 @@ def _add_month(d: date) -> date:
     return date(y, m, day)
 
 
-def build_path(curve, calc_date: date, series: str = "ks",
-               hist_years: int = 3) -> List[dict]:
+def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
+               ks_quotes: list = None) -> List[dict]:
     """Точки пути: факт (≤ calc_date, дневной с ЦБ, обрезан на hist_years назад) +
-    рыночный форвард (помесячно от calc_date до горизонта кривой).
+    рыночная траектория (помесячно вперёд).
 
-    series="ks"|"ruonia". actual_pct — факт; market_pct — форвард кривой.
+    КС: траектория = KsExpectationCurve (сплайн свопов + затухание к нейтрали, НРД
+    Прил.3) на ks_quotes; горизонт ~15 лет (видно реверс к нейтрали). RUONIA:
+    форвард bootstrap-кривой до её последнего узла.
     """
     hist = cbr.ks_history() if series == "ks" else cbr.ruonia_history()
     cutoff = date(calc_date.year - hist_years, calc_date.month, min(calc_date.day, 28))
@@ -38,16 +43,29 @@ def build_path(curve, calc_date: date, series: str = "ks",
         if cutoff <= d <= calc_date:
             out.append({"date": d.isoformat(), "actual_pct": round(v, 4), "market_pct": None})
 
-    # рыночный форвард помесячно до последнего узла кривой
+    if out:
+        out[-1]["market_pct"] = out[-1]["actual_pct"]  # стыковка факт→прогноз
+
+    # --- КС: методика НРД Прил.3 (сплайн + затухание к нейтрали) ---
+    if series == "ks" and ks_quotes:
+        from services.implied_curve import KsExpectationCurve
+        ksc = KsExpectationCurve(ks_quotes)
+        horizon = date(calc_date.year + 15, calc_date.month, min(calc_date.day, 28))
+        d = calc_date
+        while d < horizon:
+            t = (d - calc_date).days / 365.0
+            out.append({"date": d.isoformat(), "actual_pct": None,
+                        "market_pct": round(ksc.ks(t) * 100.0, 3)})
+            d = _add_month(d)
+        return out
+
+    # --- RUONIA (или нет квот КС): форвард bootstrap-кривой ---
     if curve is not None:
         try:
             horizon = curve.nodes[-1][0]
         except Exception:
             horizon = calc_date + timedelta(days=3650)
         d = max(calc_date, curve.calc_date)
-        # состыковать начало форварда с последним фактом (без разрыва)
-        if out:
-            out[-1]["market_pct"] = out[-1]["actual_pct"]
         while d < horizon:
             nxt = _add_month(d)
             try:
