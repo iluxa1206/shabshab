@@ -209,11 +209,12 @@ def build_cashflows_to_maturity(
     """
     if explicit_periods:
         # Реальный календарь MOEX: тройки (start, end, value) или пары (start, end).
+        # maturity_date может быть None (перпы/суборды без даты) — не фильтруем.
         periods = []
         for p in explicit_periods:
             s, e = p[0], p[1]
             v = p[2] if len(p) > 2 else None
-            if e <= bond.maturity_date:
+            if bond.maturity_date is None or e <= bond.maturity_date:
                 periods.append((s, e, v))
     else:
         if bond.coupon_period_days and bond.issue_date:
@@ -240,11 +241,18 @@ def build_cashflows_to_maturity(
     # T+1: платежи с датой <= settle покупателю не достаются (ex-coupon, НКД=0)
     settle = settle_date(calc_date)
 
-    # Оферта: режем поток на первой будущей оферте (спред после неё не гарантирован,
-    # купоны за офертой в bondization не определены → прогноз фиктивен). Купон
-    # периода, накрывающего оферту, отбрасывается (оферты обычно совпадают с концом
-    # купонного периода). eff_maturity — горизонт оценки.
-    put = first_offer_date(offers, settle)
+    # Оферта: режем поток ТОЛЬКО если купон после оферты неопределён (пересмотр
+    # эмитентом — ref_data.cut_at_offer). У обычного флоатера формула КС/RUONIA+m
+    # действует до погашения: пут — опция ликвидности, оцениваем к погашению (как
+    # НРД; безусловная резка давала ложные отрицательные SM у премиальных с путом).
+    put = None
+    if offers:
+        try:
+            from services.ref_data import cut_at_offer
+            if cut_at_offer(bond.isin):
+                put = first_offer_date(offers, settle)
+        except Exception:
+            put = None
     eff_maturity = bond.maturity_date
     if put and (eff_maturity is None or put < eff_maturity):
         eff_maturity = put
@@ -327,7 +335,7 @@ def build_cashflows_to_maturity(
     elif amortizing:
         for d, v in future_am:
             cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION"))
-    elif bond.maturity_date > calc_date:
+    elif bond.maturity_date and bond.maturity_date > calc_date:
         cfs.append(Cashflow(pay_date=bond.maturity_date, amount_rub=bond.face_value, type="REDEMPTION"))
 
     # 5. Sort by pay_date

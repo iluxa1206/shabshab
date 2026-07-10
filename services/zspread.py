@@ -120,9 +120,17 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     settle = settle_date(calc_date)
     sp = (ref.spread_issue_bps or 0) / 10000.0
 
-    # Оферта: режем поток (та же логика, что valuation.build_cashflows_to_maturity —
-    # спред после оферты не гарантирован, купоны за ней фикция)
-    put = first_offer_date(offers, settle)
+    # Оферта: режем ТОЛЬКО при неопределённом купоне после оферты (пересмотр
+    # эмитентом — ref_data.cut_at_offer); иначе к погашению (та же логика, что
+    # valuation.build_cashflows_to_maturity)
+    put = None
+    if offers:
+        try:
+            from services.ref_data import cut_at_offer
+            if cut_at_offer(ref.isin):
+                put = first_offer_date(offers, settle)
+        except Exception:
+            put = None
     eff_maturity = ref.maturity_date
     if put and (eff_maturity is None or put < eff_maturity):
         eff_maturity = put

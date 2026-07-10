@@ -177,6 +177,23 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
     return out
 
 
+# Типы переменной ставки Cbonds, при которых купон ПОСЛЕ оферты неопределён
+# (эмитент выставит заново) → оценка к оферте. Для обычного флоатера
+# («Плавающая ставка», формула КС/RUONIA+m до погашения) пут — лишь опция
+# ликвидности: резать поток нельзя (НРД оценивает к погашению; резка давала
+# ложные отрицательные SM у премиальных бумаг с путом).
+_RESET_VAR_TYPES = ("определяется решением эмитента", "изменение ставки при условии")
+
+
+def cut_at_offer(isin: str) -> bool:
+    """Резать ли поток флоатера по оферте: только если формула купона после
+    оферты неизвестна (пересмотр эмитентом). Неизвестный var_type → не резать."""
+    vt = (params(isin).get("var_type") or "").lower()
+    if params(isin).get("cut_at_offer") is not None:   # ручной оверрайд
+        return bool(params(isin)["cut_at_offer"])
+    return any(k in vt for k in _RESET_VAR_TYPES)
+
+
 def reload():
     """Сброс кэшей (после обновления файлов)."""
     global _cbonds_cache, _manual_cache

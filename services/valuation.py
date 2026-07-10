@@ -33,6 +33,28 @@ def calculate_valuation_metrics(
     amorts — график амортизаций MOEX [{date, value},...] для DM амортизируемых бумаг.
     Returns a dictionary suitable for formatting by Pydantic.
     """
+    # Бумага гасится не позже даты расчётов T+1: покупателю не достаётся ни одного
+    # платежа (весь поток ex) — метрики бессмысленны, а стейл prev-цена давала
+    # мусорные отрицательные SM (Магнит4P06 за 2 дня до погашения: SM −330).
+    from valuation import settle_date as _sd
+    if bond.maturity_date is not None and bond.maturity_date <= _sd(calc_date):
+        return {
+            "clean_price_pct": price, "dirty_price_rub": None,
+            "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
+            "yield_xirr_pct": None, "base_yield_pct": None, "spread_to_base_bps": None,
+            "pricing_status": "MATURED", "warnings": ["Погашение ≤ T+1 — потоки покупателю не достаются"],
+        }
+
+    # Перпы/суборды без даты погашения: поток не терминируется — флоатер-метрики
+    # (SM/DM к погашению) не определены, выходим без крэша.
+    if bond.maturity_date is None:
+        return {
+            "clean_price_pct": price, "dirty_price_rub": None,
+            "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
+            "yield_xirr_pct": None, "base_yield_pct": None, "spread_to_base_bps": None,
+            "pricing_status": "NO_MATURITY", "warnings": ["Нет даты погашения (перп/суборд)"],
+        }
+
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
     # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
     from valuation import face_for_pricing
