@@ -165,7 +165,8 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         try:
             from services.coupon_calib import calibrate
             m = margin_pct if margin_pct is not None else (out["margin_bps"] or 0) / 100.0
-            spec = calibrate(isin, coupons, m, face or 1000.0, calc_date)
+            spec = calibrate(isin, coupons, m, face or 1000.0, calc_date,
+                             base=out["base"] or "KEYRATE")
             if spec:
                 if out["fixing_lag"] is None:
                     out["fixing_lag"] = spec["lag"]

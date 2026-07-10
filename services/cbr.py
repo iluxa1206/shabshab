@@ -14,6 +14,7 @@ RUONIA (текущая с cbr.ru + историческая база из сид
 from __future__ import annotations
 import os
 import json
+import glob
 import datetime as _dt
 from datetime import date
 from typing import List, Tuple, Optional
@@ -86,6 +87,35 @@ def _load_seed() -> List[Tuple[date, float]]:
         return []
 
 
+def _load_rc_ruonia() -> List[Tuple[date, float]]:
+    """Дневная история RUONIA из выгрузки ЦБ RC_F*.xlsx (cbr.ru/hd_base/ruonia).
+    Колонки: DT (дата), ruo (ставка). Авторитетный источник — закрывает разрыв
+    между статическим сидом и live-текущей. Берём свежайший RC_F*-файл."""
+    import openpyxl
+    files = glob.glob(os.path.join(_DIR, "RC_F*.xlsx"))
+    if not files:
+        return []
+    path = max(files, key=os.path.getmtime)
+    out: List[Tuple[date, float]] = []
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        it = ws.iter_rows(values_only=True)
+        hdr = [str(h).strip().lower() if h else "" for h in next(it)]
+        di = hdr.index("dt") if "dt" in hdr else 0
+        ri = hdr.index("ruo") if "ruo" in hdr else 1
+        for row in it:
+            d, r = row[di], row[ri]
+            if isinstance(d, _dt.datetime):
+                d = d.date()
+            rv = _num(str(r)) if r is not None else None
+            if isinstance(d, date) and rv is not None:
+                out.append((d, rv))
+    except Exception as e:
+        print(f"RC RUONIA load error: {e}")
+    return out
+
+
 def _load_cache() -> dict:
     try:
         with open(_CACHE, "r", encoding="utf-8") as f:
@@ -134,8 +164,11 @@ def _refresh() -> None:
     if ks or ruonia_live:
         _save_cache(ks, ruonia_live)
 
-    # RUONIA = сид (история) + live current, мёрж по дате (live приоритетнее)
+    # RUONIA = сид (2010→) + выгрузка ЦБ RC_F (2024→, авторитетно) + live current,
+    # мёрж по дате с возрастающим приоритетом (live > RC > сид) — разрыв закрыт
     merged = {d: v for d, v in _load_seed()}
+    for d, v in _load_rc_ruonia():
+        merged[d] = v
     for d, v in ruonia_live:
         merged[d] = v
     ruonia = sorted(merged.items())

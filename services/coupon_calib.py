@@ -12,7 +12,7 @@
 проекции: прошлые дни периода — факт КС ЦБ, будущие — форвард-прогноз."""
 from __future__ import annotations
 from datetime import date, timedelta
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Tuple
 
 from services import cbr
 
@@ -21,20 +21,35 @@ _ERR_TOL_PP = 0.10     # порог средней ошибки, п.п.
 _cache: dict = {}
 
 
-def _ks_at(d: date) -> Optional[float]:
-    v = None
-    for md, r in cbr.ks_history():
-        if md <= d:
-            v = r
-        else:
-            break
-    return v
+import bisect
+
+# Индекс истории для O(log n) поиска: (dates[], rates[]) по base, кэш на день.
+_idx_cache: dict = {}
 
 
-def _ks_avg(s: date, e: date, lag: int) -> Optional[float]:
+def _index(base: str):
+    hist = cbr.ruonia_history() if base == "RUONIA" else cbr.ks_history()
+    key = (base, len(hist), hist[-1][0] if hist else None)
+    cached = _idx_cache.get(base)
+    if cached and cached[0] == key:
+        return cached[1], cached[2]
+    dates = [d for d, _ in hist]
+    rates = [r for _, r in hist]
+    _idx_cache[base] = (key, dates, rates)
+    return dates, rates
+
+
+def _rate_at(idx, d: date) -> Optional[float]:
+    """idx = (dates, rates), отсортированы по дате. Последняя ставка ≤ d (bisect)."""
+    dates, rates = idx
+    i = bisect.bisect_right(dates, d) - 1
+    return rates[i] if i >= 0 else None
+
+
+def _rate_avg(idx, s: date, e: date, lag: int) -> Optional[float]:
     tot, n, cur = 0.0, 0, s
     while cur < e:
-        k = _ks_at(cur - timedelta(days=lag))
+        k = _rate_at(idx, cur - timedelta(days=lag))
         if k is not None:
             tot += k
             n += 1
@@ -61,23 +76,26 @@ def _past_rows(coupons: list, margin_pct: float, face: float, calc_date: date):
 
 
 def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
-              calc_date: date) -> Optional[dict]:
-    """Спека формулы {'mode':'point'|'average','lag':int} по прошлым купонам."""
-    if isin in _cache:
-        return _cache[isin]
+              calc_date: date, base: str = "KEYRATE") -> Optional[dict]:
+    """Спека формулы {'mode':'point'|'average','lag':int} по прошлым купонам.
+    base='KEYRATE' — факт КС ЦБ; 'RUONIA' — дневной RUONIA (обычно average)."""
+    ck = (isin, base)
+    if ck in _cache:
+        return _cache[ck]
+    idx = _index(base)
     rows = _past_rows(coupons, margin_pct, face, calc_date)
     spec = None
-    if len(rows) >= 2:
+    if len(rows) >= 2 and idx[0]:
         best = None  # (err, mode, lag)
         for lag in range(0, _MAX_LAG + 1):
             e_pt, e_av, n = 0.0, 0.0, 0
-            for s, e, ks_obs in rows:
-                kp = _ks_at(s - timedelta(days=lag))
-                ka = _ks_avg(s, e, lag)
+            for s, e, obs in rows:
+                kp = _rate_at(idx, s - timedelta(days=lag))
+                ka = _rate_avg(idx, s, e, lag)
                 if kp is None or ka is None:
                     continue
-                e_pt += abs(kp - ks_obs)
-                e_av += abs(ka - ks_obs)
+                e_pt += abs(kp - obs)
+                e_av += abs(ka - obs)
                 n += 1
             if not n:
                 continue
@@ -85,24 +103,24 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
                 if best is None or err < best[0]:
                     best = (err, mode, lag)
         if best and best[0] < _ERR_TOL_PP:
-            spec = {"mode": best[1], "lag": best[2], "err_pp": round(best[0], 4)}
-    _cache[isin] = spec
+            spec = {"mode": best[1], "lag": best[2], "err_pp": round(best[0], 4), "base": base}
+    _cache[ck] = spec
     return spec
 
 
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
-                     ks_fwd_pct: Callable[[date], float]) -> float:
-    """КС-компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ, будущие —
-    ks_fwd_pct(date). point → одна дата; average → среднее по дням периода."""
+                     fwd_pct: Callable[[date], float]) -> float:
+    """Компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ (КС/RUONIA),
+    будущие — fwd_pct(date). point → одна дата; average → среднее по дням."""
+    idx = _index(spec.get("base", "KEYRATE"))
     lag = spec.get("lag", 0)
     if spec.get("mode") == "point":
         fix = start - timedelta(days=lag)
-        return (_ks_at(fix) if fix <= calc_date else ks_fwd_pct(fix)) or 0.0
-    # average
+        return (_rate_at(idx, fix) if fix <= calc_date else fwd_pct(fix)) or 0.0
     tot, n, cur = 0.0, 0, start
     while cur < end:
         obs = cur - timedelta(days=lag)
-        k = _ks_at(obs) if obs <= calc_date else ks_fwd_pct(obs)
+        k = _rate_at(idx, obs) if obs <= calc_date else fwd_pct(obs)
         if k is not None:
             tot += k
             n += 1
