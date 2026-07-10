@@ -66,8 +66,24 @@ def _to_float(v) -> Optional[float]:
 
 
 def _latest_cbonds_file() -> Optional[str]:
-    files = sorted(glob.glob(os.path.join(_DIR, "bondsearch_*.xlsx")))
-    return files[-1] if files else None
+    """Свежайший bondsearch_DD_MM_YYYY.xlsx по ДАТЕ в имени (не по строке —
+    иначе 20_11_2025 «больше» 10_07_2026). Фолбэк — mtime."""
+    import re
+    files = glob.glob(os.path.join(_DIR, "bondsearch_*.xlsx"))
+    if not files:
+        return None
+
+    def key(f):
+        m = re.search(r"bondsearch_(\d{2})_(\d{2})_(\d{4})", os.path.basename(f))
+        if m:
+            dd, mm, yyyy = m.groups()
+            return (int(yyyy), int(mm), int(dd))
+        return (0, 0, 0)
+
+    dated = [f for f in files if key(f) != (0, 0, 0)]
+    if dated:
+        return max(dated, key=key)
+    return max(files, key=os.path.getmtime)
 
 
 def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
