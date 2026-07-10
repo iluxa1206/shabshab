@@ -51,15 +51,26 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
         from services.implied_curve import KsExpectationCurve
         from services import cbr_forecast
         ksc = KsExpectationCurve(ks_quotes)
-        fc = cbr_forecast.avg_ks_by_year()
-        neutral = cbr_forecast.neutral_pct()
-        last_fc_year = max(fc) if fc else None
+        cur_ks = cbr.current_ks() or 0.0
+        # прогноз ЦБ: ступенчатый путь на заседаниях (средняя за год = прогнозной)
+        fc_path = cbr_forecast.meeting_step_path(calc_date, cur_ks)
+
+        def fc_level(d: date) -> Optional[float]:
+            if not fc_path:
+                return None
+            v = cur_ks
+            for md, lv in fc_path:
+                if md <= d:
+                    v = lv
+                else:
+                    break
+            return v
+
         horizon = date(calc_date.year + 15, calc_date.month, min(calc_date.day, 28))
         d = calc_date
         while d < horizon:
             t = (d - calc_date).days / 365.0
-            # прогноз ЦБ: средняя КС года; после последнего прогнозного года — нейтраль
-            fcv = fc.get(d.year, neutral if (last_fc_year and d.year > last_fc_year) else None)
+            fcv = fc_level(d)
             out.append({"date": d.isoformat(), "actual_pct": None,
                         "market_pct": round(ksc.ks(t) * 100.0, 3),
                         "forecast_pct": round(fcv, 3) if fcv is not None else None})
