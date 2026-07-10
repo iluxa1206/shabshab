@@ -66,7 +66,10 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
                     break
             return v
 
-        horizon = date(calc_date.year + 15, calc_date.month, min(calc_date.day, 28))
+        # горизонт — ровно до последнего свопа (~10Y): показываем сплайн из свопов,
+        # без правого decay-хвоста к нейтрали (экстраполяция за 10Y читалась криво)
+        hy = int(getattr(ksc, "t_last", 10))
+        horizon = date(calc_date.year + hy, calc_date.month, min(calc_date.day, 28))
         d = calc_date
         while d < horizon:
             t = (d - calc_date).days / 365.0
