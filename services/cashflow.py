@@ -50,7 +50,7 @@ def build_cashflow_from_moex(
             # факту КС ЦБ (формула выпуска: point/average+лаг из ref_data). Точное
             # значение для отображения; будущие периоды — прогноз форвардом.
             spec = None
-            if ref.base == "KEYRATE" and start <= calc_date < end:
+            if ref.base in ("KEYRATE", "RUONIA") and start <= calc_date < end:
                 try:
                     from services.ref_data import coupon_formula
                     spec = coupon_formula(ref.isin, coupons, face=face, calc_date=calc_date)
@@ -61,8 +61,8 @@ def build_cashflow_from_moex(
             if spec is not None:
                 from services.coupon_calib import projected_ks_pct
                 ks_fwd = lambda dt: (curve.forward(max(dt, calc_date), end) * 100.0) if curve else 0.0
-                ks_pct = projected_ks_pct({"mode": spec["coupon_mode"], "lag": spec.get("fixing_lag") or 0},
-                                          start, end, calc_date, ks_fwd)
+                ks_pct = projected_ks_pct({"mode": spec["coupon_mode"], "lag": spec.get("fixing_lag") or 0,
+                                           "base": ref.base}, start, end, calc_date, ks_fwd)
                 r = ks_pct / 100.0 + sp
                 factor = r * alpha
                 amount = face * factor
