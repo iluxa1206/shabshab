@@ -50,10 +50,10 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     # лист IRS кол.K — маржинальный форвард КС между тенорами), ступени по сегментам.
     # + прогноз ЦБ (ступени на заседаниях) ---
     if series == "ks" and ks_quotes:
-        from forwards import CurveBootstrapper
+        from services.implied_curve import excel_ks_forward_segments
         from services import cbr_forecast
-        ec = CurveBootstrapper._build_excel_forward_curve(ks_quotes, calc_date, "KEYRATE")
-        segs = ec.segments  # [(start, end, forward)], до последнего свопа (~10Y)
+        # точная реплика листа IRS файла 502_504 (форвард кол.K, анкер H_{n-2})
+        segs = excel_ks_forward_segments(ks_quotes, calc_date)  # [(start,end,fwd)] до 10Y
         cur_ks = cbr.current_ks() or 0.0
         fc_path = cbr_forecast.meeting_step_path(calc_date, cur_ks)
 

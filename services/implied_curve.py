@@ -17,7 +17,9 @@
 """
 from __future__ import annotations
 import math
-from typing import List, Tuple
+import calendar as _cal
+from datetime import date as _date
+from typing import List, Tuple, Optional
 
 # Долгосрочная нейтральная КС (прогноз ЦБ, середина диапазона 7.5–8.5%)
 KS_NEUTRAL_PCT = 8.0
@@ -95,3 +97,75 @@ class KsExpectationCurve:
         if t <= self.t_last:
             return self._spline(t)
         return self.neutral + (self.ks_last - self.neutral) * math.exp(-self.beta * (t - self.t_last))
+
+
+# ── Точная реплика траектории КС из СПФИ (лист IRS файла 502_504) ──────────
+_TENOR_MONTHS = {"3M": 3, "6M": 6, "9M": 9, "1Y": 12, "2Y": 24, "3Y": 36,
+                 "4Y": 48, "5Y": 60, "6Y": 72, "7Y": 84, "8Y": 96, "9Y": 108,
+                 "10Y": 120}
+
+
+def _eomonth(d: _date, m: int) -> _date:
+    """EOMONTH(d, m) — последний день месяца (d.month + m)."""
+    month = d.month - 1 + m
+    y = d.year + month // 12
+    mo = month % 12 + 1
+    return _date(y, mo, _cal.monthrange(y, mo)[1])
+
+
+def _end_date(F: _date, months: int) -> _date:
+    """H = EOMONTH(F, months−1) + DAY(F) (как в файле)."""
+    return _eomonth(F, months - 1) + (_date(F.year, F.month, F.day) - _date(F.year, F.month, 1))
+
+
+def _ks_implied_avg(mid: float, tenor: str) -> float:
+    """Implied average rate КС из mid свопа (конвенция файла, лист IRS кол.I)."""
+    t = tenor.upper()
+    if t == "3M":
+        return mid
+    if t == "6M":
+        return 4.0 * ((1 + mid / 2) ** (1 / 2) - 1)
+    if t == "9M":
+        return 4.0 * ((1 + mid * 3 / 4) ** (1 / 3) - 1)
+    return 4.0 * ((1 + mid) ** (1 / 4) - 1)
+
+
+def excel_ks_forward_segments(quotes, calc_date: _date) -> List[Tuple[_date, _date, float]]:
+    """Траектория КС по логике файла (лист IRS, forward rate кол.K):
+    маржинальный форвард между тенорами, анкер = конец тенора ДВА назад (H_{n-2}),
+    даты по EOMONTH. Возвращает [(start, end, forward_decimal)] — ступени.
+
+    K_n = (I_n·(H_n−H_{n-2}−1) − I_{n-1}·(H_{n-1}−H_{n-2}−1)) / (H_n − H_{n-1}).
+    Старт сегмента n = H_{n-1}, конец = H_n. Первый сегмент = spot implied.
+    """
+    F = calc_date + (_date(1, 1, 2) - _date(1, 1, 1))  # TODAY()+1
+    qmap = {}
+    for q in quotes:
+        t = q.tenor.upper()
+        if t in _TENOR_MONTHS:
+            qmap[t] = q.value / 100.0
+    order = [t for t in ["3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y",
+                         "6Y", "7Y", "8Y", "9Y", "10Y"] if t in qmap]
+    if not order:
+        return []
+    # узлы: [Срок(H=F), 3m, 6m, ...]; H — end date, I — implied avg
+    H = [F]
+    Iv = [None]  # у Срок implied не нужен для форвардов
+    for t in order:
+        H.append(_end_date(F, _TENOR_MONTHS[t]))
+        Iv.append(_ks_implied_avg(qmap[t], t))
+
+    segs: List[Tuple[_date, _date, float]] = []
+    for k in range(1, len(order) + 1):
+        start = H[k - 1]     # J = H_{n-1}
+        end = H[k]
+        if k == 1:
+            fwd = Iv[1]       # spot implied
+        else:
+            anchor = H[k - 2]
+            dn = (end - anchor).days - 1
+            dp = (H[k - 1] - anchor).days - 1
+            seg = (end - H[k - 1]).days
+            fwd = (Iv[k] * dn - Iv[k - 1] * dp) / seg if seg else Iv[k]
+        segs.append((start, end, fwd))
+    return segs
