@@ -1,0 +1,167 @@
+"""Справочник параметров облигаций: слой Cbonds-выгрузки + ручные оверрайды.
+
+Разрешение параметров (по убыванию приоритета):
+  base, margin, day_count, freq  ← manual > Cbonds-файл > (НРД/MOEX выше по стеку)
+  fixing_lag, coupon_mode        ← manual > эмпирический калибратор (coupon_calib)
+
+Cbonds-выгрузка (bondsearch_*.xlsx) даёт базу/маржу/day-count/частоту/тип, но НЕ
+лаг фиксинга и не конвенцию point/average — их нет ни у кого, кроме эмиссионных
+доков; закрываются калибратором (из истории купонов) или ручным вводом.
+
+Ручной слой (bond_params_manual.json) — редактируемый: новые выпуски + любое
+недостающее (лаг, конвенция, маржа для экзотических баз)."""
+from __future__ import annotations
+import os
+import json
+import glob
+from typing import Dict, Optional
+
+import openpyxl
+
+_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MANUAL_FILE = os.path.join(_DIR, "bond_params_manual.json")
+
+# База Cbonds -> наш тип
+_BASE_MAP = {
+    "ключевая ставка цб рф": "KEYRATE",
+    "ключевая ставка": "KEYRATE",
+    "cbr_rate": "KEYRATE",
+    "ruonia": "RUONIA",
+    "1/2_cbr_rate": "KEYRATE",  # половинная — обрабатывать отдельно, помечаем базу
+}
+
+# Имена колонок в bondsearch-выгрузке (сопоставление по заголовку, не по индексу)
+_COL = {
+    "isin": ["ISIN"],
+    "name": ["Бумага", "Название"],
+    "base": ["Базовая ставка", "Базовый индекс (для FRN)"],
+    "margin": ["Маржа", "Премия/Дисконт к базовому индексу (для FRN)"],
+    "day_count": ["Метод расчета НКД"],
+    "freq": ["Периодичность купона", "Купон (раз/год)"],
+    "var_type": ["Тип переменной ставки купона"],
+    "put": ["Оферта (put)"],
+}
+
+_cbonds_cache: Optional[Dict[str, dict]] = None
+_manual_cache: Optional[Dict[str, dict]] = None
+
+
+def _hdr_index(headers: list) -> Dict[str, int]:
+    idx = {}
+    for key, names in _COL.items():
+        for nm in names:
+            if nm in headers:
+                idx[key] = headers.index(nm)
+                break
+    return idx
+
+
+def _to_float(v) -> Optional[float]:
+    try:
+        if v is None or v == "":
+            return None
+        return float(str(v).replace(",", ".").replace("%", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _latest_cbonds_file() -> Optional[str]:
+    files = sorted(glob.glob(os.path.join(_DIR, "bondsearch_*.xlsx")))
+    return files[-1] if files else None
+
+
+def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
+    """{isin: {name, base, margin_bps, day_count, freq, var_type}} из bondsearch-xlsx.
+    base∈{KEYRATE,RUONIA,None}; base_raw хранит исходное имя (для экзотики)."""
+    global _cbonds_cache
+    if _cbonds_cache is not None and path is None:
+        return _cbonds_cache
+    path = path or _latest_cbonds_file()
+    out: Dict[str, dict] = {}
+    if not path or not os.path.exists(path):
+        _cbonds_cache = out
+        return out
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    it = ws.iter_rows(values_only=True)
+    headers = [str(h) if h is not None else "" for h in next(it)]
+    ix = _hdr_index(headers)
+    if "isin" not in ix:
+        _cbonds_cache = out
+        return out
+    for row in it:
+        isin = row[ix["isin"]] if ix["isin"] < len(row) else None
+        if not isin:
+            continue
+        base_raw = str(row[ix["base"]]).strip() if ix.get("base") is not None and row[ix["base"]] else None
+        base = _BASE_MAP.get((base_raw or "").lower()) if base_raw else None
+        margin = _to_float(row[ix["margin"]]) if ix.get("margin") is not None else None
+        out[str(isin).strip()] = {
+            "name": row[ix["name"]] if ix.get("name") is not None else None,
+            "base": base,
+            "base_raw": base_raw,
+            "margin_bps": round(margin * 100) if margin is not None else None,
+            "day_count": row[ix["day_count"]] if ix.get("day_count") is not None else None,
+            "freq": _to_float(row[ix["freq"]]) if ix.get("freq") is not None else None,
+            "var_type": row[ix["var_type"]] if ix.get("var_type") is not None else None,
+        }
+    if path is None or path == _latest_cbonds_file():
+        _cbonds_cache = out
+    return out
+
+
+def load_manual() -> Dict[str, dict]:
+    """{isin: {...любые оверрайды: base, margin_bps, fixing_lag, coupon_mode, ...}}."""
+    global _manual_cache
+    if _manual_cache is not None:
+        return _manual_cache
+    try:
+        with open(_MANUAL_FILE, "r", encoding="utf-8") as f:
+            _manual_cache = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        _manual_cache = {}
+    return _manual_cache
+
+
+def params(isin: str) -> dict:
+    """Слитые параметры выпуска: ручной оверрайд поверх Cbonds-справки."""
+    p = dict(load_cbonds().get(isin) or {})
+    p.update({k: v for k, v in (load_manual().get(isin) or {}).items() if v is not None})
+    return p
+
+
+def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
+                   face: float = None, calc_date=None) -> dict:
+    """Полная спека купона для точной проекции:
+        {base, margin_bps, fixing_lag, coupon_mode}
+    Разрешение: base/margin — manual > Cbonds; fixing_lag/coupon_mode —
+    manual > эмпирический калибратор (coupon_calib, из истории купонов).
+    Возвращает None-поля, если источник не дал (потребитель применяет дефолт)."""
+    p = params(isin)
+    out = {
+        "base": p.get("base"),
+        "margin_bps": p.get("margin_bps"),
+        "fixing_lag": p.get("fixing_lag"),
+        "coupon_mode": p.get("coupon_mode"),
+    }
+    # лаг/конвенция: если руками не задано — калибруем из истории купонов
+    if (out["fixing_lag"] is None or out["coupon_mode"] is None) and coupons and calc_date:
+        try:
+            from services.coupon_calib import calibrate
+            m = margin_pct if margin_pct is not None else (out["margin_bps"] or 0) / 100.0
+            spec = calibrate(isin, coupons, m, face or 1000.0, calc_date)
+            if spec:
+                if out["fixing_lag"] is None:
+                    out["fixing_lag"] = spec["lag"]
+                if out["coupon_mode"] is None:
+                    out["coupon_mode"] = spec["mode"]
+        except Exception:
+            pass
+    return out
+
+
+def reload():
+    """Сброс кэшей (после обновления файлов)."""
+    global _cbonds_cache, _manual_cache
+    _cbonds_cache = None
+    _manual_cache = None

@@ -1,0 +1,9 @@
+{
+  "_README": "Ручные оверрайды параметров облигаций поверх Cbonds-справки (bondsearch_*.xlsx). Для новых выпусков и недостающего. Поля: base (KEYRATE|RUONIA), margin_bps (int), fixing_lag (int, дней), coupon_mode (point|average), day_count, freq. Любое поле опционально — перекрывает автоисточник. Пример ниже удалить/заменить.",
+  "RU000AEXAMPLE0": {
+    "base": "KEYRATE",
+    "margin_bps": 150,
+    "fixing_lag": 7,
+    "coupon_mode": "average"
+  }
+}
