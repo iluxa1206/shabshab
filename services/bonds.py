@@ -42,6 +42,18 @@ def build_ref_external(isin: str, mo: dict, nrd: Optional[dict]) -> BondRefData:
         if nm is not None:
             spread = int(nm)
 
+    # Cbonds-справка (ref_data) как источник базы/маржи: заполняет то, чего нет у
+    # НРД (шире покрытие: точная маржа сверена 317/326 ±5бп), не перетирая НРД.
+    try:
+        from services.ref_data import params as _ref_params
+        rp = _ref_params(isin)
+        if base in (None, "UNKNOWN") and rp.get("base"):
+            base = rp["base"]
+        if spread == 0 and rp.get("margin_bps") is not None:
+            spread = int(rp["margin_bps"])
+    except Exception:
+        pass
+
     issue = _to_date(mo.get("issue"))
     maturity = _to_date(mo.get("maturity"))
     cpy = round(365 / cp) if cp else 4

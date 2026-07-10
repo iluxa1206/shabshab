@@ -46,20 +46,43 @@ def build_cashflow_from_moex(
             base_pct = 0.0
             rate_pct = float(vp) if vp is not None else (amount / face * 365.0 / days * 100 if face else 0.0)
         else:
-            # будущий плавающий — прогноз по forward + spread.
-            # анкер форварда клэмпим к calc_date (прошлый стаб не форвардим — мусор)
-            fstart = start if start > calc_date else calc_date
-            f = curve.forward(fstart, end) if (curve and ref.base in ("RUONIA", "KEYRATE") and fstart < end) else 0.0
-            r = f + sp
-            if ref.base == "RUONIA":
-                factor = (1.0 + r / 365.0) ** days - 1.0
-            elif ref.base == "KEYRATE":
-                factor = (1.0 + r / 4.0) ** (4.0 * alpha) - 1.0
+            # ТЕКУЩИЙ период KEYRATE (start ≤ calc): купон уже определяется по
+            # факту КС ЦБ (формула выпуска: point/average+лаг из ref_data). Точное
+            # значение для отображения; будущие периоды — прогноз форвардом.
+            spec = None
+            if ref.base == "KEYRATE" and start <= calc_date < end:
+                try:
+                    from services.ref_data import coupon_formula
+                    spec = coupon_formula(ref.isin, coupons, face=face, calc_date=calc_date)
+                    if spec.get("coupon_mode") is None:
+                        spec = None
+                except Exception:
+                    spec = None
+            if spec is not None:
+                from services.coupon_calib import projected_ks_pct
+                ks_fwd = lambda dt: (curve.forward(max(dt, calc_date), end) * 100.0) if curve else 0.0
+                ks_pct = projected_ks_pct({"mode": spec["coupon_mode"], "lag": spec.get("fixing_lag") or 0},
+                                          start, end, calc_date, ks_fwd)
+                r = ks_pct / 100.0 + sp
+                factor = r * alpha
+                amount = face * factor
+                base_pct = round(ks_pct, 4)
+                rate_pct = round(r * 100, 4)
             else:
-                factor = 0.0
-            amount = face * factor
-            base_pct = round(f * 100, 4)
-            rate_pct = round(r * 100, 4)
+                # будущий плавающий — прогноз по forward + spread.
+                # анкер форварда клэмпим к calc_date (прошлый стаб не форвардим — мусор)
+                fstart = start if start > calc_date else calc_date
+                f = curve.forward(fstart, end) if (curve and ref.base in ("RUONIA", "KEYRATE") and fstart < end) else 0.0
+                r = f + sp
+                if ref.base == "RUONIA":
+                    factor = (1.0 + r / 365.0) ** days - 1.0
+                elif ref.base == "KEYRATE":
+                    factor = (1.0 + r / 4.0) ** (4.0 * alpha) - 1.0
+                else:
+                    factor = 0.0
+                amount = face * factor
+                base_pct = round(f * 100, 4)
+                rate_pct = round(r * 100, 4)
 
         n += 1
         items.append(CashflowItem(
