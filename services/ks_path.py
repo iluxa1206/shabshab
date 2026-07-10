@@ -46,16 +46,23 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     if out:
         out[-1]["market_pct"] = out[-1]["actual_pct"]  # стыковка факт→прогноз
 
-    # --- КС: методика НРД Прил.3 (сплайн + затухание к нейтрали) ---
+    # --- КС: методика НРД Прил.3 (сплайн + затухание к нейтрали) + прогноз ЦБ ---
     if series == "ks" and ks_quotes:
         from services.implied_curve import KsExpectationCurve
+        from services import cbr_forecast
         ksc = KsExpectationCurve(ks_quotes)
+        fc = cbr_forecast.avg_ks_by_year()
+        neutral = cbr_forecast.neutral_pct()
+        last_fc_year = max(fc) if fc else None
         horizon = date(calc_date.year + 15, calc_date.month, min(calc_date.day, 28))
         d = calc_date
         while d < horizon:
             t = (d - calc_date).days / 365.0
+            # прогноз ЦБ: средняя КС года; после последнего прогнозного года — нейтраль
+            fcv = fc.get(d.year, neutral if (last_fc_year and d.year > last_fc_year) else None)
             out.append({"date": d.isoformat(), "actual_pct": None,
-                        "market_pct": round(ksc.ks(t) * 100.0, 3)})
+                        "market_pct": round(ksc.ks(t) * 100.0, 3),
+                        "forecast_pct": round(fcv, 3) if fcv is not None else None})
             d = _add_month(d)
         return out
 

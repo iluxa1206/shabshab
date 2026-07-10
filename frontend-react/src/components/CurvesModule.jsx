@@ -247,12 +247,16 @@ function KsPathView() {
           <KsPathChart points={data.points} calcDate={data.calc_date} />
           <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
             <LegLine color="var(--fg)" dash="" label={`Факт ${label} (ЦБ РФ)`} />
-            <LegLine color="var(--up)" dash="" label="Рынок (СПФИ форвард)" />
+            <LegLine color="var(--up)" dash="" label="Рынок (СПФИ, метод НРД Прил.3)" />
+            {series === "ks" && data.points.some((p) => p.forecast_pct != null) && (
+              <LegLine color="var(--down)" dash="5 4" label="Прогноз ЦБ (средняя КС)" />
+            )}
           </div>
           <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
-            Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — форвард нашей
-            bootstrap-кривой (что закладывают своп-котировки СПФИ).
-            {series === "ruonia" && " История RUONIA до 2025-08 — из сида 502_504, далее живьём с ЦБ."}
+            Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — ожидаемая ставка
+            из СПФИ: кубический сплайн свопов + затухание к нейтрали ЦБ (методика НРД).
+            {series === "ks" && " «Прогноз ЦБ» — среднесрочный прогноз средней КС (cbr_forecast.json)."}
+            {series === "ruonia" && " История RUONIA до 2025-08 — из сида, далее живьём с ЦБ."}
           </div>
         </>
       )}
@@ -272,6 +276,7 @@ function KsPathChart({ points, calcDate }) {
     points.forEach((p) => {
       if (p.actual_pct != null) ys.push(p.actual_pct);
       if (p.market_pct != null) ys.push(p.market_pct);
+      if (p.forecast_pct != null) ys.push(p.forecast_pct);
     });
     let ymin = Math.min(...ys), ymax = Math.max(...ys);
     const pad = (ymax - ymin) * 0.1 || 1;
@@ -330,6 +335,8 @@ function KsPathChart({ points, calcDate }) {
         {/* линия "сегодня" */}
         <line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke="var(--mut)" strokeDasharray="2 3" />
         <text x={todayX + 3} y={T + 10} fontSize="9" fill="var(--mut)">сегодня</text>
+        {/* прогноз ЦБ (пунктир) */}
+        <path d={stepPath("forecast_pct")} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
         {/* рынок */}
         <path d={stepPath("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
         {/* факт */}
@@ -346,7 +353,7 @@ function KsPathChart({ points, calcDate }) {
           padding: "3px 7px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
         }}>
           {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
-            `рынок ${hover.market_pct ?? "—"}%`}
+            `рынок ${hover.market_pct ?? "—"}%${hover.forecast_pct != null ? ` · ЦБ ${hover.forecast_pct}%` : ""}`}
         </div>
       )}
     </div>

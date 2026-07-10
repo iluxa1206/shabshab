@@ -68,9 +68,16 @@ _TENOR_Y = {"3M": .25, "6M": .5, "9M": .75, "1Y": 1, "2Y": 2, "3Y": 3, "4Y": 4,
 
 
 class KsExpectationCurve:
-    """КС(t) по Прил.3: сплайн свопов + экспо-затухание к нейтрали."""
-    def __init__(self, quotes, neutral_pct: float = KS_NEUTRAL_PCT,
+    """КС(t) по Прил.3: сплайн свопов + экспо-затухание к нейтрали.
+    neutral_pct=None → берём долгосрочную нейтраль из прогноза ЦБ (cbr_forecast)."""
+    def __init__(self, quotes, neutral_pct: float = None,
                  beta: float = KS_DECAY_BETA):
+        if neutral_pct is None:
+            try:
+                from services.cbr_forecast import neutral_pct as _fc_neutral
+                neutral_pct = _fc_neutral(KS_NEUTRAL_PCT)
+            except Exception:
+                neutral_pct = KS_NEUTRAL_PCT
         pts = sorted((_TENOR_Y[q.tenor.upper()], q.value / 100.0)
                      for q in quotes if q.tenor.upper() in _TENOR_Y)
         self.xs = [p[0] for p in pts]

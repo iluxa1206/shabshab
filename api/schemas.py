@@ -266,8 +266,9 @@ class CurvePlotResponse(BaseModel):
 # --- KS path (реплика КС-прогноз: рыночный форвард vs сценарии ЦБ) ---
 class KsPathPoint(BaseModel):
     date: date
-    actual_pct: Optional[float] = None    # факт КС (прошедшие заседания)
-    market_pct: Optional[float] = None    # рыночный форвард (СПФИ), будущие
+    actual_pct: Optional[float] = None     # факт КС (прошедшие заседания)
+    market_pct: Optional[float] = None     # рыночная траектория (СПФИ, Прил.3)
+    forecast_pct: Optional[float] = None    # среднесрочный прогноз ЦБ (avg КС по годам)
 
 class KsPathResponse(BaseModel):
     calc_date: date
