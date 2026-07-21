@@ -250,6 +250,21 @@ def _offer_price_pct(offers: Optional[List[dict]], offer_date: date) -> float:
     return 100.0
 
 
+def _check_curve_convention(base: str, curve) -> None:
+    """Кривая обязана отдавать forward() в конвенции базы бумаги:
+    RUONIA → daily_comp, KEYRATE → simple; 'level' (плоский индекс) допустим для
+    обеих (DM-путь). Иначе начисление/дисконт компаундят дважды или недокомпаундят
+    — раньше контракт был неявным (по типу кривой) и ничем не проверялся."""
+    conv = getattr(curve, "rate_convention", None)
+    if conv is None or conv == "level":
+        return
+    expected = "daily_comp" if base == "RUONIA" else "simple"
+    if conv != expected:
+        raise ValueError(
+            f"rate_convention кривой '{conv}' не соответствует базе {base} "
+            f"(ожидается '{expected}' или 'level')")
+
+
 def build_cashflows_to_maturity(
     bond: BondRefData,
     curve: DiscountCurve,
@@ -258,6 +273,8 @@ def build_cashflows_to_maturity(
     amorts: Optional[List[dict]] = None,
     offers: Optional[List[dict]] = None,
     to_offer: bool = False,
+    index_pct_fn=None,
+    warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
     """
     Строит ожидаемые cashflows: купоны и погашение принципала.
@@ -275,7 +292,14 @@ def build_cashflows_to_maturity(
     принципала ДО maturity (амортизируемая бумага), принципал платится по датам
     амортизаций, а прогнозные купоны начисляются от ОСТАТОЧНОГО номинала (сумма
     амортизаций после начала периода). Иначе — bullet (номинал целиком на maturity).
+
+    index_pct_fn — инжектированный провайдер индекса начавшегося периода с
+    сигнатурой period_index_pct (service-слой биндит в него историю ЦБ, см.
+    coupon_calib.index_history) — ядро само в сеть не ходит. None → легаси-фолбэк
+    на lazy-импорт (CLI-пути). warnings_out — аккумулятор деградаций: сбой
+    провайдера больше не глотается молча, а помечается (купон уходит на форвард).
     """
+    _check_curve_convention(bond.base, curve)
     if explicit_periods:
         # Реальный календарь MOEX: тройки (start, end, value) или пары (start, end).
         # maturity_date может быть None (перпы/суборды без даты) — не фильтруем.
@@ -390,17 +414,22 @@ def build_cashflows_to_maturity(
             idx_pct = None
             if start <= calc_date and bond.base in ("RUONIA", "KEYRATE"):
                 try:
-                    from services.coupon_calib import period_index_pct
+                    fn = index_pct_fn
+                    if fn is None:                     # легаси-фолбэк (CLI-пути)
+                        from services.coupon_calib import period_index_pct as fn
                     fwd_pct = (lambda dt: curve.forward(max(dt, calc_date), end) * 100.0
                                if max(dt, calc_date) < end else 0.0)
                     # face = ТЕКУЩИЙ остаток (не pricing_face): калибратор сам
                     # откатывает номинал назад по amorts, а транш из окна
                     # (calc, settle] в прошлых периодах ещё не был выплачен.
-                    idx_pct = period_index_pct(bond.isin, bond.base, _calib_coupons(periods),
-                                               bond.face_value, start, end, calc_date, fwd_pct,
-                                               amorts=amorts)
-                except Exception:
+                    idx_pct = fn(bond.isin, bond.base, _calib_coupons(periods),
+                                 bond.face_value, start, end, calc_date, fwd_pct,
+                                 amorts=amorts)
+                except Exception as e:
                     idx_pct = None
+                    if warnings_out is not None:
+                        warnings_out.append(
+                            f"фиксинг периода {start}: {type(e).__name__} — купон спроецирован форвардом")
             if idx_pct is not None:
                 # конвенция выпуска: (индекс + маржа) simple ACT/365
                 factor = (idx_pct / 100.0 + bond.spread_issue_bps / 10000.0) * alpha
@@ -451,6 +480,8 @@ def build_cashflows_with_spread(
     amorts: Optional[List[dict]] = None,
     offers: Optional[List[dict]] = None,
     to_offer: bool = False,
+    index_pct_fn=None,
+    warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
     bond_variant = BondRefData(
         isin=bond.isin,
@@ -466,7 +497,8 @@ def build_cashflows_with_spread(
     )
     return build_cashflows_to_maturity(bond_variant, curve, calc_date,
                                        explicit_periods=explicit_periods, amorts=amorts,
-                                       offers=offers, to_offer=to_offer)
+                                       offers=offers, to_offer=to_offer,
+                                       index_pct_fn=index_pct_fn, warnings_out=warnings_out)
 
 
 def xnpv(rate: float, cashflows: List[tuple[date, float]]) -> float:
@@ -549,6 +581,7 @@ def pv_cashflows_with_dm(
     Так поток «(индекс+маржа) simple + номинал» телескопируется точно: цена =
     номинал ⇔ SM = маржа выпуска.
     """
+    _check_curve_convention(bond.base, curve)
     dm = dm_bps / 10000.0
 
     # Уникальные даты платежей > calc_date
@@ -637,7 +670,8 @@ def solve_dm_bps(
 
 def current_index_pct(coupons, calc_date: date, margin_bps: int, face_value: float,
                       amorts: Optional[List[dict]] = None,
-                      base: Optional[str] = None) -> Optional[float]:
+                      base: Optional[str] = None,
+                      hist: Optional[List[tuple]] = None) -> Optional[float]:
     """Текущий уровень базового индекса (КС/RUONIA), % — для discount margin
     (там индекс держится ПЛОСКИМ на текущем уровне, см. solve_discount_margin_bps).
 
@@ -658,10 +692,12 @@ def current_index_pct(coupons, calc_date: date, margin_bps: int, face_value: flo
     суммы завышается."""
     if base in ("KEYRATE", "RUONIA"):
         try:
-            from services import cbr
-            hist = cbr.ks_history() if base == "KEYRATE" else cbr.ruonia_history()
+            rows = hist                 # инжектированная история [(date, pct),...]
+            if rows is None:            # легаси-фолбэк: сам фетчит (CLI-пути)
+                from services import cbr
+                rows = cbr.ks_history() if base == "KEYRATE" else cbr.ruonia_history()
             val = None
-            for md, r in hist:          # история отсортирована по дате
+            for md, r in rows:          # история отсортирована по дате
                 if md <= calc_date:
                     val = r
                 else:
@@ -782,6 +818,8 @@ class FlatForwardCurve(DiscountCurve):
     """Кривая с ПЛОСКИМ форвардом = const (текущий индекс). Для проекции купонов
     discount-margin: индекс не падает по форварду, держится на текущем уровне.
     Дисконт делает solve_discount_margin_bps сам — нужен только forward()."""
+    rate_convention = "level"
+
     def __init__(self, calc_date: date, level_pct: float):
         self.calc_date = calc_date
         self._r = level_pct / 100.0
@@ -801,6 +839,7 @@ def implied_yield_pct(
     Вычисляет эквивалентную доходность к погашению из DF_DM на дату maturity (implied yield).
     Возвращает значение в процентах годовых (e.g. 15.25 -> 15.25%).
     """
+    _check_curve_convention(bond.base, curve)
     dm = dm_bps / 10000.0
     pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > calc_date}
     grid = sorted(list(pay_dates_set))
@@ -903,6 +942,8 @@ if __name__ == "__main__":
     
     # Мок-кривая 10% Flat Forward
     class FlatCurveMock(DiscountCurve):
+        rate_convention = "level"          # сырой уровень, не simple-форвард
+
         def forward(self, t1: date, t2: date) -> float:
             return 0.10
             

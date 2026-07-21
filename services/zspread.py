@@ -53,6 +53,7 @@ class ExpCurve:
         self.calc_date = calc_date
         self._td = timedelta
         self._curve = boot(quotes, calc_date)
+        self.rate_convention = self._curve.rate_convention
 
     def t(self, d: date) -> float:
         return (d - self.calc_date).days / 365.0
@@ -103,7 +104,7 @@ def _d(s):
 
 
 def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list = None,
-                offers: list = None):
+                offers: list = None, index_pct_fn=None):
     """Прогноз потоков: зафикс.купон = факт MOEX value; будущий = индекс(exp.fwd)+margin.
     Конвенция выпусков: маржа simple ACT/365 у обеих баз; KEYRATE-индекс простой
     (КС+m)·days/365, RUONIA-индекс daily-comp. + погашение номинала.
@@ -183,10 +184,12 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
             idx_pct = None
             if start <= calc_date:
                 try:
-                    from services.coupon_calib import period_index_pct
+                    fn = index_pct_fn
+                    if fn is None:                     # легаси-фолбэк (прямые вызовы)
+                        from services.coupon_calib import period_index_pct as fn
                     fwd_pct = (lambda dt: exp.fwd(max(dt, calc_date), end) * 100.0)
-                    idx_pct = period_index_pct(ref.isin, ref.base, coupons, ref.face_value,
-                                               start, end, calc_date, fwd_pct, amorts=amorts)
+                    idx_pct = fn(ref.isin, ref.base, coupons, ref.face_value,
+                                 start, end, calc_date, fwd_pct, amorts=amorts)
                 except Exception:
                     idx_pct = None
             if idx_pct is not None:
@@ -328,9 +331,36 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     (цена в % котируется от него), amorts — график погашения принципала."""
     if ref.base not in ("RUONIA", "KEYRATE") or price_pct is None:
         return None
-    from valuation import face_for_pricing
+    from valuation import face_for_pricing, settle_date, first_offer_date
+    settle = settle_date(calc_date)
+    # Погашение ≤ T+1: весь поток покупателю не достаётся, но residual-ветка
+    # project_cfs всё равно добавила бы принципал (условие > calc_date) → z-мусор.
+    # Тот же MATURED-guard, что в services.valuation.calculate_valuation_metrics.
+    if ref.maturity_date is not None and ref.maturity_date <= settle:
+        return None
+    # Перп (нет maturity): поток не терминируется — residual-принципала не будет,
+    # z решался бы против голых купонов до обрыва расписания (глубоко отрицательный
+    # мусор, молча). Осмыслен только при оферте с обрезкой (cut_at_offer).
+    if ref.maturity_date is None:
+        put = None
+        if offers:
+            try:
+                from services.ref_data import cut_at_offer
+                if cut_at_offer(ref.isin):
+                    put = first_offer_date(offers, settle)
+            except Exception:
+                put = None
+        if put is None:
+            return None
     dirty = face_for_pricing(ref.face_value, amorts, calc_date) * price_pct / 100.0 + (accrued_rub or 0.0)
-    cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers)
+    # I/O-граница: история индекса — один фетч здесь, в project_cfs — инжекция
+    try:
+        from functools import partial
+        from services.coupon_calib import period_index_pct, index_history
+        index_pct_fn = partial(period_index_pct, idx=index_history(ref.base))
+    except Exception:
+        index_pct_fn = lambda *a, **k: None   # деградация: начавшийся период → форвард
+    cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers, index_pct_fn=index_pct_fn)
     if ref.base == "KEYRATE":
         if not g.ok():
             return None

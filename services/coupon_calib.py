@@ -173,6 +173,15 @@ def _index(base: str):
     return dates, rates
 
 
+def index_history(base: str):
+    """Публичная точка I/O: история индекса (dates[], rates_pct[]) для инжекции
+    в расчётные функции (period_index_pct/calibrate/projected_ks_pct, параметр
+    idx). Service-слой зовёт её ОДИН раз на запрос и передаёт результат вниз —
+    ядро не ходит в сеть само, а сбой фетча виден на границе (→ warnings),
+    а не глотается внутри прайсинга."""
+    return _index(base)
+
+
 def _rate_at(idx, d: date) -> Optional[float]:
     """idx = (dates, rates), отсортированы по дате. Последняя ставка ≤ d (bisect)."""
     dates, rates = idx
@@ -239,15 +248,18 @@ def _past_rows(coupons: list, margin_pct: float, face: float, calc_date: date,
 
 
 def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
-              calc_date: date, base: str = "KEYRATE", amorts: list = None) -> Optional[dict]:
+              calc_date: date, base: str = "KEYRATE", amorts: list = None,
+              idx=None) -> Optional[dict]:
     """Спека формулы {'mode':'point'|'average','lag':int} по прошлым купонам.
     base='KEYRATE' — факт КС ЦБ; 'RUONIA' — дневной RUONIA (обычно average).
     face — текущий остаток номинала; amorts — график погашений (для отката
-    номинала на дату каждого прошлого периода, см. _past_rows)."""
+    номинала на дату каждого прошлого периода, см. _past_rows).
+    idx — инжектированная история индекса (index_history); None → сам фетчит."""
     ck = (isin, base)
     if ck in _cache:
         return _cache[ck]
-    idx = _index(base)
+    if idx is None:
+        idx = _index(base)
     rows = _past_rows(coupons, margin_pct, face, calc_date, amorts)
     spec = None
     if len(rows) >= 2 and idx[0]:
@@ -276,7 +288,7 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
 def period_index_pct(isin: str, base: str, coupons: list, face: float,
                      start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float],
-                     amorts: list = None) -> Optional[float]:
+                     amorts: list = None, idx=None) -> Optional[float]:
     """Индекс-компонента ставки купона (%) для НАЧАВШЕГОСЯ периода (start ≤ calc):
     спека формулы выпуска (manual > калибратор из истории купонов) →
     projected_ks_pct (прошлые дни — факт ЦБ, будущие — форвард). Фолбэк —
@@ -293,15 +305,19 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
     spec = None
     try:
         from services.ref_data import coupon_formula
-        s = coupon_formula(isin, coupons, face=face, calc_date=calc_date, amorts=amorts)
+        s = coupon_formula(isin, coupons, face=face, calc_date=calc_date, amorts=amorts,
+                           idx=idx)
         if s.get("coupon_mode") is not None:
             spec = {"mode": s["coupon_mode"], "lag": s.get("fixing_lag") or 0,
                     "lag_unit": s.get("fixing_lag_unit") or "cal", "base": base}
     except Exception:
         spec = None
     if spec is not None:
-        return projected_ks_pct(spec, start, end, calc_date, fwd_pct)
+        return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
     if base == "KEYRATE":
+        if idx is not None:
+            k = _rate_at(idx, start)           # история хранит проценты
+            return float(k) if k is not None else None
         from services.cbr import ks_rate_at
         k = ks_rate_at(start)
         return k * 100.0 if k is not None else None
@@ -309,11 +325,13 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
 
 
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
-                     fwd_pct: Callable[[date], float]) -> float:
+                     fwd_pct: Callable[[date], float], idx=None) -> float:
     """Компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ (КС/RUONIA),
     будущие — fwd_pct(date). point → одна дата; average → среднее по дням.
-    lag_unit='work' — лаг в рабочих днях (конвенция части проспектов)."""
-    idx = _index(spec.get("base", "KEYRATE"))
+    lag_unit='work' — лаг в рабочих днях (конвенция части проспектов).
+    idx — инжектированная история (index_history); None → сам фетчит."""
+    if idx is None:
+        idx = _index(spec.get("base", "KEYRATE"))
     lag = spec.get("lag", 0)
     unit = spec.get("lag_unit", "cal")
     if spec.get("mode") == "point":

@@ -55,8 +55,9 @@ function Dashboard({ user, onLogout }) {
   useEffect(() => { localStorage.setItem("positions", JSON.stringify(positions)); }, [positions]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
 
-  const addBond = useCallback((isin) => setWatch((w) => (w.includes(isin) ? w : [...w, isin])), []);
-  const removeBond = useCallback((isin) => setWatch((w) => w.filter((x) => x !== isin)), []);
+  // стабильная ссылка (не inline-стрелка) — иначе memo(BondRow) бесполезен
+  const toggleStar = useCallback((isin) =>
+    setWatch((w) => (w.includes(isin) ? w.filter((x) => x !== isin) : [...w, isin])), []);
 
   const toggleCol = useCallback((key) => setVisibleCols((cs) =>
     cs.includes(key) ? cs.filter((k) => k !== key) : [...cs, key]), []);
@@ -199,7 +200,7 @@ function Dashboard({ user, onLogout }) {
       {module === "funds" ? (
         <FundsModule onLogout={onLogout} />
       ) : module === "curves" ? (
-        <CurvesModule />
+        <CurvesModule onLogout={onLogout} />
       ) : (
         <>
           <Kpis bonds={filtered} />
@@ -224,7 +225,7 @@ function Dashboard({ user, onLogout }) {
             onSort={onSort}
             onOpen={openDrawer}
             watch={watch}
-            onToggleStar={(isin) => (watch.includes(isin) ? removeBond(isin) : addBond(isin))}
+            onToggleStar={toggleStar}
             filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
             onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
             onRetry={loadBonds}

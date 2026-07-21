@@ -1,4 +1,5 @@
 from datetime import date
+from functools import partial
 from typing import Dict, Any, Optional
 
 from forwards import DiscountCurve
@@ -13,6 +14,24 @@ from valuation import (
     FlatForwardCurve,
     implied_yield_pct,
 )
+
+
+def _index_provider(base: str, warnings: list):
+    """I/O-граница: история индекса ЦБ фетчится ЗДЕСЬ (раз на запрос), ядро
+    получает готовый провайдер. Сбой фетча → warning + провайдер-заглушка
+    (ядро уходит на форвард-проекцию, но это видно в ответе), history-пары для
+    current_index_pct → None (DM посчитается от back-out из купона или не
+    посчитается — тоже видимо по disc_margin_bps=None)."""
+    try:
+        from services.coupon_calib import period_index_pct, index_history
+        idx = index_history(base)
+        if not idx[0]:
+            raise RuntimeError("пустая история индекса")
+        return partial(period_index_pct, idx=idx), list(zip(idx[0], idx[1]))
+    except Exception as e:
+        warnings.append(f"история {base} недоступна ({type(e).__name__}) — "
+                        "фиксинги начавшихся периодов спроецированы форвардом")
+        return (lambda *a, **k: None), None
 
 def calculate_valuation_metrics(
     bond: BondRefData,
@@ -61,6 +80,10 @@ def calculate_valuation_metrics(
     _pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
     dirty_rub = dirty_price_rub(_pricing_face, price, accrued)
 
+    # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
+    warnings: list = []
+    index_pct_fn, hist_pairs = _index_provider(bond.base, warnings)
+
     # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
     # (факт MOEX), амортизации учитываем. base_cfs (spread=0) — контрфактуал только
     # для spread_to_base_bps: там купон проектируем (value не применим к spread=0),
@@ -68,10 +91,12 @@ def calculate_valuation_metrics(
     base_periods = [(p[0], p[1]) for p in periods] if periods else None
 
     cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
-                                      explicit_periods=periods, amorts=amorts, offers=offers)
+                                      explicit_periods=periods, amorts=amorts, offers=offers,
+                                      index_pct_fn=index_pct_fn, warnings_out=warnings)
     base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0,
                                            explicit_periods=base_periods, amorts=amorts,
-                                           offers=offers)
+                                           offers=offers,
+                                           index_pct_fn=index_pct_fn, warnings_out=warnings)
 
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
@@ -104,12 +129,13 @@ def calculate_valuation_metrics(
     disc_margin_bps = None
     try:
         L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
-                              amorts=amorts, base=bond.base)
+                              amorts=amorts, base=bond.base, hist=hist_pairs)
         if L is not None:
             flat = FlatForwardCurve(calc_date, L)
             flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
                                                    explicit_periods=periods, amorts=amorts,
-                                                   offers=offers)
+                                                   offers=offers,
+                                                   index_pct_fn=index_pct_fn, warnings_out=warnings)
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
     except Exception as e:
         print(f"Discount margin error for {bond.isin}: {e}")
@@ -132,18 +158,20 @@ def calculate_valuation_metrics(
         try:
             cfs_off = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
                                                   explicit_periods=periods, amorts=amorts,
-                                                  offers=offers, to_offer=True)
+                                                  offers=offers, to_offer=True,
+                                                  index_pct_fn=index_pct_fn, warnings_out=warnings)
             y_off = xirr_yield_pct(dirty_rub, cfs_off, calc_date)
             y_to_offer = round(y_off, 4) if y_off is not None else None
             if curve and len(cfs_off) > 0:
                 sm_to_offer = solve_dm_bps(bond, curve, cfs_off, calc_date, dirty_rub)
             L2 = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
-                                   amorts=amorts, base=bond.base)
+                                   amorts=amorts, base=bond.base, hist=hist_pairs)
             if L2 is not None:
                 flat2 = FlatForwardCurve(calc_date, L2)
                 flat_cfs_off = build_cashflows_with_spread(bond, flat2, calc_date, bond.spread_issue_bps,
                                                            explicit_periods=periods, amorts=amorts,
-                                                           offers=offers, to_offer=True)
+                                                           offers=offers, to_offer=True,
+                                                           index_pct_fn=index_pct_fn, warnings_out=warnings)
                 dm_to_offer = solve_discount_margin_bps(flat_cfs_off, calc_date, dirty_rub, L2)
         except Exception as e:
             print(f"to-offer valuation error for {bond.isin}: {e}")
@@ -159,7 +187,7 @@ def calculate_valuation_metrics(
         "base_yield_pct": round(base_yield, 4) if base_yield is not None else None,
         "spread_to_base_bps": spread_to_base_bps,
         "pricing_status": "SUCCESS" if sm_bps is not None else "DM_FAILED",
-        "warnings": [],
+        "warnings": sorted(set(warnings)),
         "preferred_horizon": horizon,
         "offer_date": offer_date,
         "offer_price_pct": offer_price_pct,

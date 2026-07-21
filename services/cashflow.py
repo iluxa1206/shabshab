@@ -26,6 +26,15 @@ def build_cashflow_from_moex(
     sp = (ref.spread_issue_bps or 0) / 10000.0
     items: List[CashflowItem] = []
     n = 0
+    # I/O-граница: история индекса — один фетч на вызов (не в цикле по купонам)
+    _index_pct_fn = None
+    if ref.base in ("KEYRATE", "RUONIA"):
+        try:
+            from functools import partial
+            from services.coupon_calib import period_index_pct as _pip, index_history
+            _index_pct_fn = partial(_pip, idx=index_history(ref.base))
+        except Exception:
+            _index_pct_fn = lambda *a, **k: None
     # амортизируемая: остаточный номинал на начало периода. Считаем сами (поле face
     # строк купонов MOEX ненадёжно, всегда 1000). Берём ПОЛНЫЙ график погашений
     # (не только будущие: погашение ~сегодня уже уменьшило остаток) относительно
@@ -76,15 +85,14 @@ def build_cashflow_from_moex(
             # фолбэк — точечная КС на start). Общая точка с pricing (valuation,
             # zspread): display показывает тот же купон, что заложен в SM/z.
             idx_pct = None
-            if ref.base in ("KEYRATE", "RUONIA") and start <= calc_date < end:
+            if _index_pct_fn is not None and start <= calc_date < end:
                 try:
-                    from services.coupon_calib import period_index_pct
                     ks_fwd = lambda dt: (curve.forward(max(dt, calc_date), end) * 100.0) if curve else 0.0
                     # ref.face_value (текущий остаток) + amorts, а НЕ face периода:
                     # калибратор откатывает номинал сам, и все три пайплайна
                     # (valuation, zspread, display) обязаны кормить его одним и тем же.
-                    idx_pct = period_index_pct(ref.isin, ref.base, coupons, ref.face_value,
-                                               start, end, calc_date, ks_fwd, amorts=amorts)
+                    idx_pct = _index_pct_fn(ref.isin, ref.base, coupons, ref.face_value,
+                                            start, end, calc_date, ks_fwd, amorts=amorts)
                 except Exception:
                     idx_pct = None
             if idx_pct is not None:

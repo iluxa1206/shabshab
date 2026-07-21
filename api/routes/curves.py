@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, Literal
 from datetime import date, timedelta
@@ -60,11 +61,15 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
     y_mkt = floater_xirr_pct(cfs_mkt, dirty_pct, cd)
 
+    # actual_ks → cbr.ks_history: на холодном/протухшем кэше это 2 requests.get
+    # (таймауты 20+15с) — в потоке, не блокируем event loop (как в /ks-path)
+    cur_ks = await asyncio.to_thread(actual_ks, cd)
+
     return {
         "isin": isin, "name": u.get("name") or isin, "base": base,
         "spread_bps": u.get("spread_issue_bps") or 0,
         "calc_date": cd.isoformat(), "price_flat_pct": round(price, 4),
-        "current_ks_pct": round((actual_ks(cd) or 0) * 100, 2),
+        "current_ks_pct": round((cur_ks or 0) * 100, 2),
         "ytm_pct": y_mkt,
         "coupons_market": [{"date": d.isoformat(), "amount_pct": a} for d, a in cfs_mkt[:12]],
     }
@@ -76,7 +81,6 @@ async def get_ks_path(
 ):
     """Путь базовой ставки: факт живьём с ЦБ РФ (дневная история) + рыночный
     форвард из СПФИ (наш bootstrap). series=ks — ключевая, ruonia — RUONIA."""
-    import asyncio
     from services.ks_path import build_path, current_rate_pct
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     cd = calc_date or date.today()

@@ -1,11 +1,19 @@
 import asyncio
 import aiohttp
 import json
+import logging
 import uuid
 import os
 from typing import Dict, List, Any
 from datetime import date
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
+
+logger = logging.getLogger(__name__)
+
+# Явные таймауты aiohttp: дефолтный total=300с подвешивал поллер на минуты при
+# зависшем Alor (резолюция символов по 150 ISIN / WS-хендшейк без ограничения).
+_REST_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_WS_TIMEOUT = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
 
 from rates import get_rates_curves
 from forwards import CurveBootstrapper, add_months
@@ -63,7 +71,7 @@ async def get_last_prices_dict(access_token: str, exchange: str, isins: List[str
         symbol_to_isin[symbol] = isin
 
     if unknown:
-        async with aiohttp.ClientSession(headers=headers) as session:
+        async with aiohttp.ClientSession(headers=headers, timeout=_REST_TIMEOUT) as session:
             await asyncio.gather(*(get_info_for_isin(session, isin) for isin in unknown))
         _save_symbol_cache(_symbol_cache)
 
@@ -74,7 +82,7 @@ async def get_last_prices_dict(access_token: str, exchange: str, isins: List[str
     result = {}
     timeout = 4.0  # неликвид никогда не пришлёт котировку — не ждём полные 10с
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=_WS_TIMEOUT) as session:
         try:
             async with session.ws_connect(ws_url) as ws:
                 for sym in symbols_to_fetch:
@@ -111,9 +119,12 @@ async def get_last_prices_dict(access_token: str, exchange: str, isins: List[str
                             break
                     except asyncio.TimeoutError:
                         continue
-                        
+
         except Exception as e:
-            pass
+            # обрыв/403/протухший токен: раньше глотался молча — пустой dict наружу
+            # был неотличим от «нет котировок»
+            logger.warning("Alor WS session failed (%d symbols): %s: %s",
+                           len(symbols_to_fetch), type(e).__name__, e)
 
     return result
 
@@ -187,7 +198,7 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
     collected_symbols = set()
     timeout = 10.0 # Ждем максимум 10 секунд на получение всех данных
     
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=_WS_TIMEOUT) as session:
         try:
             async with session.ws_connect(ws_url) as ws:
                 for sym in symbols_to_fetch:

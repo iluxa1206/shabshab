@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import json
 import glob
+import threading
 import datetime as _dt
 from datetime import date
 from typing import List, Tuple, Optional
@@ -136,12 +137,24 @@ def _save_cache(ks: List[Tuple[date, float]], ruonia_live: List[Tuple[date, floa
 
 
 _mem = {"date": None, "ks": None, "ruonia": None}
+_refresh_lock = threading.Lock()
 
 
 def _refresh() -> None:
-    """Наполняет память: КС (live→cache), RUONIA (seed + live current)."""
+    """Наполняет память: КС (live→cache), RUONIA (seed + live current).
+
+    Лок: зовётся и из to_thread (warmup), и синхронно из расчётных путей —
+    без лока конкурентные вызовы при протухшем кэше дублировали фетч ЦБ и
+    гонялись за _mem."""
     today = date.today().isoformat()
     if _mem["date"] == today and _mem["ks"] is not None:
+        return
+    with _refresh_lock:
+        _refresh_locked(today)
+
+
+def _refresh_locked(today: str) -> None:
+    if _mem["date"] == today and _mem["ks"] is not None:   # re-check под локом
         return
     cache = _load_cache()
     ks: List[Tuple[date, float]] = []

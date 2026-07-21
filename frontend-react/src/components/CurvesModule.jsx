@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
+import { fetchCurvePlot, fetchKsPath, fetchFloaterYield, UnauthorizedError } from "../api.js";
 import { fmt } from "../format.js";
+
+// 401 → на экран логина (единственный модуль, где это не перехватывалось:
+// протухшая сессия показывала «Ошибка: unauthorized» вместо логина)
+const failOr401 = (onLogout, setErr, setStatus) => (e) => {
+  if (e instanceof UnauthorizedError) { onLogout?.(); return; }
+  setErr(String(e.message || e));
+  setStatus("error");
+};
 
 // Вкладка кривых. Два вида:
 //  «Кривая» — par-котировки СПФИ + построенная кривая (spot/forward).
 //  «Путь КС» — рыночный форвард-путь ставки vs ручные сценарии ЦБ + факт
 //              (реплика листа «КС-прогноз» из 502_504.xlsm).
 // SVG без внешних либ, тема через CSS-переменные.
-export default function CurvesModule() {
+export default function CurvesModule({ onLogout }) {
   const [view, setView] = useState("curve"); // curve | kspath
   return (
     <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
@@ -21,12 +29,14 @@ export default function CurvesModule() {
             onClick={() => setView("floater")}>Флоатер YTM</button>
         </span>
       </div>
-      {view === "curve" ? <CurveView /> : view === "kspath" ? <KsPathView /> : <FloaterScenariosView />}
+      {view === "curve" ? <CurveView onLogout={onLogout} />
+        : view === "kspath" ? <KsPathView onLogout={onLogout} />
+        : <FloaterScenariosView onLogout={onLogout} />}
     </div>
   );
 }
 
-function CurveView() {
+function CurveView({ onLogout }) {
   const [type, setType] = useState("ruonia");
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("loading");
@@ -36,11 +46,12 @@ function CurveView() {
   useEffect(() => {
     let alive = true;
     setStatus("loading");
+    const fail = failOr401(onLogout, setErr, setStatus);
     fetchCurvePlot(type)
       .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
-      .catch((e) => { if (alive) { setErr(String(e.message || e)); setStatus("error"); } });
+      .catch((e) => { if (alive) fail(e); });
     return () => { alive = false; };
-  }, [type]);
+  }, [type, onLogout]);
 
   return (
     <>
@@ -205,7 +216,7 @@ function QuoteTable({ data }) {
 }
 
 // ── Путь ставки: факт (ЦБ РФ) + рыночный форвард (СПФИ) ───────────────────
-function KsPathView() {
+function KsPathView({ onLogout }) {
   const [series, setSeries] = useState("ks"); // ks | ruonia
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("loading");
@@ -214,11 +225,12 @@ function KsPathView() {
   useEffect(() => {
     let alive = true;
     setStatus("loading");
+    const fail = failOr401(onLogout, setErr, setStatus);
     fetchKsPath(series)
       .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
-      .catch((e) => { if (alive) { setErr(String(e.message || e)); setStatus("error"); } });
+      .catch((e) => { if (alive) fail(e); });
     return () => { alive = false; };
-  }, [series]);
+  }, [series, onLogout]);
 
   const label = series === "ks" ? "КС" : "RUONIA";
   return (
@@ -384,7 +396,7 @@ function LegLine({ color, dash, label }) {
 }
 
 // ── Флоатер / сценарии: YTM бумаги под рынок vs сценарии ЦБ (метод 502_504) ──
-function FloaterScenariosView() {
+function FloaterScenariosView({ onLogout }) {
   const [isin, setIsin] = useState("");
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("idle"); // idle | loading | ready | error
@@ -396,7 +408,7 @@ function FloaterScenariosView() {
     setStatus("loading"); setErr("");
     fetchFloaterYield(v)
       .then((d) => { setData(d); setStatus("ready"); })
-      .catch((e) => { setErr(String(e.message || e)); setStatus("error"); });
+      .catch(failOr401(onLogout, setErr, setStatus));
   };
 
   return (

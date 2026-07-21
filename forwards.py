@@ -40,6 +40,15 @@ def get_maturity_date(start_date: date, tenor: str) -> date:
     raise ValueError(f"Unknown tenor format: {tenor}")
 
 class DiscountCurve:
+    # Конвенция ставки, которую возвращает forward():
+    #   simple     — простая ACT/365: (DF1/DF2 − 1)·365/days
+    #   daily_comp — эквивалент дневной капитализации: 365·((DF1/DF2)^(1/days) − 1)
+    #   level      — сырой уровень индекса (плоские кривые)
+    # Потребители (pv_cashflows_with_dm, build_cashflows) начисляют купон обратно
+    # конвенцией БАЗЫ бумаги — несоответствие кривая↔база даёт двойной компаундинг
+    # и раньше никак не проверялось (неявный контракт по типу кривой).
+    rate_convention: str = "simple"
+
     def __init__(self, calc_date: date, nodes: List[Tuple[date, float]] = None):
         """nodes: список кортежей (date, df). calc_date неявно добавляется с DF=1.0"""
         self.calc_date = calc_date
@@ -133,6 +142,7 @@ class BootstrappedForwardCurve(DiscountCurve):
     def __init__(self, calc_date: date, nodes: List[Tuple[date, float]], base_type: str):
         super().__init__(calc_date, nodes)
         self.base_type = base_type
+        self.rate_convention = "daily_comp" if base_type == "RUONIA" else "simple"
 
     def _equivalent_rate(self, factor: float, days: int) -> float:
         """factor = DF(t1)/DF(t2) → ставка сегмента в конвенции индекса.

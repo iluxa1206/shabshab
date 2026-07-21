@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { motion, useAnimationControls, useReducedMotion } from "framer-motion";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { useReducedMotion } from "framer-motion";
 import { fmt, dmColor } from "../format.js";
 
 const D = () => <span className="dash">—</span>;
@@ -91,27 +91,30 @@ export const COLS = [
 export const COL_META = COLS.map(({ key, label, sub, portfolio }) => ({ key, label, sub, portfolio }));
 export const DEFAULT_COLS = COLS.filter((c) => !c.portfolio).map((c) => c.key); // портфельные скрыты по умолчанию
 
-function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
-  const controls = useAnimationControls();
+// memo: WS-тик цены пересобирает массив rows, но ссылки НЕИЗМЕНИВШИХСЯ бумаг
+// стабильны (App точечно клонирует только тикнувшую) — memo снимает ре-рендер
+// остальных ~450 строк. Требует стабильных onOpen/onToggleStar (useCallback в App)
+// и стабильного cols (useMemo ниже). Flash — CSS-анимация tr.flash (styles.css)
+// вместо framer-инстанса на строку.
+const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
   const prev = useRef(b.last_price_pct);
   const reduce = useReducedMotion();
+  const [flash, setFlash] = useState(false);
 
   useEffect(() => {
     if (prev.current != null && b.last_price_pct !== prev.current && !reduce) {
-      controls.start({
-        backgroundColor: ["rgba(199,154,63,.16)", "rgba(199,154,63,0)"],
-        transition: { duration: 0.8, ease: "easeOut" },
-      });
+      setFlash(true);
     }
     prev.current = b.last_price_pct;
-  }, [b.last_price_pct, controls, reduce]);
+  }, [b.last_price_pct, reduce]);
 
   const open = (e) => onOpen(b.isin, e.currentTarget);
   const toggleStar = (e) => { e.stopPropagation(); onToggleStar(b.isin); };
 
   return (
-    <motion.tr
-      animate={controls}
+    <tr
+      className={flash ? "flash" : undefined}
+      onAnimationEnd={() => setFlash(false)}
       tabIndex={0}
       role="button"
       aria-label={`${b.short_name || b.isin} ${b.isin}, открыть карточку`}
@@ -125,9 +128,9 @@ function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
         </button>
       </td>
       {cols.map((c) => c.cell(b))}
-    </motion.tr>
+    </tr>
   );
-}
+});
 
 function HeaderCell({ col, sort, onSort }) {
   const active = sort.key === col.key;
@@ -151,9 +154,13 @@ function HeaderCell({ col, sort, onSort }) {
 }
 
 export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols }) {
-  // видимые колонки в исходном порядке COLS
-  const visSet = visibleCols ? new Set(visibleCols) : new Set(DEFAULT_COLS);
-  const cols = COLS.filter((c) => visSet.has(c.key));
+  // видимые колонки в исходном порядке COLS; useMemo — стабильная ссылка для memo(BondRow)
+  const cols = useMemo(() => {
+    const visSet = new Set(visibleCols?.length ? visibleCols : DEFAULT_COLS);
+    return COLS.filter((c) => visSet.has(c.key));
+  }, [visibleCols]);
+  // O(1) вместо watch.includes на каждую строку
+  const watchSet = useMemo(() => new Set(watch), [watch]);
   const ncols = cols.length + 1; // + star
 
   let body;
@@ -171,7 +178,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
     </td></tr>
   );
   else body = rows.map((b) => (
-    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watch.includes(b.isin)} onToggleStar={onToggleStar} cols={cols} />
+    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} />
   ));
 
   return (

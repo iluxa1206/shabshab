@@ -1,8 +1,9 @@
 import os
+import re
 import asyncio
 from datetime import datetime, date, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Query, Path
+from fastapi import APIRouter, Query, Path, HTTPException
 
 
 async def _aempty():
@@ -27,6 +28,18 @@ from services import metrics, history
 from cashflow import read_isins_from_file
 
 router = APIRouter()
+
+# ISO 6166; тот же паттерн, что в funds. Валидируем ВСЕ входные ISIN: они
+# интерполируются в URL к MOEX/Alor f-строками — мусор/`..%2F` не должен уходить
+# во внешние запросы.
+_ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
+
+
+def _require_isin(isin: str) -> str:
+    v = (isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(v):
+        raise HTTPException(status_code=422, detail=f"Невалидный ISIN: {isin!r}")
+    return v
 
 
 def build_bond_nrd(mapped: dict, last_price: Optional[float]) -> Optional[BondNrd]:
@@ -404,6 +417,7 @@ async def get_bonds(
         isins = []
 
     extra_list = [x.strip().upper() for x in (extra.split(",") if extra else []) if x.strip()]
+    extra_list = [x for x in extra_list if _ISIN_RE.fullmatch(x)]  # мусор молча отбрасываем
     cache = MarketDataService.get_local_bond_cache(cache_path)
 
     if universe:
@@ -566,6 +580,7 @@ async def get_bond_filters():
 
 @router.get("/{isin}", response_model=BondDetailsResponse, tags=["Bonds"])
 async def get_bond_details(isin: str = Path(...)):
+    isin = _require_isin(isin)
     base_dir = get_base_dir()
     cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
     data = cache.get(isin)
@@ -795,6 +810,7 @@ async def get_bond_details(isin: str = Path(...)):
 
 @router.get("/{isin}/nrd", response_model=BondNrd, tags=["Bonds"])
 async def get_bond_nrd(isin: str = Path(...)):
+    isin = _require_isin(isin)
     base_dir = get_base_dir()
     cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
     if isin not in cache:
@@ -814,6 +830,7 @@ async def get_bond_nrd(isin: str = Path(...)):
 async def get_bond_cashflow(isin: str = Path(...)):
     # Re-use logic from get_bond_details internally to stay DRY in a real app
     # Here extending it directly for clarity
+    isin = _require_isin(isin)
     base_dir = get_base_dir()
     cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
     data = cache.get(isin)
@@ -852,6 +869,7 @@ async def get_bond_cashflow(isin: str = Path(...)):
 
 @router.get("/{isin}/valuation", response_model=ValuationResponse, tags=["Bonds"])
 async def get_bond_valuation(isin: str = Path(...)):
+    isin = _require_isin(isin)
     base_dir = get_base_dir()
     cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
     data = cache.get(isin)

@@ -1,12 +1,19 @@
 import asyncio
 import json
 import logging
+import re
 from typing import Dict, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter()
 logger = logging.getLogger("api.ws")
+
+# Подписки не были ограничены: любой авторизованный мог накачать broadcaster
+# произвольными строками-«isin» (каждая гонится в Alor каждые 5с) без лимита.
+_ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
+_MAX_SUBS_PER_CLIENT = 300
+_VALID_CHANNELS = ("market", "orderbook")
 
 class ConnectionManager:
     def __init__(self):
@@ -99,10 +106,19 @@ async def websocket_market_endpoint(websocket: WebSocket):
                 channel = payload.get("channel")
                 isin = payload.get("isin")
                 
-                if action == "subscribe" and channel and isin:
+                isin = (isin or "").strip().upper() if isinstance(isin, str) else None
+                if action == "subscribe" and channel in _VALID_CHANNELS and isin:
+                    if not _ISIN_RE.fullmatch(isin):
+                        await websocket.send_json({"error": f"invalid isin: {isin[:20]}"})
+                        continue
+                    subs = manager.client_subs.get(websocket, {})
+                    n_subs = sum(len(s) for s in subs.values())
+                    if n_subs >= _MAX_SUBS_PER_CLIENT:
+                        await websocket.send_json({"error": "subscription limit reached"})
+                        continue
                     await manager.subscribe(websocket, channel, isin)
                     await websocket.send_json({"status": "subscribed", "channel": channel, "isin": isin})
-                elif action == "unsubscribe" and channel and isin:
+                elif action == "unsubscribe" and channel in _VALID_CHANNELS and isin:
                     await manager.unsubscribe(websocket, channel, isin)
                     await websocket.send_json({"status": "unsubscribed", "channel": channel, "isin": isin})
             except json.JSONDecodeError:

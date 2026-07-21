@@ -2,12 +2,17 @@ import os
 import json
 import time
 import asyncio
+import threading
 import httpx
 from typing import Dict, Optional, Tuple, List
 from datetime import date
 
 SECURITIES_CACHE_FILE = "securities_cache.json"
 _SNAP_TTL = 120.0  # сек: prev/accrued MOEX кэшируем внутридневно, чтоб не бомбить ISS
+# Максимальный возраст live-цены Alor: старше — не отдаём как «текущую» (вне торгов /
+# при упавшем Alor кэш отдавал цену любой давности; потребители честно падают на
+# prev-close/НРД). 12ч покрывает ночь до утреннего прогрева поллером (~07:00 МСК).
+_PRICE_MAX_AGE = 12 * 3600.0
 
 from rates import get_rates_curves, Quote
 from forwards import CurveBootstrapper, DiscountCurve
@@ -60,10 +65,16 @@ market_cache = {
     "ruonia_curve": None,
     "keyrate_curve": None,
     "last_prices": {},
+    "last_prices_ts": {},     # {isin: unix-ts последнего обновления} — возраст цены
     "universe_metrics": {},   # {isin: полные метрики вне watchlist} — наполняет фоновый поллер
     "rates_date": None,
     "calc_date": None
 }
+
+# _load_curves_sync зовётся через to_thread: без лока два конкурентных запроса при
+# холодном кэше запускали двойной bootstrap (сеть+CPU), а multi-key запись могла
+# отдать читателю кривую с чужой датой.
+_curves_lock = threading.Lock()
 
 class MarketDataService:
     @classmethod
@@ -74,37 +85,41 @@ class MarketDataService:
 
     @classmethod
     def _load_curves_sync(cls) -> Tuple[Optional[DiscountCurve], Optional[DiscountCurve], Optional[date], Optional[date]]:
-        # TTL: кэш кривых валиден только на сегодня (после полуночи — вчерашние ставки)
-        if market_cache["calc_date"] != date.today():
-            market_cache["ruonia_curve"] = None
-            market_cache["keyrate_curve"] = None
-        if market_cache["ruonia_curve"] and market_cache["keyrate_curve"]:
-            return market_cache["ruonia_curve"], market_cache["keyrate_curve"], market_cache["calc_date"], market_cache["rates_date"]
+        with _curves_lock:
+            # TTL: кэш кривых валиден только на сегодня (после полуночи — вчерашние ставки)
+            if market_cache["calc_date"] != date.today():
+                market_cache["ruonia_curve"] = None
+                market_cache["keyrate_curve"] = None
+            if market_cache["ruonia_curve"] and market_cache["keyrate_curve"]:
+                return market_cache["ruonia_curve"], market_cache["keyrate_curve"], market_cache["calc_date"], market_cache["rates_date"]
 
-        try:
-            # Load curves from rates.py logic
-            ois_quotes, irs_quotes = get_rates_curves(use_cache=True)
-            if not ois_quotes or not irs_quotes:
+            try:
+                # Load curves from rates.py logic
+                ois_quotes, irs_quotes = get_rates_curves(use_cache=True)
+                if not ois_quotes or not irs_quotes:
+                    return None, None, None, None
+
+                calc_date = date.today()
+                rates_date = ois_quotes[0].date if ois_quotes else None
+
+                ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
+                irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
+
+                # одна атомарная запись (под локом) — читатель не увидит кривую с чужой датой
+                market_cache.update({
+                    "ruonia_curve": ruonia_curve,
+                    "keyrate_curve": irs_curve,
+                    "calc_date": calc_date,
+                    "rates_date": rates_date,
+                    "ois_quotes": ois_quotes,   # для кривых ожиданий z-спреда
+                    "irs_quotes": irs_quotes,
+                })
+
+                return ruonia_curve, irs_curve, calc_date, rates_date
+
+            except Exception as e:
+                print(f"Error loading curves: {e}")
                 return None, None, None, None
-                
-            calc_date = date.today()
-            rates_date = ois_quotes[0].date if ois_quotes else None
-            
-            ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
-            irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
-
-            market_cache["ruonia_curve"] = ruonia_curve
-            market_cache["keyrate_curve"] = irs_curve
-            market_cache["calc_date"] = calc_date
-            market_cache["rates_date"] = rates_date
-            market_cache["ois_quotes"] = ois_quotes   # для кривых ожиданий z-спреда
-            market_cache["irs_quotes"] = irs_quotes
-            
-            return ruonia_curve, irs_curve, calc_date, rates_date
-            
-        except Exception as e:
-            print(f"Error loading curves: {e}")
-            return None, None, None, None
 
     _gcurve = None
     _gcurve_date: Optional[str] = None
@@ -162,20 +177,25 @@ class MarketDataService:
     async def fetch_last_prices(cls, isins: List[str]) -> Dict[str, float]:
         access_token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
         if not access_token:
-            return market_cache["last_prices"]
-            
+            return cls.cached_prices()
+
         try:
             prices = await get_last_prices_dict(access_token, "MOEX", isins)
+            now = time.time()
             market_cache["last_prices"].update(prices)
-            return market_cache["last_prices"]
+            market_cache["last_prices_ts"].update({i: now for i in prices})
         except Exception as e:
             print(f"Error fetching prices: {e}")
-            return market_cache["last_prices"]
-            
+        return cls.cached_prices()
+
     @classmethod
-    def cached_prices(cls) -> Dict[str, float]:
-        """Уже известные цены из WS-кэша (без нового запроса)."""
-        return dict(market_cache.get("last_prices", {}))
+    def cached_prices(cls, max_age_sec: float = _PRICE_MAX_AGE) -> Dict[str, float]:
+        """Цены из WS-кэша не старше max_age_sec (без нового запроса).
+        Цена без таймстампа (легаси-запись) считается протухшей."""
+        cutoff = time.time() - max_age_sec
+        ts = market_cache.get("last_prices_ts", {})
+        return {i: p for i, p in market_cache.get("last_prices", {}).items()
+                if ts.get(i, 0.0) >= cutoff}
 
     _shortnames: Dict[str, str] = {}
     _shortnames_date: Optional[str] = None
@@ -345,12 +365,15 @@ class MarketDataService:
         if not isins:
             return out
         cls._load_sec_cache()
+        today = date.today().isoformat()
         missing = []
         for isin in isins:
             cached = cls._sec_cache.get(isin)
             # записи старого формата (без secid) перефетчиваем разово: у них могла
-            # быть выбрана борд-строка с рублёвым НКД для валютной бумаги
-            if cached is not None and "secid" in cached:
+            # быть выбрана борд-строка с рублёвым НКД для валютной бумаги.
+            # md_date: рыночные поля (prev/accrued) валидны только в день фетча —
+            # вечный кэш прайсил бумаги ценой многомесячной давности без пометки.
+            if cached is not None and "secid" in cached and cached.get("md_date") == today:
                 out[isin] = cached
             else:
                 missing.append(isin)
@@ -424,6 +447,7 @@ class MarketDataService:
                     "accrued": g("ACCRUEDINT"),
                     "prev": prev,
                     "coupon_type": g("COUPONTYPE"),
+                    "md_date": date.today().isoformat(),  # свежесть prev/accrued
                 }
             except Exception:
                 pass

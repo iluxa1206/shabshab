@@ -150,7 +150,8 @@ def params(isin: str) -> dict:
 
 
 def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
-                   face: float = None, calc_date=None, amorts: list = None) -> dict:
+                   face: float = None, calc_date=None, amorts: list = None,
+                   idx=None) -> dict:
     """Полная спека купона для точной проекции:
         {base, margin_bps, fixing_lag, fixing_lag_unit, coupon_mode}
     Разрешение: base/margin — manual > Cbonds; fixing_lag/coupon_mode —
@@ -184,7 +185,7 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
             from services.coupon_calib import calibrate
             m = margin_pct if margin_pct is not None else (out["margin_bps"] or 0) / 100.0
             spec = calibrate(isin, coupons, m, face or 1000.0, calc_date,
-                             base=out["base"] or "KEYRATE", amorts=amorts)
+                             base=out["base"] or "KEYRATE", amorts=amorts, idx=idx)
             if spec:
                 if out["fixing_lag"] is None:
                     out["fixing_lag"] = spec["lag"]

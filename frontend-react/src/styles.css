@@ -19,7 +19,9 @@
   --neg: var(--down);
 }
 
-#app.theme-dark {
+/* класс на ЛЮБОМ корне (не только #app): Login/checking рендерятся в div без id,
+   селектор #app.theme-dark оставлял экран логина всегда светлым */
+.theme-dark {
   /* Dark = real-time LED display */
   --bg: #000000;
   --fg: #f2f2f2;
