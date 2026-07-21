@@ -14,6 +14,7 @@
   --inv-fg: #ffffff;
   --up: #157a37;              /* cheap / gain */
   --down: #c0271f;            /* rich / loss */
+  --accent: #3b5bd4;          /* доп. серия на графиках (напр. НРД Прил.3) */
   --pos: var(--up);
   --neg: var(--down);
 }
@@ -31,6 +32,7 @@
   --inv-fg: #000000;
   --up: #4ecb76;
   --down: #ff6b6b;
+  --accent: #6b9bff;          /* доп. серия на графиках (напр. НРД Прил.3) */
   --pos: var(--up);
   --neg: var(--down);
 }

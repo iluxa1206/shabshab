@@ -89,14 +89,45 @@ async def fund_nav_snapshotter():
             print(f"NAV snapshotter error: {e}")
         await asyncio.sleep(3600)
 
+async def warmup_caches():
+    """Прогрев дорогих на ХОЛОДНУЮ кэшей сразу при старте, чтобы ПЕРВЫЙ запрос
+    пользователя не платил их латентность (после каждого деплоя контейнер холодный).
+    Тяжёлое: cbr._refresh (~1.2с — 2 сетевых запроса к cbr.ru за историей КС/RUONIA)
+    и bootstrap кривых. Идёт конкурентно, старт сервера не блокирует; поллер
+    отдельно (он спит 30с и греет ещё и цены Alor + метрики юниверса)."""
+    try:
+        from services import cbr
+        from services.market_data import MarketDataService, market_cache
+        import services.nrd as nrd_service
+        from api.routes.bonds import compute_universe_metrics
+        await asyncio.to_thread(cbr.ks_history)      # триггерит _refresh (сеть)
+        await asyncio.to_thread(cbr.ruonia_history)
+        await MarketDataService.get_curves()          # bootstrap RUONIA/KEYRATE
+        await MarketDataService.get_zspread_ctx()      # ExpCurve + g-curve
+        # Метрики юниверса (dm/z/carry) — сразу из НРД-цен, НЕ дожидаясь медленного
+        # прогрева live-цен Alor поллером (30с сон + чанки по 4с WS-таймаута = ~60с
+        # пустых метрик после рестарта). Поллер потом уточнит их live-ценами.
+        if not market_cache.get("universe_metrics"):
+            uni = await nrd_service.fetch_floater_universe()
+            isins = [u["isin"] for u in uni if u.get("isin")]
+            if uni:
+                m = await compute_universe_metrics(uni, isins)
+                if m:
+                    market_cache["universe_metrics"] = m
+    except Exception as e:
+        print(f"warmup error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
     init_db()  # схема + сид фондов R5/D5/Y5 (идемпотентно)
+    warm = asyncio.create_task(warmup_caches())
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
     nav_snap = asyncio.create_task(fund_nav_snapshotter())
     yield
+    warm.cancel()
     task.cancel()
     poller.cancel()
     nav_snap.cancel()

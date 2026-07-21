@@ -36,6 +36,17 @@ def build_cashflow_from_moex(
     )
     _amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in _am_all)
     _orig_face = ref.face_value + sum(v for d, v in _am_all if d <= calc_date)
+
+    # Достройка хвоста купонов до погашения: bondization обрывается на 100-м
+    # купоне (пагинация ISS) — у длинных бумаг display недосчитывает годы купонов.
+    if coupons and ref.maturity_date:
+        from valuation import extend_periods_to_maturity
+        triples = [(c.get("start"), c.get("end"), c.get("value")) for c in coupons]
+        ext = extend_periods_to_maturity(triples, ref.maturity_date)
+        if len(ext) > len(triples):
+            coupons = [{"start": s.isoformat(), "end": e.isoformat(),
+                        "value": v, "valueprc": None, "face": None} for s, e, v in ext]
+
     for c in coupons:
         end = _d(c.get("end"))
         if not end:
@@ -43,7 +54,7 @@ def build_cashflow_from_moex(
         start = _d(c.get("start")) or end
         if _amortizing:
             paid = sum(v for d, v in _am_all if d <= start)
-            face = (_orig_face - paid) or ref.face_value
+            face = max(_orig_face - paid, 0.0)
         else:
             try:
                 face = float(c.get("face")) if c.get("face") is not None else ref.face_value
@@ -60,40 +71,41 @@ def build_cashflow_from_moex(
             base_pct = 0.0
             rate_pct = float(vp) if vp is not None else (amount / face * 365.0 / days * 100 if face else 0.0)
         else:
-            # ТЕКУЩИЙ период KEYRATE (start ≤ calc): купон уже определяется по
-            # факту КС ЦБ (формула выпуска: point/average+лаг из ref_data). Точное
-            # значение для отображения; будущие периоды — прогноз форвардом.
-            spec = None
+            # НАЧАВШИЙСЯ период (start ≤ calc): индекс (частично) определён по
+            # факту — coupon_calib.period_index_pct (спека point/average+лаг,
+            # фолбэк — точечная КС на start). Общая точка с pricing (valuation,
+            # zspread): display показывает тот же купон, что заложен в SM/z.
+            idx_pct = None
             if ref.base in ("KEYRATE", "RUONIA") and start <= calc_date < end:
                 try:
-                    from services.ref_data import coupon_formula
-                    spec = coupon_formula(ref.isin, coupons, face=face, calc_date=calc_date)
-                    if spec.get("coupon_mode") is None:
-                        spec = None
+                    from services.coupon_calib import period_index_pct
+                    ks_fwd = lambda dt: (curve.forward(max(dt, calc_date), end) * 100.0) if curve else 0.0
+                    # ref.face_value (текущий остаток) + amorts, а НЕ face периода:
+                    # калибратор откатывает номинал сам, и все три пайплайна
+                    # (valuation, zspread, display) обязаны кормить его одним и тем же.
+                    idx_pct = period_index_pct(ref.isin, ref.base, coupons, ref.face_value,
+                                               start, end, calc_date, ks_fwd, amorts=amorts)
                 except Exception:
-                    spec = None
-            if spec is not None:
-                from services.coupon_calib import projected_ks_pct
-                ks_fwd = lambda dt: (curve.forward(max(dt, calc_date), end) * 100.0) if curve else 0.0
-                ks_pct = projected_ks_pct({"mode": spec["coupon_mode"], "lag": spec.get("fixing_lag") or 0,
-                                           "base": ref.base}, start, end, calc_date, ks_fwd)
-                r = ks_pct / 100.0 + sp
+                    idx_pct = None
+            if idx_pct is not None:
+                r = idx_pct / 100.0 + sp
                 factor = r * alpha
                 amount = face * factor
-                base_pct = round(ks_pct, 4)
+                base_pct = round(idx_pct, 4)
                 rate_pct = round(r * 100, 4)
             else:
-                # будущий плавающий — прогноз по forward + spread.
+                # будущий плавающий — прогноз по forward + spread (конвенция выпуска:
+                # маржа simple; RUONIA-индекс капитализируется дневно).
                 # анкер форварда клэмпим к calc_date (прошлый стаб не форвардим — мусор)
                 fstart = start if start > calc_date else calc_date
                 f = curve.forward(fstart, end) if (curve and ref.base in ("RUONIA", "KEYRATE") and fstart < end) else 0.0
-                r = f + sp
                 if ref.base == "RUONIA":
-                    factor = (1.0 + r / 365.0) ** days - 1.0
+                    factor = (1.0 + f / 365.0) ** days - 1.0 + sp * alpha
                 elif ref.base == "KEYRATE":
-                    factor = (1.0 + r / 4.0) ** (4.0 * alpha) - 1.0
+                    factor = (f + sp) * alpha
                 else:
                     factor = 0.0
+                r = factor / alpha if alpha > 0 else 0.0   # эффективная ставка периода
                 amount = face * factor
                 base_pct = round(f * 100, 4)
                 rate_pct = round(r * 100, 4)
@@ -179,12 +191,13 @@ def get_cashflow_items(
                     fwd = ruonia_curve.forward(start_fwd, coup_date)
                     base_rate_pct = fwd * 100
                     computed_rate = fwd + spread_bps / 10000.0
-                    factor = (1.0 + computed_rate / 365.0) ** days - 1.0
+                    # индекс daily-comp, маржа simple (конвенция выпуска)
+                    factor = (1.0 + fwd / 365.0) ** days - 1.0 + spread_bps / 10000.0 * alpha
                 elif base == "KEYRATE" and keyrate_curve:
                     fwd = keyrate_curve.forward(start_fwd, coup_date)
                     base_rate_pct = fwd * 100
                     computed_rate = fwd + spread_bps / 10000.0
-                    factor = (1.0 + computed_rate / 4.0) ** (4.0 * alpha) - 1.0
+                    factor = computed_rate * alpha  # (КС+m) simple ACT/365
                 elif coupon_percent is not None:
                     computed_rate = coupon_percent / 100.0
                     factor = computed_rate * alpha

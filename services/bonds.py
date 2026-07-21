@@ -66,6 +66,58 @@ def build_ref_external(isin: str, mo: dict, nrd: Optional[dict]) -> BondRefData:
     )
 
 
+def implied_current_face(coupons_full, calc_date: date) -> Optional[float]:
+    """Истинный текущий номинал из ЗАФИКСИРОВАННОГО купона:
+        face = value / (valueprc/100 · days/365).
+    value (рубли) и valueprc (ставка %) — твёрдый факт MOEX bondization, из них
+    номинал восстанавливается точно (в отличие от поля face строк купонов, которое
+    бывает стейл 1000, и от MOEX FACEVALUE, которого может не быть в кэше).
+    Берём купон, накрывающий calc_date (для амортизируемых — остаток на текущий
+    период); иначе последний прошедший. None — восстановить нельзя."""
+    best = None  # (end_date, implied)
+    for c in coupons_full or []:
+        v = c.get("value")
+        vp = c.get("valueprc")
+        s = _to_date(c.get("start"))
+        e = _to_date(c.get("end"))
+        if v is None or not vp or not s or not e:
+            continue
+        try:
+            days = (e - s).days or 1
+            imp = float(v) / (float(vp) / 100.0 * days / 365.0)
+        except (ValueError, TypeError, ZeroDivisionError):
+            continue
+        if s <= calc_date < e:
+            return imp                      # текущий период — точный остаток
+        if e <= calc_date and (best is None or e > best[0]):
+            best = (e, imp)
+    return best[1] if best else None
+
+
+def reconcile_face(ref: BondRefData, coupons_full, calc_date: date,
+                   ratio: float = 3.0) -> Optional[float]:
+    """Правит ref.face_value ТОЛЬКО при мисскейле В РАЗЫ (order-of-magnitude):
+    тихий фолбэк на дефолтные 1000, когда бумаги нет в securities-кэше, а реальный
+    номинал 1 млн / 10 млн. Возвращает старый номинал, если правка была, иначе None.
+
+    Почему только кратный разрыв, а не любой: implied_current_face восстанавливает
+    номинал НА СТАРТ купонного периода (из value/valueprc). У амортизируемых бумаг
+    он ВЫШЕ текущего остатка, от которого котируется цена (амортизация в середине
+    периода) — правка на него испортила бы верный securities-остаток (наблюдалось
+    RU000A109XR1: 900 остаток → 985 старт-периода). Промахи деноминации всегда
+    кратны 10^k (1000 vs 10 млн = 10000×), поэтому порог в 3× чисто отделяет их от
+    амортизационных нюансов (<2×) и шума округления valueprc (<1.01×)."""
+    imp = implied_current_face(coupons_full, calc_date)
+    if imp is None or imp <= 0 or not ref.face_value or ref.face_value <= 0:
+        return None
+    r = max(imp / ref.face_value, ref.face_value / imp)
+    if r > ratio:
+        old = ref.face_value
+        ref.face_value = round(imp, 2)
+        return old
+    return None
+
+
 def external_formula(ref: BondRefData) -> str:
     """Синтетическая формула купона для отображения (нет FORMULA из кэша)."""
     label = _BASE_LABEL.get(ref.base, ref.base)

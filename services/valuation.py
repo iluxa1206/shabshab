@@ -103,7 +103,8 @@ def calculate_valuation_metrics(
     # НРД discount_margin (med −20, m|Δ|≈47bps; остаток — их проприетарная машина).
     disc_margin_bps = None
     try:
-        L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value)
+        L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
+                              amorts=amorts, base=bond.base)
         if L is not None:
             flat = FlatForwardCurve(calc_date, L)
             flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
@@ -112,6 +113,40 @@ def calculate_valuation_metrics(
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
     except Exception as e:
         print(f"Discount margin error for {bond.isin}: {e}")
+
+    # К ОФЕРТЕ (yield-to-put): для бумаг с будущей офертой это первостепенная
+    # цифра — рынок торгует к ближайшей оферте. Режем поток к оферте безусловно
+    # (выкуп остатка по цене оферты). Основные поля выше — к погашению (сверка НРД).
+    # preferred_horizon — только ПОДСКАЗКА UI, что показать первым; на то, как
+    # посчитаны sm_bps/disc_margin_bps/yield_xirr_pct, он не влияет.
+    horizon = "maturity"
+    offer_date = offer_price_pct = None
+    sm_to_offer = dm_to_offer = y_to_offer = None
+    from valuation import first_offer_date as _fod, _offer_price_pct as _opp, settle_date as _sd2
+    _settle = _sd2(calc_date)
+    _put = _fod(offers, _settle) if offers else None
+    if _put is not None and (bond.maturity_date is None or _put < bond.maturity_date):
+        horizon = "offer"
+        offer_date = _put
+        offer_price_pct = _opp(offers, _put)
+        try:
+            cfs_off = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
+                                                  explicit_periods=periods, amorts=amorts,
+                                                  offers=offers, to_offer=True)
+            y_off = xirr_yield_pct(dirty_rub, cfs_off, calc_date)
+            y_to_offer = round(y_off, 4) if y_off is not None else None
+            if curve and len(cfs_off) > 0:
+                sm_to_offer = solve_dm_bps(bond, curve, cfs_off, calc_date, dirty_rub)
+            L2 = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
+                                   amorts=amorts, base=bond.base)
+            if L2 is not None:
+                flat2 = FlatForwardCurve(calc_date, L2)
+                flat_cfs_off = build_cashflows_with_spread(bond, flat2, calc_date, bond.spread_issue_bps,
+                                                           explicit_periods=periods, amorts=amorts,
+                                                           offers=offers, to_offer=True)
+                dm_to_offer = solve_discount_margin_bps(flat_cfs_off, calc_date, dirty_rub, L2)
+        except Exception as e:
+            print(f"to-offer valuation error for {bond.isin}: {e}")
 
     return {
         "clean_price_pct": price,
@@ -124,5 +159,11 @@ def calculate_valuation_metrics(
         "base_yield_pct": round(base_yield, 4) if base_yield is not None else None,
         "spread_to_base_bps": spread_to_base_bps,
         "pricing_status": "SUCCESS" if sm_bps is not None else "DM_FAILED",
-        "warnings": []
+        "warnings": [],
+        "preferred_horizon": horizon,
+        "offer_date": offer_date,
+        "offer_price_pct": offer_price_pct,
+        "sm_to_offer_bps": sm_to_offer,
+        "disc_margin_to_offer_bps": dm_to_offer,
+        "yield_to_offer_pct": y_to_offer,
     }

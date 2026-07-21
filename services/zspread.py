@@ -30,19 +30,18 @@ TENOR_Y = {"1W": 1/52, "2W": 2/52, "1M": 1/12, "2M": 2/12, "3M": .25, "6M": .5,
            "9M": .75, "1Y": 1, "2Y": 2, "3Y": 3, "4Y": 4, "5Y": 5, "6Y": 6,
            "7Y": 7, "8Y": 8, "9Y": 9, "10Y": 10}
 
-# Лаг фиксинга КС-купона: ставка = КС на (начало периода − лаг) + маржа.
-# Типовая конвенция КС-флоатеров — КС на дату определения купона ≈ начало периода;
-# точный лаг per-issue пока не тянем, дефолт 0 (КС на начало периода).
-KS_FIXING_LAG_DAYS = 0
+# Лаг/конвенция фиксинга КС-купона per-issue — services.coupon_calib.period_index_pct
+# (спека manual > калибратор из истории купонов; фолбэк — точечная КС на start).
 
 
 class ExpCurve:
     """Кривая ожиданий индекса поверх честного bootstrap par-свопов (forwards.py).
 
     fwd(d1,d2) — эквивалентная ставка индекса на период в его собственной конвенции:
-      RUONIA  — daily-comp average (project_cfs начисляет (1+r/365)^days − 1 →
-                factor DF воспроизводится точно);
-      KEYRATE — quarterly-nominal = уровень КС (простое начисление (КС+m)·days/365).
+      RUONIA  — daily-comp average (project_cfs начисляет индекс (1+f/365)^days − 1 →
+                factor DF воспроизводится точно; маржа — simple);
+      KEYRATE — simple ACT/365 = уровень КС (начисление (КС+m)·days/365 → factor
+                1+f·days/365 воспроизводится точно на периоде ЛЮБОЙ длины).
     spot(t) — уровень индекса на горизонте t лет той же конвенцией
     (короткий конец ≈ текущий фиксинг, заложенный в свопы)."""
     def __init__(self, calc_date: date, quotes, base: str = "RUONIA"):
@@ -95,6 +94,8 @@ class GCurve:
 
 
 def _d(s):
+    if isinstance(s, date):
+        return s
     try:
         return date.fromisoformat(s) if s else None
     except (ValueError, TypeError):
@@ -104,7 +105,8 @@ def _d(s):
 def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list = None,
                 offers: list = None):
     """Прогноз потоков: зафикс.купон = факт MOEX value; будущий = индекс(exp.fwd)+margin.
-    KEYRATE простой (КС+m)·days/365; RUONIA daily-comp. + погашение номинала.
+    Конвенция выпусков: маржа simple ACT/365 у обеих баз; KEYRATE-индекс простой
+    (КС+m)·days/365, RUONIA-индекс daily-comp. + погашение номинала.
 
     amorts — MOEX bondization amortizations [{date, value}]. Если есть погашение
     принципала до maturity (амортизируемая бумага), принципал платится по датам
@@ -116,9 +118,12 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     T+1: платежи с датой <= settle (след. рабочий день) покупателю не достаются
     (ex-coupon, MOEX НКД уже 0) — исключаем, иначе накануне выплаты PV завышен
     на целый купон."""
-    from valuation import settle_date, first_offer_date, _offer_price_pct
+    from valuation import settle_date, first_offer_date, _offer_price_pct, face_for_pricing
     settle = settle_date(calc_date)
     sp = (ref.spread_issue_bps or 0) / 10000.0
+    # Та же база, от которой compute_z_bps считает dirty (амортизация в окне
+    # (calc, settle] ушла продавцу). Весь принципал ниже сводится к ней.
+    pricing_face = face_for_pricing(ref.face_value, amorts, calc_date)
 
     # Оферта: режем ТОЛЬКО при неопределённом купоне после оферты (пересмотр
     # эмитентом — ref_data.cut_at_offer); иначе к погашению (та же логика, что
@@ -143,6 +148,17 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
         and (eff_maturity is None or d <= eff_maturity)
     )
     amortizing = any(eff_maturity and d < eff_maturity for d, _ in future_am)
+
+    # Достройка хвоста купонов до погашения: bondization обрывается на 100-м
+    # купоне (пагинация ISS), у длинных бумаг пробел купоны→погашение = годы →
+    # z валится в минус. Достроенные периоды (value=None) проецируются форвардом.
+    if coupons and eff_maturity:
+        from valuation import extend_periods_to_maturity
+        triples = [(c.get("start"), c.get("end"), c.get("value")) for c in coupons]
+        ext = extend_periods_to_maturity(triples, eff_maturity)
+        if len(ext) > len(triples):
+            coupons = [{"start": s, "end": e, "value": v} for s, e, v in ext]
+
     cfs = []
     for c in coupons or []:
         end = _d(c.get("end"))
@@ -155,40 +171,44 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
         if val is not None:
             amt = float(val)
         else:
-            face = ref.face_value
+            face = pricing_face
             if amortizing:
                 paid_by_start = sum(v for d, v in future_am if d <= start)
-                face = (ref.face_value - paid_by_start) or face
-            # KEYRATE: если фиксинг купона (начало периода − лаг) уже прошёл, ставка
-            # УЖЕ определена по факту КС ЦБ на дату фиксинга (MOEX ещё не выложил
-            # рублёвую сумму). Важно на спаде КС: купон зафиксирован по прежней,
+                face = max(pricing_face - paid_by_start, 0.0)
+            # Начавшийся период: индекс (частично) определён по факту — спека
+            # формулы выпуска (point/average+лаг) с фолбэком на точечную КС на
+            # start (coupon_calib.period_index_pct — общая точка с valuation и
+            # display). Важно на спаде КС: купон зафиксирован по прежней,
             # более высокой ставке. Иначе — проекция по кривой ожиданий.
-            fixed_ks = None
-            if ref.base == "KEYRATE":
-                from services.cbr import ks_rate_at
-                from datetime import timedelta as _td
-                fix_date = start - _td(days=KS_FIXING_LAG_DAYS)
-                if fix_date <= calc_date:
-                    fixed_ks = ks_rate_at(fix_date)
-            if fixed_ks is not None:
-                amt = face * (fixed_ks + sp) * alpha
+            idx_pct = None
+            if start <= calc_date:
+                try:
+                    from services.coupon_calib import period_index_pct
+                    fwd_pct = (lambda dt: exp.fwd(max(dt, calc_date), end) * 100.0)
+                    idx_pct = period_index_pct(ref.isin, ref.base, coupons, ref.face_value,
+                                               start, end, calc_date, fwd_pct, amorts=amorts)
+                except Exception:
+                    idx_pct = None
+            if idx_pct is not None:
+                amt = face * (idx_pct / 100.0 + sp) * alpha
             else:
                 f = exp.fwd(max(start, calc_date), end)
-                r = f + sp
                 if ref.base == "RUONIA":
-                    amt = face * ((1 + r/365.0)**days - 1)
+                    # индекс капитализируется дневно, маржа simple (конвенция выпуска)
+                    amt = face * ((1 + f/365.0)**days - 1 + sp * alpha)
                 else:
-                    amt = face * r * alpha
+                    amt = face * (f + sp) * alpha
         cfs.append((end, amt))
-    if put:
-        cfs.extend(future_am)
-        residual = ref.face_value - sum(v for _d2, v in future_am)
-        if residual > 1e-9:
+    # Принципал: все будущие амортизации + непогашенный остаток одним платежом
+    # (оферта / погашение). Инвариант Σ принципала == pricing_face — та же схема,
+    # что в valuation.build_cashflows_to_maturity.
+    cfs.extend(future_am)
+    residual = pricing_face - sum(v for _d2, v in future_am)
+    if residual > 1e-9:
+        if put:
             cfs.append((put, residual * _offer_price_pct(offers, put) / 100.0))
-    elif amortizing:
-        cfs.extend(future_am)
-    elif ref.maturity_date and ref.maturity_date > calc_date:
-        cfs.append((ref.maturity_date, ref.face_value))
+        elif ref.maturity_date and ref.maturity_date > calc_date:
+            cfs.append((ref.maturity_date, residual))
     cfs.sort()
     return cfs
 

@@ -262,11 +262,12 @@ def print_cashflow(
                 if base == "RUONIA" and ruonia_curve:
                     fwd = ruonia_curve.forward(start_fwd, coup_date)
                     computed_rate = fwd + spread_bps / 10000.0
-                    factor = (1.0 + computed_rate / 365.0) ** days - 1.0
+                    # индекс daily-comp, маржа simple (конвенция выпуска)
+                    factor = (1.0 + fwd / 365.0) ** days - 1.0 + spread_bps / 10000.0 * alpha
                 elif base == "KEYRATE" and keyrate_curve:
                     fwd = keyrate_curve.forward(start_fwd, coup_date)
                     computed_rate = fwd + spread_bps / 10000.0
-                    factor = (1.0 + computed_rate / 4.0) ** (4.0 * alpha) - 1.0
+                    factor = computed_rate * alpha  # (КС+m) simple ACT/365
                 elif coupon_percent is not None:
                     computed_rate = coupon_percent / 100.0
                     factor = computed_rate * alpha

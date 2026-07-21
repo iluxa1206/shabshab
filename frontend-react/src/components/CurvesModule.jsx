@@ -247,15 +247,18 @@ function KsPathView() {
           <KsPathChart points={data.points} calcDate={data.calc_date} />
           <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
             <LegLine color="var(--fg)" dash="" label={`Факт ${label} (ЦБ РФ)`} />
-            <LegLine color="var(--up)" dash="" label="Рынок (СПФИ, метод НРД Прил.3)" />
+            <LegLine color="var(--up)" dash="" label="Рынок (форвард СПФИ)" />
+            {series === "ks" && data.points.some((p) => p.nrd_pril3_pct != null) && (
+              <LegLine color="var(--accent)" dash="" label="Ожидание (НРД Прил.3)" />
+            )}
             {series === "ks" && data.points.some((p) => p.forecast_pct != null) && (
               <LegLine color="var(--down)" dash="5 4" label="Прогноз ЦБ (средняя КС)" />
             )}
           </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 720 }}>
-            Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — ожидаемая ставка
-            из СПФИ: кубический сплайн свопов + затухание к нейтрали ЦБ (методика НРД).
-            {series === "ks" && " «Прогноз ЦБ» — среднесрочный прогноз средней КС (cbr_forecast.json)."}
+          <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 760 }}>
+            Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — арбитражный форвард
+            из СПФИ-свопов (та же кривая, что в прайсинге SM/z).
+            {series === "ks" && " «Ожидание (НРД Прил.3)» — сплайн свопов + экспо-затухание к нейтрали ЦБ за последним тенором (10Y): методика met_float Прил.3, отдельный взгляд «куда пойдёт КС» с реверсией, не совпадает с форвардом. «Прогноз ЦБ» — среднесрочный прогноз средней КС (cbr_forecast.json)."}
             {series === "ruonia" && " История RUONIA до 2025-08 — из сида, далее живьём с ЦБ."}
           </div>
         </>
@@ -277,6 +280,7 @@ function KsPathChart({ points, calcDate }) {
       if (p.actual_pct != null) ys.push(p.actual_pct);
       if (p.market_pct != null) ys.push(p.market_pct);
       if (p.forecast_pct != null) ys.push(p.forecast_pct);
+      if (p.nrd_pril3_pct != null) ys.push(p.nrd_pril3_pct);
     });
     let ymin = Math.min(...ys), ymax = Math.max(...ys);
     const pad = (ymax - ymin) * 0.1 || 1;
@@ -301,6 +305,15 @@ function KsPathChart({ points, calcDate }) {
       }
     });
     return d;
+  };
+  // гладкая полилиния (для НРД Прил.3 — плавная кривая, не ступени)
+  const linePath = (key) => {
+    const pts = points.filter((p) => p[key] != null);
+    if (!pts.length) return "";
+    return pts.map((p, i) => {
+      const x = X(new Date(p.date).getTime()), y = Y(p[key]);
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
   };
 
   const yticks = [];
@@ -337,7 +350,9 @@ function KsPathChart({ points, calcDate }) {
         <text x={todayX + 3} y={T + 10} fontSize="9" fill="var(--mut)">сегодня</text>
         {/* прогноз ЦБ (пунктир) */}
         <path d={stepPath("forecast_pct")} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
-        {/* рынок */}
+        {/* ожидание НРД Прил.3 (гладкая) */}
+        <path d={linePath("nrd_pril3_pct")} fill="none" stroke="var(--accent)" strokeWidth="1.8" opacity="0.95" />
+        {/* рынок (форвард) */}
         <path d={stepPath("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
         {/* факт */}
         <path d={stepPath("actual_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
@@ -353,7 +368,7 @@ function KsPathChart({ points, calcDate }) {
           padding: "3px 7px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
         }}>
           {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
-            `рынок ${hover.market_pct ?? "—"}%${hover.forecast_pct != null ? ` · ЦБ ${hover.forecast_pct}%` : ""}`}
+            `${hover.market_pct != null ? `рынок ${hover.market_pct}%` : ""}${hover.nrd_pril3_pct != null ? ` · Прил.3 ${hover.nrd_pril3_pct}%` : ""}${hover.forecast_pct != null ? ` · ЦБ ${hover.forecast_pct}%` : ""}`}
         </div>
       )}
     </div>

@@ -71,6 +71,19 @@ class BondValuation(BaseModel):
     spread_to_base_bps: Optional[int]
     pricing_status: str
     warnings: List[str] = Field(default_factory=list)
+    # ПОДСКАЗКА потребителю, какой горизонт показывать первым: "offer", если у
+    # бумаги есть будущая оферта (рынок торгует к ней), иначе "maturity".
+    # ВАЖНО: это НЕ описание полей выше. sm_bps / disc_margin_bps / yield_xirr_pct
+    # ВСЕГДА считаются к ПОГАШЕНИЮ (так сверяемся с НРД) независимо от значения
+    # этого поля; цифры к оферте лежат отдельно в *_to_offer. Прежнее имя
+    # valuation_horizon читалось как «горизонт, по которому посчитан этот объект»,
+    # что неверно. На 2026-07-20 фронт это поле не читает вовсе.
+    preferred_horizon: str = "maturity"
+    offer_date: Optional[date] = None
+    offer_price_pct: Optional[float] = None
+    sm_to_offer_bps: Optional[int] = None            # simple margin к оферте (yield-to-put)
+    disc_margin_to_offer_bps: Optional[int] = None   # discount margin к оферте
+    yield_to_offer_pct: Optional[float] = None       # XIRR к оферте
 
 # --- 5.4 CashflowItem ---
 class CashflowItem(BaseModel):
@@ -203,6 +216,13 @@ class BondListItem(BaseModel):
     carry_bps: Optional[int] = None            # текущий купон-доходность − база, bps (watch)
     days_to_refix: Optional[int] = None        # дни до следующего рефиксинга (watch)
     current_coupon_pct: Optional[float] = None # зафикс. ставка текущего купона, % (watch)
+    # оферта: подсказка, что показать первым. preferred_horizon="offer" → бумага
+    # имеет будущую оферту, осмысленно вывести sm_to_offer_bps. Поля dm_bps /
+    # disc_margin_bps этого объекта ВСЕГДА к погашению (см. BondValuation).
+    preferred_horizon: str = "maturity"
+    offer_date: Optional[date] = None
+    sm_to_offer_bps: Optional[int] = None          # simple margin к оферте (yield-to-put)
+    disc_margin_to_offer_bps: Optional[int] = None # discount margin к оферте
 
 class BondListResponse(BaseModel):
     items: List[BondListItem]
@@ -267,8 +287,10 @@ class CurvePlotResponse(BaseModel):
 class KsPathPoint(BaseModel):
     date: date
     actual_pct: Optional[float] = None     # факт КС (прошедшие заседания)
-    market_pct: Optional[float] = None     # рыночная траектория (СПФИ, Прил.3)
+    market_pct: Optional[float] = None     # рыночный форвард СПФИ (реплика листа IRS)
     forecast_pct: Optional[float] = None    # среднесрочный прогноз ЦБ (avg КС по годам)
+    nrd_pril3_pct: Optional[float] = None  # ожидаемая КС по НРД met_float Прил.3
+                                           # (сплайн свопов + затухание к нейтрали)
 
 class KsPathResponse(BaseModel):
     calc_date: date

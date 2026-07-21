@@ -125,7 +125,15 @@ async def get_curve_plot(
     for dd in grid:
         d = start + timedelta(days=dd)
         try:
-            spot = curve.forward(start, d) * 100.0
+            # spot = средняя ставка на срок [start, d] в daily-comp конвенции,
+            # из DF: 365·(DF^(−1/days) − 1). НЕ через curve.forward(start, d):
+            # после перехода KEYRATE-форварда на ПРОСТУЮ ставку (см.
+            # BootstrappedForwardCurve._equivalent_rate) forward(start, d) над
+            # длинным сроком = (1/DF − 1)/τ и экспоненциально разлетается
+            # (10Y ≈ 35% при плоских ~15%). Простая ставка верна только для одного
+            # купонного периода; «ставка на срок» обязана быть компаундированной.
+            df_d = curve.df(d)
+            spot = 365.0 * (df_d ** (-1.0 / dd) - 1.0) * 100.0 if (df_d > 0 and dd > 0) else 0.0
             fwd = curve.forward(d, d + timedelta(days=30)) * 100.0
         except Exception:
             continue

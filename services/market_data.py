@@ -265,42 +265,55 @@ class MarketDataService:
         out = {"coupons": [], "amorts": [], "offers": []}
         try:
             # через _moex_get (семафор 5) — иначе gather по всему юниверсу на прогреве
-            # даёт 453 одновременных коннекта к ISS → таймауты/дропы
+            # даёт 453 одновременных коннекта к ISS → таймауты/дропы.
+            # ISS отдаёт bondization страницами по 100 (limit>100 игнорируется) —
+            # ПАГИНИРУЕМ по start=, иначе у длинных месячных бумаг (12 лет = 144
+            # купона) поток обрывается на 100-м купоне: пробел купоны→погашение в
+            # годы, SM/z валятся в минус. amorts/offers приходят с первой страницей.
             async with httpx.AsyncClient() as client:
-                resp = await _moex_get(
-                    client,
-                    f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
-                    params={"iss.only": "coupons,amortizations,offers", "limit": 1000}, timeout=10)
-            if resp is None or resp.status_code != 200:
-                return out
-            j = resp.json()
-            cp = j.get("coupons", {})
-            ccols = cp.get("columns", [])
-            cg = lambda row, n: row[ccols.index(n)] if n in ccols else None
-            for row in cp.get("data", []):
-                end = cg(row, "coupondate")
-                if not end:
-                    continue
-                out["coupons"].append({
-                    "start": cg(row, "startdate"), "end": end,
-                    "value": cg(row, "value"), "valueprc": cg(row, "valueprc"),
-                    "face": cg(row, "facevalue"),
-                })
-            am = j.get("amortizations", {})
-            acols = am.get("columns", [])
-            ag = lambda row, n: row[acols.index(n)] if n in acols else None
-            for row in am.get("data", []):
-                d, val = ag(row, "amortdate"), ag(row, "value")
-                if d and val is not None:
-                    out["amorts"].append({"date": d, "value": val})
-            off = j.get("offers", {})
-            ocols = off.get("columns", [])
-            og = lambda row, n: row[ocols.index(n)] if n in ocols else None
-            for row in off.get("data", []):
-                d = og(row, "offerdate") or og(row, "offerdateend")
-                if d:
-                    out["offers"].append({"date": d, "type": og(row, "offertype"),
-                                          "price": og(row, "price")})
+                start, PAGE, guard = 0, 100, 0
+                while guard < 40:  # backstop: 40·100 = 4000 купонов хватит любому
+                    guard += 1
+                    resp = await _moex_get(
+                        client,
+                        f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
+                        params={"iss.only": "coupons,amortizations,offers",
+                                "limit": PAGE, "start": start}, timeout=10)
+                    if resp is None or resp.status_code != 200:
+                        break
+                    j = resp.json()
+                    cp = j.get("coupons", {})
+                    ccols = cp.get("columns", [])
+                    cg = lambda row, n: row[ccols.index(n)] if n in ccols else None
+                    crows = cp.get("data", [])
+                    for row in crows:
+                        end = cg(row, "coupondate")
+                        if not end:
+                            continue
+                        out["coupons"].append({
+                            "start": cg(row, "startdate"), "end": end,
+                            "value": cg(row, "value"), "valueprc": cg(row, "valueprc"),
+                            "face": cg(row, "facevalue"),
+                        })
+                    if start == 0:  # amorts/offers — только с первой страницы
+                        am = j.get("amortizations", {})
+                        acols = am.get("columns", [])
+                        ag = lambda row, n: row[acols.index(n)] if n in acols else None
+                        for row in am.get("data", []):
+                            d, val = ag(row, "amortdate"), ag(row, "value")
+                            if d and val is not None:
+                                out["amorts"].append({"date": d, "value": val})
+                        off = j.get("offers", {})
+                        ocols = off.get("columns", [])
+                        og = lambda row, n: row[ocols.index(n)] if n in ocols else None
+                        for row in off.get("data", []):
+                            d = og(row, "offerdate") or og(row, "offerdateend")
+                            if d:
+                                out["offers"].append({"date": d, "type": og(row, "offertype"),
+                                                      "price": og(row, "price")})
+                    if len(crows) < PAGE:  # последняя страница
+                        break
+                    start += PAGE
         except Exception as e:
             print(f"bondization error {isin}: {e}")
         # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем

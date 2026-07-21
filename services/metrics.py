@@ -88,13 +88,32 @@ def carry_bps(coupon_yield_pct: Optional[float], base_rate_pct: Optional[float])
 
 def breakeven_base_pct(coupon_yield_pct: Optional[float], base_rate_pct: Optional[float],
                        spread_issue_bps: Optional[int]) -> Optional[float]:
-    """Уровень базовой ставки, ниже которого купон флоатера станет меньше текущей
-    купонной доходности (т.е. carry-эдж исчезает). Приближение: base − carry.
+    """Уровень базовой ставки, ниже которого купон флоатера после рефиксинга
+    станет меньше текущей купонной доходности (carry-эдж исчезает):
+    купон(B) = B + spread < coupon_yield  ⇔  B < coupon_yield − spread.
     Показывает, сколько «пространства снижения КС» есть до потери привлекательности."""
-    c = carry_bps(coupon_yield_pct, base_rate_pct)
-    if c is None or base_rate_pct is None:
+    if coupon_yield_pct is None:
         return None
-    return round(base_rate_pct - c / 100.0, 2)
+    return round(coupon_yield_pct - (spread_issue_bps or 0) / 100.0, 2)
+
+
+def face_on_date(face_value: float, amorts, start: date, calc_date: date) -> float:
+    """Номинал, действовавший на дату start ≤ calc_date: остаток на calc_date +
+    амортизации, выплаченные в (start, calc_date]. Нужен, чтобы ставку купона
+    восстанавливать из рублёвой суммы по номиналу ЕГО периода, а не текущему."""
+    def _d(s):
+        if isinstance(s, date):
+            return s
+        try:
+            return date.fromisoformat(s) if s else None
+        except (ValueError, TypeError):
+            return None
+    add = 0.0
+    for a in amorts or []:
+        d = _d(a.get("date"))
+        if d and a.get("value") is not None and start < d <= calc_date:
+            add += float(a["value"])
+    return face_value + add
 
 
 def base_level_pct(exp_curve) -> Optional[float]:

@@ -2,11 +2,11 @@
 рыночная траектория ожиданий из СПФИ.
 
 Факт — из services.cbr (дневная история). Траектория ожиданий:
-  КС    — по методике НРД met_float Прил.3: натуральный кубический сплайн через
-          ставки СПФИ IRS KeyRate (проходит точно через свопы, C²), за последним
-          свопом — экспо-затухание к долгосрочной нейтральной ставке ЦБ
-          (services.implied_curve.KsExpectationCurve). Это и есть «ожидаемая КС(t)».
-  RUONIA — форвард нашей bootstrap-кривы (Смита-Уилсона Прил.2 пока не реализован).
+  КС    — форвардные сегменты СПФИ по логике Excel-файла 502_504 (лист IRS кол.K,
+          services.implied_curve.excel_ks_forward_segments): ступени маржинального
+          форварда между тенорами до 10Y. Затухания к нейтрали за последним свопом
+          нет — горизонт кончается последним тенором.
+  RUONIA — форвард нашей bootstrap-кривой (Смита-Уилсона Прил.2 пока не реализован).
 """
 from __future__ import annotations
 from datetime import date, timedelta
@@ -32,9 +32,9 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     """Точки пути: факт (≤ calc_date, дневной с ЦБ, обрезан на hist_years назад) +
     рыночная траектория (помесячно вперёд).
 
-    КС: траектория = KsExpectationCurve (сплайн свопов + затухание к нейтрали, НРД
-    Прил.3) на ks_quotes; горизонт ~15 лет (видно реверс к нейтрали). RUONIA:
-    форвард bootstrap-кривой до её последнего узла.
+    КС: траектория = excel_ks_forward_segments (ступени форвардов СПФИ, лист IRS)
+    на ks_quotes; горизонт — последний тенор (10Y). RUONIA: форвард
+    bootstrap-кривой до её последнего узла.
     """
     hist = cbr.ks_history() if series == "ks" else cbr.ruonia_history()
     cutoff = date(calc_date.year - hist_years, calc_date.month, min(calc_date.day, 28))
@@ -49,22 +49,19 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     # --- КС: рыночная траектория = форвардные сегменты СПФИ (логика Excel-файла:
     # лист IRS кол.K — маржинальный форвард КС между тенорами), ступени по сегментам.
     # + прогноз ЦБ (ступени на заседаниях) ---
-    if series == "ks" and ks_quotes:
-        from services.implied_curve import excel_ks_forward_segments
+    if series == "ks" and ks_quotes and curve is not None:
+        from services.implied_curve import KsExpectationCurve
         from services import cbr_forecast
-        # точная реплика листа IRS файла 502_504 (форвард кол.K, анкер H_{n-2})
-        segs = excel_ks_forward_segments(ks_quotes, calc_date)  # [(start,end,fwd)] до 10Y
+        # «Рынок» = короткий форвард НАШЕЙ bootstrap-кривой (та же, что дисконтирует
+        # SM/z) — арбитраж-консистентно и согласовано с прайсингом. Раньше здесь была
+        # excel_ks_forward_segments (реплика листа IRS): её форвард на ~1.7-2.5пп ниже
+        # bootstrap и НЕ арбитражен (zero из неё < par на растущей кривой) → чарт
+        # расходился с прайсингом. Реплика осталась в implied_curve для сверки с файлом.
+        # НРД met_float Прил.3: ожидаемая КС = сплайн свопов + затухание к нейтрали
+        # ЦБ за последним тенором (DISPLAY-ONLY, см. implied_curve).
+        pril3 = KsExpectationCurve(ks_quotes)
         cur_ks = cbr.current_ks() or 0.0
         fc_path = cbr_forecast.meeting_step_path(calc_date, cur_ks)
-
-        def _step(seq, d, default=None):
-            v = default
-            for a, b, x in seq:
-                if a <= d:
-                    v = x
-                else:
-                    break
-            return v
 
         def fc_level(d: date) -> Optional[float]:
             if not fc_path:
@@ -77,14 +74,33 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
                     break
             return v
 
-        horizon = segs[-1][1] if segs else (calc_date + timedelta(days=3650))
+        # Горизонт market/forecast — последний узел bootstrap-кривой (10Y). Прил.3
+        # продлеваем на +10 лет за него, чтобы экспо-реверсия к нейтрали была ВИДНА
+        # (внутри 10Y Прил.3 ≈ свопам, весь смысл линии — хвост затухания).
+        try:
+            h_market = curve.nodes[-1][0]
+        except Exception:
+            h_market = calc_date + timedelta(days=3650)
+        horizon = h_market + timedelta(days=3650)
         d = calc_date
         while d < horizon:
-            mv = _step(segs, d)
-            fcv = fc_level(d)
+            in_market = d < h_market
+            mv = fcv = None
+            if in_market:
+                f_start = max(d, curve.calc_date)
+                nxt = _add_month(d)
+                if f_start < nxt:
+                    try:
+                        mv = curve.forward(f_start, min(nxt, h_market)) * 100.0
+                    except Exception:
+                        mv = None
+                fcv = fc_level(d)
+            t_years = (d - calc_date).days / 365.0
+            p3 = pril3.ks(t_years) * 100.0
             out.append({"date": d.isoformat(), "actual_pct": None,
-                        "market_pct": round(mv * 100.0, 3) if mv is not None else None,
-                        "forecast_pct": round(fcv, 3) if fcv is not None else None})
+                        "market_pct": round(mv, 3) if mv is not None else None,
+                        "forecast_pct": round(fcv, 3) if fcv is not None else None,
+                        "nrd_pril3_pct": round(p3, 3)})
             d = _add_month(d)
         return out
 

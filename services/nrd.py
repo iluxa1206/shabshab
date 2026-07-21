@@ -352,6 +352,11 @@ _universe_mem: dict = {"date": None, "items": None, "fetched_at": 0.0}
 # вчерашние wa_price/dm (подтверждено сверкой 2026-07-08). Внутри дня рефетчим раз в 4ч.
 _UNIVERSE_TTL_SEC = 4 * 3600
 
+# Негативный кэш fetch_nrd_metrics: при отказе НРД (403 — доступ отозван / сеть)
+# не долбим API на КАЖДЫЙ запрос карточки. Backoff короткий — доступ может вернуться.
+_metrics_fail_until: float = 0.0
+_METRICS_FAIL_BACKOFF_SEC = 300
+
 async def fetch_floater_universe() -> List[dict]:
     """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA) из НРД valuationnewadd.
     Пагинация по 1000, фильтр coupon_type=float + база CBRATED/RUONIARATED. Кэш на день."""
@@ -413,7 +418,17 @@ async def fetch_floater_universe() -> List[dict]:
                 skip += 1000
     except Exception as e:
         print(f"NRD universe error: {e}")
-        return cache.get("items", [])
+        # Негативное кэширование: фетч упал (напр. 403 — доступ отозван) → отдаём
+        # стухший кэш И кладём его в память с fetched_at=now, чтобы НЕ долбить НРД
+        # на КАЖДЫЙ запрос дашборда. Без этого calc_date кэша (напр. прошлая дата)
+        # никогда не == today → живой фетч уходил на каждое переключение фильтра /
+        # добавление в избранное, добавляя failing HTTP round-trip к латентности.
+        # TTL (4ч) сам приведёт к повторной попытке позже (доступ мог вернуться).
+        stale = cache.get("items", [])
+        _universe_mem["date"] = today
+        _universe_mem["items"] = stale
+        _universe_mem["fetched_at"] = now
+        return stale
 
     # дедуп по ISIN — оставляем строку с максимальной датой оценки
     by_isin: Dict[str, dict] = {}
@@ -449,6 +464,13 @@ async def fetch_nrd_metrics(isins: List[str]) -> Dict[str, dict]:
     missing = [i for i in isins if i not in cached]
     result = {i: cached[i] for i in isins if i in cached}
 
+    global _metrics_fail_until
+    # недавно был отказ → не пытаемся снова, отдаём что есть в кэше (без HTTP).
+    # Иначе стухший calc_date (доступ отозван) делал ВСЕ isins missing → 2 падающих
+    # HTTP на каждый запрос карточки/списка = заметная латентность в UI.
+    if missing and time.time() < _metrics_fail_until:
+        return result
+
     if missing:
         try:
             async with httpx.AsyncClient() as client:
@@ -467,5 +489,6 @@ async def fetch_nrd_metrics(isins: List[str]) -> Dict[str, dict]:
             _save_json(CACHE_FILE, cache)
         except Exception as e:
             print(f"NRD fetch error: {e}")
+            _metrics_fail_until = time.time() + _METRICS_FAIL_BACKOFF_SEC
 
     return result

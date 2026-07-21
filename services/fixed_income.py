@@ -36,17 +36,20 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
     """
     coupons: List[tuple] = []      # (date, value) известных будущих купонов
     put_date: Optional[date] = None
-    current_face = None
     # T+1: купон с pay_date <= settle покупателю не достаётся (ex-coupon, НКД=0)
     settle = settle_date(calc_date)
+
+    # будущие погашения принципала из bondization (весь принципал, включая
+    # финальный редемпшн, идёт строками амортизаций)
+    future_am = sorted(
+        (d, float(a["value"])) for a in schedule.get("amorts", [])
+        if a.get("value") is not None and (d := _d(a.get("date"))) and d > settle
+    )
 
     for c in schedule.get("coupons", []):
         end = _d(c.get("end"))
         if end is None or end <= settle:
             continue
-        # первый будущий купон несёт face текущего периода (остаточный номинал)
-        if current_face is None and c.get("face") is not None:
-            current_face = float(c["face"])
         if c.get("value") is None:
             # первый неизвестный купон → оценка к оферте: всё после отбрасываем.
             # если неизвестен уже ближайший купон (оферта вплотную) — путим на его
@@ -55,17 +58,32 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
             break
         coupons.append((end, float(c["value"])))
 
-    face = current_face if current_face is not None else 1000.0
+    # Остаточный номинал = Σ будущих погашений принципала (надёжно); поле face
+    # строк купонов MOEX ненадёжно (для будущих периодов бывает стейл/1000) —
+    # используем его только как фолбэк при пустом графике амортизаций.
+    if future_am:
+        face = sum(v for _, v in future_am)
+    else:
+        face = None
+        for c in schedule.get("coupons", []):
+            end = _d(c.get("end"))
+            if end and end > settle and c.get("face") is not None:
+                face = float(c["face"])
+                break
+        if face is None:
+            face = 1000.0
+
     cfs = list(coupons)
 
     if put_date is not None:
-        cfs.append((put_date, face))  # выкуп по номиналу на дату оферты
+        # амортизации ДО оферты остаются в потоке; на оферту — выкуп остатка
+        early = [(d, v) for d, v in future_am if d < put_date]
+        cfs.extend(early)
+        residual = face - sum(v for _, v in early)
+        if residual > 1e-9:
+            cfs.append((put_date, residual))  # выкуп остатка по номиналу
     else:
-        for a in schedule.get("amorts", []):
-            d = _d(a.get("date"))
-            if d is None or d <= settle:
-                continue
-            cfs.append((d, float(a["value"])))
+        cfs.extend(future_am)
 
     cfs.sort(key=lambda x: x[0])
     return cfs, face, put_date
@@ -123,7 +141,8 @@ def fixed_metrics_from_schedule(
     out["convexity"] = round((pv_dn + pv_up - 2.0 * pv0) / (pv0 * dy * dy), 2)
 
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)():
-        tau = max(mod_dur, 0.01)
+        # тенор КБД матчим по Маколею (как НРД), не по модифицированной
+        tau = max(mod_dur * (1.0 + y), 0.01)
         out["g_spread_bps"] = round((y - g_curve.r(tau)) * 10000.0)
     return out
 

@@ -126,15 +126,11 @@ def meeting_step_path(calc_date: date, current_ks: float,
         return anchors[xs[-1]]
 
     def build_levels():
-        lv = [interp(m) for m in meets]
-        for i in range(1, len(lv)):          # монотонно не растёт
-            lv[i] = min(lv[i], lv[i - 1])
-        lv = [max(v, neutral) for v in lv]   # не ниже нейтрали
-        if lv and lv[0] > current_ks:        # не прыгаем вверх с текущей
-            lv[0] = current_ks
-            for i in range(1, len(lv)):
-                lv[i] = min(lv[i], lv[i - 1])
-        return lv
+        # Уровни на заседаниях = кусочно-линейная кривая через год-якоря, без
+        # клэмпов монотонности/нейтрали: прогноз ЦБ может содержать паузы и
+        # повышения, а жёсткое «не растёт» ломало подгонку годовых средних
+        # (итерация с активным клэмпом не сходилась к таргету).
+        return [interp(m) for m in meets]
 
     def level_at(lv, d):
         # уровень КС, активный на дату d: последнее заседание ≤ d, иначе текущая
@@ -161,7 +157,7 @@ def meeting_step_path(calc_date: date, current_ks: float,
             days += dd
         return tot / days if days else None
 
-    # подгоняем год-якоря под годовую среднюю (клампы монотонности внутри build_levels).
+    # подгоняем год-якоря под годовую среднюю.
     # Текущий (частичный) год не целим — его полную среднюю из середины не восстановить.
     target_years = [y for y in years if y > calc_date.year]
     for _ in range(12):

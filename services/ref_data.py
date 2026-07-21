@@ -40,6 +40,7 @@ _COL = {
     "freq": ["Периодичность купона", "Купон (раз/год)"],
     "var_type": ["Тип переменной ставки купона"],
     "put": ["Оферта (put)"],
+    "coupon_text": ["Купон"],   # текст формулы из проспекта: режим фиксинга + лаг
 }
 
 _cbonds_cache: Optional[Dict[str, dict]] = None
@@ -120,6 +121,8 @@ def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
             "day_count": row[ix["day_count"]] if ix.get("day_count") is not None else None,
             "freq": _to_float(row[ix["freq"]]) if ix.get("freq") is not None else None,
             "var_type": row[ix["var_type"]] if ix.get("var_type") is not None else None,
+            "coupon_text": (str(row[ix["coupon_text"]]).strip()
+                            if ix.get("coupon_text") is not None and row[ix["coupon_text"]] else None),
         }
     if path is None or path == _latest_cbonds_file():
         _cbonds_cache = out
@@ -147,26 +150,41 @@ def params(isin: str) -> dict:
 
 
 def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
-                   face: float = None, calc_date=None) -> dict:
+                   face: float = None, calc_date=None, amorts: list = None) -> dict:
     """Полная спека купона для точной проекции:
-        {base, margin_bps, fixing_lag, coupon_mode}
+        {base, margin_bps, fixing_lag, fixing_lag_unit, coupon_mode}
     Разрешение: base/margin — manual > Cbonds; fixing_lag/coupon_mode —
-    manual > эмпирический калибратор (coupon_calib, из истории купонов).
+    manual > ПАРСЕР ПРОСПЕКТА (Cbonds «Купон», авторитетно) > эмпирический
+    калибратор (coupon_calib, из истории купонов).
     Возвращает None-поля, если источник не дал (потребитель применяет дефолт)."""
     p = params(isin)
     out = {
         "base": p.get("base"),
         "margin_bps": p.get("margin_bps"),
         "fixing_lag": p.get("fixing_lag"),
+        "fixing_lag_unit": p.get("fixing_lag_unit"),
         "coupon_mode": p.get("coupon_mode"),
     }
-    # лаг/конвенция: если руками не задано — калибруем из истории купонов
+    # 1) текст формулы из проспекта (точный режим + лаг, включая рабочие дни)
+    if (out["fixing_lag"] is None or out["coupon_mode"] is None) and p.get("coupon_text"):
+        try:
+            from services.coupon_calib import parse_prospectus_formula
+            ps = parse_prospectus_formula(p["coupon_text"])
+            if ps:
+                if out["coupon_mode"] is None:
+                    out["coupon_mode"] = ps["mode"]
+                if out["fixing_lag"] is None:
+                    out["fixing_lag"] = ps["lag"]
+                    out["fixing_lag_unit"] = ps.get("lag_unit", "cal")
+        except Exception:
+            pass
+    # 2) фолбэк: калибровка из истории купонов
     if (out["fixing_lag"] is None or out["coupon_mode"] is None) and coupons and calc_date:
         try:
             from services.coupon_calib import calibrate
             m = margin_pct if margin_pct is not None else (out["margin_bps"] or 0) / 100.0
             spec = calibrate(isin, coupons, m, face or 1000.0, calc_date,
-                             base=out["base"] or "KEYRATE")
+                             base=out["base"] or "KEYRATE", amorts=amorts)
             if spec:
                 if out["fixing_lag"] is None:
                     out["fixing_lag"] = spec["lag"]
@@ -174,6 +192,8 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                     out["coupon_mode"] = spec["mode"]
         except Exception:
             pass
+    if out["fixing_lag"] is not None and out["fixing_lag_unit"] is None:
+        out["fixing_lag_unit"] = "cal"
     return out
 
 
