@@ -26,10 +26,17 @@ def _d(s):
 
 def build_cashflow_from_moex(
     ref, curve, calc_date: date, coupons: list, amorts: list, formula: str,
+    offers: Optional[list] = None,
 ) -> Tuple[List[dict], float]:
     """Cashflow по реальному расписанию MOEX:
     прошлые/зафиксированные купоны = фактическая сумма (value/valueprc),
-    будущие плавающие = прогноз (forward + spread). Погашение из амортизаций."""
+    будущие плавающие = прогноз (forward + spread). Погашение из амортизаций.
+
+    offers — bondization offers [{date,type,price},...]. Если купон ПОСЛЕ оферты
+    неопределён (пересмотр эмитентом — ref_data.cut_at_offer), поток режется к
+    оферте ТОЧНО как в pricing (valuation.build_cashflows_to_maturity): купоны до
+    оферты (страддлящий период — стаб), выкуп остатка номинала по цене оферты. Так
+    таблица карточки не противоречит SM/z, считаемым к оферте."""
     sp = (ref.spread_issue_bps or 0) / 10000.0
     items: List[dict] = []
     n = 0
@@ -53,6 +60,20 @@ def build_cashflow_from_moex(
     _amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in _am_all)
     _orig_face = ref.face_value + sum(v for d, v in _am_all if d <= calc_date)
 
+    # Оферта с пересмотром купона → режем поток к первой будущей оферте, как pricing.
+    # Обычный флоатер с путом (лишь опция ликвидности) НЕ режем: cut_at_offer=False.
+    put = None
+    if offers:
+        try:
+            from services.ref_data import cut_at_offer
+            if cut_at_offer(ref.isin):
+                from valuation import first_offer_date
+                put = first_offer_date(offers, calc_date)
+        except Exception:
+            put = None
+    if put and ref.maturity_date and put >= ref.maturity_date:
+        put = None  # оферта не раньше погашения — обычный путь до maturity
+
     # Достройка хвоста купонов до погашения: bondization обрывается на 100-м
     # купоне (пагинация ISS) — у длинных бумаг display недосчитывает годы купонов.
     if coupons and ref.maturity_date:
@@ -68,6 +89,16 @@ def build_cashflow_from_moex(
         if not end:
             continue
         start = _d(c.get("start")) or end
+        # Резка к оферте: купоны целиком за офертой отбрасываем, страддлящий период
+        # укорачиваем до стаба [start, put] с пропорциональным купоном (та же логика,
+        # что valuation: зафикс. value → доля дней, прогноз → проекция на put).
+        offer_ratio = 1.0
+        if put is not None:
+            if start >= put:
+                continue
+            if start < put < end:
+                offer_ratio = (put - start).days / ((end - start).days or 1)
+                end = put
         if _amortizing:
             paid = sum(v for d, v in _am_all if d <= start)
             face = max(_orig_face - paid, 0.0)
@@ -82,8 +113,8 @@ def build_cashflow_from_moex(
         vp = c.get("valueprc")
 
         if val is not None:
-            # фактический / зафиксированный купон из MOEX
-            amount = float(val)
+            # фактический / зафиксированный купон из MOEX (стаб к оферте — доля дней)
+            amount = float(val) * offer_ratio
             base_pct = 0.0
             rate_pct = float(vp) if vp is not None else (amount / face * 365.0 / days * 100 if face else 0.0)
         else:
@@ -134,7 +165,31 @@ def build_cashflow_from_moex(
 
     # погашение принципала (амортизации). Если нет — номинал на дату погашения.
     redemption_total = 0.0
-    if amorts:
+    if put is not None:
+        # выкуп по оферте (как pricing): амортизации до оферты по графику + остаток
+        # номинала одним платежом на дату оферты по её цене. Всё за офертой отброшено.
+        from valuation import _offer_price_pct
+        price = _offer_price_pct(offers, put) / 100.0
+        for d, amt in _am_all:
+            if d <= put:
+                redemption_total += amt
+                n += 1
+                items.append(_item(
+                    number=n, period_start=d, period_end=d, payment_date=d,
+                    coupon_formula="", base_rate_pct=0.0, spread_bps=0,
+                    coupon_rate_pct=0.0, amount_rub=round(amt, 2), type="REDEMPTION",
+                ))
+        residual = _orig_face - sum(v for d, v in _am_all if d <= put)
+        if residual > 1e-9:
+            amt = residual * price
+            redemption_total += amt
+            n += 1
+            items.append(_item(
+                number=n, period_start=put, period_end=put, payment_date=put,
+                coupon_formula="", base_rate_pct=0.0, spread_bps=0,
+                coupon_rate_pct=0.0, amount_rub=round(amt, 2), type="REDEMPTION",
+            ))
+    elif amorts:
         for a in amorts:
             d = _d(a.get("date"))
             if not d:

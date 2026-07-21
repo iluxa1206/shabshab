@@ -227,6 +227,11 @@ function Content({ d }) {
   const cf = d.cashflow || [];
   const today = new Date().toISOString().slice(0, 10);
   const coupons = cf.filter((c) => c.type === "COUPON"); // без погашения — оно в 20× больше
+  // поток обрезан к оферте (pricing cut_at_offer): последняя выплата ≤ оферта < погашение.
+  // Тогда таблица и метрики SM/z считаются к одному горизонту.
+  const lastPay = cf.length ? cf[cf.length - 1].payment_date : null;
+  const cutToOffer = !!(r.offer_date && lastPay && lastPay <= r.offer_date
+    && (!r.maturity_date || r.offer_date < r.maturity_date));
 
   return (
     <>
@@ -266,6 +271,7 @@ function Content({ d }) {
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>
         <RefCell k="Размещение">{fmt.date(r.start_date)}</RefCell>
         <RefCell k="Погашение">{fmt.date(r.maturity_date)}</RefCell>
+        {r.offer_date && <RefCell k="Оферта">{fmt.date(r.offer_date) + (r.offer_type ? " · " + r.offer_type : "")}</RefCell>}
         <RefCell k="След. купон">{fmt.date(r.next_coupon_date)}</RefCell>
         <RefCell k="Период / год">{(r.coupon_period_days || "—") + " дн · " + (r.coupons_per_year || "—") + "×"}</RefCell>
         <RefCell k="НКД">{fmt.num(r.accrued_interest) + " ₽"}</RefCell>
@@ -276,12 +282,12 @@ function Content({ d }) {
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
-      <div className="section-title">Купоны · факт + прогноз</div>
+      <div className="section-title">Купоны · факт + прогноз{cutToOffer ? " · до оферты" : ""}</div>
       <div className="chart-box"><CashflowChart items={coupons} today={today} /></div>
 
       <NrdSection n={d.nrd} v={v} />
 
-      <div className="section-title">Cashflow ({cf.length})</div>
+      <div className="section-title">Cashflow{cutToOffer ? " · до оферты " + fmt.date(r.offer_date) : ""} ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>
         <table className="cf-table">
           <thead>
@@ -291,6 +297,7 @@ function Content({ d }) {
             {cf.map((c) => {
               const past = c.payment_date < today;
               const redem = c.type === "REDEMPTION";
+              const offerBuyout = redem && cutToOffer && c.payment_date === r.offer_date;
               return (
                 <tr key={c.number} className={redem ? "redemption" : past ? "past" : ""}>
                   <td className="left">{c.number}</td>
@@ -298,7 +305,7 @@ function Content({ d }) {
                   <td>{fmt.pct(c.base_rate_pct)}</td>
                   <td>{fmt.pct(c.coupon_rate_pct)}</td>
                   <td>{fmt.num(c.amount_rub)}</td>
-                  <td className="left">{redem ? "погашение" : "купон"}</td>
+                  <td className="left">{offerBuyout ? "выкуп по оферте" : redem ? "погашение" : "купон"}</td>
                 </tr>
               );
             })}

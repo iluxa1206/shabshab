@@ -149,6 +149,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         cfs, _ = build_cashflow_from_moex(
             ref_obj, curve, calc_date,
             sched_full.get("coupons", []), sched_full.get("amorts", []), formula,
+            offers=sched_full.get("offers"),
         )
     except Exception as e:
         logger.warning(f"Cashflow error for {isin}: {e}")
