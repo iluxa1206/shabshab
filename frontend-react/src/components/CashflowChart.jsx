@@ -1,4 +1,5 @@
 import { fmt } from "../format.js";
+import { linearScale } from "../charts/index.js";
 
 // График купонов: прошлые (факт, приглушённые) + будущие (прогноз, яркие). Погашение исключено.
 export default function CashflowChart({ items, today }) {
@@ -8,6 +9,7 @@ export default function CashflowChart({ items, today }) {
   const n = items.length;
   const bw = Math.max(2, (W - pad * 2) / n - 2);
   const step = (W - pad * 2) / n;
+  const sh = linearScale([0, max], [0, H - 24]); // сумма купона → высота бара
 
   // позиция линии "сегодня" — граница между прошлым и будущим
   let todayIdx = items.findIndex((c) => c.payment_date >= today);
@@ -22,7 +24,7 @@ export default function CashflowChart({ items, today }) {
           <line x1={todayX.toFixed(1)} y1="2" x2={todayX.toFixed(1)} y2={H - 12} stroke="var(--mut)" strokeDasharray="2 3" />
         )}
         {items.map((c, i) => {
-          const h = (c.amount_rub / max) * (H - 24);
+          const h = sh(c.amount_rub);
           const x = pad + i * step;
           const y = H - h - 12;
           const past = c.payment_date < today;

@@ -3,6 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
 import { fmt } from "../format.js";
+import {
+  extent, logScale, linearScale, timeScale, linTicks, yearTicks,
+  linePath, stepPath, GridY, XTicks, useNearestHover, Tooltip,
+  Legend, LegendLine, LegendDot,
+} from "../charts/index.js";
 
 // Вкладка кривых. Виды (URL /curves/:view):
 //  «Кривая» — par-котировки СПФИ + построенная кривая (spot/forward).
@@ -35,7 +40,6 @@ export default function CurvesModule() {
 
 function CurveView() {
   const [type, setType] = useState("ruonia");
-  const [hover, setHover] = useState(null);
   const q = useQuery({ queryKey: ["curvePlot", type], queryFn: () => fetchCurvePlot(type) });
   const data = q.data;
   const status = q.isPending ? "loading" : q.isError ? "error" : "ready";
@@ -67,8 +71,12 @@ function CurveView() {
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
         <>
-          <Chart data={data} hover={hover} setHover={setHover} />
-          <Legend />
+          <Chart data={data} />
+          <Legend>
+            <LegendDot color="var(--fg)" label="par-котировки СПФИ" />
+            <LegendLine color="var(--up)" label="spot (ср. ставка на срок)" />
+            <LegendLine color="var(--down)" dash="4 3" label="forward (мгновенный ~30д)" />
+          </Legend>
           <QuoteTable data={data} />
         </>
       )}
@@ -76,102 +84,51 @@ function CurveView() {
   );
 }
 
-function Chart({ data, hover, setHover }) {
+function Chart({ data }) {
   const { quotes, samples } = data;
   const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
-  const iw = W - L - R, ih = H - T - B;
 
   const geom = useMemo(() => {
     const maxDays = Math.max(...samples.map((s) => s.days), ...quotes.map((q) => q.days), 1);
-    const ys = [
+    const [ymin, ymax] = extent([
       ...samples.map((s) => s.spot_pct), ...samples.map((s) => s.forward_pct),
       ...quotes.map((q) => q.value_pct),
-    ];
-    let ymin = Math.min(...ys), ymax = Math.max(...ys);
-    const padY = (ymax - ymin) * 0.12 || 0.3;
-    ymin -= padY; ymax += padY;
-    // x лог по дням (короткий конец не слипается)
-    const lx = (d) => Math.log(Math.max(d, 1));
-    const lxmin = lx(7), lxmax = lx(maxDays);
-    const X = (d) => L + ((lx(d) - lxmin) / (lxmax - lxmin)) * iw;
-    const Y = (v) => T + (1 - (v - ymin) / (ymax - ymin)) * ih;
-    return { X, Y, ymin, ymax, maxDays };
+    ], 0.12, 0.3);
+    const X = logScale([7, maxDays], [L, W - R]); // x лог по дням (короткий конец не слипается)
+    const Y = linearScale([ymin, ymax], [H - B, T]);
+    return { X, Y, ymin, ymax };
   }, [samples, quotes]);
 
   const { X, Y, ymin, ymax } = geom;
-  const path = (arr, key) => arr.map((s, i) => `${i ? "L" : "M"}${X(s.days).toFixed(1)},${Y(s[key]).toFixed(1)}`).join(" ");
-
-  // сетка Y (5 линий)
-  const yticks = [];
-  for (let i = 0; i <= 4; i++) yticks.push(ymin + ((ymax - ymin) * i) / 4);
-  // сетка X по тенорам-котировкам
-  const xticks = quotes.map((q) => ({ d: q.days, label: q.tenor }));
+  // nearest-point hover по тенорам-котировкам (единый механизм, см. charts/hover)
+  const { hover, handlers } = useNearestHover({ viewW: W, points: quotes, px: (q) => X(q.days) });
 
   return (
     <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}
-        onMouseLeave={() => setHover(null)}>
-        {/* Y-сетка */}
-        {yticks.map((v, i) => (
-          <g key={i}>
-            <line x1={L} y1={Y(v)} x2={W - R} y2={Y(v)} stroke="var(--line-2)" strokeWidth="1" />
-            <text x={L - 6} y={Y(v) + 3} textAnchor="end" fontSize="10" fill="var(--mut)">{v.toFixed(2)}</text>
-          </g>
-        ))}
-        {/* X-тики (теноры) */}
-        {xticks.map((t, i) => (
-          <text key={i} x={X(t.d)} y={H - B + 14} textAnchor="middle" fontSize="9" fill="var(--mut)">{t.label}</text>
-        ))}
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+        <GridY ticks={linTicks(ymin, ymax, 4)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(2)} />
+        <XTicks ticks={quotes.map((q) => ({ x: X(q.days), label: q.tenor }))} y={H - B + 14} />
         {/* forward (пунктир) */}
-        <path d={path(samples, "forward_pct")} fill="none" stroke="var(--down)" strokeWidth="1.5"
-          strokeDasharray="4 3" opacity="0.85" />
+        <path d={linePath(samples, (s) => X(s.days), (s) => Y(s.forward_pct))} fill="none" stroke="var(--down)"
+          strokeWidth="1.5" strokeDasharray="4 3" opacity="0.85" />
         {/* spot (сплошная) */}
-        <path d={path(samples, "spot_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
+        <path d={linePath(samples, (s) => X(s.days), (s) => Y(s.spot_pct))} fill="none" stroke="var(--up)" strokeWidth="2" />
         {/* котировки (точки) */}
         {quotes.map((q, i) => (
-          <circle key={i} cx={X(q.days)} cy={Y(q.value_pct)} r="3.5"
-            fill="var(--fg)" stroke="var(--bg)" strokeWidth="1"
-            onMouseEnter={() => setHover({
-              x: X(q.days), y: Y(q.value_pct),
-              label: `${q.tenor}: ${q.value_pct.toFixed(4)}% (par)`,
-            })}>
+          <circle key={i} cx={X(q.days)} cy={Y(q.value_pct)} r="3.5" fill="var(--fg)" stroke="var(--bg)" strokeWidth="1">
             <title>{`${q.tenor} · ${q.value_pct.toFixed(4)}% · ${q.days}д`}</title>
           </circle>
         ))}
         {hover && (
           <g>
-            <line x1={hover.x} y1={T} x2={hover.x} y2={H - B} stroke="var(--mut)" strokeDasharray="2 2" />
-            <circle cx={hover.x} cy={hover.y} r="5" fill="none" stroke="var(--fg)" strokeWidth="1.5" />
+            <line x1={X(hover.days)} y1={T} x2={X(hover.days)} y2={H - B} stroke="var(--mut)" strokeDasharray="2 2" />
+            <circle cx={X(hover.days)} cy={Y(hover.value_pct)} r="5" fill="none" stroke="var(--fg)" strokeWidth="1.5" />
           </g>
         )}
       </svg>
       {hover && (
-        <div style={{
-          position: "absolute", left: `${(hover.x / W) * 100}%`, top: 0,
-          transform: "translate(-50%, -4px)", fontSize: 11, background: "var(--inv-bg)",
-          color: "var(--inv-fg)", padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
-          pointerEvents: "none",
-        }}>{hover.label}</div>
+        <Tooltip x={X(hover.days)} viewW={W}>{`${hover.tenor}: ${hover.value_pct.toFixed(4)}% (par)`}</Tooltip>
       )}
-    </div>
-  );
-}
-
-function Legend() {
-  const item = (color, dash, label) => (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-      <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke={color}
-        strokeWidth="2" strokeDasharray={dash} /></svg>{label}
-    </span>
-  );
-  return (
-    <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-        <svg width="12" height="12"><circle cx="6" cy="6" r="3.5" fill="var(--fg)" /></svg>
-        par-котировки СПФИ
-      </span>
-      {item("var(--up)", "", "spot (ср. ставка на срок)")}
-      {item("var(--down)", "4 3", "forward (мгновенный ~30д)")}
     </div>
   );
 }
@@ -236,16 +193,16 @@ function KsPathView() {
             <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
           )}
           <KsPathChart points={data.points} calcDate={data.calc_date} />
-          <div style={{ display: "flex", gap: 18, margin: "8px 2px 4px", color: "var(--mut)", flexWrap: "wrap" }}>
-            <LegLine color="var(--fg)" dash="" label={`Факт ${label} (ЦБ РФ)`} />
-            <LegLine color="var(--up)" dash="" label="Рынок (форвард СПФИ)" />
+          <Legend>
+            <LegendLine color="var(--fg)" label={`Факт ${label} (ЦБ РФ)`} />
+            <LegendLine color="var(--up)" label="Рынок (форвард СПФИ)" />
             {series === "ks" && data.points.some((p) => p.nrd_pril3_pct != null) && (
-              <LegLine color="var(--accent)" dash="" label="Ожидание (НРД Прил.3)" />
+              <LegendLine color="var(--accent)" label="Ожидание (НРД Прил.3)" />
             )}
             {series === "ks" && data.points.some((p) => p.forecast_pct != null) && (
-              <LegLine color="var(--down)" dash="5 4" label="Прогноз ЦБ (средняя КС)" />
+              <LegendLine color="var(--down)" dash="5 4" label="Прогноз ЦБ (средняя КС)" />
             )}
-          </div>
+          </Legend>
           <div className="muted" style={{ fontSize: 11, marginTop: 6, maxWidth: 760 }}>
             Слева от «сегодня» — исторический факт с ЦБ РФ. «Рынок» — арбитражный форвард
             из СПФИ-свопов (та же кривая, что в прайсинге SM/z).
@@ -260,8 +217,6 @@ function KsPathView() {
 
 function KsPathChart({ points, calcDate }) {
   const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
-  const iw = W - L - R, ih = H - T - B;
-  const [hover, setHover] = useState(null);
 
   const g = useMemo(() => {
     const xs = points.map((p) => new Date(p.date).getTime());
@@ -273,104 +228,47 @@ function KsPathChart({ points, calcDate }) {
       if (p.forecast_pct != null) ys.push(p.forecast_pct);
       if (p.nrd_pril3_pct != null) ys.push(p.nrd_pril3_pct);
     });
-    let ymin = Math.min(...ys), ymax = Math.max(...ys);
-    const pad = (ymax - ymin) * 0.1 || 1;
-    ymin -= pad; ymax += pad;
-    const X = (t) => L + ((t - xmin) / (xmax - xmin)) * iw;
-    const Y = (v) => T + (1 - (v - ymin) / (ymax - ymin)) * ih;
+    const [ymin, ymax] = extent(ys, 0.1, 1);
+    const X = timeScale([xmin, xmax], [L, W - R]);
+    const Y = linearScale([ymin, ymax], [H - B, T]);
     return { X, Y, xmin, xmax, ymin, ymax };
   }, [points]);
 
   const { X, Y, ymin, ymax, xmin, xmax } = g;
-  // ступенчатый путь: горизонт до след. точки, потом вертикаль
-  const stepPath = (key) => {
-    const pts = points.filter((p) => p[key] != null);
-    if (!pts.length) return "";
-    let d = "";
-    pts.forEach((p, i) => {
-      const x = X(new Date(p.date).getTime()), y = Y(p[key]);
-      if (i === 0) d += `M${x.toFixed(1)},${y.toFixed(1)}`;
-      else {
-        const px = X(new Date(pts[i - 1].date).getTime());
-        d += `L${x.toFixed(1)},${Y(pts[i - 1][key]).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)}`;
-      }
-    });
-    return d;
-  };
-  // гладкая полилиния (для НРД Прил.3 — плавная кривая, не ступени)
-  const linePath = (key) => {
-    const pts = points.filter((p) => p[key] != null);
-    if (!pts.length) return "";
-    return pts.map((p, i) => {
-      const x = X(new Date(p.date).getTime()), y = Y(p[key]);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-  };
-
-  const yticks = [];
-  for (let i = 0; i <= 5; i++) yticks.push(ymin + ((ymax - ymin) * i) / 5);
-  // X-годовые тики
-  const years = [];
-  const y0 = new Date(xmin).getFullYear(), y1 = new Date(xmax).getFullYear();
-  for (let y = y0; y <= y1; y++) years.push(new Date(`${y}-01-01`).getTime());
-  const todayX = X(new Date(calcDate).getTime());
+  const { hover, handlers } = useNearestHover({ viewW: W, points, px: (p) => X(p.date) });
+  // ступени (факт/рынок/прогноз) и гладкая линия (НРД Прил.3) через общие path-билдеры
+  const step = (key) => stepPath(points.filter((p) => p[key] != null), (p) => X(p.date), (p) => Y(p[key]));
+  const line = (key) => linePath(points.filter((p) => p[key] != null), (p) => X(p.date), (p) => Y(p[key]));
+  const todayX = X(calcDate);
 
   return (
     <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}
-        onMouseLeave={() => setHover(null)}
-        onMouseMove={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          const px = ((e.clientX - r.left) / r.width) * W;
-          const t = xmin + ((px - L) / iw) * (xmax - xmin);
-          let best = null, bd = 1e18;
-          points.forEach((p) => { const d = Math.abs(new Date(p.date).getTime() - t); if (d < bd) { bd = d; best = p; } });
-          if (best) setHover(best);
-        }}>
-        {yticks.map((v, i) => (
-          <g key={i}>
-            <line x1={L} y1={Y(v)} x2={W - R} y2={Y(v)} stroke="var(--line-2)" />
-            <text x={L - 6} y={Y(v) + 3} textAnchor="end" fontSize="10" fill="var(--mut)">{v.toFixed(1)}</text>
-          </g>
-        ))}
-        {years.map((t, i) => t >= xmin && t <= xmax && (
-          <text key={i} x={X(t)} y={H - B + 14} textAnchor="middle" fontSize="9" fill="var(--mut)">{new Date(t).getFullYear()}</text>
-        ))}
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+        <GridY ticks={linTicks(ymin, ymax, 5)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(1)} />
+        <XTicks ticks={yearTicks(xmin, xmax).filter((t) => t >= xmin && t <= xmax).map((t) => ({ x: X(t), label: new Date(t).getFullYear() }))}
+          y={H - B + 14} />
         {/* линия "сегодня" */}
         <line x1={todayX} y1={T} x2={todayX} y2={H - B} stroke="var(--mut)" strokeDasharray="2 3" />
         <text x={todayX + 3} y={T + 10} fontSize="9" fill="var(--mut)">сегодня</text>
         {/* прогноз ЦБ (пунктир) */}
-        <path d={stepPath("forecast_pct")} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
+        <path d={step("forecast_pct")} fill="none" stroke="var(--down)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.9" />
         {/* ожидание НРД Прил.3 (гладкая) */}
-        <path d={linePath("nrd_pril3_pct")} fill="none" stroke="var(--accent)" strokeWidth="1.8" opacity="0.95" />
+        <path d={line("nrd_pril3_pct")} fill="none" stroke="var(--accent)" strokeWidth="1.8" opacity="0.95" />
         {/* рынок (форвард) */}
-        <path d={stepPath("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
+        <path d={step("market_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
         {/* факт */}
-        <path d={stepPath("actual_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
+        <path d={step("actual_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
         {hover && (
-          <line x1={X(new Date(hover.date).getTime())} y1={T} x2={X(new Date(hover.date).getTime())} y2={H - B}
-            stroke="var(--mut)" strokeDasharray="1 2" />
+          <line x1={X(hover.date)} y1={T} x2={X(hover.date)} y2={H - B} stroke="var(--mut)" strokeDasharray="1 2" />
         )}
       </svg>
       {hover && (
-        <div style={{
-          position: "absolute", left: `${(X(new Date(hover.date).getTime()) / W) * 100}%`, top: 4,
-          transform: "translate(-50%, 0)", fontSize: 11, background: "var(--inv-bg)", color: "var(--inv-fg)",
-          padding: "3px 7px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
-        }}>
+        <Tooltip x={X(hover.date)} viewW={W} top={4} dy={0} padding="3px 7px">
           {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
             `${hover.market_pct != null ? `рынок ${hover.market_pct}%` : ""}${hover.nrd_pril3_pct != null ? ` · Прил.3 ${hover.nrd_pril3_pct}%` : ""}${hover.forecast_pct != null ? ` · ЦБ ${hover.forecast_pct}%` : ""}`}
-        </div>
+        </Tooltip>
       )}
     </div>
-  );
-}
-
-function LegLine({ color, dash, label }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-      <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke={color} strokeWidth="2" strokeDasharray={dash} /></svg>{label}
-    </span>
   );
 }
 

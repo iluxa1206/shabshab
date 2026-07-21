@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { fmt } from "../format.js";
+import { linearScale, linTicks, GridY, XTicks } from "../charts/index.js";
 
-// рейтинг-бакеты и их цвет (градация риска)
+// рейтинг-бакеты и их цвет (градация риска) — CSS-переменные, тема-aware
 const BUCKETS = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
 const norm = (r) => {
   if (!r) return "NR";
@@ -10,8 +11,8 @@ const norm = (r) => {
   return "NR";
 };
 const BCOLOR = {
-  AAA: "#2f9e44", AA: "#66a80f", A: "#f08c00", BBB: "#e8590c",
-  BB: "#e03131", B: "#c92a2a", NR: "var(--mut-2)",
+  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
+  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
 };
 
 // склонение «бумага/бумаги/бумаг» по числу
@@ -46,24 +47,15 @@ function ScatterZDur({ rows }) {
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
-  const sx = (x) => pad.l + (x / xmax) * (W - pad.l - pad.r);
-  const sy = (y) => H - pad.b - ((y - ymin) / (ymax - ymin || 1)) * (H - pad.t - pad.b);
-  const yticks = 4, xticks = Math.min(Math.ceil(xmax), 6);
+  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
+  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
+  const nx = Math.min(Math.ceil(xmax), 6);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="z-спред vs spread duration">
-      {Array.from({ length: yticks + 1 }, (_, i) => {
-        const yv = ymin + ((ymax - ymin) * i) / yticks;
-        return (
-          <g key={i}>
-            <line x1={pad.l} y1={sy(yv)} x2={W - pad.r} y2={sy(yv)} className="an-grid" />
-            <text x={pad.l - 6} y={sy(yv) + 3} className="an-axis" textAnchor="end">{Math.round(yv)}</text>
-          </g>
-        );
-      })}
-      {Array.from({ length: xticks + 1 }, (_, i) => {
-        const xv = (xmax * i) / xticks;
-        return <text key={i} x={sx(xv)} y={H - pad.b + 14} className="an-axis" textAnchor="middle">{fmt.yrs(xv)}</text>;
-      })}
+      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
+        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+        y={H - pad.b + 14} textClass="an-axis" />
       {pts.map((p) => (
         <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}>
           <title>{`${p.name} — один выпуск\nz-спред: ${p.y} bps (НРД, к кривой ОФЗ)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
@@ -90,7 +82,7 @@ function RatingDist({ rows }) {
   const all = present.flatMap((k) => groups[k]);
   const zmax = Math.max(...all), zmin = Math.min(0, ...all);
   const W = 460, rowH = 30, pad = { l: 44, r: 40, t: 6 };
-  const sx = (z) => pad.l + ((z - zmin) / (zmax - zmin || 1)) * (W - pad.l - pad.r);
+  const sx = linearScale([zmin, zmax], [pad.l, W - pad.r]);
   return (
     <svg viewBox={`0 0 ${W} ${present.length * rowH + pad.t + 8}`} className="an-svg" role="img" aria-label="распределение z по рейтингам">
       {present.map((k, i) => {
@@ -127,10 +119,11 @@ function RefixProfile({ rows }) {
   const cmax = Math.max(...counts, 1);
   const W = 460, H = 150, pad = { l: 30, r: 10, t: 10, b: 24 };
   const bw = (W - pad.l - pad.r) / bins.length;
+  const sh = linearScale([0, cmax], [0, H - pad.t - pad.b]); // счётчик → высота бара
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="профиль рефиксинга">
       {bins.map((bin, i) => {
-        const h = (counts[i] / cmax) * (H - pad.t - pad.b);
+        const h = sh(counts[i]);
         const x = pad.l + i * bw + bw * 0.15;
         return (
           <g key={bin.lbl}>
@@ -138,10 +131,11 @@ function RefixProfile({ rows }) {
               <title>{`рефиксинг через ${bin.lbl} дн.: ${counts[i]} ${plu(counts[i])}`}</title>
             </rect>
             {counts[i] > 0 && <text x={x + bw * 0.35} y={H - pad.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
-            <text x={x + bw * 0.35} y={H - pad.b + 14} className="an-axis" textAnchor="middle">{bin.lbl}</text>
           </g>
         );
       })}
+      <XTicks ticks={bins.map((bin, i) => ({ x: pad.l + i * bw + bw * 0.5, label: bin.lbl }))}
+        y={H - pad.b + 14} textClass="an-axis" />
     </svg>
   );
 }

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fmt } from "../../format.js";
 import { fetchFundCashflow } from "../../api.js";
+import { linearScale, stackedBars } from "../../charts/index.js";
 import { conv } from "./ccy.js";
 
 const MONTHS_RU = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
@@ -31,7 +32,7 @@ export default function FundCashflow({ code, rate, sign }) {
   const bw = Math.max(6, step - 10);
   const totals = items.map((b) => b.coupons_rub + b.coupons_est_rub + b.principal_rub);
   const max = Math.max(...totals, 1);
-  const sy = (v) => (v / max) * (H - padB - padT);
+  const sy = linearScale([0, max], [0, H - padB - padT]); // сумма → высота сегмента
   const totalYear = totals.reduce((a, x) => a + x, 0);
 
   return (
@@ -46,21 +47,21 @@ export default function FundCashflow({ code, rate, sign }) {
         <line x1={padX} y1={H - padB} x2={W - padX} y2={H - padB} stroke="var(--line-2)" />
         {items.map((b, i) => {
           const x = padX + i * step + (step - bw) / 2;
-          let y = H - padB;
-          const seg = (v, opacity) => {
-            const h = sy(v);
-            y -= h;
-            return h > 0.5 ? <rect key={y} x={x.toFixed(1)} y={y.toFixed(1)} width={bw.toFixed(1)} height={h.toFixed(1)} fill="currentColor" opacity={opacity} /> : null;
-          };
+          // стек снизу вверх: принципал → купоны → прогноз
+          const segs = stackedBars([
+            { value: b.principal_rub, opacity: 0.32 },
+            { value: b.coupons_rub, opacity: 0.92 },
+            { value: b.coupons_est_rub, opacity: 0.55 },
+          ], H - padB, sy);
           const title = `${mLabel(b.month)}: купоны ${fmt.num(conv(b.coupons_rub, rate) / 1e6, 2)}` +
             (b.coupons_est_rub ? ` + прогноз ${fmt.num(conv(b.coupons_est_rub, rate) / 1e6, 2)}` : "") +
             (b.principal_rub ? ` · принципал ${fmt.num(conv(b.principal_rub, rate) / 1e6, 2)}` : "") + ` млн ${sign}`;
           return (
             <g key={b.month}>
               <title>{title}</title>
-              {seg(b.principal_rub, 0.32)}
-              {seg(b.coupons_rub, 0.92)}
-              {seg(b.coupons_est_rub, 0.55)}
+              {segs.map((s) => (
+                <rect key={s.opacity} x={x.toFixed(1)} y={s.y.toFixed(1)} width={bw.toFixed(1)} height={s.h.toFixed(1)} fill="currentColor" opacity={s.opacity} />
+              ))}
               <text x={(x + bw / 2).toFixed(1)} y={H - padB + 14} textAnchor="middle"
                 fontSize="9" fill="var(--mut)" style={{ textTransform: "uppercase", letterSpacing: "0.08em" }}>
                 {mLabel(b.month)}
