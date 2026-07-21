@@ -3,6 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    // ПЕРВЫМ в <head>: <base> = корень mount (<prefix>/app/), вычисленный из URL.
+    // Vite base:"./" делает ассеты относительными (один билд под /app/ и /desk/app/),
+    // но на вложенных SPA-роутах (/app/curves/kspath, /app/funds/X5) относительный
+    // "./assets" резолвился бы от текущего пути → 404. <base> фиксит корень до того,
+    // как парсер дойдёт до module-script. Root-relative fetch api.js ("/api…") не задет.
+    (function () {
+      var mount = location.pathname.replace(/\/app(\/.*)?$/, "") + "/app/";
+      var b = document.createElement("base");
+      b.href = mount;
+      document.head.appendChild(b);
+    })();
+  </script>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <title>DESK</title>
   <script>
