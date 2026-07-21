@@ -22,9 +22,12 @@ watch-качества), юниверс 127 бумаг (с амортизиру�
 mean|Δ|≈113, медиана +81; хвост низких рейтингов — та же кросс-секция НРД.
 """
 from __future__ import annotations
+import logging
 import math
 from datetime import date
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 TENOR_Y = {"1W": 1/52, "2W": 2/52, "1M": 1/12, "2M": 2/12, "3M": .25, "6M": .5,
            "9M": .75, "1Y": 1, "2Y": 2, "3Y": 3, "4Y": 4, "5Y": 5, "6Y": 6,
@@ -187,6 +190,8 @@ def solve_z_discrete(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Op
     lo, hi = -0.6, 0.9
     flo, fhi = pv(lo) - dirty_target, pv(hi) - dirty_target
     if flo != flo or fhi != fhi or flo * fhi > 0:
+        # дистресс за пределами брекета / NaN — раньше None был неотличим от «нет данных»
+        logger.warning(f"solve_z_discrete: нет корня в [{lo},{hi}] (pv(lo)-P={flo:.2f}, pv(hi)-P={fhi:.2f})")
         return None
     for _ in range(90):
         m = (lo + hi) / 2

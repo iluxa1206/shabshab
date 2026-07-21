@@ -25,7 +25,15 @@ def add_months(d: date, months: int) -> date:
         return date(year, month, min(day, last_day))
 
 def get_maturity_date(start_date: date, tenor: str) -> date:
-    """Конвертация тенора вида 'ON', '1W', '3M', '1Y' в дату экспирации от start_date."""
+    """Конвертация тенора вида 'ON', '1W', '3M', '1Y' в дату экспирации от start_date.
+
+    ВНИМАНИЕ (конвенция): все теноры получают +1 день (1Y = 366д от effective
+    start) — эмпирическая подгонка под подневную сетку СПФИ-кривой из
+    502_504.xlsm (реплика листа сверялась с Excel по дням). Фикс-нога при этом
+    строится add_months БЕЗ +1 (см. _fixed_leg_schedule) — последний период
+    короче на день; эффект — единицы bps в DF дальних узлов. При переходе на
+    формальную методику СПФИ (business-day adjusted даты) пересмотреть оба места
+    согласованно."""
     tenor = tenor.upper()
     if tenor == "ON": return start_date + timedelta(days=1)
     if tenor == "TN": return start_date + timedelta(days=2)

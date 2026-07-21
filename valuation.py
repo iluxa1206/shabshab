@@ -194,12 +194,36 @@ def _amort_date(a) -> Optional[date]:
 
 # Нерабочие дни MOEX (расчёты НКЦ): фиксированные федеральные праздники.
 # MOEX торгует большинство «мостов» и новогодних (3–6, 8 янв) — в списке только
-# дни, когда расчётов нет. Переносы правительства на мосты НЕ включаем.
-# Обновлять раз в год по календарю MOEX (https://www.moex.com/s371).
+# дни, когда расчётов нет. Переносы правительства на мосты — через оверрайд
+# data/moex_holidays.json: {"extra_dates": ["YYYY-MM-DD", ...], "trading_dates":
+# ["YYYY-MM-DD", ...]} (extra — нерабочие сверх базовых, trading — рабочие
+# вопреки базовым, напр. перенесённая рабочая суббота). Файл опционален,
+# обновляется по календарю MOEX (https://www.moex.com/s371) без правки кода.
 _MOEX_HOLIDAYS_MD = {(1, 1), (1, 2), (1, 7), (2, 23), (3, 8), (5, 1), (5, 9), (6, 12), (11, 4)}
 
 
+def _load_holiday_overrides():
+    import os
+    import json
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "moex_holidays.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        extra = {date.fromisoformat(s) for s in raw.get("extra_dates", [])}
+        trading = {date.fromisoformat(s) for s in raw.get("trading_dates", [])}
+        return extra, trading
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+        return set(), set()
+
+
+_HOLIDAY_EXTRA, _HOLIDAY_TRADING = _load_holiday_overrides()
+
+
 def _is_settlement_day_off(d: date) -> bool:
+    if d in _HOLIDAY_TRADING:
+        return False
+    if d in _HOLIDAY_EXTRA:
+        return True
     return d.weekday() >= 5 or (d.month, d.day) in _MOEX_HOLIDAYS_MD
 
 
@@ -361,6 +385,20 @@ def build_cashflows_to_maturity(
     else:
         put = None  # оферта не раньше погашения — обычный путь
 
+    # Оферта внутри купонного периода: страддлящий период режем в стаб
+    # [start, put] с пропорциональным купоном (зафикс. value — по доле дней,
+    # прогнозный — проекция на укороченный период). Раньше купон выбрасывался
+    # целиком — PV к оферте занижался на частичный НКД.
+    if put:
+        adj = []
+        for (s, e, v) in periods:
+            if s < put < e:
+                ratio = (put - s).days / ((e - s).days or 1)
+                adj.append((s, put, float(v) * ratio if v is not None else None))
+            else:
+                adj.append((s, e, v))
+        periods = adj
+
     # Амортизации: будущие погашения принципала (dates > settle, до горизонта).
     future_am = sorted(
         (d, float(a["value"]))
@@ -411,6 +449,14 @@ def build_cashflows_to_maturity(
             # факту — спека формулы выпуска (point/average+лаг, manual > калибратор,
             # та же логика, что display в services/cashflow) с фолбэком на точечный
             # фиксинг КС на start. Иначе — проекция форвардом.
+            #
+            # ГРАНИЦА КОНВЕНЦИЙ (RUONIA, осознанно): начавшийся период начисляется
+            # simple на СРЕДНЕМ индексе (это буквальная формула проспектов
+            # average-бумаг), будущие — daily-comp фактором кривой (else-ветка ниже):
+            # только так factor телескопируется с DF и SM=марже на паре. Слить
+            # конвенции нельзя, не сломав одно из двух: либо расходимся с проспектом
+            # на текущем купоне, либо теряем par-тождество и сверку с НРД. Разрыв на
+            # стыке ≈ единицы bps SM при КС ~14-16%.
             idx_pct = None
             if start <= calc_date and bond.base in ("RUONIA", "KEYRATE"):
                 try:

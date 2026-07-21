@@ -255,12 +255,15 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
     face — текущий остаток номинала; amorts — график погашений (для отката
     номинала на дату каждого прошлого периода, см. _past_rows).
     idx — инжектированная история индекса (index_history); None → сам фетчит."""
-    ck = (isin, base)
+    rows = _past_rows(coupons, margin_pct, face, calc_date, amorts)
+    # Ключ кэша включает отпечаток данных (число прошлых купонов + дата последнего):
+    # раньше кэшировалось по (isin, base) НАВСЕГДА — новые купоны/сменившийся manual
+    # не пересчитывали спеку до рестарта процесса.
+    ck = (isin, base, len(rows), rows[-1][1] if rows else None)
     if ck in _cache:
         return _cache[ck]
     if idx is None:
         idx = _index(base)
-    rows = _past_rows(coupons, margin_pct, face, calc_date, amorts)
     spec = None
     if len(rows) >= 2 and idx[0]:
         best = None  # (err, mode, lag)

@@ -72,10 +72,10 @@ def build_cashflow_from_moex(
             paid = sum(v for d, v in _am_all if d <= start)
             face = max(_orig_face - paid, 0.0)
         else:
-            try:
-                face = float(c.get("face")) if c.get("face") is not None else ref.face_value
-            except (ValueError, TypeError):
-                face = ref.face_value
+            # bullet: номинал не меняется — всегда ref.face_value. Поле face строк
+            # купонов MOEX не используем: оно ненадёжно (стейл 1000 у бумаг с
+            # номиналом 100/1e6 — купоны display масштабировались неверно).
+            face = ref.face_value
         days = (end - start).days or 1
         alpha = days / 365.0
         val = c.get("value")
