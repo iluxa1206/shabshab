@@ -55,6 +55,9 @@ body {
 }
 
 #app { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--fg); }
+/* корневые контейнеры вне #app (Login/checking): цвет/фон из темы, иначе
+   текст наследует body светлой темы (DESK был чёрным на чёрном) */
+.theme-dark, .login-wrap { background: var(--bg); color: var(--fg); }
 
 .mono { font-family: var(--mono); }
 .muted { color: var(--mut); }
