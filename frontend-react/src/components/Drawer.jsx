@@ -1,47 +1,45 @@
 import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { fmt, dmColor, vsFairColor } from "../format.js";
 import { fetchBondDetails, fetchFunds, putFundPosition, UnauthorizedError } from "../api.js";
+import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 
 // Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
-// Список фондов тянется лениво при первом открытии drawer'а.
-function AddToFund({ isin, onLogout }) {
-  const [funds, setFunds] = useState(null); // null = не загружено
+// Список фондов — из общего кэша ['funds'] (делится с модулем «Фонды»).
+function AddToFund({ isin }) {
+  const qc = useQueryClient();
+  const { data: funds } = useQuery({ queryKey: ["funds"], queryFn: fetchFunds });
   const [code, setCode] = useState("");
   const [qty, setQty] = useState("");
   const [msg, setMsg] = useState(null); // {ok, text}
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    let alive = true;
-    fetchFunds()
-      .then((fs) => { if (alive) { setFunds(fs); if (fs.length && !code) setCode(fs[0].code); } })
-      .catch((e) => {
-        if (e instanceof UnauthorizedError) { onLogout?.(); return; }
-        if (alive) setFunds([]);
-      });
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!code && funds?.length) setCode(funds[0].code);
+  }, [funds, code]);
 
   useEffect(() => { setMsg(null); setQty(""); }, [isin]);
 
+  const putMut = useMutation({
+    mutationFn: ({ fund, n }) => putFundPosition(fund, isin, n),
+    onSuccess: (_d, { fund, n }) => {
+      setMsg({ ok: true, text: `${fmt.num(n, 0)} шт → ${fund}` });
+      setQty("");
+      invalidateFund(qc, fund);
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setMsg({ ok: false, text: e.message }); },
+  });
+  const busy = putMut.isPending;
+
   if (!funds || !funds.length) return null;
 
-  const submit = async (e) => {
+  const submit = (e) => {
     e.preventDefault();
     const n = parseFloat(String(qty).replace(/\s/g, "").replace(",", "."));
     if (!Number.isFinite(n) || n <= 0) { setMsg({ ok: false, text: "Количество?" }); return; }
-    setBusy(true); setMsg(null);
-    try {
-      await putFundPosition(code, isin, n);
-      setMsg({ ok: true, text: `${fmt.num(n, 0)} шт → ${code}` });
-      setQty("");
-    } catch (e2) {
-      if (e2 instanceof UnauthorizedError) { onLogout?.(); return; }
-      setMsg({ ok: false, text: e2.message });
-    } finally { setBusy(false); }
+    setMsg(null);
+    putMut.mutate({ fund: code, n });
   };
 
   return (
@@ -222,7 +220,7 @@ function StaleChips({ m, n }) {
   );
 }
 
-function Content({ d, onLogout }) {
+function Content({ d }) {
   const r = d.reference, m = d.market, v = d.valuation;
   const dc = dmColor(v.dm_bps);
   const warnings = [...(v.warnings || []), ...(d.warnings || [])];
@@ -274,7 +272,7 @@ function Content({ d, onLogout }) {
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
 
-      <AddToFund isin={r.isin} onLogout={onLogout} />
+      <AddToFund isin={r.isin} />
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
@@ -311,23 +309,17 @@ function Content({ d, onLogout }) {
   );
 }
 
-export default function Drawer({ isin, onClose, onLogout }) {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(null);
+export default function Drawer({ isin, onClose }) {
+  const detailsQ = useQuery({
+    queryKey: ["bond", isin],
+    queryFn: () => fetchBondDetails(isin),
+    enabled: !!isin,
+  });
+  const data = detailsQ.data;
+  const err = detailsQ.isError ? detailsQ.error?.message : null;
   const reduce = useReducedMotion();
   const panelRef = useRef(null);
   const closeRef = useRef(null);
-
-  useEffect(() => {
-    if (!isin) return;
-    setData(null); setErr(null);
-    let alive = true;
-    fetchBondDetails(isin).then((d) => alive && setData(d)).catch((e) => {
-      if (e instanceof UnauthorizedError) { onLogout?.(); return; }
-      if (alive) setErr(e.message);
-    });
-    return () => { alive = false; };
-  }, [isin]);
 
   // focus + esc + tab-trap
   useEffect(() => {
@@ -378,7 +370,7 @@ export default function Drawer({ isin, onClose, onLogout }) {
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">LOADING</div>
-                : <Content d={data} onLogout={onLogout} />}
+                : <Content d={data} />}
             </div>
           </motion.aside>
         </>

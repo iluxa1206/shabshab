@@ -126,7 +126,7 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .seg-btn {
   font-family: var(--mono); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--mut); background: transparent; border: none; border-right: 1px solid var(--line-2);
-  padding: 6px 13px; cursor: pointer;
+  padding: 6px 13px; cursor: pointer; text-decoration: none; /* NavLink-табы (<a>) выглядят как кнопки */
 }
 .seg-btn:last-child { border-right: none; }
 .seg-btn:hover { color: var(--fg); }

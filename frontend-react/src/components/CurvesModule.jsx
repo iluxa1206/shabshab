@@ -1,22 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchCurvePlot, fetchKsPath, fetchFloaterYield, UnauthorizedError } from "../api.js";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
+import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
 import { fmt } from "../format.js";
 
-// 401 → на экран логина (единственный модуль, где это не перехватывалось:
-// протухшая сессия показывала «Ошибка: unauthorized» вместо логина)
-const failOr401 = (onLogout, setErr, setStatus) => (e) => {
-  if (e instanceof UnauthorizedError) { onLogout?.(); return; }
-  setErr(String(e.message || e));
-  setStatus("error");
-};
-
-// Вкладка кривых. Два вида:
+// Вкладка кривых. Виды (URL /curves/:view):
 //  «Кривая» — par-котировки СПФИ + построенная кривая (spot/forward).
 //  «Путь КС» — рыночный форвард-путь ставки vs ручные сценарии ЦБ + факт
 //              (реплика листа «КС-прогноз» из 502_504.xlsm).
-// SVG без внешних либ, тема через CSS-переменные.
-export default function CurvesModule({ onLogout }) {
-  const [view, setView] = useState("curve"); // curve | kspath
+// SVG без внешних либ, тема через CSS-переменные. 401 ловит глобальный onError QueryClient.
+export default function CurvesModule() {
+  const navigate = useNavigate();
+  const { view: viewParam } = useParams(); // undefined | curve | kspath | floater
+  const view = viewParam === "kspath" || viewParam === "floater" ? viewParam : "curve";
+  const setView = (v) => navigate(v === "curve" ? "/curves" : `/curves/${v}`);
   return (
     <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
       <div style={{ marginBottom: 14 }}>
@@ -29,29 +26,20 @@ export default function CurvesModule({ onLogout }) {
             onClick={() => setView("floater")}>Флоатер YTM</button>
         </span>
       </div>
-      {view === "curve" ? <CurveView onLogout={onLogout} />
-        : view === "kspath" ? <KsPathView onLogout={onLogout} />
-        : <FloaterScenariosView onLogout={onLogout} />}
+      {view === "curve" ? <CurveView />
+        : view === "kspath" ? <KsPathView />
+        : <FloaterScenariosView />}
     </div>
   );
 }
 
-function CurveView({ onLogout }) {
+function CurveView() {
   const [type, setType] = useState("ruonia");
-  const [data, setData] = useState(null);
-  const [status, setStatus] = useState("loading");
-  const [err, setErr] = useState("");
   const [hover, setHover] = useState(null);
-
-  useEffect(() => {
-    let alive = true;
-    setStatus("loading");
-    const fail = failOr401(onLogout, setErr, setStatus);
-    fetchCurvePlot(type)
-      .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
-      .catch((e) => { if (alive) fail(e); });
-    return () => { alive = false; };
-  }, [type, onLogout]);
+  const q = useQuery({ queryKey: ["curvePlot", type], queryFn: () => fetchCurvePlot(type) });
+  const data = q.data;
+  const status = q.isPending ? "loading" : q.isError ? "error" : "ready";
+  const err = q.error?.message || "";
 
   return (
     <>
@@ -216,21 +204,12 @@ function QuoteTable({ data }) {
 }
 
 // ── Путь ставки: факт (ЦБ РФ) + рыночный форвард (СПФИ) ───────────────────
-function KsPathView({ onLogout }) {
+function KsPathView() {
   const [series, setSeries] = useState("ks"); // ks | ruonia
-  const [data, setData] = useState(null);
-  const [status, setStatus] = useState("loading");
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    setStatus("loading");
-    const fail = failOr401(onLogout, setErr, setStatus);
-    fetchKsPath(series)
-      .then((d) => { if (alive) { setData(d); setStatus("ready"); } })
-      .catch((e) => { if (alive) fail(e); });
-    return () => { alive = false; };
-  }, [series, onLogout]);
+  const q = useQuery({ queryKey: ["ksPath", series], queryFn: () => fetchKsPath(series) });
+  const data = q.data;
+  const status = q.isPending ? "loading" : q.isError ? "error" : "ready";
+  const err = q.error?.message || "";
 
   const label = series === "ks" ? "КС" : "RUONIA";
   return (
@@ -396,19 +375,22 @@ function LegLine({ color, dash, label }) {
 }
 
 // ── Флоатер / сценарии: YTM бумаги под рынок vs сценарии ЦБ (метод 502_504) ──
-function FloaterScenariosView({ onLogout }) {
+function FloaterScenariosView() {
   const [isin, setIsin] = useState("");
-  const [data, setData] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | loading | ready | error
-  const [err, setErr] = useState("");
+  const [submitted, setSubmitted] = useState(""); // ISIN, по которому запущен расчёт
+  const q = useQuery({
+    queryKey: ["floaterYield", submitted],
+    queryFn: () => fetchFloaterYield(submitted),
+    enabled: !!submitted,
+  });
+  const data = q.data;
+  const status = !submitted ? "idle" : q.isPending || q.isFetching ? "loading" : q.isError ? "error" : "ready";
+  const err = q.error?.message || "";
 
   const run = () => {
     const v = isin.trim().toUpperCase();
     if (!v) return;
-    setStatus("loading"); setErr("");
-    fetchFloaterYield(v)
-      .then((d) => { setData(d); setStatus("ready"); })
-      .catch(failOr401(onLogout, setErr, setStatus));
+    setSubmitted(v);
   };
 
   return (

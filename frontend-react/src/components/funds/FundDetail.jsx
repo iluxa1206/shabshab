@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
 import { fetchFundSummary, fetchFundRepos, patchFund, deleteFund, UnauthorizedError } from "../../api.js";
+import { invalidateFund } from "../../queries.js";
 import FundPositionsTable from "./FundPositionsTable.jsx";
 import RepoSection from "./RepoSection.jsx";
 import SnapshotModal from "./SnapshotModal.jsx";
@@ -131,54 +133,55 @@ function ClassBreakdown({ classes, rate, sign, clsFilter, onToggle }) {
   );
 }
 
-export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }) {
-  const [summary, setSummary] = useState(null);
-  const [repos, setRepos] = useState([]);
-  const [status, setStatus] = useState("loading");
-  const [errMsg, setErrMsg] = useState("");
+export default function FundDetail({ code, dispCcy, onSetCcy, onBack }) {
+  const qc = useQueryClient();
   const [sort, setSort] = useState({ key: "mv_rub", dir: "desc" });
   const [clsFilter, setClsFilter] = useState([]);
   const [showSnapshot, setShowSnapshot] = useState(false);
 
-  const reload = useCallback(async () => {
-    try {
-      const [s, r] = await Promise.all([fetchFundSummary(code), fetchFundRepos(code)]);
-      setSummary(s); setRepos(r);
-      setStatus("ready");
-    } catch (e) {
-      if (e instanceof UnauthorizedError) { onLogout(); return; }
-      setErrMsg(e.message); setStatus("error");
-    }
-  }, [code, onLogout]);
+  const summaryQ = useQuery({ queryKey: ["fund", code], queryFn: () => fetchFundSummary(code) });
+  const reposQ = useQuery({ queryKey: ["fundRepos", code], queryFn: () => fetchFundRepos(code) });
 
-  useEffect(() => { setStatus("loading"); reload(); }, [reload]);
+  const reload = useCallback(() => invalidateFund(qc, code), [qc, code]);
 
-  const saveCapital = async (capital) => {
-    try { await patchFund(code, { capital }); await reload(); }
-    catch (e) { if (e instanceof UnauthorizedError) onLogout(); else alert(e.message); }
-  };
+  const capitalMut = useMutation({
+    mutationFn: (capital) => patchFund(code, { capital }),
+    onSuccess: reload,
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) alert(e.message); },
+  });
 
-  const removeFund = async () => {
+  const deleteMut = useMutation({
+    mutationFn: () => deleteFund(code),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["fund", code] });
+      qc.invalidateQueries({ queryKey: ["funds"] });
+      onBack();
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) alert(e.message); },
+  });
+
+  const removeFund = () => {
     if (!confirm(`Удалить фонд ${code} со всеми позициями и РЕПО?`)) return;
-    try { await deleteFund(code); onBack(); }
-    catch (e) { if (e instanceof UnauthorizedError) onLogout(); else alert(e.message); }
+    deleteMut.mutate();
   };
 
   const onSort = useCallback((key) => {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
   }, []);
 
-  if (status === "loading" && !summary) return <div className="funds-state muted">Загрузка {code}…</div>;
-  if (status === "error" && !summary) {
+  const summary = summaryQ.data;
+  if (summaryQ.isPending) return <div className="funds-state muted">Загрузка {code}…</div>;
+  if (summaryQ.isError) {
     return (
       <div className="funds-state">
-        <div className="admin-err">{errMsg}</div>
-        <button className="btn" onClick={reload}>Повторить</button>
+        <div className="admin-err">{summaryQ.error?.message}</div>
+        <button className="btn" onClick={() => summaryQ.refetch()}>Повторить</button>
         <button className="btn" onClick={onBack}>← Фонды</button>
       </div>
     );
   }
   const s = summary;
+  const repos = reposQ.data || [];
   const rate = dispRate(dispCcy, s.fx) ?? 1;
   const sign = rate === 1 && dispCcy !== "RUB" ? CCY_SIGN.RUB : CCY_SIGN[dispCcy];
   const carryCls = s.net_carry_rub == null ? "" : s.net_carry_rub >= 0 ? "pos" : "neg";
@@ -199,7 +202,7 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
         <button className="btn" onClick={() => setShowSnapshot(true)}>Снапшот CSV</button>
         <button className="btn" onClick={() => exportPositionsCsv(s)}
           disabled={!s.positions?.length} title="Скачать позиции с метриками">Экспорт</button>
-        <button className="btn btn-danger" onClick={removeFund}>Удалить</button>
+        <button className="btn btn-danger" onClick={removeFund} disabled={deleteMut.isPending}>Удалить</button>
       </div>
 
       <div className="kpis kpis-funds">
@@ -211,7 +214,8 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
           sub={s.net_carry_pct_capital != null ? fmt.signed(s.net_carry_pct_capital) + "% капитала / год" : "годовой"} />
         <Kpi label="Funding" value={mlnCcy(s.repo_rub, rate, sign)}
           sub={s.repo_rate_wa != null ? "WA " + fmt.pct(s.repo_rate_wa) + "% · " + mlnCcy(s.funding_cost_rub, rate, sign) + "/год" : "нет РЕПО"} />
-        <CapitalKpi s={s} rate={rate} sign={sign} onSave={saveCapital} />
+        <CapitalKpi s={s} rate={rate} sign={sign}
+          onSave={(capital) => capitalMut.mutateAsync(capital).catch(() => { /* alert в onError */ })} />
       </div>
 
       <RiskStrip s={s} rate={rate} sign={sign} />
@@ -230,28 +234,23 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack, onLogout }
         clsFilter={clsFilter}
         sort={sort}
         onSort={onSort}
-        onChanged={reload}
-        onLogout={onLogout}
       />
 
       {(s.positions || []).length > 0 && (
-        <ScenariosSection code={code} refreshKey={s.snap_date + ":" + s.n_positions}
-          rate={rate} sign={sign} onLogout={onLogout} />
+        <ScenariosSection code={code} rate={rate} sign={sign} />
       )}
 
       {(s.positions || []).length > 0 && (
-        <FundCashflow code={code} refreshKey={s.snap_date + ":" + s.n_positions}
-          rate={rate} sign={sign} onLogout={onLogout} />
+        <FundCashflow code={code} rate={rate} sign={sign} />
       )}
 
-      <RepoSection code={code} repos={repos} onChanged={reload} onLogout={onLogout} />
+      <RepoSection code={code} repos={repos} />
 
       {showSnapshot && (
         <SnapshotModal
           code={code}
           onClose={() => setShowSnapshot(false)}
           onDone={() => { setShowSnapshot(false); reload(); }}
-          onLogout={onLogout}
         />
       )}
     </>

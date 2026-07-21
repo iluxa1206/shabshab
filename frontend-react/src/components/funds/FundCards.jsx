@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
-import { createFund, deleteFund, UnauthorizedError } from "../../api.js";
+import { createFund, UnauthorizedError } from "../../api.js";
 import { CCYS, CCY_SIGN, dispRate, mlnCcy, numCcy } from "./ccy.js";
 import { CompareTable, BenchmarksRow, CalendarSection } from "./FundsOverviewExtras.jsx";
 
@@ -69,26 +70,25 @@ export function CcySwitch({ dispCcy, onSetCcy, rates, fxLabel }) {
   );
 }
 
-function CreateForm({ onDone, onLogout }) {
+function CreateForm() {
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [ccy, setCcy] = useState("RUB");
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true); setErr("");
-    try {
-      await createFund({ code: code.trim(), name: name.trim() || code.trim(), base_ccy: ccy });
+  const createMut = useMutation({
+    mutationFn: () => createFund({ code: code.trim(), name: name.trim() || code.trim(), base_ccy: ccy }),
+    onSuccess: () => {
       setOpen(false); setCode(""); setName("");
-      onDone();
-    } catch (e2) {
-      if (e2 instanceof UnauthorizedError) { onLogout(); return; }
-      setErr(e2.message);
-    } finally { setBusy(false); }
-  };
+      qc.invalidateQueries({ queryKey: ["funds"] });
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setErr(e.message); },
+  });
+  const busy = createMut.isPending;
+
+  const submit = (e) => { e.preventDefault(); setErr(""); createMut.mutate(); };
 
   if (!open) {
     return (
@@ -118,7 +118,7 @@ function CreateForm({ onDone, onLogout }) {
   );
 }
 
-export default function FundCards({ funds, status, errMsg, dispCcy, onSetCcy, onSelect, onReload, onLogout }) {
+export default function FundCards({ funds, status, errMsg, dispCcy, onSetCcy, onSelect, onReload }) {
   if (status === "loading" && !funds.length) {
     return <div className="funds-state muted">Загрузка фондов…</div>;
   }
@@ -142,11 +142,11 @@ export default function FundCards({ funds, status, errMsg, dispCcy, onSetCcy, on
       </div>
       <div className="fund-cards">
         {funds.map((f) => <FundCard key={f.code} f={f} rate={rate} sign={sign} onSelect={onSelect} />)}
-        <CreateForm onDone={onReload} onLogout={onLogout} />
+        <CreateForm />
       </div>
       <CompareTable funds={funds} rate={rate} sign={sign} />
-      <BenchmarksRow onLogout={onLogout} />
-      <CalendarSection rate={rate} sign={sign} onLogout={onLogout} />
+      <BenchmarksRow />
+      <CalendarSection rate={rate} sign={sign} />
     </>
   );
 }

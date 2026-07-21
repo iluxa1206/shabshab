@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchBonds, fetchMeta, connectMarketWs, fetchMe, logout, UnauthorizedError } from "./api.js";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { fetchBonds, fetchMeta, connectMarketWs, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
 import Topbar from "./components/Topbar.jsx";
@@ -13,7 +16,8 @@ import FundsModule from "./components/funds/FundsModule.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
-function Dashboard({ user, onLogout }) {
+function Dashboard() {
+  const { user, onLogout } = useAuth();
   const [bonds, setBonds] = useState([]);
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [errMsg, setErrMsg] = useState("");
@@ -28,11 +32,11 @@ function Dashboard({ user, onLogout }) {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "dm_bps", dir: "asc" });
 
-  const [drawerIsin, setDrawerIsin] = useState(null);
+  // drawer бумаги — в URL (?isin=): deep-link + back закрывает
+  const [searchParams, setSearchParams] = useSearchParams();
+  const drawerIsin = searchParams.get("isin");
   const [showSettings, setShowSettings] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
-  // активный модуль: флоатеры (дефолт) | фонды; хуки флоатеров не размонтируются
-  const [module, setModule] = useState(() => localStorage.getItem("module") || "floaters");
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch") || "[]"); } catch { return []; }
   });
@@ -50,7 +54,6 @@ function Dashboard({ user, onLogout }) {
   const lastTriggerRef = useRef(null);
 
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
-  useEffect(() => { localStorage.setItem("module", module); }, [module]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("positions", JSON.stringify(positions)); }, [positions]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
@@ -175,14 +178,49 @@ function Dashboard({ user, onLogout }) {
 
   const openDrawer = useCallback((isin, triggerEl) => {
     lastTriggerRef.current = triggerEl || document.activeElement;
-    setDrawerIsin(isin);
-  }, []);
+    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.set("isin", isin); return n; });
+  }, [setSearchParams]);
 
   const closeDrawer = useCallback(() => {
-    setDrawerIsin(null);
+    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); return n; });
     const el = lastTriggerRef.current;
     if (el && el.focus) requestAnimationFrame(() => el.focus());
-  }, []);
+  }, [setSearchParams]);
+
+  const floatersView = (
+    <>
+      <Kpis bonds={filtered} />
+      <Toolbar
+        onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
+        basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
+        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+        query={query} setQuery={setQuery}
+        watchCount={watch.length}
+        shown={filtered.length} total={bonds.length}
+        showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
+        onImportCsv={importCsv}
+        posCount={Object.keys(positions).length} onClearPositions={clearPositions}
+        visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
+      />
+      {showAnalytics && <AnalyticsPanel rows={filtered} />}
+      <BondTable
+        rows={filtered}
+        status={status}
+        errMsg={errMsg}
+        sort={sort}
+        onSort={onSort}
+        onOpen={openDrawer}
+        watch={watch}
+        onToggleStar={toggleStar}
+        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
+        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
+        onRetry={loadBonds}
+        visibleCols={visibleCols}
+      />
+      <Drawer isin={drawerIsin} onClose={closeDrawer} />
+      <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
+    </>
+  );
 
   return (
     <div id="app" className={theme === "dark" ? "theme-dark" : ""}>
@@ -194,69 +232,25 @@ function Dashboard({ user, onLogout }) {
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
-        module={module}
-        onSetModule={setModule}
       />
-      {module === "funds" ? (
-        <FundsModule onLogout={onLogout} />
-      ) : module === "curves" ? (
-        <CurvesModule onLogout={onLogout} />
-      ) : (
-        <>
-          <Kpis bonds={filtered} />
-          <Toolbar
-            onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
-            basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
-            ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
-            query={query} setQuery={setQuery}
-            watchCount={watch.length}
-            shown={filtered.length} total={bonds.length}
-            showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
-            onImportCsv={importCsv}
-            posCount={Object.keys(positions).length} onClearPositions={clearPositions}
-            visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
-          />
-          {showAnalytics && <AnalyticsPanel rows={filtered} />}
-          <BondTable
-            rows={filtered}
-            status={status}
-            errMsg={errMsg}
-            sort={sort}
-            onSort={onSort}
-            onOpen={openDrawer}
-            watch={watch}
-            onToggleStar={toggleStar}
-            filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
-            onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
-            onRetry={loadBonds}
-            visibleCols={visibleCols}
-          />
-          <Drawer isin={drawerIsin} onClose={closeDrawer} onLogout={onLogout} />
-          <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
-        </>
-      )}
+      <Routes>
+        <Route path="/" element={<Navigate to="/floaters" replace />} />
+        <Route path="/floaters" element={floatersView} />
+        <Route path="/funds" element={<FundsModule />} />
+        <Route path="/funds/:code" element={<FundsModule />} />
+        <Route path="/curves" element={<CurvesModule />} />
+        <Route path="/curves/:view" element={<CurvesModule />} />
+        <Route path="*" element={<Navigate to="/floaters" replace />} />
+      </Routes>
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
 
 // Гейт авторизации: пока не проверили сессию — заглушка; нет сессии — Login; есть — дашборд.
-export default function App() {
-  const [auth, setAuth] = useState("checking"); // checking | anon | authed
-  const [user, setUser] = useState(null);
+function AuthGate() {
+  const { auth, onLogin } = useAuth();
   const [theme] = useState(() => localStorage.getItem("theme") || "light");
-
-  useEffect(() => {
-    fetchMe()
-      .then((u) => { setUser(u); setAuth("authed"); })
-      .catch(() => setAuth("anon"));
-  }, []);
-
-  const onLogout = useCallback(async () => {
-    try { await logout(); } catch { /* игнор — всё равно на логин */ }
-    setUser(null);
-    setAuth("anon");
-  }, []);
 
   if (auth === "checking") {
     return <div className={"login-wrap" + (theme === "dark" ? " theme-dark" : "")} />;
@@ -264,9 +258,21 @@ export default function App() {
   if (auth === "anon") {
     return (
       <div className={theme === "dark" ? "theme-dark" : ""}>
-        <Login onSuccess={(u) => { setUser(u); setAuth("authed"); }} />
+        <Login onSuccess={onLogin} />
       </div>
     );
   }
-  return <Dashboard user={user} onLogout={onLogout} />;
+  return <Dashboard />;
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <BrowserRouter basename={APP_BASENAME}>
+          <AuthGate />
+        </BrowserRouter>
+      </AuthProvider>
+    </QueryClientProvider>
+  );
 }

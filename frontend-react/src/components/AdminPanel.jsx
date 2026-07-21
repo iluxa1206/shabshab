@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
 } from "../api.js";
+
+const USERS_KEY = ["admin", "users"];
 
 // Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление юзерами.
 export default function AdminPanel({ user, onClose }) {
@@ -72,28 +75,16 @@ function PasswordSection() {
 }
 
 function UsersSection({ me }) {
-  const [users, setUsers] = useState([]);
   const [err, setErr] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  const reload = useCallback(async () => {
-    setErr("");
-    try {
-      setUsers(await adminListUsers());
-    } catch (ex) {
-      setErr(ex.message || "Не удалось загрузить список");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { reload(); }, [reload]);
+  const q = useQuery({ queryKey: USERS_KEY, queryFn: adminListUsers });
+  const users = q.data || [];
+  const loadErr = q.isError ? (q.error?.message || "Не удалось загрузить список") : "";
 
   return (
     <section className="admin-sec">
       <h3 className="admin-h">Пользователи</h3>
-      {err && <Msg err={err} />}
-      {loading ? (
+      {(err || loadErr) && <Msg err={err || loadErr} />}
+      {q.isPending ? (
         <div className="admin-msg">Загрузка…</div>
       ) : (
         <table className="admin-table">
@@ -102,39 +93,40 @@ function UsersSection({ me }) {
           </thead>
           <tbody>
             {users.map((u) => (
-              <UserRow key={u.email} u={u} me={me} onChanged={reload} setErr={setErr} />
+              <UserRow key={u.email} u={u} me={me} setErr={setErr} />
             ))}
           </tbody>
         </table>
       )}
-      <AddUserForm onAdded={reload} />
+      <AddUserForm />
     </section>
   );
 }
 
-function UserRow({ u, me, onChanged, setErr }) {
-  const [busy, setBusy] = useState(false);
+function UserRow({ u, me, setErr }) {
+  const qc = useQueryClient();
   const isSelf = u.email === me;
 
-  const wrap = async (fn) => {
-    setErr(""); setBusy(true);
-    try { await fn(); await onChanged(); }
-    catch (ex) { setErr(ex.message || "Ошибка"); }
-    finally { setBusy(false); }
-  };
+  const mut = useMutation({
+    mutationFn: (fn) => fn(),
+    onMutate: () => setErr(""),
+    onSuccess: () => qc.invalidateQueries({ queryKey: USERS_KEY }),
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+  const busy = mut.isPending;
 
-  const toggleRole = () => wrap(() =>
+  const toggleRole = () => mut.mutate(() =>
     adminUpdateUser(u.email, { role: u.role === "admin" ? "user" : "admin" }));
 
   const resetPw = () => {
     const p = prompt(`Новый пароль для ${u.email} (мин. 8 символов):`);
     if (p == null) return;
-    wrap(() => adminUpdateUser(u.email, { password: p }));
+    mut.mutate(() => adminUpdateUser(u.email, { password: p }));
   };
 
   const del = () => {
     if (!confirm(`Удалить пользователя ${u.email}?`)) return;
-    wrap(() => adminDeleteUser(u.email));
+    mut.mutate(() => adminDeleteUser(u.email));
   };
 
   return (
@@ -155,29 +147,26 @@ function UserRow({ u, me, onChanged, setErr }) {
   );
 }
 
-function AddUserForm({ onAdded }) {
+function AddUserForm() {
+  const qc = useQueryClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr(""); setOk("");
-    setBusy(true);
-    try {
-      await adminCreateUser(email.trim(), password, role);
+  const createMut = useMutation({
+    mutationFn: () => adminCreateUser(email.trim(), password, role),
+    onSuccess: () => {
       setOk(`Добавлен ${email.trim()}`);
       setEmail(""); setPassword(""); setRole("user");
-      await onAdded();
-    } catch (ex) {
-      setErr(ex.message || "Ошибка");
-    } finally {
-      setBusy(false);
-    }
-  };
+      qc.invalidateQueries({ queryKey: USERS_KEY });
+    },
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+  const busy = createMut.isPending;
+
+  const submit = (e) => { e.preventDefault(); setErr(""); setOk(""); createMut.mutate(); };
 
   return (
     <form className="admin-form admin-add" onSubmit={submit}>

@@ -1,14 +1,14 @@
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { putFundSnapshot, UnauthorizedError } from "../../api.js";
 
 // Загрузка снапшота позиций: CSV `ISIN;кол-во` (толерантный парсинг на бэке).
-// Заменяет позиции фонда ЦЕЛИКОМ.
-export default function SnapshotModal({ code, onClose, onDone, onLogout }) {
+// Заменяет позиции фонда ЦЕЛИКОМ. Инвалидацию запросов делает onDone (FundDetail).
+export default function SnapshotModal({ code, onClose, onDone }) {
   const [csv, setCsv] = useState("");
   const [snapDate, setSnapDate] = useState("");
   const [errors, setErrors] = useState([]);
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
 
   const onFile = (e) => {
     const f = e.target.files?.[0];
@@ -18,17 +18,17 @@ export default function SnapshotModal({ code, onClose, onDone, onLogout }) {
     reader.readAsText(f);
   };
 
-  const submit = async () => {
-    setBusy(true); setErr(""); setErrors([]);
-    try {
-      const r = await putFundSnapshot(code, csv, snapDate || null);
+  const snapMut = useMutation({
+    mutationFn: () => putFundSnapshot(code, csv, snapDate || null),
+    onSuccess: (r) => {
       if (r.errors?.length) setErrors(r.errors);
       else onDone();
-    } catch (e) {
-      if (e instanceof UnauthorizedError) { onLogout ? onLogout() : onClose(); return; }
-      setErr(e.message);
-    } finally { setBusy(false); }
-  };
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setErr(e.message); },
+  });
+  const busy = snapMut.isPending;
+
+  const submit = () => { setErr(""); setErrors([]); snapMut.mutate(); };
 
   return (
     <div className="modal-overlay" onClick={onClose}>

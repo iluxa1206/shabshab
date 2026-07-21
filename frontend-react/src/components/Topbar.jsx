@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { fmt } from "../format.js";
 
 function Clock() {
@@ -17,27 +18,18 @@ function Clock() {
   );
 }
 
-export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, user, onLogout, onOpenSettings, module, onSetModule }) {
+const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
+
+export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, user, onLogout, onOpenSettings }) {
   return (
     <header className="menubar">
       <div className="brand-row">
         <span className="wordmark">DESK</span>
-        {onSetModule && (
-          <span className="seg module-seg" role="tablist" aria-label="Модуль">
-            <button
-              className={"seg-btn" + (module === "floaters" ? " active" : "")}
-              onClick={() => onSetModule("floaters")}
-            >Флоатеры</button>
-            <button
-              className={"seg-btn" + (module === "funds" ? " active" : "")}
-              onClick={() => onSetModule("funds")}
-            >Фонды</button>
-            <button
-              className={"seg-btn" + (module === "curves" ? " active" : "")}
-              onClick={() => onSetModule("curves")}
-            >Кривые</button>
-          </span>
-        )}
+        <span className="seg module-seg" role="tablist" aria-label="Модуль">
+          <NavLink className={tabCls} to="/floaters">Флоатеры</NavLink>
+          <NavLink className={tabCls} to="/funds">Фонды</NavLink>
+          <NavLink className={tabCls} to="/curves">Кривые</NavLink>
+        </span>
       </div>
       <div className="topbar-right">
         <span className="meta-chip">

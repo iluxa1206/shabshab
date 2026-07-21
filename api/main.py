@@ -198,8 +198,29 @@ app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REACT_DIST = os.path.join(_ROOT, "frontend-react", "dist")
 _FRONTEND_DIR = _REACT_DIST if os.path.isdir(_REACT_DIST) else os.path.join(_ROOT, "frontend")
+
+
+class _SPAStaticFiles(StaticFiles):
+    """SPA-fallback: неизвестные пути под /app (react-router: /app/funds/X5,
+    /app/curves/kspath) отдают index.html — hard reload/deep-link больше не 404.
+    Пути с расширением (ассеты) честно 404-ятся (протухший хеш бандла не должен
+    маскироваться под HTML)."""
+    async def get_response(self, path: str, scope):
+        from starlette.exceptions import HTTPException as _StarletteHTTPException
+        try:
+            resp = await super().get_response(path, scope)
+        except _StarletteHTTPException as e:
+            # StaticFiles на отсутствующий файл КИДАЕТ 404, а не возвращает response
+            if e.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+                return await super().get_response("index.html", scope)
+            raise
+        if resp.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+            return await super().get_response("index.html", scope)
+        return resp
+
+
 if os.path.isdir(_FRONTEND_DIR):
-    app.mount("/app", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+    app.mount("/app", _SPAStaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
 
     @app.get("/", include_in_schema=False)
     async def root_redirect():

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { fmt } from "../../format.js";
-import { fetchFundCashflow, UnauthorizedError } from "../../api.js";
+import { fetchFundCashflow } from "../../api.js";
 import { conv } from "./ccy.js";
 
 const MONTHS_RU = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
@@ -8,21 +8,11 @@ const mLabel = (ym) => MONTHS_RU[parseInt(ym.slice(5), 10) - 1] + " " + ym.slice
 
 // Денежный поток фонда на 12 мес: stacked-бары по месяцам —
 // принципал (приглушённый) + купоны известные (яркие) + прогноз флоатеров (полупрозрачный).
-export default function FundCashflow({ code, refreshKey, rate, sign, onLogout }) {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    setErr("");
-    fetchFundCashflow(code)
-      .then((d) => alive && setData(d))
-      .catch((e) => {
-        if (e instanceof UnauthorizedError) { onLogout(); return; }
-        if (alive) setErr(e.message);
-      });
-    return () => { alive = false; };
-  }, [code, refreshKey, onLogout]);
+// Рефреш после мутаций — через invalidateFund (ключ ["cashflow", code]).
+export default function FundCashflow({ code, rate, sign }) {
+  const q = useQuery({ queryKey: ["cashflow", code], queryFn: () => fetchFundCashflow(code) });
+  const data = q.data;
+  const err = q.error?.message || "";
 
   if (err) return <div className="admin-sec fund-cf"><div className="fund-sec-title">Денежный поток · 12 мес</div><div className="admin-err">{err}</div></div>;
   const items = data?.items || [];

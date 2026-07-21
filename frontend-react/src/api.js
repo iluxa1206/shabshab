@@ -1,42 +1,14 @@
 // Префикс перед /app/ в URL страницы: "" на deskdeskdesk.ru, "/desk" на assetallocator.ru/desk
 // (Caddy срезает префикс до проксирования, но браузер должен слать запросы с ним).
+// Вычисляется один раз при загрузке; вложенные SPA-пути (/app/funds/X5) регэксп переживает.
 const API = location.pathname.replace(/\/app(\/.*)?$/, "");
 
-// Ошибка 401 — сессия истекла/отсутствует. App перехватывает и показывает логин.
+// Базовый путь SPA для react-router (учитывает возможный префикс перед /app).
+export const APP_BASENAME = `${API}/app`;
+
+// Ошибка 401 — сессия истекла/отсутствует. Глобальный onError QueryClient → логин.
 export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); this.name = "UnauthorizedError"; }
-}
-
-// fetch с cookie-сессией; 401 → UnauthorizedError (единый гейт авторизации).
-async function authFetch(url, opts = {}) {
-  const r = await fetch(url, { credentials: "same-origin", ...opts });
-  if (r.status === 401) throw new UnauthorizedError();
-  return r;
-}
-
-export async function login(email, password) {
-  const r = await fetch(`${API}/api/auth/login`, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!r.ok) {
-    const msg = r.status === 401 ? "Неверный email или пароль" : `Ошибка входа (${r.status})`;
-    throw new Error(msg);
-  }
-  return r.json();
-}
-
-export async function logout() {
-  await fetch(`${API}/api/auth/logout`, { method: "POST", credentials: "same-origin" });
-}
-
-export async function fetchMe() {
-  const r = await fetch(`${API}/api/auth/me`, { credentials: "same-origin" });
-  if (r.status === 401) throw new UnauthorizedError();
-  if (!r.ok) throw new Error("me " + r.status);
-  return r.json();
 }
 
 // Тело ошибки FastAPI: {detail: "..."}. Достаём человекочитаемое сообщение.
@@ -45,224 +17,165 @@ async function errText(r, fallback) {
   return fallback || `Ошибка (${r.status})`;
 }
 
-async function jsonOrThrow(r) {
+// Единая точка HTTP: префикс, cookie-сессия, JSON-тело, разбор ошибок.
+// 401 → UnauthorizedError; прочие не-2xx → Error с detail из JSON.
+async function request(path, { method = "GET", json, signal } = {}) {
+  const opts = { method, credentials: "same-origin", signal };
+  if (json !== undefined) {
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify(json);
+  }
+  const r = await fetch(`${API}${path}`, opts);
   if (r.status === 401) throw new UnauthorizedError();
   if (!r.ok) throw new Error(await errText(r));
-  return r.json();
+  return r.status === 204 ? null : r.json();
 }
+
+// --- Аутентификация ---
+export async function login(email, password) {
+  try {
+    return await request("/api/auth/login", { method: "POST", json: { email, password } });
+  } catch (e) {
+    if (e instanceof UnauthorizedError) throw new Error("Неверный email или пароль");
+    throw e;
+  }
+}
+
+export async function logout() {
+  try { await request("/api/auth/logout", { method: "POST" }); } catch { /* всё равно на логин */ }
+}
+
+export const fetchMe = () => request("/api/auth/me");
 
 // Смена своего пароля (любой авторизованный).
-export async function changePassword(currentPassword, newPassword) {
-  const r = await authFetch(`${API}/api/auth/password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-  });
-  return jsonOrThrow(r);
-}
+export const changePassword = (currentPassword, newPassword) =>
+  request("/api/auth/password", { method: "POST", json: { current_password: currentPassword, new_password: newPassword } });
 
 // --- Управление пользователями (только admin) ---
-export async function adminListUsers() {
-  const r = await authFetch(`${API}/api/auth/users`);
-  return (await jsonOrThrow(r)).users || [];
-}
+export const adminListUsers = () => request("/api/auth/users").then((d) => d.users || []);
 
-export async function adminCreateUser(email, password, role) {
-  const r = await authFetch(`${API}/api/auth/users`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, role }),
-  });
-  return jsonOrThrow(r);
-}
+export const adminCreateUser = (email, password, role) =>
+  request("/api/auth/users", { method: "POST", json: { email, password, role } });
 
-export async function adminUpdateUser(email, patch) {
-  const r = await authFetch(`${API}/api/auth/users/${encodeURIComponent(email)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  return jsonOrThrow(r);
-}
+export const adminUpdateUser = (email, patch) =>
+  request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "PATCH", json: patch });
 
-export async function adminDeleteUser(email) {
-  const r = await authFetch(`${API}/api/auth/users/${encodeURIComponent(email)}`, {
-    method: "DELETE",
-  });
-  return jsonOrThrow(r);
-}
+export const adminDeleteUser = (email) =>
+  request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "DELETE" });
 
-export async function fetchMeta() {
-  const r = await authFetch(`${API}/api/meta`);
-  if (!r.ok) throw new Error("meta " + r.status);
-  return r.json();
-}
+// --- Мета/кривые/бонды ---
+export const fetchMeta = () => request("/api/meta");
 
-export async function fetchCurvePlot(type) {
-  const r = await authFetch(`${API}/api/curves/plot?type=${type}`);
-  if (!r.ok) throw new Error("curve " + r.status);
-  return r.json();
-}
+export const fetchCurvePlot = (type) => request(`/api/curves/plot?type=${type}`);
 
-export async function fetchKsPath(series = "ks") {
-  const r = await authFetch(`${API}/api/curves/ks-path?series=${series}`);
-  if (!r.ok) throw new Error("ks-path " + r.status);
-  return r.json();
-}
+export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);
 
-export async function fetchFloaterYield(isin) {
-  const r = await authFetch(`${API}/api/curves/floater-yield?isin=${encodeURIComponent(isin)}`);
-  if (!r.ok) {
-    let msg = "floater " + r.status;
-    try { const j = await r.json(); if (j.detail) msg = j.detail; } catch { /* ignore */ }
-    throw new Error(msg);
-  }
-  return r.json();
-}
+export const fetchFloaterYield = (isin) =>
+  request(`/api/curves/floater-yield?isin=${encodeURIComponent(isin)}`);
 
-export async function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
+export function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
   let url;
   if (universe) {
-    url = `${API}/api/bonds?universe=true&limit=2000`;
+    url = `/api/bonds?universe=true&limit=2000`;
     // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
   } else {
-    url = `${API}/api/bonds?with_market=true&with_valuation=${withVal}&with_nrd=${withNrd}&limit=500`;
+    url = `/api/bonds?with_market=true&with_valuation=${withVal}&with_nrd=${withNrd}&limit=500`;
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
   }
-  const r = await authFetch(url, { signal });
-  if (!r.ok) throw new Error("bonds " + r.status);
-  return r.json();
+  return request(url, { signal });
 }
 
-export async function searchBonds(q, signal) {
-  const r = await authFetch(`${API}/api/bonds/search?q=${encodeURIComponent(q)}`, { signal });
-  if (!r.ok) throw new Error("search " + r.status);
-  return (await r.json()).items || [];
-}
+export const searchBonds = (q, signal) =>
+  request(`/api/bonds/search?q=${encodeURIComponent(q)}`, { signal }).then((d) => d.items || []);
 
-export async function fetchBondDetails(isin) {
-  const r = await authFetch(`${API}/api/bonds/${isin}`);
-  if (!r.ok) throw new Error("details " + r.status);
-  return r.json();
-}
+export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
 // --- Модуль «Фонды» ---
-export async function fetchFunds() {
-  const r = await authFetch(`${API}/api/funds`);
-  return (await jsonOrThrow(r)).funds || [];
-}
+export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);
 
-export async function createFund({ code, name, base_ccy }) {
-  const r = await authFetch(`${API}/api/funds`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, name, base_ccy }),
-  });
-  return jsonOrThrow(r);
-}
+export const createFund = ({ code, name, base_ccy }) =>
+  request("/api/funds", { method: "POST", json: { code, name, base_ccy } });
 
-export async function patchFund(code, patch) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  return jsonOrThrow(r);
-}
+export const patchFund = (code, patch) =>
+  request(`/api/funds/${encodeURIComponent(code)}`, { method: "PATCH", json: patch });
 
-export async function deleteFund(code) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}`, { method: "DELETE" });
-  return jsonOrThrow(r);
-}
+export const deleteFund = (code) =>
+  request(`/api/funds/${encodeURIComponent(code)}`, { method: "DELETE" });
 
-export async function fetchFundSummary(code) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/summary`);
-  return jsonOrThrow(r);
-}
+export const fetchFundSummary = (code) => request(`/api/funds/${encodeURIComponent(code)}/summary`);
 
-export async function putFundSnapshot(code, csv, snapDate) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/snapshot`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ csv, snap_date: snapDate || null }),
-  });
-  return jsonOrThrow(r);
-}
+export const putFundSnapshot = (code, csv, snapDate) =>
+  request(`/api/funds/${encodeURIComponent(code)}/snapshot`, { method: "PUT", json: { csv, snap_date: snapDate || null } });
 
-export async function putFundPosition(code, isin, qty) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/position`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isin, qty }),
-  });
-  return jsonOrThrow(r);
-}
+export const putFundPosition = (code, isin, qty) =>
+  request(`/api/funds/${encodeURIComponent(code)}/position`, { method: "PUT", json: { isin, qty } });
 
-export async function fetchFundRepos(code) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo`);
-  return (await jsonOrThrow(r)).repos || [];
-}
+export const fetchFundRepos = (code) =>
+  request(`/api/funds/${encodeURIComponent(code)}/repo`).then((d) => d.repos || []);
 
-export async function addFundRepo(code, repo) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(repo),
-  });
-  return jsonOrThrow(r);
-}
+export const addFundRepo = (code, repo) =>
+  request(`/api/funds/${encodeURIComponent(code)}/repo`, { method: "POST", json: repo });
 
-export async function fetchFundCashflow(code, months = 12) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/cashflow?months=${months}`);
-  return jsonOrThrow(r);
-}
+export const deleteFundRepo = (code, id) =>
+  request(`/api/funds/${encodeURIComponent(code)}/repo/${id}`, { method: "DELETE" });
 
-export async function fetchFundNavHistory(code, days = 120) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/nav_history?days=${days}`);
-  return (await jsonOrThrow(r)).items || [];
-}
+export const fetchFundCashflow = (code, months = 12) =>
+  request(`/api/funds/${encodeURIComponent(code)}/cashflow?months=${months}`);
 
-export async function fetchFundScenarios(code) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/scenarios`);
-  return jsonOrThrow(r);
-}
+export const fetchFundNavHistory = (code, days = 120) =>
+  request(`/api/funds/${encodeURIComponent(code)}/nav_history?days=${days}`).then((d) => d.items || []);
 
-export async function fetchFundAlerts(code, threshold = 20) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/alerts?threshold=${threshold}`);
-  return jsonOrThrow(r);
-}
+export const fetchFundScenarios = (code) =>
+  request(`/api/funds/${encodeURIComponent(code)}/scenarios`);
 
-export async function fetchFundsCalendar(days = 90) {
-  const r = await authFetch(`${API}/api/funds/_meta/calendar?days=${days}`);
-  return jsonOrThrow(r);
-}
+export const fetchFundAlerts = (code, threshold = 20) =>
+  request(`/api/funds/${encodeURIComponent(code)}/alerts?threshold=${threshold}`);
 
-export async function fetchBenchmarks(days = 180) {
-  const r = await authFetch(`${API}/api/funds/_meta/benchmarks?days=${days}`);
-  return jsonOrThrow(r);
-}
+export const fetchFundsCalendar = (days = 90) =>
+  request(`/api/funds/_meta/calendar?days=${days}`);
 
-export async function deleteFundRepo(code, id) {
-  const r = await authFetch(`${API}/api/funds/${encodeURIComponent(code)}/repo/${id}`, {
-    method: "DELETE",
-  });
-  return jsonOrThrow(r);
-}
+export const fetchBenchmarks = (days = 180) =>
+  request(`/api/funds/_meta/benchmarks?days=${days}`);
 
-// WebSocket live-цен. onPrice(isin, price). Возвращает {close}.
+// WebSocket live-цен. onPrice(isin, price). Возвращает {resubscribe, close}.
+// resubscribe шлёт diff: subscribe на новые ISIN, unsubscribe на убранные (без дублей).
+// Reconnect — экспоненциальный backoff 1с → 30с, сброс при успешном коннекте.
 export function connectMarketWs(getIsins, onStatus, onPrice) {
   const WS_URL =
     (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
-  let ws;
+  let ws = null;
   let closed = false;
   let reconnectTimer = null;
+  let backoff = 1000;
+  let subscribed = new Set(); // ISIN, подписанные на текущем соединении
 
-  const subscribeAll = () => {
+  const send = (obj) => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  };
+
+  // diff желаемых подписок против фактических
+  const sync = () => {
     if (!ws || ws.readyState !== 1) return;
-    for (const isin of getIsins()) {
-      ws.send(JSON.stringify({ action: "subscribe", channel: "market", isin }));
+    const want = new Set(getIsins());
+    for (const isin of want) {
+      if (!subscribed.has(isin)) {
+        send({ action: "subscribe", channel: "market", isin });
+        subscribed.add(isin);
+      }
     }
+    for (const isin of [...subscribed]) {
+      if (!want.has(isin)) {
+        send({ action: "unsubscribe", channel: "market", isin });
+        subscribed.delete(isin);
+      }
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; open(); }, backoff);
+    backoff = Math.min(backoff * 2, 30000);
   };
 
   const open = () => {
@@ -270,13 +183,11 @@ export function connectMarketWs(getIsins, onStatus, onPrice) {
       ws = new WebSocket(WS_URL);
     } catch {
       onStatus(false);
+      scheduleReconnect();
       return;
     }
-    ws.onopen = () => { onStatus(true); subscribeAll(); };
-    ws.onclose = () => {
-      onStatus(false);
-      if (!closed) reconnectTimer = setTimeout(open, 4000);
-    };
+    ws.onopen = () => { onStatus(true); backoff = 1000; subscribed = new Set(); sync(); };
+    ws.onclose = () => { onStatus(false); subscribed = new Set(); scheduleReconnect(); };
     ws.onerror = () => onStatus(false);
     ws.onmessage = (ev) => {
       let msg;
@@ -289,7 +200,7 @@ export function connectMarketWs(getIsins, onStatus, onPrice) {
   open();
 
   return {
-    resubscribe: subscribeAll,
+    resubscribe: sync,
     close() {
       closed = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }

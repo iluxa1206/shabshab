@@ -1,6 +1,8 @@
 import { useMemo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { fmt, dmColor } from "../../format.js";
 import { putFundPosition, UnauthorizedError } from "../../api.js";
+import { invalidateFund } from "../../queries.js";
 import { conv } from "./ccy.js";
 
 const D = () => <span className="dash">—</span>;
@@ -51,7 +53,8 @@ const COLS = [
     cell: (p) => <td className="num" key="maturity" style={{ fontSize: 12 }}>{fmt.date(p.maturity) ?? <D />}</td> },
 ];
 
-export default function FundPositionsTable({ code, positions, rate, sign, clsFilter, sort, onSort, onChanged, onLogout }) {
+export default function FundPositionsTable({ code, positions, rate, sign, clsFilter, sort, onSort }) {
+  const qc = useQueryClient();
   const totalMv = useMemo(
     () => positions.reduce((a, p) => a + (p.mv_rub || 0), 0), [positions]);
 
@@ -71,10 +74,15 @@ export default function FundPositionsTable({ code, positions, rate, sign, clsFil
     });
   }, [positions, clsFilter, sort]);
 
-  const removePos = async (isin) => {
+  const removeMut = useMutation({
+    mutationFn: (isin) => putFundPosition(code, isin, 0),
+    onSuccess: () => invalidateFund(qc, code),
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) alert(e.message); },
+  });
+
+  const removePos = (isin) => {
     if (!confirm(`Убрать ${isin} из портфеля?`)) return;
-    try { await putFundPosition(code, isin, 0); onChanged(); }
-    catch (e) { if (e instanceof UnauthorizedError) onLogout(); else alert(e.message); }
+    removeMut.mutate(isin);
   };
 
   if (!positions.length) {

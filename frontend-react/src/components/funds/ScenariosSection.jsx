@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
-import { fetchFundScenarios, fetchFundAlerts, UnauthorizedError } from "../../api.js";
+import { fetchFundScenarios, fetchFundAlerts } from "../../api.js";
 import { conv } from "./ccy.js";
 
 const sgnCls = (v) => (v == null ? "" : v >= 0 ? "pos" : "neg");
@@ -8,22 +8,13 @@ const mln = (v, rate) => (v == null ? DASH : fmt.signed(conv(v, rate) / 1e6, 2))
 
 // Сценарный анализ: КС ±100/±200, наклон кривой, FX ±10% → ΔNAV (MtM) и Δcarry.
 // Плюс repricing-алерты D/D (Δz/Δdm из истории НРД) по бумагам фонда.
-export default function ScenariosSection({ code, refreshKey, rate, sign, onLogout }) {
-  const [data, setData] = useState(null);
-  const [alerts, setAlerts] = useState(null);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    setErr("");
-    Promise.all([fetchFundScenarios(code), fetchFundAlerts(code)])
-      .then(([sc, al]) => { if (alive) { setData(sc); setAlerts(al); } })
-      .catch((e) => {
-        if (e instanceof UnauthorizedError) { onLogout(); return; }
-        if (alive) setErr(e.message);
-      });
-    return () => { alive = false; };
-  }, [code, refreshKey, onLogout]);
+// Рефреш после мутаций — через invalidateFund (ключи ["scenarios"|"fundAlerts", code]).
+export default function ScenariosSection({ code, rate, sign }) {
+  const scQ = useQuery({ queryKey: ["scenarios", code], queryFn: () => fetchFundScenarios(code) });
+  const alQ = useQuery({ queryKey: ["fundAlerts", code], queryFn: () => fetchFundAlerts(code) });
+  const data = scQ.data;
+  const alerts = alQ.data;
+  const err = scQ.error?.message || alQ.error?.message || "";
 
   const items = data?.items || [];
   return (

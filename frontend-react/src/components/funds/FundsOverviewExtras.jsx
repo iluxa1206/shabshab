@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
-import { fetchFundsCalendar, fetchBenchmarks, UnauthorizedError } from "../../api.js";
+import { fetchFundsCalendar, fetchBenchmarks } from "../../api.js";
 import { conv } from "./ccy.js";
 
 const EV_LABEL = {
@@ -42,15 +42,8 @@ export function CompareTable({ funds, rate, sign }) {
 }
 
 // Бенчмарки: RGBITR / RUCBTRNS / RUCEU — last close + 1д/30д/YTD
-export function BenchmarksRow({ onLogout }) {
-  const [bm, setBm] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    fetchBenchmarks().then((d) => alive && setBm(d)).catch((e) => {
-      if (e instanceof UnauthorizedError) onLogout();
-    });
-    return () => { alive = false; };
-  }, [onLogout]);
+export function BenchmarksRow() {
+  const { data: bm } = useQuery({ queryKey: ["benchmarks"], queryFn: () => fetchBenchmarks() });
   if (!bm) return null;
   const cell = (v) => (
     <td className={"num " + (v == null ? "" : v >= 0 ? "pos" : "neg")}>
@@ -79,15 +72,8 @@ export function BenchmarksRow({ onLogout }) {
 }
 
 // Календарь событий по всем фондам: купоны/амортизации/погашения/оферты
-export function CalendarSection({ rate, sign, onLogout }) {
-  const [cal, setCal] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    fetchFundsCalendar(90).then((d) => alive && setCal(d)).catch((e) => {
-      if (e instanceof UnauthorizedError) onLogout();
-    });
-    return () => { alive = false; };
-  }, [onLogout]);
+export function CalendarSection({ rate, sign }) {
+  const { data: cal } = useQuery({ queryKey: ["fundsCalendar", 90], queryFn: () => fetchFundsCalendar(90) });
   const items = cal?.items || [];
   if (!cal || !items.length) return null;
   return (

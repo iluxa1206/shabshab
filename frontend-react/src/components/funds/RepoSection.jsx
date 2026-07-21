@@ -1,10 +1,13 @@
 import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
 import { addFundRepo, deleteFundRepo, UnauthorizedError } from "../../api.js";
+import { invalidateFund } from "../../queries.js";
 
 // РЕПО-сделки фонда (фондирование): список + добавление + удаление.
-// После любого изменения — onChanged() (summary пересчитывает бэк).
-export default function RepoSection({ code, repos, onChanged, onLogout }) {
+// После любого изменения — инвалидация запросов фонда (summary пересчитывает бэк).
+export default function RepoSection({ code, repos }) {
+  const qc = useQueryClient();
   const [amount, setAmount] = useState("");
   const [rate, setRate] = useState("");
   const [ccy, setCcy] = useState("RUB");
@@ -12,35 +15,42 @@ export default function RepoSection({ code, repos, onChanged, onLogout }) {
   const [term, setTerm] = useState("");
   const [note, setNote] = useState("");
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
 
   const num = (s) => parseFloat(String(s).replace(/\s/g, "").replace(",", "."));
 
-  const submit = async (e) => {
+  const addMut = useMutation({
+    mutationFn: (repo) => addFundRepo(code, repo),
+    onSuccess: () => {
+      setAmount(""); setRate(""); setTerm(""); setNote("");
+      invalidateFund(qc, code);
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setErr(e.message); },
+  });
+
+  const delMut = useMutation({
+    mutationFn: (id) => deleteFundRepo(code, id),
+    onSuccess: () => invalidateFund(qc, code),
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) alert(e.message); },
+  });
+
+  const submit = (e) => {
     e.preventDefault();
     const a = num(amount), r = num(rate);
     if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(r)) { setErr("Сумма и ставка обязательны"); return; }
-    setBusy(true); setErr("");
-    try {
-      await addFundRepo(code, {
-        amount: a, rate_pct: r, ccy,
-        open_date: openDate || null,
-        term_days: term ? parseInt(term, 10) : null,
-        note: note || null,
-      });
-      setAmount(""); setRate(""); setTerm(""); setNote("");
-      onChanged();
-    } catch (e2) {
-      if (e2 instanceof UnauthorizedError) { onLogout(); return; }
-      setErr(e2.message);
-    } finally { setBusy(false); }
+    setErr("");
+    addMut.mutate({
+      amount: a, rate_pct: r, ccy,
+      open_date: openDate || null,
+      term_days: term ? parseInt(term, 10) : null,
+      note: note || null,
+    });
   };
 
-  const remove = async (id) => {
+  const remove = (id) => {
     if (!confirm("Удалить РЕПО-сделку?")) return;
-    try { await deleteFundRepo(code, id); onChanged(); }
-    catch (e) { if (e instanceof UnauthorizedError) onLogout(); else alert(e.message); }
+    delMut.mutate(id);
   };
+  const busy = addMut.isPending;
 
   return (
     <div className="admin-sec fund-repo">
