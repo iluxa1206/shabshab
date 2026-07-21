@@ -128,6 +128,39 @@ def base_level_pct(exp_curve) -> Optional[float]:
         return None
 
 
+def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[float],
+                      exp_curve, nrd_current_yield: Optional[float],
+                      calc_date: date) -> dict:
+    """{carry_bps, days_to_refix, current_coupon_pct, coupon_yield_pct,
+    base_rate_pct} — единый блок carry/refix.
+
+    Раньше был скопирован ТРИЖДЫ (universe-фон, universe-watch, карточка) и копии
+    начинали разъезжаться. Логика: ставка текущего купона из valueprc, фолбэк —
+    восстановление из рублёвой суммы по номиналу периода (face_on_date);
+    carry = купонная доходность на вложенное (купон/цена, как НРД current_yield;
+    фолбэк из ставки-на-номинал приводится к цене) − уровень базы с короткого
+    конца кривой ожиданий."""
+    refix = days_to_refix(coupons, calc_date)
+    cur_cpn = current_coupon_pct(coupons, calc_date)
+    cp = current_period(coupons, calc_date)
+    if cur_cpn is None and cp and cp.get("value") is not None:
+        cdays = (cp["end"] - cp["start"]).days or 1
+        face_p = face_on_date(face_value, amorts, cp["start"], calc_date)
+        if face_p > 0:
+            cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
+    coupon_yield = nrd_current_yield
+    if coupon_yield is None and cur_cpn is not None:
+        coupon_yield = round(cur_cpn / (price_pct / 100.0), 3) if price_pct else cur_cpn
+    base_lvl = base_level_pct(exp_curve)
+    return {
+        "carry_bps": carry_bps(coupon_yield, base_lvl),
+        "days_to_refix": refix,
+        "current_coupon_pct": cur_cpn,
+        "coupon_yield_pct": coupon_yield,
+        "base_rate_pct": base_lvl,
+    }
+
+
 def rank_pct(value: Optional[float], peers: list) -> Optional[int]:
     """Перцентиль value среди peers (доля peers со значением ≤ value), 0..100.
     Для z-спреда внутри рейтингового бакета: высокий перцентиль = бумага дороже

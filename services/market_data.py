@@ -638,6 +638,38 @@ class MarketDataService:
         return result
             
     @classmethod
+    async def search_bonds(cls, q: str) -> List[dict]:
+        """Поиск облигаций на MOEX по названию/ISIN (q-эндпоинт ISS). Через
+        _moex_get (семафор/ретраи) — раньше route ходил httpx напрямую."""
+        out: List[dict] = []
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await _moex_get(
+                    client, "https://iss.moex.com/iss/securities.json",
+                    params={"q": q, "iss.meta": "off", "limit": 50,
+                            "securities.columns": "secid,isin,shortname,type,is_traded"},
+                    timeout=8)
+            if resp is None or resp.status_code != 200:
+                return out
+            sec = resp.json().get("securities", {})
+            cols, rows = sec.get("columns", []), sec.get("data", [])
+            g = lambda row, n: row[cols.index(n)] if n in cols else None
+            seen = set()
+            for row in rows:
+                isin = g(row, "isin") or g(row, "secid")
+                typ = (g(row, "type") or "")
+                if not isin or not str(isin).startswith("RU") or "bond" not in typ:
+                    continue
+                if isin in seen:
+                    continue
+                seen.add(isin)
+                out.append({"isin": isin, "name": g(row, "shortname"), "type": typ,
+                            "traded": bool(g(row, "is_traded"))})
+        except Exception as e:
+            logger.warning(f"MOEX search error: {e}")
+        return out[:20]
+
+    @classmethod
     def get_local_bond_cache(cls, cache_path: str) -> Dict[str, dict]:
         return load_cache(cache_path)
 

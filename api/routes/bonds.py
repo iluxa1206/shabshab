@@ -24,7 +24,7 @@ from services.valuation import calculate_valuation_metrics
 from services.zspread import compute_z_bps, project_cfs, solve_flat_y
 from services.exceptions import NotFoundException, CalculationException
 from services import nrd as nrd_service
-from services import metrics, history
+from services import metrics
 from cashflow import read_isins_from_file
 import logging
 
@@ -62,340 +62,65 @@ _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 
 
 async def compute_universe_metrics(uni: list, isins: list) -> dict:
-    """Фоновый расчёт полных метрик (dirty/DM/z_model/carry/next_coupon/delta) для
-    бумаг юниверса вне watchlist. Данные MOEX батчатся (board snapshot одним запросом)
-    и кэшируются на день (bondization, справочник). Возвращает {isin: {метрики}}.
-    Логика идентична watch-ветке enrich(), но по всему юниверсу из кэшей."""
-    want = {i for i in isins if i}
-    uni_by = {u["isin"]: u for u in uni if u.get("isin") in want}
-    ids = list(uni_by.keys())
-    if not ids:
-        return {}
-
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
-    external = [i for i in ids if i not in cache]
-
-    prices = MarketDataService.cached_prices()
-    board, curves, zctx, secs = await asyncio.gather(
-        MarketDataService.fetch_board_snapshot(),
-        MarketDataService.get_curves(),
-        MarketDataService.get_zspread_ctx(),
-        MarketDataService.fetch_moex_securities(external) if external else _aempty(),
-    )
-    ruonia_curve, keyrate_curve, cd, rd = curves
-    exp_ks, exp_ru, g_curve = zctx
-    calc_date = cd or rd or date.today()
-    # bondization (купоны+амортизации) — из day-кэша, MOEX только на прогреве
-    fulls = await asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids))
-    full_by = dict(zip(ids, fulls))
-
-    out: dict = {}
-    for isin in ids:
-        u = uni_by[isin]
-        base = u.get("base_rate_type", "UNKNOWN")
-        spread = u.get("spread_issue_bps") or 0
-        snap = board.get(isin, {})
-        last = prices.get(isin)
-        prev = snap.get("prev")
-        delta = round(last - float(prev), 4) if (last is not None and prev is not None) else None
-
-        data = cache.get(isin)
-        ref = create_bond_ref_data(data, isin) if data else build_ref_external(isin, secs.get(isin, {}), {
-            "base_coupon_index": ("CBRATED" if base == "KEYRATE" else "RUONIARATED" if base == "RUONIA" else None),
-            "nominal_margin_bps": spread,
-        })
-        curve = ruonia_curve if base == "RUONIA" else keyrate_curve
-        full = full_by.get(isin) or {}
-        coupons_full = full.get("coupons") or []
-        # Номинал: сверяем с фактом купона (value/valueprc). Ловит тихий фолбэк на
-        # 1000, когда бумаги нет в securities-кэше (актуально после отключения
-        # NRD-доступа: кэш стухнет, новые выпуски не закэшируются).
-        _rf = reconcile_face(ref, coupons_full, calc_date)
-        periods = None
-        if coupons_full:
-            periods = []
-            for c in coupons_full:
-                try:
-                    periods.append((date.fromisoformat(c["start"]), date.fromisoformat(c["end"]), c.get("value")))
-                except Exception:
-                    pass
-        # цена для расчёта: live → prev-close → НРД (не зависим от момента WS-цены)
-        price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
-
-        dirty = dm = disc_dm = z_model = None
-        hz, off_d, sm_off, dm_off = "maturity", None, None, None
-        if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
-            try:
-                m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
-                                                accrued_override=snap.get("accrued"), periods=periods,
-                                                amorts=full.get("amorts"), offers=full.get("offers"))
-                dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
-                hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
-                sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
-            except Exception:
-                pass
-
-        next_cpn = None
-        if periods:
-            future = [e for (_s, e, _v) in periods if e > calc_date]
-            next_cpn = min(future) if future else None
-        if next_cpn is None:
-            try:
-                next_cpn = next_coupon_after(ref, calc_date)
-            except Exception:
-                pass
-
-        exp = exp_ru if base == "RUONIA" else exp_ks
-        if exp and g_curve and price_calc is not None and base in ("RUONIA", "KEYRATE"):
-            try:
-                coupons = ([{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")} for c in coupons_full]
-                           if coupons_full else
-                           [{"start": s.isoformat(), "end": e.isoformat(), "value": v} for (s, e, v) in (periods or [])])
-                z_model = compute_z_bps(ref, exp, g_curve, calc_date, price_calc,
-                                        snap.get("accrued") or ref.accrued_rub, coupons,
-                                        full.get("amorts"), full.get("offers"))
-            except Exception:
-                pass
-
-        carry = refix = cur_cpn = None
-        try:
-            cpns = coupons_full or [{"start": s.isoformat(), "end": e.isoformat(), "value": v} for (s, e, v) in (periods or [])]
-            refix = metrics.days_to_refix(cpns, calc_date)
-            cur_cpn = metrics.current_coupon_pct(cpns, calc_date)
-            cp = metrics.current_period(cpns, calc_date)
-            if cur_cpn is None and cp and cp.get("value") is not None:
-                cdays = (cp["end"] - cp["start"]).days or 1
-                face_p = metrics.face_on_date(ref.face_value, full.get("amorts"), cp["start"], calc_date)
-                if face_p > 0:
-                    cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
-            # carry: купонная доходность на вложенное (купон/цена, как НРД
-            # current_yield); фолбэк из ставки-на-номинал приводим к цене —
-            # иначе поле смешивало две разные метрики
-            coupon_yield = u.get("current_yield_pct")
-            if coupon_yield is None and cur_cpn is not None:
-                coupon_yield = round(cur_cpn / (price_calc / 100.0), 3) if price_calc else cur_cpn
-            carry = metrics.carry_bps(coupon_yield, metrics.base_level_pct(exp))
-        except Exception:
-            pass
-
-        out[isin] = {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "delta": delta,
-                     "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
-                     "refix": refix, "current_coupon": cur_cpn,
-                     "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}
-    return out
+    """Прокси в services.universe (конвейер вынесен из route-слоя)."""
+    from services.universe import compute_universe_metrics as _cum
+    return await _cum(uni, isins, os.path.join(get_base_dir(), "isins_cache.json"))
 
 
-def _uni_item(u, name, last, dirty=None, dm=None, delta=None, next_coupon=None, z_model=None,
-              spread_dur_yrs=None, z_pctile=None, delta_z_dod=None, delta_z_mom=None,
-              carry_bps=None, days_to_refix=None, current_coupon_pct=None, disc_margin=None,
-              preferred_horizon="maturity", offer_date=None, sm_to_offer=None, disc_margin_to_offer=None):
+def _uni_item(u, name, mx, cross):
+    """BondListItem: строка НРД-юниверса + наши метрики mx (universe.enrich_bond)
+    + кросс-секция (spread_dur, z-перцентиль, Δz)."""
     base = u.get("base_rate_type", "UNKNOWN")
     spread = u.get("spread_issue_bps") or 0
     label = _BASE_LABEL.get(base, base)
     formula = f"{label} + {spread / 100:g}%" if spread else label
+    last = mx.get("last")
     nrd_price = u.get("nrd_price_pct")
     vs_nrd = round(last - nrd_price, 4) if (last is not None and nrd_price is not None) else None
+    sd, zp, dz, dzm = cross
     return BondListItem(
-        isin=u["isin"], short_name=name, base_rate_type=base,
-        formula=formula, spread_issue_bps=int(spread), maturity_date=u.get("maturity_date"),
-        next_coupon_date=next_coupon, last_price_pct=last, dirty_price_rub=dirty, dm_bps=dm,
-        delta_to_prev_close=delta, nrd_price_pct=nrd_price, price_vs_nrd_pct=vs_nrd,
-        nrd_duration=u.get("nrd_duration"), discount_margin_bps=u.get("discount_margin_bps"),
-        simple_margin_bps=u.get("simple_margin_bps"), disc_margin_bps=disc_margin,
-        z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"), z_model_bps=z_model,
-        spread_dur_yrs=spread_dur_yrs, z_pctile=z_pctile, delta_z_dod=delta_z_dod,
-        delta_z_mom=delta_z_mom,
-        carry_bps=carry_bps, days_to_refix=days_to_refix, current_coupon_pct=current_coupon_pct,
-        preferred_horizon=preferred_horizon, offer_date=offer_date,
-        sm_to_offer_bps=sm_to_offer, disc_margin_to_offer_bps=disc_margin_to_offer,
+        isin=u["isin"], short_name=name, base_rate_type=base, formula=formula,
+        spread_issue_bps=int(spread), maturity_date=u.get("maturity_date"),
+        next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
+        dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
+        delta_to_prev_close=mx.get("delta"), nrd_price_pct=nrd_price,
+        price_vs_nrd_pct=vs_nrd, nrd_duration=u.get("nrd_duration"),
+        discount_margin_bps=u.get("discount_margin_bps"),
+        simple_margin_bps=u.get("simple_margin_bps"), disc_margin_bps=mx.get("disc_dm"),
+        z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"),
+        z_model_bps=mx.get("z_model"), spread_dur_yrs=sd, z_pctile=zp,
+        delta_z_dod=dz, delta_z_mom=dzm, carry_bps=mx.get("carry"),
+        days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
+        preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
+        sm_to_offer_bps=mx.get("sm_to_offer"), disc_margin_to_offer_bps=mx.get("dm_to_offer"),
     )
-
-
-_cross_cache = {"date": None, "map": {}}
-
-def _cross_section_map(uni: list) -> dict:
-    """{isin: (spread_dur_yrs, z_pctile, Δz_dod, Δz_mom)} по всему рынку.
-    Записывает снапшот истории и считает кросс-секцию РАЗ В ДЕНЬ — зависит только
-    от дневного НРД-юниверса, незачем повторять на каждый запрос дашборда."""
-    today = date.today().isoformat()
-    if _cross_cache["date"] == today and _cross_cache["map"]:
-        return _cross_cache["map"]
-    try:
-        history.record_snapshot(uni)
-    except Exception:
-        pass
-    dod_z = mom_z = {}
-    try:
-        dod_z = history.dod_map("z")
-        mom_z = history.change_map("z", 30)
-    except Exception:
-        pass
-    bucket_z: dict = {}
-    for u in uni:
-        bucket_z.setdefault(u.get("rating"), []).append(u.get("z_spread_bps"))
-    today0 = date.today()
-    out: dict = {}
-    for u in uni:
-        mat = u.get("maturity_date")
-        sd = metrics.years_to(date.fromisoformat(mat), today0) if mat else None
-        zp = metrics.rank_pct(u.get("z_spread_bps"), bucket_z.get(u.get("rating"), []))
-        out[u.get("isin")] = (sd, zp, dod_z.get(u.get("isin")), mom_z.get(u.get("isin")))
-    _cross_cache["date"] = today
-    _cross_cache["map"] = out
-    return out
 
 
 async def _universe_bonds(extra_list, cache, limit, offset):
     """Весь рынок флоатеров из НРД (кэш на день). НРД-аналитика по всем;
-    live-цена Alor + наш DM — только для watchlist (extra), т.к. их мало."""
+    live-метрики — только для watchlist (extra). Расчёты в services.universe."""
+    from services import universe as universe_svc
     uni = await nrd_service.fetch_floater_universe()
     if not uni:
         return BondListResponse(items=[], total=0, limit=limit, offset=offset)
 
     cached_prices = MarketDataService.cached_prices()
-    uni_metrics = MarketDataService.universe_metrics()  # полные метрики вне watchlist (фон)
+    uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
     shortnames = await MarketDataService.fetch_moex_shortnames()
     watch = set(extra_list)
+    cross = universe_svc.cross_section_map(uni)
 
-    # кросс-секция (z-перцентиль, spread duration, Δz d/d и m/m) + запись истории —
-    # зависят только от дневного НРД-юниверса, считаем раз в день (не на каждый запрос)
-    cross = _cross_section_map(uni)
+    watch_rows = [u for u in uni if u.get("isin") in watch]
+    watch_metrics = await universe_svc.compute_watch_metrics(watch_rows, cache) if watch_rows else {}
 
-    def _cross(u):
-        return cross.get(u.get("isin"), (None, None, None, None))
-
-    # live-данные + наш DM только для watchlist
-    market_prices = snapshot = schedules = moex_ref = sched_full = {}
-    ruonia_curve = keyrate_curve = None
-    exp_ks = exp_ru = g_curve = None
-    calc_date = date.today()
-    if watch:
-        live = list(watch)
-        external_live = [i for i in live if i not in cache]
-        # Цену watch берём из cached_prices (фон-поллер 10мин + WS-broadcaster 5с
-        # держат её тёплой) — НЕ блокируем ответ свежим Alor WS на каждый запрос.
-        market_prices = cached_prices
-        # независимые сетевые вызовы — параллельно (MOEX ISS ~3.5с/запрос,
-        # последовательно давало ~17с; gather сводит к самому долгому)
-        snapshot, schedules, moex_ref, curves, zctx, fulls = await asyncio.gather(
-            MarketDataService.fetch_moex_snapshot(live),
-            MarketDataService.fetch_coupon_schedules(live),
-            MarketDataService.fetch_moex_securities(external_live) if external_live else _aempty(),
-            MarketDataService.get_curves(),
-            MarketDataService.get_zspread_ctx(),
-            asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in live)),
-        )
-        sched_full = dict(zip(live, fulls))
-        ruonia_curve, keyrate_curve, cd, rd = curves
-        exp_ks, exp_ru, g_curve = zctx
-        calc_date = cd or rd or date.today()
-
-    def enrich(u):
+    items = []
+    for u in uni:
         isin = u["isin"]
-        base = u.get("base_rate_type", "UNKNOWN")
-        spread = u.get("spread_issue_bps") or 0
         name = shortnames.get(isin) or u.get("name") or isin
-        sd, zp, dz, dzm = _cross(u)
-        if isin not in watch:
-            mx = uni_metrics.get(isin, {})
-            return _uni_item(u, name, mx.get("last", cached_prices.get(isin)),
-                             dirty=mx.get("dirty"), dm=mx.get("dm"), delta=mx.get("delta"),
-                             next_coupon=mx.get("next_coupon"), z_model=mx.get("z_model"),
-                             spread_dur_yrs=sd, z_pctile=zp, delta_z_dod=dz, delta_z_mom=dzm,
-                             carry_bps=mx.get("carry"), days_to_refix=mx.get("refix"),
-                             current_coupon_pct=mx.get("current_coupon"), disc_margin=mx.get("disc_dm"),
-                             preferred_horizon=mx.get("horizon", "maturity"), offer_date=mx.get("offer_date"),
-                             sm_to_offer=mx.get("sm_to_offer"), disc_margin_to_offer=mx.get("dm_to_offer"))
-        last = market_prices.get(isin)
-        prev = snapshot.get(isin, {}).get("prev") or (moex_ref.get(isin) or {}).get("prev")
-        delta = round(last - float(prev), 4) if (last is not None and prev is not None) else None
-        dirty = dm = None
-        data = cache.get(isin)
-        ref = create_bond_ref_data(data, isin) if data else build_ref_external(isin, moex_ref.get(isin, {}), {
-            "base_coupon_index": ("CBRATED" if base == "KEYRATE" else "RUONIARATED" if base == "RUONIA" else None),
-            "nominal_margin_bps": spread,
-        })
-        curve = ruonia_curve if base == "RUONIA" else keyrate_curve
-        reconcile_face(ref, (sched_full.get(isin) or {}).get("coupons"), calc_date)
-        # цена для расчёта dirty/DM: live → prev-close → НРД (модель не должна
-        # зависеть от момента прихода WS-цены; при холодном Alor не обнуляемся)
-        price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
-        disc_dm = None
-        hz, off_d, sm_off, dm_off = "maturity", None, None, None
-        if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
-            try:
-                m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
-                                                accrued_override=snapshot.get(isin, {}).get("accrued"),
-                                                periods=schedules.get(isin),
-                                                amorts=(sched_full.get(isin) or {}).get("amorts"),
-                                                offers=(sched_full.get(isin) or {}).get("offers"))
-                dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
-                hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
-                sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
-            except Exception:
-                pass
-        # ближайший купон: из реального расписания MOEX (end > calc_date),
-        # иначе оценка по ref (для внешних без issue падает на maturity)
-        next_cpn = None
-        sched = schedules.get(isin)
-        if sched:
-            future = [e for (_s, e, _v) in sched if e > calc_date]
-            next_cpn = min(future) if future else None
-        if next_cpn is None:
-            try:
-                next_cpn = next_coupon_after(ref, calc_date)
-            except Exception:
-                pass
-        # наш z-спред, сопоставимый с НРД z_spread (zspread.py): RUONIA ±40bps,
-        # KEYRATE mean|Δ|≈43bps (ytm−G, сверка 2026-07-02). value зафиксированных
-        # купонов передаём — иначе текущий купон перепрогнозируется моделью.
-        # Амортизации (bondization) — z_model амортизируемых бумаг считается
-        # от остаточного номинала, принципал гасится по датам амортизаций
-        z_model = None
-        exp = exp_ru if base == "RUONIA" else exp_ks
-        if exp and g_curve and price_calc is not None and base in ("RUONIA", "KEYRATE"):
-            try:
-                full = sched_full.get(isin) or {}
-                if full.get("coupons"):
-                    coupons = [{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")}
-                               for c in full["coupons"]]
-                else:
-                    coupons = [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
-                               for (s, e, v) in (sched or [])]
-                z_model = compute_z_bps(ref, exp, g_curve, calc_date, price_calc,
-                                        snapshot.get(isin, {}).get("accrued") or ref.accrued_rub,
-                                        coupons, full.get("amorts"), full.get("offers"))
-            except Exception:
-                pass
-        # watch-метрики: carry vs база, срок до рефиксинга, текущая ставка купона
-        carry = refix = cur_cpn = None
-        try:
-            full = sched_full.get(isin) or {}
-            cpns = full.get("coupons") or [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
-                                           for (s, e, v) in (sched or [])]
-            refix = metrics.days_to_refix(cpns, calc_date)
-            cur_cpn = metrics.current_coupon_pct(cpns, calc_date)
-            cp = metrics.current_period(cpns, calc_date)
-            if cur_cpn is None and cp and cp.get("value") is not None:
-                cdays = (cp["end"] - cp["start"]).days or 1
-                face_p = metrics.face_on_date(ref.face_value, full.get("amorts"), cp["start"], calc_date)
-                if face_p > 0:
-                    cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
-            # carry: купон/цена (как НРД current_yield); фолбэк приводим к цене
-            coupon_yield = u.get("current_yield_pct")
-            if coupon_yield is None and cur_cpn is not None:
-                coupon_yield = round(cur_cpn / (price_calc / 100.0), 3) if price_calc else cur_cpn
-            carry = metrics.carry_bps(coupon_yield, metrics.base_level_pct(exp))
-        except Exception:
-            pass
-        return _uni_item(u, name, last, dirty, dm, delta, next_cpn, z_model,
-                         spread_dur_yrs=sd, z_pctile=zp, delta_z_dod=dz, delta_z_mom=dzm,
-                         carry_bps=carry, days_to_refix=refix, current_coupon_pct=cur_cpn,
-                         disc_margin=disc_dm, preferred_horizon=hz, offer_date=off_d,
-                         sm_to_offer=sm_off, disc_margin_to_offer=dm_off)
-
-    items = [enrich(u) for u in uni]
+        mx = watch_metrics.get(isin) or uni_metrics.get(isin)
+        if mx is None:
+            mx = {"last": cached_prices.get(isin)}
+        items.append(_uni_item(u, name, mx, cross.get(isin, (None, None, None, None))))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 
 
@@ -538,29 +263,7 @@ async def get_bonds(
 @router.get("/search", tags=["Bonds"])
 async def search_bonds(q: str = Query(..., min_length=2)):
     """Поиск облигаций на MOEX по названию/ISIN для добавления в список."""
-    import httpx
-    url = ("https://iss.moex.com/iss/securities.json"
-           "?iss.meta=off&limit=50&securities.columns=secid,isin,shortname,type,is_traded")
-    out = []
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params={"q": q}, timeout=8)
-        sec = resp.json().get("securities", {})
-        cols, rows = sec.get("columns", []), sec.get("data", [])
-        g = lambda row, n: row[cols.index(n)] if n in cols else None
-        seen = set()
-        for row in rows:
-            isin = g(row, "isin") or g(row, "secid")
-            typ = (g(row, "type") or "")
-            if not isin or not str(isin).startswith("RU") or "bond" not in typ:
-                continue
-            if isin in seen:
-                continue
-            seen.add(isin)
-            out.append({"isin": isin, "name": g(row, "shortname"), "type": typ, "traded": bool(g(row, "is_traded"))})
-    except Exception as e:
-        logger.warning(f"MOEX search error: {e}")
-    return {"items": out[:20]}
+    return {"items": await MarketDataService.search_bonds(q)}
 
 
 @router.get("/filters", response_model=BondFiltersResponse, tags=["Bonds"])
@@ -756,27 +459,17 @@ async def get_bond_details(isin: str = Path(...)):
                 y = solve_flat_y(zcfs, calc_date, dirty)
                 if y is not None:
                     spread_dur = metrics.macaulay_years(zcfs, calc_date, y)
-            refix = metrics.days_to_refix(coupons, calc_date)
-            cur_cpn = metrics.current_coupon_pct(coupons, calc_date)
-            cp = metrics.current_period(coupons, calc_date)
-            if cur_cpn is None and cp and cp.get("value") is not None:
-                cdays = (cp["end"] - cp["start"]).days or 1
-                face_p = metrics.face_on_date(ref_obj.face_value, sched_full.get("amorts"),
-                                              cp["start"], calc_date)
-                if face_p > 0:
-                    cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
-            base_lvl = metrics.base_level_pct(exp)
-            # carry: купон/цена (как НРД current_yield); фолбэк приводим к цене
-            coupon_yield = nm.get("current_yield_pct")
-            if coupon_yield is None and cur_cpn is not None:
-                coupon_yield = round(cur_cpn / (px / 100.0), 3) if px else cur_cpn
-            carry = metrics.carry_bps(coupon_yield, base_lvl)
+            cb = metrics.carry_refix_block(coupons, sched_full.get("amorts"),
+                                           ref_obj.face_value, px, exp,
+                                           nm.get("current_yield_pct"), calc_date)
+            refix = cb["days_to_refix"]
             floater_block = FloaterRisk(
                 spread_duration_yrs=round(spread_dur, 3) if spread_dur is not None else None,
                 rate_duration_yrs=round(refix / 365.0, 3) if refix is not None else None,
-                days_to_refix=refix, current_coupon_pct=cur_cpn, base_rate_pct=base_lvl,
-                carry_bps=carry,
-                breakeven_base_pct=metrics.breakeven_base_pct(coupon_yield, base_lvl, ref_obj.spread_issue_bps),
+                days_to_refix=refix, current_coupon_pct=cb["current_coupon_pct"],
+                base_rate_pct=cb["base_rate_pct"], carry_bps=cb["carry_bps"],
+                breakeven_base_pct=metrics.breakeven_base_pct(
+                    cb["coupon_yield_pct"], cb["base_rate_pct"], ref_obj.spread_issue_bps),
                 mod_duration=nm.get("mod_duration"), convexity=nm.get("convexity"), pvbp=nm.get("pvbp"),
             )
         except Exception as e:

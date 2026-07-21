@@ -6,8 +6,15 @@ from cashflow import (
     build_coupon_schedule,
     parse_base_and_spread
 )
-from api.schemas import CashflowItem
 from services.exceptions import CalculationException
+
+# Сервис отдаёт plain dicts (ключи = поля api.schemas.CashflowItem) — Pydantic
+# коэрсит их на route-слое. Раньше сервис импортировал api.schemas: домен
+# зависел от API-контракта (инверсия слоёв).
+
+
+def _item(**kw) -> dict:
+    return kw
 
 
 def _d(s):
@@ -19,12 +26,12 @@ def _d(s):
 
 def build_cashflow_from_moex(
     ref, curve, calc_date: date, coupons: list, amorts: list, formula: str,
-) -> Tuple[List[CashflowItem], float]:
+) -> Tuple[List[dict], float]:
     """Cashflow по реальному расписанию MOEX:
     прошлые/зафиксированные купоны = фактическая сумма (value/valueprc),
     будущие плавающие = прогноз (forward + spread). Погашение из амортизаций."""
     sp = (ref.spread_issue_bps or 0) / 10000.0
-    items: List[CashflowItem] = []
+    items: List[dict] = []
     n = 0
     # I/O-граница: история индекса — один фетч на вызов (не в цикле по купонам)
     _index_pct_fn = None
@@ -119,7 +126,7 @@ def build_cashflow_from_moex(
                 rate_pct = round(r * 100, 4)
 
         n += 1
-        items.append(CashflowItem(
+        items.append(_item(
             number=n, period_start=start, period_end=end, payment_date=end,
             coupon_formula=formula, base_rate_pct=base_pct, spread_bps=ref.spread_issue_bps or 0,
             coupon_rate_pct=round(rate_pct, 4), amount_rub=round(amount, 2), type="COUPON",
@@ -135,7 +142,7 @@ def build_cashflow_from_moex(
             amt = float(a.get("value") or 0)
             redemption_total += amt
             n += 1
-            items.append(CashflowItem(
+            items.append(_item(
                 number=n, period_start=d, period_end=d, payment_date=d,
                 coupon_formula="", base_rate_pct=0.0, spread_bps=0,
                 coupon_rate_pct=0.0, amount_rub=round(amt, 2), type="REDEMPTION",
@@ -143,15 +150,15 @@ def build_cashflow_from_moex(
     elif ref.maturity_date:
         redemption_total = ref.face_value
         n += 1
-        items.append(CashflowItem(
+        items.append(_item(
             number=n, period_start=ref.maturity_date, period_end=ref.maturity_date,
             payment_date=ref.maturity_date, coupon_formula="", base_rate_pct=0.0,
             spread_bps=0, coupon_rate_pct=0.0, amount_rub=round(ref.face_value, 2), type="REDEMPTION",
         ))
 
-    items.sort(key=lambda x: x.payment_date)
+    items.sort(key=lambda x: x["payment_date"])
     for idx, it in enumerate(items, start=1):
-        it.number = idx
+        it["number"] = idx
     return items, redemption_total
 
 def get_cashflow_items(
@@ -167,7 +174,7 @@ def get_cashflow_items(
     calc_date: date,
     coupon_percent: Optional[float],
     next_coupon_date: Optional[date],
-) -> Tuple[List[CashflowItem], float]:
+) -> Tuple[List[dict], float]:
     
     if not end_date or not coupon_period_days:
         raise CalculationException("Недостаточно данных для построения графика (нет end_date или coupon_period_days)", {"isin": isin})
@@ -217,7 +224,7 @@ def get_cashflow_items(
 
         payout = face_value * factor
         
-        item = CashflowItem(
+        item = _item(
             number=i,
             period_start=prev_date,
             period_end=coup_date,
@@ -233,7 +240,7 @@ def get_cashflow_items(
         prev_date = coup_date
 
     redemption_date = adjust_following(end_date)
-    redemption_item = CashflowItem(
+    redemption_item = _item(
         number=len(items) + 1,
         period_start=prev_date, # arbitrary for redemption
         period_end=redemption_date,
