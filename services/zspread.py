@@ -105,115 +105,29 @@ def _d(s):
 
 def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list = None,
                 offers: list = None, index_pct_fn=None):
-    """Прогноз потоков: зафикс.купон = факт MOEX value; будущий = индекс(exp.fwd)+margin.
-    Конвенция выпусков: маржа simple ACT/365 у обеих баз; KEYRATE-индекс простой
-    (КС+m)·days/365, RUONIA-индекс daily-comp. + погашение номинала.
+    """Прогноз потоков для z-спреда — ТОНКАЯ ОБЁРТКА над единым builder'ом
+    valuation.build_cashflows_to_maturity (вход — MOEX-dicts, выход —
+    [(pay_date, amount)]). Вся логика потоков (T+1/праздники, cut_at_offer,
+    амортизации от остаточного номинала, достройка хвоста >100 купонов,
+    факт-фиксинг начавшегося периода, конвенции RUONIA daily-comp /
+    KEYRATE simple) живёт в ОДНОМ месте — раньше это была построчная копия
+    (~150 строк), и каждый фикс вносился дважды (см. историю коммитов).
 
-    amorts — MOEX bondization amortizations [{date, value}]. Если есть погашение
-    принципала до maturity (амортизируемая бумага), принципал платится по датам
-    амортизаций, а будущие купоны начисляются от остаточного номинала = сумма
-    амортизаций после начала периода (поле face строк купонов MOEX ненадёжно:
-    для будущих периодов не проецируется, бывает стейл). Иначе — прежний
-    bullet-путь (номинал целиком на maturity_date).
-
-    T+1: платежи с датой <= settle (след. рабочий день) покупателю не достаются
-    (ex-coupon, MOEX НКД уже 0) — исключаем, иначе накануне выплаты PV завышен
-    на целый купон."""
-    from valuation import settle_date, first_offer_date, _offer_price_pct, face_for_pricing
-    settle = settle_date(calc_date)
-    sp = (ref.spread_issue_bps or 0) / 10000.0
-    # Та же база, от которой compute_z_bps считает dirty (амортизация в окне
-    # (calc, settle] ушла продавцу). Весь принципал ниже сводится к ней.
-    pricing_face = face_for_pricing(ref.face_value, amorts, calc_date)
-
-    # Оферта: режем ТОЛЬКО при неопределённом купоне после оферты (пересмотр
-    # эмитентом — ref_data.cut_at_offer); иначе к погашению (та же логика, что
-    # valuation.build_cashflows_to_maturity)
-    put = None
-    if offers:
-        try:
-            from services.ref_data import cut_at_offer
-            if cut_at_offer(ref.isin):
-                put = first_offer_date(offers, settle)
-        except Exception:
-            put = None
-    eff_maturity = ref.maturity_date
-    if put and (eff_maturity is None or put < eff_maturity):
-        eff_maturity = put
-    else:
-        put = None
-
-    future_am = sorted(
-        (d, float(a["value"])) for a in amorts or []
-        if a.get("value") is not None and (d := _d(a.get("date"))) and d > settle
-        and (eff_maturity is None or d <= eff_maturity)
-    )
-    amortizing = any(eff_maturity and d < eff_maturity for d, _ in future_am)
-
-    # Достройка хвоста купонов до погашения: bondization обрывается на 100-м
-    # купоне (пагинация ISS), у длинных бумаг пробел купоны→погашение = годы →
-    # z валится в минус. Достроенные периоды (value=None) проецируются форвардом.
-    if coupons and eff_maturity:
-        from valuation import extend_periods_to_maturity
-        triples = [(c.get("start"), c.get("end"), c.get("value")) for c in coupons]
-        ext = extend_periods_to_maturity(triples, eff_maturity)
-        if len(ext) > len(triples):
-            coupons = [{"start": s, "end": e, "value": v} for s, e, v in ext]
-
-    cfs = []
+    Кривая: у ExpCurve берём внутреннюю bootstrap-кривую (та же конвенция
+    forward, что в exp.fwd; builder клэмпит анкер к calc_date сам)."""
+    from valuation import build_cashflows_to_maturity
+    triples = []
     for c in coupons or []:
-        end = _d(c.get("end"))
-        if not end or end <= settle or (eff_maturity and end > eff_maturity):
+        e = _d(c.get("end"))
+        if not e:
             continue
-        start = _d(c.get("start")) or end
-        days = (end - start).days or 1
-        alpha = days / 365.0
-        val = c.get("value")
-        if val is not None:
-            amt = float(val)
-        else:
-            face = pricing_face
-            if amortizing:
-                paid_by_start = sum(v for d, v in future_am if d <= start)
-                face = max(pricing_face - paid_by_start, 0.0)
-            # Начавшийся период: индекс (частично) определён по факту — спека
-            # формулы выпуска (point/average+лаг) с фолбэком на точечную КС на
-            # start (coupon_calib.period_index_pct — общая точка с valuation и
-            # display). Важно на спаде КС: купон зафиксирован по прежней,
-            # более высокой ставке. Иначе — проекция по кривой ожиданий.
-            idx_pct = None
-            if start <= calc_date:
-                try:
-                    fn = index_pct_fn
-                    if fn is None:                     # легаси-фолбэк (прямые вызовы)
-                        from services.coupon_calib import period_index_pct as fn
-                    fwd_pct = (lambda dt: exp.fwd(max(dt, calc_date), end) * 100.0)
-                    idx_pct = fn(ref.isin, ref.base, coupons, ref.face_value,
-                                 start, end, calc_date, fwd_pct, amorts=amorts)
-                except Exception:
-                    idx_pct = None
-            if idx_pct is not None:
-                amt = face * (idx_pct / 100.0 + sp) * alpha
-            else:
-                f = exp.fwd(max(start, calc_date), end)
-                if ref.base == "RUONIA":
-                    # индекс капитализируется дневно, маржа simple (конвенция выпуска)
-                    amt = face * ((1 + f/365.0)**days - 1 + sp * alpha)
-                else:
-                    amt = face * (f + sp) * alpha
-        cfs.append((end, amt))
-    # Принципал: все будущие амортизации + непогашенный остаток одним платежом
-    # (оферта / погашение). Инвариант Σ принципала == pricing_face — та же схема,
-    # что в valuation.build_cashflows_to_maturity.
-    cfs.extend(future_am)
-    residual = pricing_face - sum(v for _d2, v in future_am)
-    if residual > 1e-9:
-        if put:
-            cfs.append((put, residual * _offer_price_pct(offers, put) / 100.0))
-        elif ref.maturity_date and ref.maturity_date > calc_date:
-            cfs.append((ref.maturity_date, residual))
-    cfs.sort()
-    return cfs
+        s = _d(c.get("start")) or e
+        triples.append((s, e, c.get("value")))
+    curve = getattr(exp, "_curve", exp)
+    cfs = build_cashflows_to_maturity(
+        ref, curve, calc_date, explicit_periods=triples or None,
+        amorts=amorts, offers=offers, index_pct_fn=index_pct_fn)
+    return [(cf.pay_date, cf.amount_rub) for cf in cfs]
 
 
 def solve_z_bps(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Optional[int]:
