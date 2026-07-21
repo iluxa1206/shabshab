@@ -12,6 +12,9 @@ SM/DM калиброваны сверками. НРД может молча по
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Пороги |медианы Δ|, bps: выше — WARNING (подобраны от текущих сверок:
 # SM ≈ 0-30, DM ≈ 20-50, z ≈ 40-90 медианно; порог = «что-то сломалось»)
@@ -68,6 +71,6 @@ def compute_nrd_drift(universe: list, uni_metrics: dict) -> dict:
             alerts.append(f"NRD drift {key.upper()}: median Δ {a['median']:+.0f} bps "
                           f"(порог {THRESHOLDS[key]}, n={a['n']}) — проверь методику/кривые")
     for msg in alerts:
-        print(f"WARNING: {msg}")
+        logger.warning(f"WARNING: {msg}")
     return {"ts": datetime.now().isoformat(timespec="seconds"),
             "stats": stats, "alerts": alerts}

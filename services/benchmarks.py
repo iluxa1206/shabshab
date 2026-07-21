@@ -11,6 +11,9 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional
 
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 # code -> (SECID MOEX, подпись)
 BENCHMARKS = {
@@ -58,11 +61,11 @@ async def get_benchmarks(days: int = 180) -> dict:
                 try:
                     items = await _fetch_one(client, secid, frm)
                 except Exception as e:
-                    print(f"Benchmark {secid} error: {e!r}")
+                    logger.warning(f"Benchmark {secid} error: {e!r}")
                     items = []
                 data[code] = {"label": label, "items": items}
     except Exception as e:
-        print(f"Benchmarks fetch error: {e!r}")
+        logger.warning(f"Benchmarks fetch error: {e!r}")
 
     if any(v["items"] for v in data.values()):
         _mem.update({"date": today, "data": data})

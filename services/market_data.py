@@ -19,6 +19,9 @@ from forwards import CurveBootstrapper, DiscountCurve
 from auth import get_access_token, REFRESH_TOKEN
 from last_prices import get_last_prices_dict
 from cashflow import load_cache, get_local_excel_db
+import logging
+
+logger = logging.getLogger(__name__)
 
 SCHEDULE_CACHE_FILE = "schedule_cache.json"
 SCHEDULE_FULL_CACHE_FILE = "schedule_full_cache.json"
@@ -118,7 +121,7 @@ class MarketDataService:
                 return ruonia_curve, irs_curve, calc_date, rates_date
 
             except Exception as e:
-                print(f"Error loading curves: {e}")
+                logger.warning(f"Error loading curves: {e}")
                 return None, None, None, None
 
     _gcurve = None
@@ -155,9 +158,9 @@ class MarketDataService:
         """Отдаёт закэшированную КБД при сбое фетча — но ГРОМКО, с возрастом.
         Раньше stale отдавался молча → z/G-спреды сутками на вчерашней КБД."""
         if cls._gcurve is not None and cls._gcurve_date != date.today().isoformat():
-            print(f"WARNING: G-curve STALE (от {cls._gcurve_date}) — {reason}")
+            logger.warning(f"WARNING: G-curve STALE (от {cls._gcurve_date}) — {reason}")
         else:
-            print(f"G-curve unavailable: {reason}")
+            logger.warning(f"G-curve unavailable: {reason}")
         return cls._gcurve
 
     @classmethod
@@ -185,7 +188,7 @@ class MarketDataService:
             market_cache["last_prices"].update(prices)
             market_cache["last_prices_ts"].update({i: now for i in prices})
         except Exception as e:
-            print(f"Error fetching prices: {e}")
+            logger.warning(f"Error fetching prices: {e}")
         return cls.cached_prices()
 
     @classmethod
@@ -232,7 +235,7 @@ class MarketDataService:
                 if isin and si >= 0 and row[si]:
                     out[isin] = row[si]
         except Exception as e:
-            print(f"MOEX shortnames error: {e}")
+            logger.warning(f"MOEX shortnames error: {e}")
             return cls._shortnames
         if out:
             cls._shortnames, cls._shortnames_date = out, today
@@ -335,7 +338,7 @@ class MarketDataService:
                         break
                     start += PAGE
         except Exception as e:
-            print(f"bondization error {isin}: {e}")
+            logger.warning(f"bondization error {isin}: {e}")
         # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем
         if out.get("coupons"):
             cls._full_mem[isin] = out
@@ -558,7 +561,7 @@ class MarketDataService:
                         "accrued": float(acc) if acc is not None else None,
                     }
         except Exception as e:
-            print(f"board snapshot error: {e}")
+            logger.warning(f"board snapshot error: {e}")
         if out:
             cls._board_snap = out
             cls._board_snap_ts = now

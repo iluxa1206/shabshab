@@ -22,6 +22,9 @@ from typing import List, Tuple, Optional
 
 import requests
 from bs4 import BeautifulSoup
+import logging
+
+logger = logging.getLogger(__name__)
 
 _DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CACHE = os.path.join(_DIR, "cbr_cache.json")
@@ -113,7 +116,7 @@ def _load_rc_ruonia() -> List[Tuple[date, float]]:
             if isinstance(d, date) and rv is not None:
                 out.append((d, rv))
     except Exception as e:
-        print(f"RC RUONIA load error: {e}")
+        logger.warning(f"RC RUONIA load error: {e}")
     return out
 
 
@@ -162,15 +165,15 @@ def _refresh_locked(today: str) -> None:
     try:
         ks = _fetch_ks_live()
     except Exception as e:
-        print(f"WARNING: CBR KeyRate fetch failed ({e}) — фолбэк на кэш")
+        logger.warning(f"WARNING: CBR KeyRate fetch failed ({e}) — фолбэк на кэш")
     try:
         ruonia_live = _fetch_ruonia_current_live()
     except Exception as e:
-        print(f"WARNING: CBR RUONIA fetch failed ({e})")
+        logger.warning(f"WARNING: CBR RUONIA fetch failed ({e})")
 
     if len(ks) < 100 and cache.get("ks"):  # фетч куцый → stale-кэш
         ks = [(date.fromisoformat(d), v) for d, v in cache["ks"]]
-        print("WARNING: CBR KeyRate stale cache fallback")
+        logger.warning("WARNING: CBR KeyRate stale cache fallback")
     if not ruonia_live and cache.get("ruonia_live"):
         ruonia_live = [(date.fromisoformat(d), v) for d, v in cache["ruonia_live"]]
 

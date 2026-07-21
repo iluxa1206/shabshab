@@ -17,6 +17,9 @@ from datetime import date
 from typing import Dict, Optional
 
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 MOEX_CETS_URL = "https://iss.moex.com/iss/engines/currency/markets/selt/boards/CETS/securities.json"
@@ -136,7 +139,7 @@ async def get_fx() -> dict:
             if tom:
                 _tom_last.update({"ts": now, "rates": dict(tom), "upd": upd})
         except Exception as e:
-            print(f"MOEX TOM FX error: {e!r}")
+            logger.warning(f"MOEX TOM FX error: {e!r}")
             tom, upd = {}, None
         if not tom and _tom_last["rates"] and now - _tom_last["ts"] < _TOM_STALE_OK:
             tom, upd = _tom_last["rates"], _tom_last["upd"]
@@ -156,7 +159,7 @@ async def get_fx() -> dict:
                 if not label and any(s == "cbr" for s in source.values()):
                     label = "ЦБ " + date.today().strftime("%d.%m")
             except Exception as e:
-                print(f"CBR FX fetch error: {e}")
+                logger.warning(f"CBR FX fetch error: {e}")
 
     if rates:
         rates["RUB"] = 1.0

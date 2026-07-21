@@ -26,6 +26,9 @@ from services.exceptions import NotFoundException, CalculationException
 from services import nrd as nrd_service
 from services import metrics, history
 from cashflow import read_isins_from_file
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -453,7 +456,7 @@ async def get_bonds(
         try:
             nrd_metrics = await nrd_service.fetch_nrd_metrics(paginated_isins if with_nrd else external)
         except Exception as e:
-            print(f"NRD list fetch error: {e}")
+            logger.warning(f"NRD list fetch error: {e}")
 
     if external:
         moex_ref = await MarketDataService.fetch_moex_securities(external)
@@ -556,7 +559,7 @@ async def search_bonds(q: str = Query(..., min_length=2)):
             seen.add(isin)
             out.append({"isin": isin, "name": g(row, "shortname"), "type": typ, "traded": bool(g(row, "is_traded"))})
     except Exception as e:
-        print(f"MOEX search error: {e}")
+        logger.warning(f"MOEX search error: {e}")
     return {"items": out[:20]}
 
 
@@ -697,7 +700,7 @@ async def get_bond_details(isin: str = Path(...)):
             sched_full.get("coupons", []), sched_full.get("amorts", []), formula,
         )
     except Exception as e:
-        print(f"Cashflow error for {isin}: {e}")
+        logger.warning(f"Cashflow error for {isin}: {e}")
         
     val_dict = {
         "clean_price_pct": last_price or 100.0,
@@ -777,7 +780,7 @@ async def get_bond_details(isin: str = Path(...)):
                 mod_duration=nm.get("mod_duration"), convexity=nm.get("convexity"), pvbp=nm.get("pvbp"),
             )
         except Exception as e:
-            print(f"Floater risk error for {isin}: {e}")
+            logger.warning(f"Floater risk error for {isin}: {e}")
 
     nrd_block = None
     warnings = []
@@ -790,7 +793,7 @@ async def get_bond_details(isin: str = Path(...)):
     try:
         nrd_block = build_bond_nrd(nrd_metrics.get(isin, {}), last_price)
     except Exception as e:
-        print(f"NRD details error for {isin}: {e}")
+        logger.warning(f"NRD details error for {isin}: {e}")
     if nrd_block is None and nrd_service.is_configured():
         warnings.append("NRD data unavailable for this bond")
     elif not nrd_service.is_configured():

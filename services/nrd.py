@@ -417,7 +417,7 @@ async def fetch_floater_universe() -> List[dict]:
                     break
                 skip += 1000
     except Exception as e:
-        print(f"NRD universe error: {e}")
+        logger.warning(f"NRD universe error: {e}")
         # Негативное кэширование: фетч упал (напр. 403 — доступ отозван) → отдаём
         # стухший кэш И кладём его в память с fetched_at=now, чтобы НЕ долбить НРД
         # на КАЖДЫЙ запрос дашборда. Без этого calc_date кэша (напр. прошлая дата)
@@ -488,7 +488,7 @@ async def fetch_nrd_metrics(isins: List[str]) -> Dict[str, dict]:
             cache["fetched_at"] = time.time()
             _save_json(CACHE_FILE, cache)
         except Exception as e:
-            print(f"NRD fetch error: {e}")
+            logger.warning(f"NRD fetch error: {e}")
             _metrics_fail_until = time.time() + _METRICS_FAIL_BACKOFF_SEC
 
     return result

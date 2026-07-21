@@ -1,6 +1,15 @@
 import os
+import logging
 import uvicorn
 from fastapi import FastAPI, Request
+
+# Логи приложения (services/*, api/*) — в stdout с таймстампами; uvicorn настраивает
+# только свои логгеры, наши без basicConfig терялись (раньше вся диагностика шла print'ом)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +37,7 @@ async def ws_market_data_broadcaster():
                         payload = {"last_price_pct": prices[isin]}
                         await ws.manager.broadcast_market_data(isin, payload)
         except Exception as e:
-            print(f"WS Broadcaster error: {e}")
+            logger.warning(f"WS Broadcaster error: {e}")
 
         await asyncio.sleep(5)  # Fetch and broadcast every 5 seconds
 
@@ -73,7 +82,7 @@ async def universe_price_poller():
                     from services.drift import compute_nrd_drift
                     market_cache["nrd_drift"] = compute_nrd_drift(uni, metrics)
         except Exception as e:
-            print(f"Universe poller error: {e}")
+            logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
 
 async def fund_nav_snapshotter():
@@ -86,7 +95,7 @@ async def fund_nav_snapshotter():
         try:
             await snapshot_all_navs()
         except Exception as e:
-            print(f"NAV snapshotter error: {e}")
+            logger.warning(f"NAV snapshotter error: {e}")
         await asyncio.sleep(3600)
 
 async def warmup_caches():
@@ -115,7 +124,7 @@ async def warmup_caches():
                 if m:
                     market_cache["universe_metrics"] = m
     except Exception as e:
-        print(f"warmup error: {e}")
+        logger.warning(f"warmup error: {e}")
 
 
 @asynccontextmanager

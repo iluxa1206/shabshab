@@ -15,6 +15,10 @@ from valuation import (
     implied_yield_pct,
 )
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def _index_provider(base: str, warnings: list):
     """I/O-граница: история индекса ЦБ фетчится ЗДЕСЬ (раз на запрос), ядро
@@ -101,7 +105,7 @@ def calculate_valuation_metrics(
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
     except Exception as e:
-        print(f"XIRR error for {bond.isin}: {e}")
+        logger.warning(f"XIRR error for {bond.isin}: {e}")
         impl_yield = None
         
     try:
@@ -121,7 +125,7 @@ def calculate_valuation_metrics(
         if curve and len(cfs) > 0:
             sm_bps = solve_dm_bps(bond, curve, cfs, calc_date, dirty_rub)
     except Exception as e:
-        print(f"SM calculation error for {bond.isin}: {e}")
+        logger.warning(f"SM calculation error for {bond.isin}: {e}")
 
     # DISCOUNT MARGIN (наш disc_margin_bps): настоящий FRN DM — индекс плоский на
     # ТЕКУЩЕМ уровне (из зафикс. купона), money-market дисконт (L+DM). Воспроизводит
@@ -138,7 +142,7 @@ def calculate_valuation_metrics(
                                                    index_pct_fn=index_pct_fn, warnings_out=warnings)
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
     except Exception as e:
-        print(f"Discount margin error for {bond.isin}: {e}")
+        logger.warning(f"Discount margin error for {bond.isin}: {e}")
 
     # К ОФЕРТЕ (yield-to-put): для бумаг с будущей офертой это первостепенная
     # цифра — рынок торгует к ближайшей оферте. Режем поток к оферте безусловно
@@ -174,7 +178,7 @@ def calculate_valuation_metrics(
                                                            index_pct_fn=index_pct_fn, warnings_out=warnings)
                 dm_to_offer = solve_discount_margin_bps(flat_cfs_off, calc_date, dirty_rub, L2)
         except Exception as e:
-            print(f"to-offer valuation error for {bond.isin}: {e}")
+            logger.warning(f"to-offer valuation error for {bond.isin}: {e}")
 
     return {
         "clean_price_pct": price,

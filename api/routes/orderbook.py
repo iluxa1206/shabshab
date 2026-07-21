@@ -8,6 +8,9 @@ from services.market_data import MarketDataService
 from services.bonds import create_bond_ref_data
 from services.valuation import calculate_valuation_metrics
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,7 +29,7 @@ async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]
                 if resp.status == 200:
                     return await resp.json()
     except Exception as e:
-        print(f"Error fetching orderbook snapshot: {e}")
+        logger.warning(f"Error fetching orderbook snapshot: {e}")
         
     return None
 

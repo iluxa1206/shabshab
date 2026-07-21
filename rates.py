@@ -6,6 +6,9 @@ import re
 from datetime import date
 from bs4 import BeautifulSoup
 from pprint import pprint
+import logging
+
+logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -139,12 +142,12 @@ def load_cache(allow_stale: bool = False):
         if cache_date == date.today().isoformat() or (allow_stale and cache_date):
             if allow_stale and cache_date != date.today().isoformat():
                 age = (date.today() - date.fromisoformat(cache_date)).days
-                print(f"WARNING: rates cache STALE — возраст {age} дн. (cache_date={cache_date}), Cbonds недоступен")
+                logger.warning(f"WARNING: rates cache STALE — возраст {age} дн. (cache_date={cache_date}), Cbonds недоступен")
             def dicts_to_quotes(dicts):
                 return [Quote(d["name"], d["tenor"], d["value"], date.fromisoformat(d["date"])) for d in dicts]
             return dicts_to_quotes(data["ois"]), dicts_to_quotes(data["irs"])
     except Exception as e:
-        print(f"Failed to load cache: {e}")
+        logger.warning(f"Failed to load cache: {e}")
     return None
 
 def save_cache(ois, irs):
@@ -160,7 +163,7 @@ def save_cache(ois, irs):
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Failed to save cache: {e}")
+        logger.warning(f"Failed to save cache: {e}")
 
 # --- СПФИ МосБиржи: "RUB Key Rate NY Forward Curve" (Cbonds) ---
 # Форвардные значения КС по срокам — реальный вход методики НРД (met_float Прил.3).
@@ -198,7 +201,7 @@ def _parse_spfi_date(raw: str) -> date | None:
 
 
 def _spfi_fallback() -> list[Quote]:
-    print(f"WARNING: SPFI fallback hardcode as-of {SPFI_FALLBACK_DATE} (Cbonds недоступен)")
+    logger.warning(f"WARNING: SPFI fallback hardcode as-of {SPFI_FALLBACK_DATE} (Cbonds недоступен)")
     return [Quote(f"SPFI KEYRATE {t} (fallback)", t, v, SPFI_FALLBACK_DATE)
             for t, v in SPFI_KS_FALLBACK.items()]
 
@@ -215,7 +218,7 @@ def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
                 return [Quote(d["name"], d["tenor"], d["value"], date.fromisoformat(d["date"]))
                         for d in data["quotes"]]
         except Exception as e:
-            print(f"Failed to load SPFI cache: {e}")
+            logger.warning(f"Failed to load SPFI cache: {e}")
 
     quotes: list[Quote] = []
     for tenor, idx in SPFI_INDEX_IDS.items():
@@ -229,7 +232,7 @@ def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
             d = _parse_spfi_date(dm.group(1)) if dm else None
             quotes.append(Quote(f"SPFI KEYRATE {tenor}", tenor, value, d or date.today()))
         except Exception as e:
-            print(f"SPFI {tenor} (id {idx}) fetch error: {e}")
+            logger.warning(f"SPFI {tenor} (id {idx}) fetch error: {e}")
         _time.sleep(0.3)
 
     tenors = {q.tenor for q in quotes}
@@ -245,7 +248,7 @@ def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
                                        "date": q.date.isoformat()} for q in quotes]},
                           f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Failed to save SPFI cache: {e}")
+            logger.warning(f"Failed to save SPFI cache: {e}")
     return quotes
 
 
@@ -256,19 +259,19 @@ def get_rates_curves(use_cache=True):
     if use_cache:
         cached = load_cache()
         if cached:
-            print("Loaded rates from cache.")
+            logger.info("Loaded rates from cache.")
             return cached
 
     try:
-        print("Fetching OIS RUONIA from Cbonds...")
+        logger.info("Fetching OIS RUONIA from Cbonds...")
         ois_html = fetch(CBONDS_RUONIA_OIS_URL)
         ois_quotes = parse_cbonds_quotes(ois_html, r"RUONIA\s+([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
 
-        print("Fetching IRS KEYRATE from Cbonds...")
+        logger.info("Fetching IRS KEYRATE from Cbonds...")
         irs_html = fetch(CBONDS_KEYRATE_IRS_URL)
         irs_quotes = parse_cbonds_quotes(irs_html, r"IRS RUB vs RUB KEYRATE.*?([0-9]+(?:\.[0-9]+)?[DWMY]|ON|TN|SN)")
     except Exception as e:
-        print(f"WARNING: Cbonds fetch failed ({e}) — пробуем stale-кэш")
+        logger.warning(f"WARNING: Cbonds fetch failed ({e}) — пробуем stale-кэш")
         ois_quotes, irs_quotes = [], []
 
     # Санити: сломанный парсер/пейволл отдаёт мало теноров — фолбэк на stale.
@@ -278,11 +281,11 @@ def get_rates_curves(use_cache=True):
                 and any(tenor_to_days(q.tenor) >= 5 * 365 for q in quotes))
 
     if not (_ok(ois_quotes) and _ok(irs_quotes)):
-        print(f"WARNING: Cbonds parse куцый (ois={len(ois_quotes)}, irs={len(irs_quotes)}) — фолбэк на stale-кэш")
+        logger.warning(f"WARNING: Cbonds parse куцый (ois={len(ois_quotes)}, irs={len(irs_quotes)}) — фолбэк на stale-кэш")
         stale = load_cache(allow_stale=True)
         if stale:
             return stale
-        print("WARNING: stale-кэша нет — возвращаем что распарсили")
+        logger.warning("WARNING: stale-кэша нет — возвращаем что распарсили")
         return ois_quotes, irs_quotes
 
     if use_cache:

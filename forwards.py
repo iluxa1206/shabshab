@@ -2,6 +2,9 @@ import math
 import calendar
 from datetime import date, timedelta
 from typing import List, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 def yf_act365(d1: date, d2: date) -> float:
     """Измеряет Year Fraction (долю года) по конвенции ACT/365"""
@@ -276,7 +279,7 @@ class CurveBootstrapper:
             if d in unique:
                 # важно понимать, что при дубликате дата перезапишется
                 # можно заменить на логгер, если используете logging
-                print(f"[WARN] duplicate node date {d}, overwrite DF {unique[d]} -> {df}")
+                logger.warning(f"[WARN] duplicate node date {d}, overwrite DF {unique[d]} -> {df}")
             unique[d] = df
         return sorted(unique.items(), key=lambda x: x[0])
 

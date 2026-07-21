@@ -210,7 +210,7 @@ def extract_bond_reference_dict(isin: str, data: dict, ref_obj: BondRefData) -> 
     try:
         if data.get("NEXTCOUPON"):
             next_coupon_date = date.fromisoformat(data.get("NEXTCOUPON"))
-    except:
+    except (ValueError, TypeError):
         pass
         
     return {
