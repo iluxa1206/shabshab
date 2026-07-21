@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Редеплой Floaters Desk на deskdeskdesk.ru (VPS 161.104.17.23, стек floaters-prod).
+# Редеплой Floaters Desk на assetallocator.ru/desk (VPS 161.104.17.23, стек floaters-prod).
+# Прод-URL мигрировал 2026-07-21: deskdeskdesk.ru → assetallocator.ru/desk/ (Caddy path-route).
 # Инфра: контейнер floaters-prod в docker-сети astra-prod_default, за Caddy (TLS Let's Encrypt).
 # Использование: ./scripts/deploy.sh
 set -euo pipefail
@@ -30,7 +31,6 @@ ssh -o BatchMode=yes "$SERVER" \
   "cd $REMOTE && docker compose -f docker-compose.prod.yml --env-file .env up -d --build"
 
 echo ">>> healthcheck"
-ssh -o BatchMode=yes "$SERVER" \
-  'curl -s --max-time 15 https://deskdeskdesk.ru/api/health'
+curl -s --max-time 15 https://assetallocator.ru/desk/api/health
 echo
-echo ">>> done: https://deskdeskdesk.ru/app/"
+echo ">>> done: https://assetallocator.ru/desk/app/"
