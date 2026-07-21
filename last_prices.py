@@ -21,7 +21,8 @@ from valuation import BondRefData, calculate_floater_metrics
 
 # Персистентный кэш isin→symbol (маппинг статичен). Режет REST-резолюцию символа
 # на каждый ISIN — критично для периодического опроса всего юниверса (~453 бумаги).
-_SYMBOL_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alor_symbols_cache.json")
+from services.paths import cache_path as _cache_path
+_SYMBOL_CACHE_PATH = _cache_path("alor_symbols_cache.json")
 
 def _load_symbol_cache() -> dict:
     try:
@@ -32,8 +33,8 @@ def _load_symbol_cache() -> dict:
 
 def _save_symbol_cache(cache: dict) -> None:
     try:
-        with open(_SYMBOL_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(cache, f)
+        from services.paths import atomic_write_json
+        atomic_write_json(_SYMBOL_CACHE_PATH, cache)
     except Exception:
         pass
 

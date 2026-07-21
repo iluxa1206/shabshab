@@ -19,7 +19,8 @@ import httpx
 
 from services.market_data import MarketDataService, _moex_get
 
-CLASS_CACHE_FILE = "instrument_class_cache.json"
+from services.paths import cache_path as _cache_path
+CLASS_CACHE_FILE = _cache_path("instrument_class_cache.json")
 
 # человекочитаемые ярлыки классов (фронт использует как есть)
 CLASS_LABELS = {
@@ -51,8 +52,8 @@ def _load_desc_cache() -> None:
 
 def _save_desc_cache() -> None:
     try:
-        with open(CLASS_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_desc_cache, f, ensure_ascii=False)
+        from services.paths import atomic_write_json as _awj
+        _awj(CLASS_CACHE_FILE, _desc_cache)
     except OSError:
         pass
 

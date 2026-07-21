@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 MOEX_CETS_URL = "https://iss.moex.com/iss/engines/currency/markets/selt/boards/CETS/securities.json"
-FX_CACHE_FILE = "fx_cache.json"
+from services.paths import cache_path as _cache_path
+FX_CACHE_FILE = _cache_path("fx_cache.json")
 
 _TOM_SECIDS = {"USD000UTSTOM": "USD", "CNYRUB_TOM": "CNY", "EUR_RUB__TOM": "EUR"}
 _CCYS = {"USD", "EUR", "CNY"}
@@ -48,8 +49,8 @@ def _load_disk() -> Optional[dict]:
 
 def _save_disk(data: dict) -> None:
     try:
-        with open(FX_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        from services.paths import atomic_write_json as _awj
+        _awj(FX_CACHE_FILE, data)
     except OSError:
         pass
 

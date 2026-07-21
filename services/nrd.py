@@ -61,9 +61,10 @@ PATH_REFRESH = "/api/auth/refresh"
 PATH_VALUATION = "/api/get/valuationnew"
 PATH_VALUATION_ADD = "/api/get/valuationnewadd"
 
-CACHE_FILE = Path("nrd_cache.json")
-UNIVERSE_FILE = Path("nrd_universe_cache.json")
-TOKEN_CACHE_FILE = Path("nrd_token_cache.json")
+from services.paths import cache_path as _cache_path
+CACHE_FILE = Path(_cache_path("nrd_cache.json"))
+UNIVERSE_FILE = Path(_cache_path("nrd_universe_cache.json"))
+TOKEN_CACHE_FILE = Path(_cache_path("nrd_token_cache.json"))
 HTTP_TIMEOUT = 30.0
 # Бамп при изменении маппинга/масштабов — старый кэш с другим scale инвалидируется
 CACHE_VERSION = 4  # v4: + simple_margin_bps в юниверс (like-for-like якорь нашего DM)

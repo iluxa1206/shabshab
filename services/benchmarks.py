@@ -22,7 +22,8 @@ BENCHMARKS = {
     "RUCEU": ("RUCEU", "Замещающие (RUCEU)"),
 }
 _HIST_URL = "https://iss.moex.com/iss/history/engines/stock/markets/index/securities/{secid}.json"
-_CACHE_FILE = "benchmarks_cache.json"
+from services.paths import cache_path as _cache_path
+_CACHE_FILE = _cache_path("benchmarks_cache.json")
 
 _mem: dict = {"date": None, "data": None}
 
@@ -70,8 +71,8 @@ async def get_benchmarks(days: int = 180) -> dict:
     if any(v["items"] for v in data.values()):
         _mem.update({"date": today, "data": data})
         try:
-            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"date": today, "data": data}, f, ensure_ascii=False)
+            from services.paths import atomic_write_json as _awj
+            _awj(_CACHE_FILE, {"date": today, "data": data})
         except OSError:
             pass
         return data

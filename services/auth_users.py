@@ -70,8 +70,16 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
 
 
+def _pwd_version(rec: dict) -> str:
+    """Версия пароля = хеш от bcrypt-хеша (12 hex). Меняется при смене пароля —
+    кладётся в JWT-claim pv: смена пароля мгновенно инвалидирует выданные токены
+    (раньше украденная cookie жила до 7 дней после смены пароля)."""
+    import hashlib
+    return hashlib.sha256((rec.get("hash") or "").encode("ascii")).hexdigest()[:12]
+
+
 def verify_credentials(email: str, password: str) -> Optional[dict]:
-    """Возвращает {"email", "role"} при верном пароле, иначе None."""
+    """Возвращает {"email", "role", "pv"} при верном пароле, иначе None."""
     email = (email or "").strip().lower()
     rec = _load()["users"].get(email)
     if not rec:
@@ -82,7 +90,7 @@ def verify_credentials(email: str, password: str) -> Optional[dict]:
         return None
     if not ok:
         return None
-    return {"email": email, "role": rec.get("role", "user")}
+    return {"email": email, "role": rec.get("role", "user"), "pv": _pwd_version(rec)}
 
 
 def get_user(email: str) -> Optional[dict]:
@@ -91,7 +99,7 @@ def get_user(email: str) -> Optional[dict]:
     rec = _load()["users"].get(email)
     if not rec:
         return None
-    return {"email": email, "role": rec.get("role", "user")}
+    return {"email": email, "role": rec.get("role", "user"), "pv": _pwd_version(rec)}
 
 
 def add_user(email: str, password: str, role: str = "user", overwrite: bool = False) -> None:

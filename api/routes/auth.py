@@ -36,9 +36,10 @@ class LoginBody(BaseModel):
     password: str
 
 
-def _make_token(email: str, role: str) -> str:
+def _make_token(email: str, role: str, pwd_ver: str = "") -> str:
     now = datetime.now(timezone.utc)
-    payload = {"sub": email, "role": role, "iat": now, "exp": now + SESSION_TTL}
+    payload = {"sub": email, "role": role, "pv": pwd_ver,
+               "iat": now, "exp": now + SESSION_TTL}
     return jwt.encode(payload, SECRET, algorithm=ALGO)
 
 
@@ -54,6 +55,12 @@ def _decode_token(token: str) -> Optional[dict]:
         return None
     # сверяем с актуальным хранилищем — удалённый юзер сразу теряет доступ
     user = auth_users.get_user(email)
+    if user is None:
+        return None
+    # версия пароля: смена пароля инвалидирует все выданные токены (в т.ч.
+    # легаси-токены без pv — разовый ре-логин после этого деплоя)
+    if data.get("pv") != user.get("pv"):
+        return None
     return user
 
 
@@ -104,7 +111,7 @@ async def login(body: LoginBody, response: Response):
     user = auth_users.verify_credentials(body.email, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
-    token = _make_token(user["email"], user["role"])
+    token = _make_token(user["email"], user["role"], user.get("pv", ""))
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,

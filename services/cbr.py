@@ -27,7 +27,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 _DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CACHE = os.path.join(_DIR, "cbr_cache.json")
+from services.paths import cache_path as _cache_path
+_CACHE = _cache_path("cbr_cache.json")
 _RUONIA_SEED = os.path.join(_DIR, "ruonia_seed.json")
 _UA = {"User-Agent": "Mozilla/5.0"}
 _KS_URL = "https://www.cbr.ru/hd_base/KeyRate/"
@@ -130,11 +131,10 @@ def _load_cache() -> dict:
 
 def _save_cache(ks: List[Tuple[date, float]], ruonia_live: List[Tuple[date, float]]) -> None:
     try:
-        with open(_CACHE, "w", encoding="utf-8") as f:
-            json.dump({"cache_date": date.today().isoformat(),
+        from services.paths import atomic_write_json as _awj
+        _awj(_CACHE, {"cache_date": date.today().isoformat(),
                        "ks": [[d.isoformat(), v] for d, v in ks],
-                       "ruonia_live": [[d.isoformat(), v] for d, v in ruonia_live]},
-                      f, ensure_ascii=False)
+                       "ruonia_live": [[d.isoformat(), v] for d, v in ruonia_live]})
     except OSError:
         pass
 

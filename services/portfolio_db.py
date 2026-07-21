@@ -72,10 +72,48 @@ CREATE TABLE IF NOT EXISTS pos_daily(
 );
 """
 
-# добивка колонок к существующим таблицам (ALTER не умеет IF NOT EXISTS)
-_MIGRATIONS = [
-    "ALTER TABLE nav_daily ADD COLUMN fx_usd REAL",
-    "ALTER TABLE nav_daily ADD COLUMN fx_cny REAL",
+# Версионированные миграции (PRAGMA user_version). Раньше — список ALTER с
+# глотанием OperationalError: без версий, «колонка есть» неотличимо от «ALTER
+# сломался», рост неуправляем.
+#
+# v2: фундамент P&L-атрибуции — то, что НЕЛЬЗЯ восстановить задним числом:
+#   trades      — изменения позиций (снапшоты positions перезаписываются целиком,
+#                 история qty между днями терялась); пишутся автоматически как
+#                 дельты при replace_snapshot/upsert_position
+#   cash_events — купоны/амортизации/взносы как cash-факты
+#   pos_daily.accrued — НКД на юнит (без него carry-компоненту не разложить)
+#   nav_daily.cash_rub — остаток денег
+_MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, [
+        "ALTER TABLE nav_daily ADD COLUMN fx_usd REAL",
+        "ALTER TABLE nav_daily ADD COLUMN fx_cny REAL",
+    ]),
+    (2, [
+        """CREATE TABLE IF NOT EXISTS trades(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             fund TEXT NOT NULL REFERENCES funds(code) ON DELETE CASCADE,
+             isin TEXT NOT NULL,
+             trade_date TEXT NOT NULL,
+             qty_delta REAL NOT NULL,
+             price_pct REAL,
+             fee_rub REAL,
+             source TEXT NOT NULL DEFAULT 'manual',  -- manual | snapshot-diff
+             note TEXT
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_trades_fund_date ON trades(fund, trade_date)",
+        """CREATE TABLE IF NOT EXISTS cash_events(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             fund TEXT NOT NULL REFERENCES funds(code) ON DELETE CASCADE,
+             date TEXT NOT NULL,
+             isin TEXT,
+             type TEXT NOT NULL,          -- COUPON|AMORT|REDEMPTION|DEPOSIT|WITHDRAWAL|REPO_INT|FEE|OTHER
+             amount_rub REAL NOT NULL,
+             note TEXT
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_cash_fund_date ON cash_events(fund, date)",
+        "ALTER TABLE pos_daily ADD COLUMN accrued REAL",
+        "ALTER TABLE nav_daily ADD COLUMN cash_rub REAL",
+    ]),
 ]
 
 _SEED_FUNDS = [
@@ -95,14 +133,23 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Схема + сид трёх фондов (идемпотентно). Зовётся на старте приложения."""
+    """Схема + версионированные миграции + сид трёх фондов (идемпотентно)."""
     with _lock, _connect() as conn:
         conn.executescript(_SCHEMA)
-        for mig in _MIGRATIONS:
-            try:
-                conn.execute(mig)
-            except sqlite3.OperationalError:
-                pass  # колонка уже есть
+        v = conn.execute("PRAGMA user_version").fetchone()[0]
+        for ver, stmts in _MIGRATIONS:
+            if ver <= v:
+                continue
+            for stmt in stmts:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    if ver == 1:
+                        pass  # легаси-базы до версионирования: fx-колонки уже добавлены
+                    else:
+                        raise
+            conn.execute(f"PRAGMA user_version={ver}")
+            v = ver
         now = datetime.now(timezone.utc).isoformat()
         for code, name, ccy in _SEED_FUNDS:
             conn.execute(
@@ -162,9 +209,25 @@ def get_positions(fund: str) -> list[dict]:
             "SELECT isin, qty, snap_date FROM positions WHERE fund=? ORDER BY isin", (fund,)))
 
 
+def _record_qty_deltas(conn, fund: str, new_qty: dict, trade_date: str) -> None:
+    """Дельты qty vs текущих позиций → trades (source=snapshot-diff): история
+    изменения позиций между снапшотами раньше терялась безвозвратно."""
+    old = {r["isin"]: r["qty"] for r in conn.execute(
+        "SELECT isin, qty FROM positions WHERE fund=?", (fund,))}
+    deltas = []
+    for isin in set(old) | set(new_qty):
+        d = (new_qty.get(isin) or 0.0) - (old.get(isin) or 0.0)
+        if abs(d) > 1e-9:
+            deltas.append((fund, isin, trade_date, d))
+    conn.executemany(
+        "INSERT INTO trades(fund,isin,trade_date,qty_delta,source) "
+        "VALUES(?,?,?,?,'snapshot-diff')", deltas)
+
+
 def replace_snapshot(fund: str, rows: list[tuple[str, float]], snap_date: str) -> int:
     """Заменяет снапшот фонда целиком. rows = [(isin, qty), ...]. Возвращает кол-во позиций."""
     with _lock, _connect() as conn:
+        _record_qty_deltas(conn, fund, dict(rows), snap_date)
         conn.execute("DELETE FROM positions WHERE fund=?", (fund,))
         conn.executemany(
             "INSERT INTO positions(fund,isin,qty,snap_date) VALUES(?,?,?,?)",
@@ -175,6 +238,13 @@ def replace_snapshot(fund: str, rows: list[tuple[str, float]], snap_date: str) -
 def upsert_position(fund: str, isin: str, qty: float, snap_date: str) -> None:
     """Точечное редактирование позиции; qty<=0 => удаление."""
     with _lock, _connect() as conn:
+        old = conn.execute("SELECT qty FROM positions WHERE fund=? AND isin=?",
+                           (fund, isin)).fetchone()
+        d = (qty if qty > 0 else 0.0) - (old["qty"] if old else 0.0)
+        if abs(d) > 1e-9:
+            conn.execute(
+                "INSERT INTO trades(fund,isin,trade_date,qty_delta,source) "
+                "VALUES(?,?,?,?,'snapshot-diff')", (fund, isin, snap_date, d))
         if qty <= 0:
             conn.execute("DELETE FROM positions WHERE fund=? AND isin=?", (fund, isin))
         else:
@@ -216,21 +286,60 @@ def save_nav(fund: str, day: str, m: dict) -> None:
     with _lock, _connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO nav_daily"
-            "(fund,date,nav_rub,mv_rub,repo_rub,dv01_rub,leverage,net_carry_rub,fx_usd,fx_cny) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "(fund,date,nav_rub,mv_rub,repo_rub,dv01_rub,leverage,net_carry_rub,fx_usd,fx_cny,cash_rub) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (fund, day, m.get("nav_rub"), m.get("mv_rub"), m.get("repo_rub"),
              m.get("dv01_rub"), m.get("leverage_gross"), m.get("net_carry_rub"),
-             m.get("fx_usd"), m.get("fx_cny")))
+             m.get("fx_usd"), m.get("fx_cny"), m.get("cash_rub")))
 
 
 def save_positions_snapshot(fund: str, day: str, rows: list[dict]) -> None:
-    """Дневной позиционный срез с ценами (перезапись за день)."""
+    """Дневной позиционный срез с ценами и НКД (перезапись за день).
+    accrued — НКД на юнит в валюте бумаги: без него carry-компоненту P&L
+    (dirty = clean + НКД) задним числом не разложить."""
     with _lock, _connect() as conn:
         conn.execute("DELETE FROM pos_daily WHERE fund=? AND date=?", (fund, day))
         conn.executemany(
-            "INSERT INTO pos_daily(fund,date,isin,qty,price_pct,fx,mv_rub) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO pos_daily(fund,date,isin,qty,price_pct,fx,mv_rub,accrued) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             [(fund, day, r["isin"], r.get("qty"), r.get("price_pct"),
-              r.get("fx"), r.get("mv_rub")) for r in rows])
+              r.get("fx"), r.get("mv_rub"), r.get("accrued")) for r in rows])
+
+
+# ---------- trades / cash events (фундамент атрибуции Ф5) ----------
+
+def add_trade(fund: str, isin: str, trade_date: str, qty_delta: float,
+              price_pct: Optional[float] = None, fee_rub: Optional[float] = None,
+              note: Optional[str] = None) -> dict:
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO trades(fund,isin,trade_date,qty_delta,price_pct,fee_rub,source,note) "
+            "VALUES(?,?,?,?,?,?,'manual',?)",
+            (fund, isin, trade_date, qty_delta, price_pct, fee_rub, note))
+        return dict(conn.execute("SELECT * FROM trades WHERE id=?", (cur.lastrowid,)).fetchone())
+
+
+def list_trades(fund: str, days: int = 365) -> list[dict]:
+    with _connect() as conn:
+        return _rows(conn.execute(
+            "SELECT * FROM trades WHERE fund=? ORDER BY trade_date DESC, id DESC LIMIT ?",
+            (fund, days * 10)))
+
+
+def add_cash_event(fund: str, day: str, type_: str, amount_rub: float,
+                   isin: Optional[str] = None, note: Optional[str] = None) -> dict:
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO cash_events(fund,date,isin,type,amount_rub,note) VALUES(?,?,?,?,?,?)",
+            (fund, day, isin, type_, amount_rub, note))
+        return dict(conn.execute("SELECT * FROM cash_events WHERE id=?", (cur.lastrowid,)).fetchone())
+
+
+def list_cash_events(fund: str, days: int = 365) -> list[dict]:
+    with _connect() as conn:
+        return _rows(conn.execute(
+            "SELECT * FROM cash_events WHERE fund=? ORDER BY date DESC, id DESC LIMIT ?",
+            (fund, days * 20)))
 
 
 def get_nav_history(fund: str, days: int = 120) -> list[dict]:

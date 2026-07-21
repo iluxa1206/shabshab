@@ -17,7 +17,8 @@ REFRESH_TOKEN = os.getenv("ALOR_REFRESH_TOKEN")
 AUTH_URL = "https://oauth.alor.ru/refresh"
 BASE_API = "https://api.alor.ru"
 
-TOKEN_CACHE_FILE = Path("alor_token_cache.json")
+from services.paths import cache_path as _cache_path
+TOKEN_CACHE_FILE = Path(_cache_path("alor_token_cache.json"))
 TOKEN_TTL = 28 * 60 # 28 минут
 HTTP_TIMEOUT = 15.0
 

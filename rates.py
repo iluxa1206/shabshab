@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rates_cache.json")
+from services.paths import cache_path as _cache_path
+CACHE_FILE = _cache_path("rates_cache.json")
 CBONDS_KEYRATE_IRS_URL = "https://cbonds.ru/indexes/93232/" 
 CBONDS_RUONIA_OIS_URL = "https://cbonds.ru/indexes/93218/"
 
@@ -160,8 +161,8 @@ def save_cache(ois, irs):
             "ois": quotes_to_dicts(ois),
             "irs": quotes_to_dicts(irs)
         }
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        from services.paths import atomic_write_json as _awj
+        _awj(CACHE_FILE, data)
     except Exception as e:
         logger.warning(f"Failed to save cache: {e}")
 
@@ -172,7 +173,7 @@ def save_cache(ois, irs):
 SPFI_INDEX_IDS = {"3M": 98488, "6M": 98490, "9M": 98492, "1Y": 98494, "2Y": 98496,
                   "3Y": 98498, "4Y": 98500, "5Y": 98546, "6Y": 98502, "7Y": 98504,
                   "8Y": 98506, "9Y": 98508, "10Y": 98510}
-SPFI_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spfi_cache.json")
+SPFI_CACHE_FILE = _cache_path("spfi_cache.json")
 # Снапшот 2026-06-30 — фолбэк при недоступности Cbonds (стареет!)
 SPFI_KS_FALLBACK = {"3M": 14.0069, "6M": 13.7284, "9M": 13.0211, "1Y": 13.4592,
                     "2Y": 13.0027, "3Y": 13.6501, "4Y": 13.5447, "5Y": 13.6249,
@@ -242,11 +243,10 @@ def get_spfi_curve(use_cache: bool = True) -> list[Quote]:
 
     if use_cache:
         try:
-            with open(SPFI_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"cache_date": date.today().isoformat(),
+            from services.paths import atomic_write_json as _awj
+            _awj(SPFI_CACHE_FILE, {"cache_date": date.today().isoformat(),
                            "quotes": [{"name": q.name, "tenor": q.tenor, "value": q.value,
-                                       "date": q.date.isoformat()} for q in quotes]},
-                          f, ensure_ascii=False, indent=2)
+                                       "date": q.date.isoformat()} for q in quotes]})
         except Exception as e:
             logger.warning(f"Failed to save SPFI cache: {e}")
     return quotes

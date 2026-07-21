@@ -7,7 +7,9 @@ import httpx
 from typing import Dict, Optional, Tuple, List
 from datetime import date
 
-SECURITIES_CACHE_FILE = "securities_cache.json"
+from services.paths import cache_path, atomic_write_json
+
+SECURITIES_CACHE_FILE = cache_path("securities_cache.json")
 _SNAP_TTL = 120.0  # сек: prev/accrued MOEX кэшируем внутридневно, чтоб не бомбить ISS
 # Максимальный возраст live-цены Alor: старше — не отдаём как «текущую» (вне торгов /
 # при упавшем Alor кэш отдавал цену любой давности; потребители честно падают на
@@ -23,8 +25,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SCHEDULE_CACHE_FILE = "schedule_cache.json"
-SCHEDULE_FULL_CACHE_FILE = "schedule_full_cache.json"
+SCHEDULE_CACHE_FILE = cache_path("schedule_cache.json")
+SCHEDULE_FULL_CACHE_FILE = cache_path("schedule_full_cache.json")
 
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.
@@ -57,8 +59,7 @@ def _load_schedule_cache() -> dict:
 
 def _save_schedule_cache(cache: dict) -> None:
     try:
-        with open(SCHEDULE_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False)
+        atomic_write_json(SCHEDULE_CACHE_FILE, cache)
     except OSError:
         pass
 
@@ -211,7 +212,7 @@ class MarketDataService:
         if cls._shortnames and cls._shortnames_date == today:
             return cls._shortnames
         try:
-            with open("shortnames_cache.json", "r", encoding="utf-8") as f:
+            with open(cache_path("shortnames_cache.json"), "r", encoding="utf-8") as f:
                 d = json.load(f)
             if d.get("date") == today:
                 cls._shortnames = d.get("map", {})
@@ -240,8 +241,7 @@ class MarketDataService:
         if out:
             cls._shortnames, cls._shortnames_date = out, today
             try:
-                with open("shortnames_cache.json", "w", encoding="utf-8") as f:
-                    json.dump({"date": today, "map": out}, f, ensure_ascii=False)
+                atomic_write_json(cache_path("shortnames_cache.json"), {"date": today, "map": out})
             except OSError:
                 pass
         return cls._shortnames
@@ -268,9 +268,8 @@ class MarketDataService:
     @classmethod
     def _save_full_disk(cls) -> None:
         try:
-            with open(SCHEDULE_FULL_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"date": cls._full_mem_date, "version": 2, "items": cls._full_mem},
-                          f, ensure_ascii=False)
+            atomic_write_json(SCHEDULE_FULL_CACHE_FILE,
+                              {"date": cls._full_mem_date, "version": 2, "items": cls._full_mem})
         except OSError:
             pass
 
@@ -462,8 +461,7 @@ class MarketDataService:
         if new:
             cls._sec_cache.update(new)
             try:
-                with open(SECURITIES_CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(cls._sec_cache, f, ensure_ascii=False)
+                atomic_write_json(SECURITIES_CACHE_FILE, cls._sec_cache)
             except OSError:
                 pass
         return out
