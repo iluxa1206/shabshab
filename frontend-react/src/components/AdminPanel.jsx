@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
@@ -263,21 +263,22 @@ const _FIELDS = [
 ];
 
 function InstrumentForm({ isin, onSaved }) {
-  // грузим ПОЛНЫЙ инструмент из реестра — прифилл всех полей реальными значениями
+  // ВСЕ хуки — до любого return (Rules of Hooks): грузим полный инструмент,
+  // прифилл через useEffect, мутация сохранения
   const q = useQuery({ queryKey: ["instrument", isin], queryFn: () => fetchInstrument(isin) });
   const [vals, setVals] = useState(null);
   const [err, setErr] = useState("");
 
-  // инициализируем форму, когда данные пришли
-  if (vals === null && q.data) {
-    setVals(Object.fromEntries(_FIELDS.map(([k]) => [k, q.data[k] ?? ""])));
-  }
-  if (q.isPending || vals === null) return <div className="admin-msg">Загрузка параметров…</div>;
+  useEffect(() => {
+    if (q.data && vals === null) {
+      setVals(Object.fromEntries(_FIELDS.map(([k]) => [k, q.data[k] ?? ""])));
+    }
+  }, [q.data, vals]);
 
   const save = useMutation({
     mutationFn: () => {
       const params = {};
-      for (const [k, v] of Object.entries(vals)) {
+      for (const [k, v] of Object.entries(vals || {})) {
         if (v === "" || v == null) continue;
         params[k] = _NUM.has(k) ? Number(v) : v;
       }
@@ -287,6 +288,8 @@ function InstrumentForm({ isin, onSaved }) {
     onSuccess: onSaved,
     onError: (ex) => setErr(ex.message || "Ошибка"),
   });
+
+  if (q.isPending || vals === null) return <div className="admin-msg">Загрузка параметров…</div>;
 
   return (
     <div className="instr-form">
