@@ -158,6 +158,36 @@ def test_sync_active_set_guards_small_listing(reg):
     assert reg.get("RU1")["active"] == 1                    # не тронут
 
 
+def test_reclassify_fixed_leaves_universe(reg):
+    """Фикс-бумага (base=FIXED) уходит из флоатер-универса."""
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    assert "RU1" in {x["isin"] for x in reg.universe_rows()}
+    reg.reclassify_fixed("RU1")
+    assert reg.get("RU1")["base"] == "FIXED"
+    assert "RU1" not in {x["isin"] for x in reg.universe_rows()}
+
+
+def test_reclassify_fixed_respects_manual_lock(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    reg.set_manual("RU1", {"base": "KEYRATE"}, lock=True)
+    reg.reclassify_fixed("RU1")
+    assert reg.get("RU1")["base"] == "KEYRATE"        # locked — не тронут
+
+
+def test_margin_check_and_suspect(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    reg.upsert({"isin": "RU2", "base": "KEYRATE", "margin_bps": 999,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    reg.set_margin_check("RU1", 0.3)    # ок
+    reg.set_margin_check("RU2", 5.0)    # подозрит.
+    suspect = {r["isin"] for r in reg.list_suspect()}
+    assert suspect == {"RU2"}
+    assert reg.count()["suspect"] == 1
+
+
 def test_nrd_disabled_by_default(monkeypatch):
     monkeypatch.setenv("NRD_CONFIG_FILE", tempfile.mktemp(suffix=".json"))
     import importlib

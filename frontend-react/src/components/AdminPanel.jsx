@@ -154,7 +154,9 @@ function InstrumentsSection() {
   // incomplete (без base/margin/maturity — не прайсуются) в приоритете, затем
   // просто новые на подтверждение; дедуп по ISIN
   const incomplete = q.data?.incomplete || [];
+  const suspect = q.data?.suspect || [];
   const unrev = q.data?.items || [];
+  // suspect (маржа расходится) → инфо-строки с Δ; incomplete → приоритет; затем новые
   const seen = new Set(incomplete.map((x) => x.isin));
   const items = [...incomplete, ...unrev.filter((x) => !seen.has(x.isin))];
   const cnt = q.data?.count;
@@ -177,8 +179,26 @@ function InstrumentsSection() {
         Реестр инструментов
         {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
         {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
+        {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
       </h3>
       {err && <Msg err={err} />}
+      {suspect.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div className="admin-h admin-h-sm">Подозрительная маржа (бэк-аут vs факт КС/RUONIA)</div>
+          <table className="admin-table instr-table"><thead>
+            <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Δ pp</th><th></th></tr>
+          </thead><tbody>
+            {suspect.slice(0, 20).map((s) => (
+              <InstrumentRow key={s.isin} it={{ ...s, maturity_date: `Δ${s.margin_check_pp > 0 ? "+" : ""}${s.margin_check_pp}pp` }}
+                editing={editIsin === s.isin}
+                onEdit={() => setEditIsin(editIsin === s.isin ? null : s.isin)}
+                onSaved={() => { setEditIsin(null); invalidate(); }}
+                onReview={() => reviewed.mutate(s.isin)}
+                busy={reviewed.isPending} />
+            ))}
+          </tbody></table>
+        </div>
+      )}
       {q.isPending ? (
         <div className="admin-msg">Загрузка…</div>
       ) : items.length === 0 ? (

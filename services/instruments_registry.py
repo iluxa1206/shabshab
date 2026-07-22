@@ -51,10 +51,16 @@ CREATE TABLE IF NOT EXISTS instruments(
   updated_at        TEXT,
   active            INTEGER NOT NULL DEFAULT 1,
   manual_locked     INTEGER NOT NULL DEFAULT 0,
-  reviewed          INTEGER NOT NULL DEFAULT 0   -- новая бумага, ждёт ревью параметров
+  reviewed          INTEGER NOT NULL DEFAULT 0,   -- новая бумага, ждёт ревью параметров
+  margin_check_pp   REAL                          -- бэк-аут маржи vs факт КС/RUONIA (pp); |>1.5| = подозрение
 );
 CREATE INDEX IF NOT EXISTS ix_instruments_active ON instruments(active);
 """
+
+# ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
+_MIGRATIONS = [
+    "ALTER TABLE instruments ADD COLUMN margin_check_pp REAL",
+]
 
 
 def _now() -> str:
@@ -78,6 +84,11 @@ def _ensure() -> None:
         return
     with _lock, _conn() as c:
         c.executescript(_SCHEMA)
+        for mig in _MIGRATIONS:
+            try:
+                c.execute(mig)
+            except sqlite3.OperationalError:
+                pass  # колонка уже есть
     _initialized = True
 
 
@@ -250,6 +261,40 @@ def retire_matured(today_iso: str) -> int:
         return cur.rowcount
 
 
+def reclassify_fixed(isin: str) -> None:
+    """Бумага оказалась фикс-купонной (0 будущих незафикс. купонов) → base='FIXED':
+    уходит из флоатер-универса (universe_rows фильтрует по KEYRATE/RUONIA), не
+    прайсится как флоатер. reviewed=0 — на подтверждение админом."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET base='FIXED', reviewed=0, updated_at=? "
+                  "WHERE isin=? AND manual_locked=0", (_now(), isin))
+
+
+def set_margin_check(isin: str, diff_pp: Optional[float]) -> None:
+    """Записать расхождение бэк-аута маржи (pp) от факта КС/RUONIA. |>1.5| → suspect."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET margin_check_pp=? WHERE isin=?",
+                  (round(diff_pp, 3) if diff_pp is not None else None, isin))
+
+
+_SUSPECT_PP = 1.5
+
+
+def list_suspect() -> list[dict]:
+    """Прайсуемые флоатеры, где бэк-аут маржи расходится с фактом КС/RUONIA >1.5pp
+    (вероятно неверная маржа/база из Cbonds) — на ручную проверку."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, maturity_date, margin_check_pp, source "
+            "FROM instruments WHERE active=1 AND margin_check_pp IS NOT NULL "
+            "AND ABS(margin_check_pp) > ? ORDER BY ABS(margin_check_pp) DESC",
+            (_SUSPECT_PP,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_incomplete() -> list[dict]:
     """Активные флоатеры без полного набора расчётных параметров (не прайсуемы):
     нужен ручной ввод базы/маржи/погашения (B3-очередь)."""
@@ -341,5 +386,8 @@ def count() -> dict:
         priceable = sum(1 for r in c.execute(
             "SELECT base, margin_bps, maturity_date FROM instruments WHERE active=1").fetchall()
             if is_priceable(r))
+        suspect = c.execute(
+            "SELECT COUNT(*) FROM instruments WHERE active=1 AND margin_check_pp IS NOT NULL "
+            "AND ABS(margin_check_pp) > ?", (_SUSPECT_PP,)).fetchone()[0]
     return {"total": total, "floaters": floaters, "unreviewed": unrev,
-            "priceable": priceable, "incomplete": floaters - priceable}
+            "priceable": priceable, "incomplete": floaters - priceable, "suspect": suspect}

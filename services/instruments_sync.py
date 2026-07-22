@@ -110,7 +110,18 @@ async def sync_instruments() -> dict:
     # 4. ретайр погашенных (A2): active=0 при maturity < сегодня
     retired = reg.retire_matured(date.today().isoformat())
 
+    # 5. самопроверка данных: реклассификация фикс-бумаг + бэк-аут маржи vs факт
+    #    КС/RUONIA (ловит неверную маржу/базу из Cbonds — инвариант «расчёт верен»)
+    try:
+        from services.instruments_validate import validate_priceable
+        vstats = await validate_priceable()
+    except Exception as e:
+        logger.warning("registry validation failed: %s", e)
+        vstats = {}
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "reclassified_fixed": vstats.get("reclassified_fixed", 0),
+                  "suspect": vstats.get("suspect", 0),
                   "deactivated": traded_stats.get("deactivated", 0),
                   "reactivated": traded_stats.get("reactivated", 0),
                   "synced_at": date.today().isoformat()})
