@@ -261,6 +261,38 @@ def retire_matured(today_iso: str) -> int:
         return cur.rowcount
 
 
+def apply_authoritative(isin: str, fields: dict, source: str) -> bool:
+    """Перезапись полей из АВТОРИТЕТНОГО источника (corpbonds — формула купона):
+    в отличие от upsert (COALESCE, None не затирает), тут ПЕРЕЗАПИСЫВАЕМ заданные
+    поля даже поверх известных (corpbonds точнее Cbonds по базе/марже/режиму).
+    manual_locked уважается. Обнуляет margin_check_pp (пересчитается). Returns True если применено."""
+    _ensure()
+    isin = (isin or "").strip()
+    upd = {k: v for k, v in fields.items() if k in _COLS and v is not None}
+    if not upd:
+        return False
+    with _lock, _conn() as c:
+        row = c.execute("SELECT manual_locked FROM instruments WHERE isin=?", (isin,)).fetchone()
+        if row is None or row["manual_locked"]:
+            return False
+        sets = [f"{k}=?" for k in upd] + ["source=?", "updated_at=?", "margin_check_pp=NULL", "reviewed=1"]
+        vals = list(upd.values()) + [source, _now(), isin]
+        c.execute(f"UPDATE instruments SET {','.join(sets)} WHERE isin=?", vals)
+    return True
+
+
+def set_exotic(isin: str, note: str = "") -> None:
+    """Экзотическая структура (инверсная/CPI/капитализируемая) — линейной моделью
+    КС+маржа не считается корректно → base='EXOTIC' (вне универса), reviewed=1."""
+    _ensure()
+    with _lock, _conn() as c:
+        r = c.execute("SELECT manual_locked FROM instruments WHERE isin=?", (isin,)).fetchone()
+        if r is None or r["manual_locked"]:
+            return
+        c.execute("UPDATE instruments SET base='EXOTIC', reviewed=1, margin_check_pp=NULL, "
+                  "updated_at=? WHERE isin=?", (_now(), isin))
+
+
 def reclassify_fixed(isin: str) -> None:
     """Бумага оказалась фикс-купонной (0 будущих незафикс. купонов) → base='FIXED':
     уходит из флоатер-универса (universe_rows фильтрует по KEYRATE/RUONIA), не

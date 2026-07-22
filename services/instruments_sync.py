@@ -119,9 +119,27 @@ async def sync_instruments() -> dict:
         logger.warning("registry validation failed: %s", e)
         vstats = {}
 
+    # 6. обогащение из corpbonds.ru (авторитетная формула купона) для проблемных:
+    #    incomplete (нет base/margin) + suspect (маржа расходится). Формула даёт
+    #    точную базу/маржу/режим + ловит ЭКЗОТИКУ (инверсные/CPI/G-Curve → EXOTIC,
+    #    вне линейной модели). Внешний сайт → капим и rate-limit'им.
+    cb_stats = {}
+    try:
+        from services.enrich_corpbonds import enrich_registry
+        targets = ([r["isin"] for r in reg.list_incomplete()]
+                   + [s["isin"] for s in reg.list_suspect()])
+        targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
+        if targets:
+            cb = await enrich_registry(targets, apply=True, delay=0.6)
+            cb_stats = cb.get("stats", {})
+    except Exception as e:
+        logger.warning("corpbonds enrich failed: %s", e)
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
                   "reclassified_fixed": vstats.get("reclassified_fixed", 0),
                   "suspect": vstats.get("suspect", 0),
+                  "cb_exotic": cb_stats.get("exotic", 0),
+                  "cb_filled": cb_stats.get("filled", 0),
                   "deactivated": traded_stats.get("deactivated", 0),
                   "reactivated": traded_stats.get("reactivated", 0),
                   "synced_at": date.today().isoformat()})
@@ -130,6 +148,7 @@ async def sync_instruments() -> dict:
 
 
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
+_MAX_CORPBONDS_PER_RUN = 60   # запросов к corpbonds.ru за прогон (внешний сайт)
 
 
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
