@@ -131,6 +131,33 @@ def test_retire_matured(reg):
     assert live == {"RU2"}                                  # погашенная выпала
 
 
+def test_sync_active_set_deactivates_non_traded(reg):
+    """Только MOEX-торгуемые: не-торгуемые → active=0, вернувшиеся → active=1."""
+    for i in range(600):  # набор >min_expected, чтобы sanity-guard пропустил
+        reg.upsert({"isin": f"RU{i:010d}", "base": "KEYRATE", "margin_bps": 100,
+                    "maturity_date": "2030-01-01"}, "cbonds")
+    reg.upsert({"isin": "RUCOMMERCIAL0", "base": "KEYRATE", "margin_bps": 100,
+                "maturity_date": "2030-01-01"}, "cbonds")   # не на MOEX
+    traded = {f"RU{i:010d}" for i in range(600)}            # без RUCOMMERCIAL0
+    st = reg.sync_active_set(traded)
+    assert st["deactivated"] == 1
+    assert reg.get("RUCOMMERCIAL0")["active"] == 0
+    assert "RUCOMMERCIAL0" not in {x["isin"] for x in reg.universe_rows(only_priceable=False)}
+    # вернулась в листинг → реактивация
+    st2 = reg.sync_active_set(traded | {"RUCOMMERCIAL0"})
+    assert st2["reactivated"] == 1
+    assert reg.get("RUCOMMERCIAL0")["active"] == 1
+
+
+def test_sync_active_set_guards_small_listing(reg):
+    """Куцый листинг (сбой сети) → массовой деактивации НЕТ (не обнуляем универс)."""
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 100,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    st = reg.sync_active_set({"RU_OTHER"}, min_expected=500)  # набор мал
+    assert st.get("deactivated") == 0
+    assert reg.get("RU1")["active"] == 1                    # не тронут
+
+
 def test_nrd_disabled_by_default(monkeypatch):
     monkeypatch.setenv("NRD_CONFIG_FILE", tempfile.mktemp(suffix=".json"))
     import importlib

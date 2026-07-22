@@ -567,19 +567,20 @@ class MarketDataService:
 
     @classmethod
     async def fetch_bond_listing(cls) -> Dict[str, dict]:
-        """{isin: {short_name, maturity, coupon_percent, face}} по всему борду TQCB
-        одним запросом — авторитетный live-список торгуемых облигаций MOEX (для
-        авто-дискавери новых бумаг в реестр, Ф3-A1). coupon_percent=None у бумаги
-        с купонами — маркер флоатера (ставка ещё не зафиксирована)."""
+        """{isin: {short_name, maturity, coupon_percent, face}} по ВСЕМУ рынку
+        облигаций MOEX (все борды, market-level) одним запросом — авторитетный
+        live-список ТОРГУЕМЫХ на MOEX бумаг (Ф3-A1: дискавери + фильтр «только MOEX»
+        + прямой источник maturity). coupon_percent=None у бумаги с купонами —
+        маркер флоатера. Дедуп по ISIN (бумага в нескольких бордах — берём с maturity)."""
         out: Dict[str, dict] = {}
         try:
             async with httpx.AsyncClient() as client:
                 resp = await _moex_get(
                     client,
-                    "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
-                    params={"iss.only": "securities",
+                    "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
+                    params={"iss.only": "securities", "iss.meta": "off",
                             "securities.columns": "ISIN,SHORTNAME,MATDATE,COUPONPERCENT,FACEVALUE"},
-                    timeout=15)
+                    timeout=20)
             if resp is not None and resp.status_code == 200:
                 sec = resp.json().get("securities", {})
                 cols, rows = sec.get("columns", []), sec.get("data", [])
@@ -589,20 +590,77 @@ class MarketDataService:
                     if not isin:
                         continue
                     mat = row[idx.get("MATDATE", -1)] if "MATDATE" in idx else None
+                    mat = mat if mat and mat != "0000-00-00" else None
                     cp = row[idx.get("COUPONPERCENT", -1)] if "COUPONPERCENT" in idx else None
                     fv = row[idx["FACEVALUE"]] if "FACEVALUE" in idx else None
                     try:
                         fv = float(fv) if fv not in (None, "") else None
                     except (ValueError, TypeError):
                         fv = None
+                    prev = out.get(isin)
+                    # бумага в нескольких бордах: не затираем строку с maturity пустой
+                    if prev and prev.get("maturity") and not mat:
+                        continue
                     out[isin] = {
                         "short_name": row[idx["SHORTNAME"]] if "SHORTNAME" in idx else None,
-                        "maturity": mat if mat and mat != "0000-00-00" else None,
+                        "maturity": mat,
                         "coupon_percent": float(cp) if cp not in (None, "") else None,
                         "face": fv,
                     }
         except Exception as e:
             logger.warning(f"bond listing error: {e}")
+        return out
+
+    @classmethod
+    async def fetch_security_master(cls, isins: List[str]) -> Dict[str, dict]:
+        """{isin: {maturity, issue, face, coupon_freq, coupon_percent, name}} из
+        БОРД-НЕЗАВИСИМОГО справочника MOEX /iss/securities/{isin}.json (description).
+        Ловит maturity даже для бумаг вне TQCB-борда (в отличие от board-методов),
+        покрытие шире — для наполнения реестра параметрами (Ф3-энрич)."""
+        out: Dict[str, dict] = {}
+
+        async def one(client, isin):
+            try:
+                resp = await _moex_get(
+                    client, f"https://iss.moex.com/iss/securities/{isin}.json",
+                    params={"iss.only": "description", "iss.meta": "off"}, timeout=10)
+                if resp is None or resp.status_code != 200:
+                    return
+                desc = resp.json().get("description", {})
+                cols, rows = desc.get("columns", []), desc.get("data", [])
+                if "name" not in cols or "value" not in cols:
+                    return
+                ni, vi = cols.index("name"), cols.index("value")
+                kv = {r[ni]: r[vi] for r in rows}
+                mat = kv.get("MATDATE")
+                rec = {
+                    "maturity": mat if mat and mat != "0000-00-00" else None,
+                    "issue": kv.get("ISSUEDATE") or kv.get("STARTDATEMOEX") or None,
+                    "face": _f(kv.get("FACEVALUE") or kv.get("INITIALFACEVALUE")),
+                    "coupon_freq": _f(kv.get("COUPONFREQUENCY")),
+                    "coupon_percent": _f(kv.get("COUPONPERCENT")),
+                    "name": kv.get("SHORTNAME") or kv.get("NAME"),
+                }
+                if any(v is not None for v in rec.values()):
+                    out[isin] = rec
+            except Exception:
+                return
+
+        def _f(x):
+            try:
+                return float(x) if x not in (None, "") else None
+            except (ValueError, TypeError):
+                return None
+
+        # батчим с ограничением конкуренции — не залить MOEX сотнями параллельных
+        sem = asyncio.Semaphore(8)
+
+        async def guarded(client, isin):
+            async with sem:
+                await one(client, isin)
+
+        async with httpx.AsyncClient() as client:
+            await asyncio.gather(*(guarded(client, i) for i in isins))
         return out
 
     @classmethod

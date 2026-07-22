@@ -44,8 +44,13 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("MOEX listing failed: %s", e)
         listing = {}
+    # «только MOEX-торгуемые»: не-торгуемые (коммерческие/OTC — нет в листинге)
+    # деактивируются, вернувшиеся — реактивируются (sanity-guard внутри)
+    traded_stats = reg.sync_active_set(set(listing.keys()))
+
     known = {r["isin"] for r in reg.universe_rows(only_priceable=False, only_floaters=False)}
-    # существующие: освежить maturity/name/face
+    # существующие: освежить maturity/name/face ПРЯМО из листинга (market-level даёт
+    # MATDATE — закрывает главный пробел «нет maturity» без per-bond вызовов)
     for isin in known & set(listing):
         mo = listing[isin]
         upd = {"isin": isin, "maturity_date": mo.get("maturity"),
@@ -71,22 +76,33 @@ async def sync_instruments() -> dict:
         logger.info("discovery capped: %d new ISINs, checked %d",
                     len(new_isins), _MAX_DISCOVERY_PER_RUN)
 
-    # 3. добор maturity/issue/face из MOEX securities для бумаг без даты погашения
-    #    (у Cbonds-бумаг maturity нет; листинг мог не покрыть — добираем точечно)
-    missing = [r["isin"] for r in reg.universe_rows(only_priceable=False)
-               if not r.get("maturity_date")]
+    # 3. добор maturity/issue/face/частоты из БОРД-НЕЗАВИСИМОГО справочника MOEX
+    #    (fetch_security_master ловит maturity даже вне TQCB — покрытие шире, чем
+    #    board-методы; у Cbonds-бумаг maturity нет вовсе). Заодно инференс базы для
+    #    ОФЗ-ПК (RUONIA-флоатеры Минфина) по имени.
+    incomplete_rows = [r for r in reg.universe_rows(only_priceable=False, only_floaters=False)
+                       if not r.get("maturity_date")]
+    missing = [r["isin"] for r in incomplete_rows]
     enriched = 0
     if missing:
         try:
-            secs = await MarketDataService.fetch_moex_securities(missing)
+            secs = await MarketDataService.fetch_security_master(missing)
         except Exception as e:
-            logger.warning("MOEX securities enrich failed: %s", e)
+            logger.warning("MOEX security master enrich failed: %s", e)
             secs = {}
         for isin, mo in (secs or {}).items():
             if not mo:
                 continue
+            freq = mo.get("coupon_freq")
             upd = {"isin": isin, "maturity_date": mo.get("maturity"),
                    "issue_date": mo.get("issue"), "face_value": _f(mo.get("face"))}
+            if freq:
+                upd["coupons_per_year"] = int(freq)
+                upd["coupon_period_days"] = round(365 / freq)
+            # база ОФЗ-ПК (Минфин, плавающий по RUONIA) по имени
+            name = (mo.get("name") or "").upper()
+            if _looks_ofz_pk(name, isin):
+                upd["base"] = "RUONIA"
             if any(v is not None for k, v in upd.items() if k != "isin"):
                 reg.upsert(upd, source="moex", mark_new=False)
                 enriched += 1
@@ -95,12 +111,22 @@ async def sync_instruments() -> dict:
     retired = reg.retire_matured(date.today().isoformat())
 
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "deactivated": traded_stats.get("deactivated", 0),
+                  "reactivated": traded_stats.get("reactivated", 0),
                   "synced_at": date.today().isoformat()})
     logger.info("instruments sync: %s | registry=%s", stats, reg.count())
     return stats
 
 
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
+
+
+def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
+    """ОФЗ-ПК (Минфин, купон плавает по RUONIA) — по имени/названию выпуска.
+    SU29xxx — тикерный префикс серии ОФЗ-ПК на MOEX."""
+    return ("ОФЗ-ПК" in name_upper or "ОФЗ ПК" in name_upper
+            or "29" == (isin[8:10] if len(isin) > 10 else "")  # редко
+            or "SU29" in name_upper)
 
 
 async def _is_floater(isin: str) -> bool:

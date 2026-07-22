@@ -214,6 +214,30 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
     return out
 
 
+def sync_active_set(traded_isins: set, min_expected: int = 500) -> dict:
+    """Держит active в согласии с набором ТОРГУЕМЫХ на MOEX бумаг:
+    не-торгуемые (нет в traded_isins — коммерческие/OTC/делистинг) → active=0;
+    вернувшиеся в листинг → active=1. Sanity-guard: если listing куцый
+    (< min_expected — сбой сети) НЕ деактивируем массово, чтобы не обнулить универс.
+    Возвращает {deactivated, reactivated}."""
+    _ensure()
+    if len(traded_isins) < min_expected:
+        return {"deactivated": 0, "reactivated": 0, "skipped": "listing too small"}
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT isin, active FROM instruments").fetchall()
+        deact = react = 0
+        now = _now()
+        for r in rows:
+            traded = r["isin"] in traded_isins
+            if r["active"] and not traded:
+                c.execute("UPDATE instruments SET active=0, updated_at=? WHERE isin=?", (now, r["isin"]))
+                deact += 1
+            elif not r["active"] and traded:
+                c.execute("UPDATE instruments SET active=1, updated_at=? WHERE isin=?", (now, r["isin"]))
+                react += 1
+    return {"deactivated": deact, "reactivated": react}
+
+
 def retire_matured(today_iso: str) -> int:
     """Деактивирует бумаги с погашением < сегодня (active=0). Возвращает число
     ретайрнутых. Список остаётся чистым — мёртвые бумаги не мусорят универс/ревью."""
