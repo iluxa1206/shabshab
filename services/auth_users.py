@@ -78,14 +78,30 @@ def _pwd_version(rec: dict) -> str:
     return hashlib.sha256((rec.get("hash") or "").encode("ascii")).hexdigest()[:12]
 
 
+# Фиксированный dummy-хеш для сверки при отсутствии юзера: bcrypt.checkpw
+# отрабатывает то же время, что и для реального аккаунта → нет user enumeration
+# по таймингу отклика (SEC #4). Хеш заведомо ничему не соответствует.
+_DUMMY_HASH = "$2b$12$0000000000000000000000000000000000000000000000000000u".encode("ascii")
+
+
 def verify_credentials(email: str, password: str) -> Optional[dict]:
-    """Возвращает {"email", "role", "pv"} при верном пароле, иначе None."""
+    """Возвращает {"email", "role", "pv"} при верном пароле, иначе None.
+
+    ВНИМАНИЕ: bcrypt.checkpw блокирует ~50-100мс — в async-хендлерах звать через
+    asyncio.to_thread (SEC #1), иначе встаёт event loop. Существующий/отсутствующий
+    юзер обрабатываются за одинаковое время (dummy-хеш, SEC #4)."""
     email = (email or "").strip().lower()
     rec = _load()["users"].get(email)
+    pw = password.encode("utf-8")
     if not rec:
+        # тратим то же время на bcrypt, что и для реального юзера (constant-time)
+        try:
+            bcrypt.checkpw(pw, _DUMMY_HASH)
+        except (ValueError, TypeError):
+            pass
         return None
     try:
-        ok = bcrypt.checkpw(password.encode("utf-8"), rec["hash"].encode("ascii"))
+        ok = bcrypt.checkpw(pw, rec["hash"].encode("ascii"))
     except (ValueError, KeyError):
         return None
     if not ok:

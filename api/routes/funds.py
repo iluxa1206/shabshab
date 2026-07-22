@@ -67,7 +67,10 @@ class FundPatch(BaseModel):
 
 
 class SnapshotIn(BaseModel):
-    csv: str
+    # лимит тела (SEC #5): парсер грузит весь текст в память и гоняет regex
+    # построчно — без потолка авторизованный юзер может послать гигантский body
+    # (память/CPU DoS). 1 МБ с запасом покрывает любой реальный портфель.
+    csv: str = Field(..., max_length=1_048_576)
     snap_date: Optional[str] = None  # ISO; по умолчанию сегодня
 
 

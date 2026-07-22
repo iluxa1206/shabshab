@@ -6,7 +6,10 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -19,7 +22,52 @@ from services import auth_users
 
 load_dotenv()  # AUTH_SECRET / AUTH_COOKIE_SECURE из .env
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# --- Rate-limit /login (SEC #2): in-memory backoff по ключу IP+email ---
+# Одиночный процесс (uvicorn 1 воркер) — общий dict достаточен; при масштабировании
+# на воркеры вынести в Redis. Экспоненциальный порог: чем больше неудач, тем дольше
+# окно. Цель — сорвать онлайн-брутфорс единственного админ-пароля, не мешая юзеру.
+_LOGIN_FAILS: dict[str, tuple[int, float]] = {}   # key -> (fail_count, window_start)
+_LOGIN_MAX_FAILS = 5           # неудач до блокировки
+_LOGIN_WINDOW_SEC = 300        # окно счётчика / базовая блокировка
+_LOGIN_FAILS_MAX_ENTRIES = 4096  # защита самого dict от разрастания
+
+
+def _login_key(request: Request, email: str) -> str:
+    ip = request.client.host if request.client else "?"
+    return f"{ip}|{(email or '').strip().lower()}"
+
+
+def _login_blocked_for(key: str, now: float) -> float:
+    """Секунд до разблокировки (0 = не заблокирован)."""
+    ent = _LOGIN_FAILS.get(key)
+    if not ent:
+        return 0.0
+    fails, start = ent
+    if fails < _LOGIN_MAX_FAILS:
+        return 0.0
+    # блокировка растёт с числом неудач сверх порога (5→300с, 6→600с, capped 1ч)
+    block = min(_LOGIN_WINDOW_SEC * (2 ** (fails - _LOGIN_MAX_FAILS)), 3600)
+    remaining = start + block - now
+    return remaining if remaining > 0 else 0.0
+
+
+def _login_record_fail(key: str, now: float) -> None:
+    if len(_LOGIN_FAILS) > _LOGIN_FAILS_MAX_ENTRIES:
+        # выкидываем протухшие записи, чтобы dict не рос бесконечно (DoS-память)
+        for k, (_f, s) in list(_LOGIN_FAILS.items()):
+            if now - s > 3600:
+                _LOGIN_FAILS.pop(k, None)
+    fails, start = _LOGIN_FAILS.get(key, (0, now))
+    if now - start > _LOGIN_WINDOW_SEC and fails < _LOGIN_MAX_FAILS:
+        fails, start = 0, now      # окно истекло без блокировки — сброс
+    _LOGIN_FAILS[key] = (fails + 1, start if fails else now)
+
+
+def _login_reset(key: str) -> None:
+    _LOGIN_FAILS.pop(key, None)
 
 # AUTH_SECRET обязателен в проде — иначе токены нельзя подписать/проверить.
 # Без него любой запрос к данным вернёт 401 (fail-closed), сайт остаётся закрыт.
@@ -105,12 +153,23 @@ class UpdateUserBody(BaseModel):
 
 
 @router.post("/login")
-async def login(body: LoginBody, response: Response):
+async def login(body: LoginBody, request: Request, response: Response):
     if not SECRET:
         raise HTTPException(status_code=503, detail="Авторизация не настроена (AUTH_SECRET)")
-    user = auth_users.verify_credentials(body.email, body.password)
+    now = time.time()
+    key = _login_key(request, body.email)
+    blocked = _login_blocked_for(key, now)
+    if blocked > 0:
+        logger.warning("login rate-limited: key=%s, %.0fs remaining", key, blocked)
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Попробуйте позже.",
+                            headers={"Retry-After": str(int(blocked) + 1)})
+    # bcrypt блокирует event loop ~50-100мс → в threadpool (SEC #1)
+    user = await asyncio.to_thread(auth_users.verify_credentials, body.email, body.password)
     if not user:
+        _login_record_fail(key, now)
+        logger.warning("login failed: key=%s", key)
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
+    _login_reset(key)
     token = _make_token(user["email"], user["role"], user.get("pv", ""))
     response.set_cookie(
         key=COOKIE_NAME,
@@ -138,7 +197,8 @@ async def me(user: dict = Depends(require_user)):
 # --- Смена своего пароля (любой авторизованный) ---
 @router.post("/password")
 async def change_own_password(body: PasswordBody, user: dict = Depends(require_user)):
-    if not auth_users.verify_credentials(user["email"], body.current_password):
+    # bcrypt в threadpool (SEC #1) — не блокируем event loop
+    if not await asyncio.to_thread(auth_users.verify_credentials, user["email"], body.current_password):
         raise HTTPException(status_code=400, detail="Текущий пароль неверный")
     try:
         auth_users.set_password(user["email"], body.new_password)
