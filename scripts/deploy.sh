@@ -22,6 +22,7 @@ rsync -az --delete \
   --exclude '**/__pycache__' \
   --exclude '.pytest_cache' \
   --exclude '.claude' \
+  --exclude '*.xlsm' \
   --exclude '*.pyc' \
   -e 'ssh -o BatchMode=yes' \
   ./ "$SERVER:$REMOTE/"
