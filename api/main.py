@@ -67,11 +67,22 @@ async def universe_price_poller():
     from services.universe import compute_universe_metrics
     from services.market_data import market_cache
     from services import history
+    from services.instruments_sync import sync_instruments
     await asyncio.sleep(30)  # прогрев: не конкурировать со стартом
+    _last_reg_sync = None
     while True:
         try:
+            # ежедневный синк реестра инструментов (обнаружение новых бумаг +
+            # добор maturity из MOEX). Раз в день, независимо от торговых часов.
+            _today = date.today().isoformat()
+            if _last_reg_sync != _today:
+                try:
+                    await sync_instruments()
+                    _last_reg_sync = _today
+                except Exception as e:
+                    logger.warning(f"instruments sync error: {e}")
             if _in_moex_trading_hours():
-                uni = await nrd_service.fetch_floater_universe()  # кэш на день
+                uni = await nrd_service.fetch_floater_universe()  # реестр / НРД
                 isins = [u["isin"] for u in uni if u.get("isin")]
                 # дневной срез истории НРД-метрик — здесь, а не по первому запросу
                 # дашборда (раньше история писалась, только если кто-то зашёл)

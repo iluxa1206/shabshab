@@ -358,11 +358,58 @@ _UNIVERSE_TTL_SEC = 4 * 3600
 _metrics_fail_until: float = 0.0
 _METRICS_FAIL_BACKOFF_SEC = 300
 
+def is_active() -> bool:
+    """НРД-слой реально работает ⇔ включён админом (runtime-флаг) И есть креды.
+    Базово ВЫКЛЮЧЕН: универс идёт из реестра инструментов, расчёт — по нашим кривым."""
+    try:
+        from services import nrd_config
+        return nrd_config.is_enabled() and is_configured()
+    except Exception:
+        return False
+
+
+def invalidate_memory() -> None:
+    """Сброс in-memory кэшей НРД (universe/metrics) — при переключении флага НРД,
+    чтобы OFF↔ON подхватилось без рестарта процесса."""
+    _universe_mem.update({"date": None, "items": None, "fetched_at": 0.0})
+    global _metrics_fail_until
+    _metrics_fail_until = 0.0
+
+
+def _registry_universe() -> List[dict]:
+    """Универс из реестра инструментов (НРД-независимо). Если реестр пуст —
+    разовый bootstrap-sync из доступных источников (замороженный NRD-кэш + Cbonds)."""
+    from services import instruments_registry as reg
+    rows = reg.universe_rows()
+    if rows:
+        return rows
+    # холодный реестр → наполняем из того, что есть на диске (без сети)
+    try:
+        frozen = _load_json(UNIVERSE_FILE).get("items", [])
+    except Exception:
+        frozen = []
+    cbonds = manual = {}
+    try:
+        from services import ref_data
+        cbonds = ref_data.load_cbonds()
+        manual = ref_data.load_manual()
+    except Exception:
+        pass
+    try:
+        reg.sync_from_sources(frozen, cbonds, manual)
+    except Exception as e:
+        logger.warning("registry bootstrap sync failed: %s", e)
+    return reg.universe_rows()
+
+
 async def fetch_floater_universe() -> List[dict]:
-    """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA) из НРД valuationnewadd.
-    Пагинация по 1000, фильтр coupon_type=float + база CBRATED/RUONIARATED. Кэш на день."""
-    if not is_configured():
-        return []
+    """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA).
+
+    НРД ВЫКЛЮЧЕН (базовый режим) → список из реестра инструментов (расчётные поля
+    из Cbonds/MOEX, NRD-поля пустые). НРД ВКЛЮЧЁН → из НРД valuationnewadd
+    (пагинация 1000, фильтр coupon_type=float, база CBRATED/RUONIARATED), кэш на день."""
+    if not is_active():
+        return _registry_universe()
     today = date.today().isoformat()
     now = time.time()
     # in-memory слой: юниверс запрашивается на каждый запрос дашборда — не читаем
@@ -453,8 +500,8 @@ async def fetch_floater_universe() -> List[dict]:
 
 async def fetch_nrd_metrics(isins: List[str]) -> Dict[str, dict]:
     """{isin: нормализованный блок НРД}. Кэш на диск по дате расчёта.
-    Без конфига/при ошибке — пустой dict (грейсфул)."""
-    if not isins or not is_configured():
+    НРД выключен/без конфига/при ошибке — пустой dict (грейсфул, обогащения нет)."""
+    if not isins or not is_active():
         return {}
 
     today = date.today().isoformat()

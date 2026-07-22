@@ -234,10 +234,12 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         nrd_block = nrd_view(nrd_metrics.get(isin, {}), last_price)
     except Exception as e:
         logger.warning(f"NRD details error for {isin}: {e}")
-    if nrd_block is None and nrd_service.is_configured():
+    if nrd_block is None and nrd_service.is_active():
         warnings.append("NRD data unavailable for this bond")
-    elif not nrd_service.is_configured():
-        warnings.append("NRD source not configured (set NRD_LOGIN / NRD_APIKEY in .env)")
+    elif not nrd_service.is_active():
+        # НРД-слой выключен (базовый режим) — метрики считаются по нашим кривым,
+        # NRD-обогащение (цена/fair-value/duration) недоступно
+        warnings.append("NRD source disabled")
 
     return {
         "reference": ref_dict,

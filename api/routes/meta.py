@@ -1,9 +1,12 @@
 import os
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from datetime import date
 from api.schemas import MetaResponse
 from services.market_data import MarketDataService
 from services import nrd as nrd_service
+from services import nrd_config, instruments_registry
+from api.routes.auth import require_admin
 from auth import REFRESH_TOKEN
 
 router = APIRouter()
@@ -30,7 +33,7 @@ async def get_meta():
     source_status = {
         "alor": bool(REFRESH_TOKEN),                 # ценами живёт WS; здесь — есть ли креды
         "cbonds": bool(ruonia and keyrate),          # кривые ставок построены
-        "nrd": nrd_service.is_configured(),          # НРД ценовой центр подключён
+        "nrd": nrd_service.is_active(),              # НРД-слой включён И подключён
     }
 
     return MetaResponse(
@@ -45,3 +48,32 @@ async def get_meta():
         warnings=warnings,
         nrd_drift=drift,
     )
+
+
+# --- НРД-слой: статус + переключение (админ) ----------------------------------
+class NrdToggle(BaseModel):
+    enabled: bool
+
+
+@router.get("/nrd", tags=["System"])
+async def nrd_status():
+    """Состояние НРД-слоя: включён (runtime-флаг), есть ли креды, реально ли активен,
+    + счётчик реестра инструментов (источник универса без НРД)."""
+    return {
+        "enabled": nrd_config.is_enabled(),
+        "configured": nrd_service.is_configured(),
+        "active": nrd_service.is_active(),
+        "registry": instruments_registry.count(),
+    }
+
+
+@router.post("/nrd", tags=["System"])
+async def nrd_toggle(body: NrdToggle, _admin: dict = Depends(require_admin)):
+    """Включить/выключить НРД-слой (только админ). Сбрасывает in-memory кэши НРД,
+    смена подхватывается сразу. Включение без кред — флаг встанет, но active=False."""
+    state = nrd_config.set_enabled(body.enabled)
+    return {
+        "enabled": state["enabled"],
+        "configured": nrd_service.is_configured(),
+        "active": nrd_service.is_active(),
+    }
