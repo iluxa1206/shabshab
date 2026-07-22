@@ -48,8 +48,10 @@ _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 @router.get("/unreviewed", tags=["Instruments"])
 async def unreviewed(_admin: dict = Depends(require_admin)):
-    """Новые бумаги, параметры которых ещё не подтверждены (для ручного ревью)."""
-    return {"items": reg.list_unreviewed(), "count": reg.count()}
+    """Новые бумаги на ревью + непрайсуемые (без base/margin/maturity) + счётчики."""
+    return {"items": reg.list_unreviewed(),
+            "incomplete": reg.list_incomplete(),
+            "count": reg.count()}
 
 
 @router.get("/{isin}", tags=["Instruments"])

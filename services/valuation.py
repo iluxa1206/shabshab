@@ -180,6 +180,23 @@ def calculate_valuation_metrics(
         except Exception as e:
             logger.warning(f"to-offer valuation error for {bond.isin}: {e}")
 
+    # SANITY-GUARD (C6): вывод вне разумных границ = плохой вход (кривая/параметры/
+    # цена) → чистим метрику в None + помечаем, а не выдаём мусор в таблицу. Границы
+    # широкие: ловят только явную дичь (SM −30000bps, ytm 900%), не режут дистресс.
+    sm_bps = _sane_bps(sm_bps, warnings, "sm")
+    disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
+    spread_to_base_bps = _sane_bps(spread_to_base_bps, warnings, "spread_to_base")
+    sm_to_offer = _sane_bps(sm_to_offer, warnings, "sm_to_offer")
+    dm_to_offer = _sane_bps(dm_to_offer, warnings, "disc_margin_to_offer")
+    impl_yield = _sane_pct(impl_yield, warnings, "yield")
+    y_to_offer = _sane_pct(y_to_offer, warnings, "yield_to_offer")
+    if dirty_rub is not None and dirty_rub <= 0:
+        warnings.append("sanity: dirty_price ≤ 0")
+
+    status = "SUCCESS" if sm_bps is not None else "DM_FAILED"
+    if any(w.startswith("sanity:") for w in warnings):
+        status = "SANITY_FLAG"
+
     return {
         "clean_price_pct": price,
         "dirty_price_rub": dirty_rub,
@@ -190,7 +207,7 @@ def calculate_valuation_metrics(
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "base_yield_pct": round(base_yield, 4) if base_yield is not None else None,
         "spread_to_base_bps": spread_to_base_bps,
-        "pricing_status": "SUCCESS" if sm_bps is not None else "DM_FAILED",
+        "pricing_status": status,
         "warnings": sorted(set(warnings)),
         "preferred_horizon": horizon,
         "offer_date": offer_date,
@@ -199,3 +216,27 @@ def calculate_valuation_metrics(
         "disc_margin_to_offer_bps": dm_to_offer,
         "yield_to_offer_pct": y_to_offer,
     }
+
+
+# Разумные границы вывода — ловят data-driven регрессии (плохой параметр → дичь),
+# не режут реальный дистресс. Спред флоатера ±10000bps, доходность 0..150%.
+_SANE_BPS = (-5000, 15000)
+_SANE_PCT = (-5.0, 150.0)
+
+
+def _sane_bps(v, warnings: list, name: str):
+    if v is None:
+        return None
+    if not (_SANE_BPS[0] <= v <= _SANE_BPS[1]):
+        warnings.append(f"sanity: {name}={v}bps вне [{_SANE_BPS[0]},{_SANE_BPS[1]}]")
+        return None
+    return v
+
+
+def _sane_pct(v, warnings: list, name: str):
+    if v is None:
+        return None
+    if not (_SANE_PCT[0] <= v <= _SANE_PCT[1]):
+        warnings.append(f"sanity: {name}={v}% вне [{_SANE_PCT[0]},{_SANE_PCT[1]}]")
+        return None
+    return v

@@ -108,3 +108,27 @@ def test_flat_forward_curve_convention(calc_date):
     assert flat.rate_convention == "level"
     f = flat.forward(calc_date + timedelta(days=10), calc_date + timedelta(days=100))
     assert f == pytest.approx(0.15)
+
+
+def test_sanity_guard_nulls_garbage_output(calc_date, flat_index_15, monkeypatch):
+    """C6: заведомо бредовый SM (out-of-range) → None + pricing_status SANITY_FLAG,
+    а не мусор в таблице. Эмулируем через monkeypatch солвера."""
+    import services.valuation as sv
+    from conftest import make_bond, quarterly_periods
+    _, idx = flat_index_15
+    monkeypatch.setattr("services.coupon_calib.index_history", lambda base: idx)
+    # солвер вернёт дичь вне [_SANE_BPS]
+    monkeypatch.setattr("services.valuation.solve_dm_bps", lambda *a, **k: -99999)
+    monkeypatch.setattr("services.valuation.solve_discount_margin_bps", lambda *a, **k: None)
+
+    from forwards import CurveBootstrapper
+    from rates import Quote
+    from conftest import CALC_DATE
+    q = [Quote("SYN", t, 15.0, CALC_DATE) for t in ["3M", "1Y", "3Y", "5Y", "10Y"]]
+    curve = CurveBootstrapper.bootstrap_keyrate(q, CALC_DATE)
+    bond = make_bond()
+    periods = quarterly_periods(calc_date, bond.maturity_date)
+    m = sv.calculate_valuation_metrics(bond, 100.0, curve, calc_date, periods=periods)
+    assert m["sm_bps"] is None                       # дичь вычищена
+    assert m["pricing_status"] == "SANITY_FLAG"
+    assert any("sanity:" in w for w in m["warnings"])

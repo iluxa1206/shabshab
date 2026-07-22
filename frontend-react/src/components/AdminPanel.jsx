@@ -150,7 +150,13 @@ function InstrumentsSection() {
   const [err, setErr] = useState("");
   const [editIsin, setEditIsin] = useState(null);
   const q = useQuery({ queryKey: UNREVIEWED_KEY, queryFn: fetchUnreviewedInstruments });
-  const items = q.data?.items || [];
+  // incomplete (без base/margin/maturity — не прайсуются) в приоритете, затем
+  // просто новые на подтверждение; дедуп по ISIN
+  const incomplete = q.data?.incomplete || [];
+  const unrev = q.data?.items || [];
+  const seen = new Set(incomplete.map((x) => x.isin));
+  const items = [...incomplete, ...unrev.filter((x) => !seen.has(x.isin))];
+  const cnt = q.data?.count;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: UNREVIEWED_KEY });
@@ -168,7 +174,8 @@ function InstrumentsSection() {
     <section className="admin-sec">
       <h3 className="admin-h">
         Реестр инструментов
-        {items.length > 0 && <span className="admin-badge">{items.length} на ревью</span>}
+        {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
+        {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
       </h3>
       {err && <Msg err={err} />}
       {q.isPending ? (

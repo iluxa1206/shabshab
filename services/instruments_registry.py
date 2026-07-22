@@ -172,10 +172,23 @@ def get(isin: str) -> Optional[dict]:
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 
 
-def universe_rows(only_floaters: bool = True) -> list[dict]:
+def is_priceable(row) -> bool:
+    """Бумага прайсуема нашим расчётом ⇔ есть база-флоатер, маржа и дата погашения.
+    Без любого из трёх SM/DM/z не посчитать (нет базы→нет проекции, нет маржи→
+    нет спреда выпуска, нет maturity→поток не терминируется, perp-guard)."""
+    return (row["base"] in ("KEYRATE", "RUONIA")
+            and row["margin_bps"] is not None
+            and bool(row["maturity_date"]))
+
+
+def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> list[dict]:
     """Список бумаг в форме universe-строки (совместимо с fetch_floater_universe):
     NRD-поля (nrd_price_pct/discount_margin_bps/...) = None — их наполняет NRD-слой,
-    когда включён. Расчётные поля (base/margin/maturity) — из реестра."""
+    когда включён. Расчётные поля (base/margin/maturity) — из реестра.
+
+    only_priceable=True (по умолчанию) — в основной универс попадают только бумаги
+    с полным набором расчётных параметров (B3): непрайсуемые (без базы/маржи/
+    погашения) висят в очереди ревью, а не мусорят таблицу нулевыми метриками."""
     _ensure()
     with _conn() as c:
         rows = c.execute("SELECT * FROM instruments WHERE active=1").fetchall()
@@ -183,6 +196,8 @@ def universe_rows(only_floaters: bool = True) -> list[dict]:
     for r in rows:
         base = r["base"]
         if only_floaters and base not in ("KEYRATE", "RUONIA"):
+            continue
+        if only_priceable and not is_priceable(r):
             continue
         out.append({
             "isin": r["isin"],
@@ -197,6 +212,30 @@ def universe_rows(only_floaters: bool = True) -> list[dict]:
             "nrd_duration": None, "current_yield_pct": None, "nrd_calc_date": None,
         })
     return out
+
+
+def retire_matured(today_iso: str) -> int:
+    """Деактивирует бумаги с погашением < сегодня (active=0). Возвращает число
+    ретайрнутых. Список остаётся чистым — мёртвые бумаги не мусорят универс/ревью."""
+    _ensure()
+    with _lock, _conn() as c:
+        cur = c.execute(
+            "UPDATE instruments SET active=0, updated_at=? "
+            "WHERE active=1 AND maturity_date IS NOT NULL AND maturity_date < ?",
+            (_now(), today_iso))
+        return cur.rowcount
+
+
+def list_incomplete() -> list[dict]:
+    """Активные флоатеры без полного набора расчётных параметров (не прайсуемы):
+    нужен ручной ввод базы/маржи/погашения (B3-очередь)."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, maturity_date, source "
+            "FROM instruments WHERE active=1").fetchall()
+    return [dict(r) for r in rows
+            if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
 
 
 def list_unreviewed() -> list[dict]:
@@ -275,4 +314,8 @@ def count() -> dict:
             "SELECT COUNT(*) FROM instruments WHERE active=1 AND base IN ('KEYRATE','RUONIA')"
         ).fetchone()[0]
         unrev = c.execute("SELECT COUNT(*) FROM instruments WHERE reviewed=0 AND active=1").fetchone()[0]
-    return {"total": total, "floaters": floaters, "unreviewed": unrev}
+        priceable = sum(1 for r in c.execute(
+            "SELECT base, margin_bps, maturity_date FROM instruments WHERE active=1").fetchall()
+            if is_priceable(r))
+    return {"total": total, "floaters": floaters, "unreviewed": unrev,
+            "priceable": priceable, "incomplete": floaters - priceable}

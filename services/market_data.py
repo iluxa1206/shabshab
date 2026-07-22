@@ -566,6 +566,46 @@ class MarketDataService:
         return out
 
     @classmethod
+    async def fetch_bond_listing(cls) -> Dict[str, dict]:
+        """{isin: {short_name, maturity, coupon_percent, face}} по всему борду TQCB
+        одним запросом — авторитетный live-список торгуемых облигаций MOEX (для
+        авто-дискавери новых бумаг в реестр, Ф3-A1). coupon_percent=None у бумаги
+        с купонами — маркер флоатера (ставка ещё не зафиксирована)."""
+        out: Dict[str, dict] = {}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await _moex_get(
+                    client,
+                    "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
+                    params={"iss.only": "securities",
+                            "securities.columns": "ISIN,SHORTNAME,MATDATE,COUPONPERCENT,FACEVALUE"},
+                    timeout=15)
+            if resp is not None and resp.status_code == 200:
+                sec = resp.json().get("securities", {})
+                cols, rows = sec.get("columns", []), sec.get("data", [])
+                idx = {c: cols.index(c) for c in cols}
+                for row in rows:
+                    isin = row[idx["ISIN"]] if "ISIN" in idx else None
+                    if not isin:
+                        continue
+                    mat = row[idx.get("MATDATE", -1)] if "MATDATE" in idx else None
+                    cp = row[idx.get("COUPONPERCENT", -1)] if "COUPONPERCENT" in idx else None
+                    fv = row[idx["FACEVALUE"]] if "FACEVALUE" in idx else None
+                    try:
+                        fv = float(fv) if fv not in (None, "") else None
+                    except (ValueError, TypeError):
+                        fv = None
+                    out[isin] = {
+                        "short_name": row[idx["SHORTNAME"]] if "SHORTNAME" in idx else None,
+                        "maturity": mat if mat and mat != "0000-00-00" else None,
+                        "coupon_percent": float(cp) if cp not in (None, "") else None,
+                        "face": fv,
+                    }
+        except Exception as e:
+            logger.warning(f"bond listing error: {e}")
+        return out
+
+    @classmethod
     def universe_metrics(cls) -> Dict[str, dict]:
         """Полные метрики юниверса вне watchlist (наполняет фоновый поллер)."""
         return market_cache.get("universe_metrics", {})

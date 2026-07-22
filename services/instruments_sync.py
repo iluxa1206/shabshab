@@ -32,9 +32,49 @@ async def sync_instruments() -> dict:
         cbonds, manual = {}, {}
     stats = reg.sync_from_sources(frozen, cbonds, manual)
 
-    # 2. добор maturity/issue/face из MOEX для бумаг без даты погашения
-    #    (Cbonds не даёт maturity; без неё флоатер не прайсится — perp guard)
-    missing = [r["isin"] for r in reg.universe_rows() if not r.get("maturity_date")]
+    # 2. MOEX-дискавери (A1): авторитетный live-список торгуемых бумаг TQCB.
+    #    - существующим — освежаем maturity/name/face (не-locked поля);
+    #    - НОВЫЕ ISIN (нет в реестре) — проверяем на флоатер (bondization: есть
+    #      будущий купон с value=None → ставка не зафиксирована = плавающий),
+    #      подтверждённые кладём source='moex', reviewed=0 (в очередь ревью).
+    #    Так список авто-актуален без ручной Cbonds-выгрузки.
+    discovered = 0
+    try:
+        listing = await MarketDataService.fetch_bond_listing()
+    except Exception as e:
+        logger.warning("MOEX listing failed: %s", e)
+        listing = {}
+    known = {r["isin"] for r in reg.universe_rows(only_priceable=False, only_floaters=False)}
+    # существующие: освежить maturity/name/face
+    for isin in known & set(listing):
+        mo = listing[isin]
+        upd = {"isin": isin, "maturity_date": mo.get("maturity"),
+               "short_name": mo.get("short_name"), "face_value": mo.get("face")}
+        if any(v is not None for k, v in upd.items() if k != "isin"):
+            reg.upsert(upd, source="moex", mark_new=False)
+    # новые кандидаты: сперва дешёвый пре-фильтр по листингу (coupon_percent
+    # None/0 = ставка не зафиксирована → вероятный флоатер), лишь потом дорогой
+    # bondization-чек. Отсекает ~фикс-купонные без лишних сетевых вызовов.
+    new_isins = [i for i in listing if i not in known
+                 and listing[i].get("coupon_percent") in (None, 0.0)]
+    for isin in new_isins[:_MAX_DISCOVERY_PER_RUN]:
+        try:
+            if await _is_floater(isin):
+                mo = listing[isin]
+                reg.upsert({"isin": isin, "short_name": mo.get("short_name"),
+                            "maturity_date": mo.get("maturity"), "face_value": mo.get("face")},
+                           source="moex", mark_new=True)
+                discovered += 1
+        except Exception:
+            continue
+    if len(new_isins) > _MAX_DISCOVERY_PER_RUN:
+        logger.info("discovery capped: %d new ISINs, checked %d",
+                    len(new_isins), _MAX_DISCOVERY_PER_RUN)
+
+    # 3. добор maturity/issue/face из MOEX securities для бумаг без даты погашения
+    #    (у Cbonds-бумаг maturity нет; листинг мог не покрыть — добираем точечно)
+    missing = [r["isin"] for r in reg.universe_rows(only_priceable=False)
+               if not r.get("maturity_date")]
     enriched = 0
     if missing:
         try:
@@ -45,17 +85,33 @@ async def sync_instruments() -> dict:
         for isin, mo in (secs or {}).items():
             if not mo:
                 continue
-            upd = {"isin": isin,
-                   "maturity_date": mo.get("maturity"),
-                   "issue_date": mo.get("issue"),
-                   "face_value": _f(mo.get("face"))}
+            upd = {"isin": isin, "maturity_date": mo.get("maturity"),
+                   "issue_date": mo.get("issue"), "face_value": _f(mo.get("face"))}
             if any(v is not None for k, v in upd.items() if k != "isin"):
                 reg.upsert(upd, source="moex", mark_new=False)
                 enriched += 1
-    stats["enriched"] = enriched
-    stats["synced_at"] = date.today().isoformat()
-    logger.info("instruments sync: %s", stats)
+
+    # 4. ретайр погашенных (A2): active=0 при maturity < сегодня
+    retired = reg.retire_matured(date.today().isoformat())
+
+    stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "synced_at": date.today().isoformat()})
+    logger.info("instruments sync: %s | registry=%s", stats, reg.count())
     return stats
+
+
+_MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
+
+
+async def _is_floater(isin: str) -> bool:
+    """Флоатер ⇔ у бумаги есть БУДУЩИЙ купон с незафиксированной суммой (value=None):
+    у фикс-купонных все value известны заранее. Сигнал из MOEX bondization."""
+    from services.market_data import MarketDataService
+    full = await MarketDataService.fetch_bond_schedule_full(isin)
+    coupons = (full or {}).get("coupons") or []
+    if not coupons:
+        return False
+    return any(c.get("value") is None for c in coupons)
 
 
 def _f(x):

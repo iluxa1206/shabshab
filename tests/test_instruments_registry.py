@@ -104,6 +104,33 @@ def test_mark_reviewed_removes_from_unreviewed(reg):
     assert not any(x["isin"] == "RU1" for x in reg.list_unreviewed())
 
 
+def test_priceable_filter_excludes_incomplete(reg):
+    """only_priceable=True (дефолт): в универс только бумаги с base+margin+maturity."""
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")            # полная
+    reg.upsert({"isin": "RU2", "base": "KEYRATE", "margin_bps": 150}, "cbonds")  # нет maturity
+    reg.upsert({"isin": "RU3", "base": "RUONIA", "maturity_date": "2030-01-01"}, "cbonds")  # нет margin
+    priceable = {x["isin"] for x in reg.universe_rows()}
+    assert priceable == {"RU1"}
+    allrows = {x["isin"] for x in reg.universe_rows(only_priceable=False)}
+    assert allrows == {"RU1", "RU2", "RU3"}
+    inc = {x["isin"] for x in reg.list_incomplete()}
+    assert inc == {"RU2", "RU3"}
+    c = reg.count()
+    assert c["priceable"] == 1 and c["incomplete"] == 2
+
+
+def test_retire_matured(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2020-01-01"}, "cbonds")   # погашена
+    reg.upsert({"isin": "RU2", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")   # живая
+    n = reg.retire_matured("2026-07-22")
+    assert n == 1
+    live = {x["isin"] for x in reg.universe_rows(only_priceable=False)}
+    assert live == {"RU2"}                                  # погашенная выпала
+
+
 def test_nrd_disabled_by_default(monkeypatch):
     monkeypatch.setenv("NRD_CONFIG_FILE", tempfile.mktemp(suffix=".json"))
     import importlib
