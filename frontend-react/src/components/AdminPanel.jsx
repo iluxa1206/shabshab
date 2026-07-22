@@ -2,11 +2,16 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
+  fetchNrdStatus, setNrdEnabled, fetchUnreviewedInstruments,
+  setInstrumentParams, markInstrumentReviewed,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
+const NRD_KEY = ["admin", "nrd"];
+const UNREVIEWED_KEY = ["admin", "instruments", "unreviewed"];
 
-// Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление юзерами.
+// Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление
+// юзерами, НРД-слоем и реестром инструментов.
 export default function AdminPanel({ user, onClose }) {
   const isAdmin = user?.role === "admin";
 
@@ -18,6 +23,8 @@ export default function AdminPanel({ user, onClose }) {
           <button className="btn" onClick={onClose}>Закрыть</button>
         </div>
         <PasswordSection />
+        {isAdmin && <NrdSection />}
+        {isAdmin && <InstrumentsSection />}
         {isAdmin && <UsersSection me={user.email} />}
       </div>
     </div>
@@ -71,6 +78,195 @@ function PasswordSection() {
         </button>
       </form>
     </section>
+  );
+}
+
+// --- НРД-слой: тумблер вкл/выкл + статус реестра инструментов ---
+function NrdSection() {
+  const qc = useQueryClient();
+  const [err, setErr] = useState("");
+  const q = useQuery({ queryKey: NRD_KEY, queryFn: fetchNrdStatus });
+  const s = q.data;
+
+  const toggle = useMutation({
+    mutationFn: () => setNrdEnabled(!s?.enabled),
+    onMutate: () => setErr(""),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: NRD_KEY });
+      qc.invalidateQueries({ queryKey: ["meta"] });   // индикатор-точка NRD в топбаре
+    },
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+
+  return (
+    <section className="admin-sec">
+      <h3 className="admin-h">Ценовой центр НРД</h3>
+      {err && <Msg err={err} />}
+      {q.isPending ? (
+        <div className="admin-msg">Загрузка…</div>
+      ) : (
+        <>
+          <div className="nrd-row">
+            <div>
+              <div className="nrd-state">
+                Слой:{" "}
+                <b style={{ color: s?.active ? "var(--pos)" : "var(--mut)" }}>
+                  {s?.active ? "активен" : "выключен"}
+                </b>
+                {s?.enabled && !s?.configured && (
+                  <span className="muted"> (нет кред NRD_LOGIN/NRD_APIKEY)</span>
+                )}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Реестр: {s?.registry?.floaters ?? "—"} флоатеров
+                {s?.registry?.unreviewed ? ` · ${s.registry.unreviewed} на ревью` : ""}
+              </div>
+            </div>
+            <button
+              className={"btn admin-btn-primary" + (s?.enabled ? " admin-btn-danger" : "")}
+              onClick={() => toggle.mutate()}
+              disabled={toggle.isPending}
+              title="НРД — опциональный слой обогащения (цена/fair-value). Расчёт работает и без него."
+            >
+              {toggle.isPending ? "…" : s?.enabled ? "Выключить НРД" : "Включить НРД"}
+            </button>
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Универс и расчёт (SM/DM/z) работают из реестра инструментов без НРД.
+            НРД добавляет цену/справедливую стоимость/duration, когда доступ к API есть.
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// --- Реестр инструментов: новые бумаги на ревью + ручной ввод параметров ---
+const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
+  "fixing_lag", "face_value"]);
+
+function InstrumentsSection() {
+  const qc = useQueryClient();
+  const [err, setErr] = useState("");
+  const [editIsin, setEditIsin] = useState(null);
+  const q = useQuery({ queryKey: UNREVIEWED_KEY, queryFn: fetchUnreviewedInstruments });
+  const items = q.data?.items || [];
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: UNREVIEWED_KEY });
+    qc.invalidateQueries({ queryKey: NRD_KEY });
+  };
+
+  const reviewed = useMutation({
+    mutationFn: (isin) => markInstrumentReviewed(isin),
+    onMutate: () => setErr(""),
+    onSuccess: invalidate,
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+
+  return (
+    <section className="admin-sec">
+      <h3 className="admin-h">
+        Реестр инструментов
+        {items.length > 0 && <span className="admin-badge">{items.length} на ревью</span>}
+      </h3>
+      {err && <Msg err={err} />}
+      {q.isPending ? (
+        <div className="admin-msg">Загрузка…</div>
+      ) : items.length === 0 ? (
+        <div className="admin-msg admin-ok">Все бумаги проверены</div>
+      ) : (
+        <table className="admin-table">
+          <thead>
+            <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Погашение</th><th></th></tr>
+          </thead>
+          <tbody>
+            {items.slice(0, 50).map((it) => (
+              <InstrumentRow key={it.isin} it={it}
+                editing={editIsin === it.isin}
+                onEdit={() => setEditIsin(editIsin === it.isin ? null : it.isin)}
+                onSaved={() => { setEditIsin(null); invalidate(); }}
+                onReview={() => reviewed.mutate(it.isin)}
+                busy={reviewed.isPending} />
+            ))}
+          </tbody>
+        </table>
+      )}
+      {items.length > 50 && (
+        <div className="muted" style={{ fontSize: 11 }}>показаны первые 50 из {items.length}</div>
+      )}
+    </section>
+  );
+}
+
+function InstrumentRow({ it, editing, onEdit, onSaved, onReview, busy }) {
+  return (
+    <>
+      <tr>
+        <td style={{ fontFamily: "var(--mono, monospace)" }}>{it.isin}</td>
+        <td>{it.short_name || "—"}</td>
+        <td>{it.base || <span className="admin-warn">?</span>}</td>
+        <td>{it.margin_bps ?? <span className="admin-warn">?</span>}</td>
+        <td>{it.maturity_date || <span className="admin-warn">?</span>}</td>
+        <td className="admin-actions">
+          <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Параметры"}</button>
+          <button className="btn admin-btn-sm" onClick={onReview} disabled={busy}>Ок</button>
+        </td>
+      </tr>
+      {editing && (
+        <tr><td colSpan={6}><InstrumentForm isin={it.isin} it={it} onSaved={onSaved} /></td></tr>
+      )}
+    </>
+  );
+}
+
+const _FIELDS = [
+  ["base", "База (KEYRATE|RUONIA|FIXED)", "text"],
+  ["margin_bps", "Маржа, bps", "number"],
+  ["maturity_date", "Погашение (YYYY-MM-DD)", "text"],
+  ["coupon_period_days", "Период купона, дней", "number"],
+  ["coupons_per_year", "Купонов в год", "number"],
+  ["fixing_lag", "Лаг фиксинга, дней", "number"],
+  ["fixing_lag_unit", "Ед. лага (cal|work)", "text"],
+  ["coupon_mode", "Режим (point|average)", "text"],
+  ["face_value", "Номинал", "number"],
+];
+
+function InstrumentForm({ isin, it, onSaved }) {
+  const [vals, setVals] = useState(() =>
+    Object.fromEntries(_FIELDS.map(([k]) => [k, it[k] ?? ""])));
+  const [err, setErr] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => {
+      const params = {};
+      for (const [k, v] of Object.entries(vals)) {
+        if (v === "" || v == null) continue;
+        params[k] = _NUM.has(k) ? Number(v) : v;
+      }
+      return setInstrumentParams(isin, params);
+    },
+    onMutate: () => setErr(""),
+    onSuccess: onSaved,
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+
+  return (
+    <div className="instr-form">
+      <div className="instr-grid">
+        {_FIELDS.map(([k, label, type]) => (
+          <label key={k} className="instr-field">
+            <span>{label}</span>
+            <input type={type} value={vals[k]}
+              onChange={(e) => setVals((p) => ({ ...p, [k]: e.target.value }))} />
+          </label>
+        ))}
+      </div>
+      {err && <Msg err={err} />}
+      <button className="btn admin-btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>
+        {save.isPending ? "Сохранение…" : "Сохранить (lock)"}
+      </button>
+    </div>
   );
 }
 

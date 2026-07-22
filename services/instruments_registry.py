@@ -147,8 +147,8 @@ def set_manual(isin: str, params: dict, lock: bool = True) -> None:
         else:
             sets = [f"{k}=?" for k in fields]
             vals = list(fields.values())
-            sets += ["updated_at=?", "reviewed=?"]
-            vals += [now, 1]
+            sets += ["updated_at=?", "reviewed=?", "source=?"]
+            vals += [now, 1, "manual"]
             if lock:
                 sets.append("manual_locked=?")
                 vals.append(1)

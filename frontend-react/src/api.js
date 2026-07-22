@@ -63,6 +63,24 @@ export const adminUpdateUser = (email, patch) =>
 export const adminDeleteUser = (email) =>
   request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "DELETE" });
 
+// --- НРД-слой: статус + переключение (admin) ---
+export const fetchNrdStatus = () => request("/api/nrd");
+
+export const setNrdEnabled = (enabled) =>
+  request("/api/nrd", { method: "POST", json: { enabled } });
+
+// --- Реестр инструментов (admin): ревью новых бумаг + ручной ввод параметров ---
+export const fetchUnreviewedInstruments = () => request("/api/instruments/unreviewed");
+
+export const fetchInstrument = (isin) =>
+  request(`/api/instruments/${encodeURIComponent(isin)}`);
+
+export const setInstrumentParams = (isin, params) =>
+  request(`/api/instruments/${encodeURIComponent(isin)}`, { method: "POST", json: params });
+
+export const markInstrumentReviewed = (isin) =>
+  request(`/api/instruments/${encodeURIComponent(isin)}/reviewed`, { method: "POST" });
+
 // --- Мета/кривые/бонды ---
 export const fetchMeta = () => request("/api/meta");
 

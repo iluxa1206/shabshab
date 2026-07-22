@@ -85,6 +85,25 @@ def test_sync_skips_service_manual_keys(reg):
     assert reg.get("_README") is None
 
 
+def test_manual_reflects_in_universe_and_source(reg):
+    """Ручной ввод параметров → виден в universe_rows, source='manual', reviewed=1."""
+    reg.upsert({"isin": "RU1", "base": "RUONIA", "margin_bps": 100}, "cbonds")
+    reg.set_manual("RU1", {"base": "KEYRATE", "margin_bps": 250,
+                           "maturity_date": "2029-06-01"})
+    r = reg.get("RU1")
+    assert r["source"] == "manual" and r["manual_locked"] == 1 and r["reviewed"] == 1
+    u = [x for x in reg.universe_rows() if x["isin"] == "RU1"][0]
+    assert u["base_rate_type"] == "KEYRATE" and u["spread_issue_bps"] == 250
+    assert u["maturity_date"] == "2029-06-01"
+
+
+def test_mark_reviewed_removes_from_unreviewed(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 100}, "cbonds")
+    assert any(x["isin"] == "RU1" for x in reg.list_unreviewed())
+    reg.mark_reviewed("RU1")
+    assert not any(x["isin"] == "RU1" for x in reg.list_unreviewed())
+
+
 def test_nrd_disabled_by_default(monkeypatch):
     monkeypatch.setenv("NRD_CONFIG_FILE", tempfile.mktemp(suffix=".json"))
     import importlib

@@ -533,3 +533,15 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
   .kpis-funds { grid-template-columns: repeat(2, 1fr); }
   .fund-cards { grid-template-columns: 1fr; padding: 16px; }
 }
+
+/* --- Admin: НРД-тумблер + реестр инструментов (Фаза 2) --- */
+.nrd-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.nrd-state { font-size: 13px; }
+.admin-badge { margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: var(--line-2); color: var(--fg); vertical-align: middle; letter-spacing: normal; }
+.admin-warn { color: var(--neg, #c0392b); font-weight: 600; }
+.instr-form { padding: 8px 4px 4px; }
+.instr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; margin-bottom: 8px; }
+.instr-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--mut); }
+.instr-field input { font-size: 12px; padding: 4px 6px; }
+@media (max-width: 640px) { .instr-grid { grid-template-columns: repeat(2, 1fr); } }
