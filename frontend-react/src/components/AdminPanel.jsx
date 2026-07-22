@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
   fetchNrdStatus, setNrdEnabled, fetchUnreviewedInstruments,
-  setInstrumentParams, markInstrumentReviewed,
+  setInstrumentParams, markInstrumentReviewed, fetchInstrument,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
@@ -164,6 +164,7 @@ function InstrumentsSection() {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: UNREVIEWED_KEY });
     qc.invalidateQueries({ queryKey: NRD_KEY });
+    qc.invalidateQueries({ queryKey: ["instrument"] });
   };
 
   const reviewed = useMutation({
@@ -189,7 +190,8 @@ function InstrumentsSection() {
             <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Δ pp</th><th></th></tr>
           </thead><tbody>
             {suspect.slice(0, 20).map((s) => (
-              <InstrumentRow key={s.isin} it={{ ...s, maturity_date: `Δ${s.margin_check_pp > 0 ? "+" : ""}${s.margin_check_pp}pp` }}
+              <InstrumentRow key={s.isin} it={s}
+                fifthCol={<span className="admin-warn">Δ{s.margin_check_pp > 0 ? "+" : ""}{s.margin_check_pp}pp</span>}
                 editing={editIsin === s.isin}
                 onEdit={() => setEditIsin(editIsin === s.isin ? null : s.isin)}
                 onSaved={() => { setEditIsin(null); invalidate(); }}
@@ -227,7 +229,7 @@ function InstrumentsSection() {
   );
 }
 
-function InstrumentRow({ it, editing, onEdit, onSaved, onReview, busy }) {
+function InstrumentRow({ it, editing, onEdit, onSaved, onReview, busy, fifthCol }) {
   return (
     <>
       <tr>
@@ -235,14 +237,14 @@ function InstrumentRow({ it, editing, onEdit, onSaved, onReview, busy }) {
         <td>{it.short_name || "—"}</td>
         <td>{it.base || <span className="admin-warn">?</span>}</td>
         <td>{it.margin_bps ?? <span className="admin-warn">?</span>}</td>
-        <td>{it.maturity_date || <span className="admin-warn">?</span>}</td>
+        <td>{fifthCol !== undefined ? fifthCol : (it.maturity_date || <span className="admin-warn">?</span>)}</td>
         <td className="admin-actions">
           <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Параметры"}</button>
           <button className="btn admin-btn-sm" onClick={onReview} disabled={busy}>Ок</button>
         </td>
       </tr>
       {editing && (
-        <tr><td colSpan={6}><InstrumentForm isin={it.isin} it={it} onSaved={onSaved} /></td></tr>
+        <tr><td colSpan={6}><InstrumentForm isin={it.isin} onSaved={onSaved} /></td></tr>
       )}
     </>
   );
@@ -260,10 +262,17 @@ const _FIELDS = [
   ["face_value", "Номинал", "number"],
 ];
 
-function InstrumentForm({ isin, it, onSaved }) {
-  const [vals, setVals] = useState(() =>
-    Object.fromEntries(_FIELDS.map(([k]) => [k, it[k] ?? ""])));
+function InstrumentForm({ isin, onSaved }) {
+  // грузим ПОЛНЫЙ инструмент из реестра — прифилл всех полей реальными значениями
+  const q = useQuery({ queryKey: ["instrument", isin], queryFn: () => fetchInstrument(isin) });
+  const [vals, setVals] = useState(null);
   const [err, setErr] = useState("");
+
+  // инициализируем форму, когда данные пришли
+  if (vals === null && q.data) {
+    setVals(Object.fromEntries(_FIELDS.map(([k]) => [k, q.data[k] ?? ""])));
+  }
+  if (q.isPending || vals === null) return <div className="admin-msg">Загрузка параметров…</div>;
 
   const save = useMutation({
     mutationFn: () => {
