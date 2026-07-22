@@ -420,7 +420,16 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 
 /* --- Модалка настроек / админ-панель --- */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; z-index: 100; overflow-y: auto; }
-.modal-card { width: 100%; max-width: 440px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 8px 40px rgba(0,0,0,0.3); }
+.modal-card { width: 100%; max-width: 440px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 8px 40px rgba(0,0,0,0.3); max-height: calc(100vh - 96px); overflow-y: auto; }
+/* Широкая модалка для админки с таблицей реестра (6 колонок + инлайн-формы) */
+.modal-card.modal-wide { max-width: 820px; }
+.modal-head { position: sticky; top: 0; background: var(--bg); z-index: 1; }
+/* Реестр: длинные названия переносим, таблица не расталкивает карту */
+.admin-table.instr-table { table-layout: fixed; }
+.instr-table td:nth-child(2) { white-space: normal; word-break: break-word; }
+.instr-table th:first-child, .instr-table td:first-child { width: 118px; font-family: var(--mono); font-size: 11px; }
+.instr-table td { font-size: 11px; }
+.instr-table .admin-actions { white-space: nowrap; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .modal-title { font-size: 13px; text-transform: uppercase; letter-spacing: 2px; }
 .admin-sec { padding: 16px 18px; border-bottom: 1px solid var(--line); }

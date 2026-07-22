@@ -17,7 +17,8 @@ export default function AdminPanel({ user, onClose }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+      <div className={"modal-card" + (isAdmin ? " modal-wide" : "")}
+        onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <div className="modal-head">
           <span className="modal-title">Настройки доступа</span>
           <button className="btn" onClick={onClose}>Закрыть</button>
@@ -183,7 +184,7 @@ function InstrumentsSection() {
       ) : items.length === 0 ? (
         <div className="admin-msg admin-ok">Все бумаги проверены</div>
       ) : (
-        <table className="admin-table">
+        <table className="admin-table instr-table">
           <thead>
             <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Погашение</th><th></th></tr>
           </thead>
