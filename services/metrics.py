@@ -39,6 +39,39 @@ def macaulay_years(cfs, calc_date: date, y: float) -> Optional[float]:
     return num / den if den > 0 else None
 
 
+def duration_metrics(cfs, calc_date: date, y: float, dirty_rub: Optional[float]):
+    """(mod_duration, convexity, pvbp) из спроектированных потоков при доходности
+    y (непрерывная, как solve_flat_y) — наш расчёт, не зависит от НРД.
+
+    Дисконтируем эффективной годовой ставкой ya = e^y − 1 (конвенционально):
+      mod_dur   = Macaulay/(1+ya) = −(1/P)·dP/dya   (годы)
+      convexity = Σ τ(τ+1)·CF/(1+ya)^(τ+2) / P
+      PVBP      = mod_dur · dirty · 1e-4             (₽ за 1 bp)
+    Для флоатера потоки уже прогнозные → это чувствительность к доходности/спреду
+    (spread-basis), отличается от НРД effective-duration, но корректна и
+    самодостаточна. cfs — список (pay_date, amount)."""
+    ya = math.exp(y) - 1.0
+    if ya <= -1.0:
+        return None, None, None
+    P = mac = conv = 0.0
+    for pay, amt in cfs:
+        tau = (pay - calc_date).days / 365.0
+        if tau <= 0:
+            continue
+        df = amt / (1.0 + ya) ** tau
+        P += df
+        mac += tau * df
+        conv += tau * (tau + 1.0) * amt / (1.0 + ya) ** (tau + 2.0)
+    if P <= 0:
+        return None, None, None
+    macaulay = mac / P
+    mod = macaulay / (1.0 + ya)
+    convexity = conv / P
+    pvbp = mod * dirty_rub * 1e-4 if dirty_rub else None
+    return (round(mod, 3), round(convexity, 3),
+            round(pvbp, 4) if pvbp is not None else None)
+
+
 def current_period(coupons, calc_date: date):
     """Купон, чей период накрывает calc_date (или ближайший будущий).
     Возвращает dict {start, end, value, valueprc} с date-объектами или None."""

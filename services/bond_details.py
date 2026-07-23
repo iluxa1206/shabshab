@@ -195,6 +195,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             coupons = sched_full.get("coupons", [])
             px = last_price or prev_close_pct or nm.get("nrd_price_pct")
             spread_dur = None
+            mod_dur = convexity = pvbp = None
             if exp and px:
                 # те же потоки и цена, что в z-модели: face_for_pricing (T+1
                 # ex-амортизация) и offers (обрезка по оферте при пересмотре купона)
@@ -206,6 +207,8 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 y = solve_flat_y(zcfs, calc_date, dirty)
                 if y is not None:
                     spread_dur = metrics.macaulay_years(zcfs, calc_date, y)
+                    # mod dur / convexity / PVBP — наш расчёт (НРД-доступ отключён)
+                    mod_dur, convexity, pvbp = metrics.duration_metrics(zcfs, calc_date, y, dirty)
             # ставка начавшегося периода из модельного cashflow — фолбэк текущего
             # купона для RUONIA-average (MOEX не даёт valueprc/value до конца периода)
             cur_cpn_model = None
@@ -226,8 +229,10 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 "base_rate_pct": cb["base_rate_pct"], "carry_bps": cb["carry_bps"],
                 "breakeven_base_pct": metrics.breakeven_base_pct(
                     cb["coupon_yield_pct"], cb["base_rate_pct"], ref_obj.spread_issue_bps),
-                "mod_duration": nm.get("mod_duration"), "convexity": nm.get("convexity"),
-                "pvbp": nm.get("pvbp"),
+                # наш расчёт (fallback на НРД, если наш не вышел и НРД доступен)
+                "mod_duration": mod_dur if mod_dur is not None else nm.get("mod_duration"),
+                "convexity": convexity if convexity is not None else nm.get("convexity"),
+                "pvbp": pvbp if pvbp is not None else nm.get("pvbp"),
             }
         except Exception as e:
             logger.warning(f"Floater risk error for {isin}: {e}")
