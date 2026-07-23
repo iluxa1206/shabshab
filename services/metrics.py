@@ -130,13 +130,17 @@ def base_level_pct(exp_curve) -> Optional[float]:
 
 def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[float],
                       exp_curve, nrd_current_yield: Optional[float],
-                      calc_date: date) -> dict:
+                      calc_date: date,
+                      current_coupon_override: Optional[float] = None) -> dict:
     """{carry_bps, days_to_refix, current_coupon_pct, coupon_yield_pct,
     base_rate_pct} — единый блок carry/refix.
 
     Раньше был скопирован ТРИЖДЫ (universe-фон, universe-watch, карточка) и копии
     начинали разъезжаться. Логика: ставка текущего купона из valueprc, фолбэк —
-    восстановление из рублёвой суммы по номиналу периода (face_on_date);
+    восстановление из рублёвой суммы по номиналу периода (face_on_date), затем
+    current_coupon_override (ставка начавшегося периода из модельного cashflow —
+    нужен для RUONIA-average, где MOEX не публикует valueprc/value до конца
+    периода → без него carry/breakeven пустовали);
     carry = купонная доходность на вложенное (купон/цена, как НРД current_yield;
     фолбэк из ставки-на-номинал приводится к цене) − уровень базы с короткого
     конца кривой ожиданий."""
@@ -148,6 +152,8 @@ def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[fl
         face_p = face_on_date(face_value, amorts, cp["start"], calc_date)
         if face_p > 0:
             cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
+    if cur_cpn is None and current_coupon_override is not None:
+        cur_cpn = round(float(current_coupon_override), 3)
     coupon_yield = nrd_current_yield
     if coupon_yield is None and cur_cpn is not None:
         coupon_yield = round(cur_cpn / (price_pct / 100.0), 3) if price_pct else cur_cpn

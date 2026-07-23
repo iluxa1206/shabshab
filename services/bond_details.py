@@ -206,9 +206,18 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 y = solve_flat_y(zcfs, calc_date, dirty)
                 if y is not None:
                     spread_dur = metrics.macaulay_years(zcfs, calc_date, y)
+            # ставка начавшегося периода из модельного cashflow — фолбэк текущего
+            # купона для RUONIA-average (MOEX не даёт valueprc/value до конца периода)
+            cur_cpn_model = None
+            for it in cfs:
+                if (it.get("type") == "COUPON" and it.get("period_start")
+                        and it["period_start"] <= calc_date < it["period_end"]):
+                    cur_cpn_model = it.get("coupon_rate_pct")
+                    break
             cb = metrics.carry_refix_block(coupons, sched_full.get("amorts"),
                                            ref_obj.face_value, px, exp,
-                                           nm.get("current_yield_pct"), calc_date)
+                                           nm.get("current_yield_pct"), calc_date,
+                                           current_coupon_override=cur_cpn_model)
             refix = cb["days_to_refix"]
             floater_block = {
                 "spread_duration_yrs": round(spread_dur, 3) if spread_dur is not None else None,
