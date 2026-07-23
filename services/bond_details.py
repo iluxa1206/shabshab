@@ -17,7 +17,7 @@ from services.bonds import (
 from services.valuation import calculate_valuation_metrics
 from services.cashflow import build_cashflow_from_moex
 from services.zspread import project_cfs, solve_flat_y
-from services.exceptions import NotFoundException
+from services.exceptions import NotFoundException, CalculationException
 
 logger = logging.getLogger(__name__)
 
@@ -251,3 +251,56 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         "sources": {"details": "MOEX", "market": "Alor", "nrd": "NRD Price Center"},
         "warnings": warnings,
     }
+
+
+async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
+    """Пересчёт всех метрик оценки под ПРОИЗВОЛЬНУЮ чистую цену (калькулятор в
+    карточке). Считает тем же богатым путём, что build_bond_details
+    (periods/amorts/offers/НКД), но без НРД/cashflow-сборки. Переиспользует тёплые
+    кэши (кривые в памяти, расписание на диске с day-TTL, снапшот) — после
+    открытия карточки сетевых вызовов нет, пересчёт мгновенный."""
+    data = cache.get(isin)
+    external = data is None
+    res = await asyncio.gather(
+        MarketDataService.fetch_coupon_schedules([isin]),                             # 0
+        MarketDataService.get_curves(),                                               # 1
+        MarketDataService.fetch_bond_schedule_full(isin),                             # 2
+        MarketDataService.fetch_moex_snapshot([isin]),                                # 3
+        MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 4
+        nrd_service.fetch_nrd_metrics([isin]) if external else _aempty(),             # 5
+        return_exceptions=True,
+    )
+    _ok = lambda x, d: d if isinstance(x, Exception) else x
+    schedules = _ok(res[0], {})
+    ruonia_curve, keyrate_curve, calc_date, rates_date = _ok(res[1], (None, None, None, None))
+    sched_full = _ok(res[2], {"coupons": [], "amorts": []})
+    snapshot = _ok(res[3], {})
+    mo_map = _ok(res[4], {})
+    nrd_metrics = _ok(res[5], {})
+
+    if data:
+        ref_obj = create_bond_ref_data(data, isin)
+    else:
+        mo = mo_map.get(isin, {})
+        if not mo and not nrd_metrics.get(isin):
+            raise NotFoundException(f"Bond {isin} not found on MOEX/NRD", {"isin": isin})
+        ref_obj = build_ref_external(isin, mo, nrd_metrics.get(isin))
+
+    if not calc_date:
+        calc_date = rates_date or date.today()
+
+    # номинал и НКД — как в карточке (иначе dirty/ставка расходятся)
+    reconcile_face(ref_obj, (sched_full or {}).get("coupons"), calc_date)
+    accrued_live = snapshot.get(isin, {}).get("accrued")
+    if accrued_live is not None:
+        ref_obj.accrued_rub = accrued_live
+
+    curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
+    if curve is None:
+        raise CalculationException("Curve unavailable to reprice", {"isin": isin})
+
+    return calculate_valuation_metrics(
+        ref_obj, price, curve, calc_date,
+        accrued_override=accrued_live, periods=schedules.get(isin),
+        amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
+    )

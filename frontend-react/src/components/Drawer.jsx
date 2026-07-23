@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { fmt, dmColor, vsFairColor } from "../format.js";
-import { fetchBondDetails, fetchFunds, putFundPosition, UnauthorizedError } from "../api.js";
+import { fetchBondDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 
@@ -221,9 +221,35 @@ function StaleChips({ m, n }) {
 }
 
 function Content({ d }) {
-  const r = d.reference, m = d.market, v = d.valuation;
+  const r = d.reference, m = d.market;
+  const baseVal = d.valuation;
+
+  // Калькулятор цены: пользователь вводит чистую цену → бэк пересчитывает все
+  // метрики оценки под неё. Пусто → показываем рыночную (baseVal).
+  const [priceInput, setPriceInput] = useState("");
+  const [repriced, setRepriced] = useState(null);
+  useEffect(() => { setPriceInput(""); setRepriced(null); }, [r.isin]);
+
+  const repriceMut = useMutation({
+    mutationFn: (p) => repriceBond(r.isin, p),
+    onSuccess: (data) => setRepriced(data),
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setRepriced(null); },
+  });
+  const mutate = repriceMut.mutate;
+
+  useEffect(() => {
+    const raw = priceInput.trim().replace(",", ".");
+    if (!raw) { setRepriced(null); return; }
+    const p = parseFloat(raw);
+    if (!Number.isFinite(p) || p <= 0 || p > 1000) return;
+    const t = setTimeout(() => mutate(p), 350);
+    return () => clearTimeout(t);
+  }, [priceInput, r.isin, mutate]);
+
+  const isRepriced = repriced != null;
+  const v = repriced || baseVal;
   const dc = dmColor(v.disc_margin_bps);
-  const warnings = [...(v.warnings || []), ...(d.warnings || [])];
+  const warnings = [...(baseVal.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
   const today = new Date().toISOString().slice(0, 10);
   const coupons = cf.filter((c) => c.type === "COUPON"); // без погашения — оно в 20× больше
@@ -236,7 +262,30 @@ function Content({ d }) {
   return (
     <>
       <StaleChips m={m} n={d.nrd} />
-      <div className="val-cards">
+      <div className="price-calc">
+        <label className="pc-label">Калькулятор цены</label>
+        <div className="pc-input-wrap">
+          <input
+            className="pc-input"
+            inputMode="decimal"
+            placeholder={fmt.pct(baseVal.clean_price_pct) ?? "цена"}
+            value={priceInput}
+            onChange={(e) => setPriceInput(e.target.value)}
+          />
+          <span className="pc-unit">%</span>
+        </div>
+        {isRepriced && (
+          <button className="pc-reset" onClick={() => { setPriceInput(""); setRepriced(null); }}>
+            ↺ рынок {fmt.pct(baseVal.clean_price_pct)}%
+          </button>
+        )}
+        <span className="pc-status">
+          {repriceMut.isPending ? "пересчёт…"
+            : isRepriced ? "под введённую цену"
+            : "рыночная цена"}
+        </span>
+      </div>
+      <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
         <div className="vc">
           <div className="vc-label">DM (discount)</div>
           <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>

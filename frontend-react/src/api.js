@@ -109,6 +109,10 @@ export const searchBonds = (q, signal) =>
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
+// Калькулятор карточки: пересчёт метрик оценки под произвольную чистую цену.
+export const repriceBond = (isin, price, signal) =>
+  request(`/api/bonds/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });
+
 // --- Модуль «Фонды» ---
 export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);
 
