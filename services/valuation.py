@@ -101,14 +101,24 @@ def calculate_valuation_metrics(
     warnings: list = []
     index_pct_fn, hist_pairs = _index_provider(bond.base, warnings, calc_date)
 
-    # кэп/флор купона: проекция линейна (КС/RUONIA+m), ограничение ставки не
-    # прайсится → при высокой базе DM/SM/YTM завышают. Помечаем (числовой клэмп —
-    # отдельно, требует валидации парса кэпа на юниверсе).
+    # кэп/флор купона: если число распарсилось — прогноз клэмпится в
+    # build_cashflows (потолок/пол ставки учтён). Если capped, но числа нет —
+    # проекция линейна, помечаем (при высокой базе DM/SM/YTM могут завышать).
     try:
         from services.ref_data import coupon_formula as _cf
-        if _cf(bond.isin).get("capped"):
-            warnings.append("купон с кэпом/флором (MIN/«не более») — проекция линейна, "
-                            "ограничение ставки не учтено: DM/SM/YTM могут завышать")
+        _cfs = _cf(bond.isin)
+        if _cfs.get("capped"):
+            _cap, _flr = _cfs.get("cap_pct"), _cfs.get("floor_pct")
+            if _cap is not None or _flr is not None:
+                parts = []
+                if _cap is not None:
+                    parts.append(f"кэп {_cap}%")
+                if _flr is not None:
+                    parts.append(f"флор {_flr}%")
+                warnings.append(f"купон с ограничением ставки ({', '.join(parts)}) — учтён в проекции")
+            else:
+                warnings.append("купон с кэпом/флором (число не распарсилось) — проекция линейна, "
+                                "ограничение ставки НЕ учтено: DM/SM/YTM могут завышать")
     except Exception:
         pass
 

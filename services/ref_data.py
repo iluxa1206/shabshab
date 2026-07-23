@@ -165,21 +165,27 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "fixing_lag": p.get("fixing_lag"),
         "fixing_lag_unit": p.get("fixing_lag_unit"),
         "coupon_mode": p.get("coupon_mode"),
-        "capped": p.get("capped"),   # кэп/флор купона (MIN/«не более») — проекция линейна
+        "capped": p.get("capped"),        # есть ли кэп/флор (bool)
+        "cap_pct": p.get("cap_pct"),      # потолок ставки купона, % годовых (MIN/«не более»)
+        "floor_pct": p.get("floor_pct"),  # пол ставки купона, % годовых (MAX/«не менее»)
     }
-    # 1) текст формулы из проспекта (точный режим + лаг, включая рабочие дни)
+    # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
     if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
         try:
             from services.coupon_calib import parse_prospectus_formula
             ps = parse_prospectus_formula(p["coupon_text"])
             if ps:
-                if out["coupon_mode"] is None:
+                if out["coupon_mode"] is None and ps.get("mode") is not None:
                     out["coupon_mode"] = ps["mode"]
-                if out["fixing_lag"] is None:
+                if out["fixing_lag"] is None and ps.get("lag") is not None:
                     out["fixing_lag"] = ps["lag"]
                     out["fixing_lag_unit"] = ps.get("lag_unit", "cal")
                 if out["capped"] is None:
                     out["capped"] = ps.get("capped", False)
+                if out["cap_pct"] is None:
+                    out["cap_pct"] = ps.get("cap_pct")
+                if out["floor_pct"] is None:
+                    out["floor_pct"] = ps.get("floor_pct")
         except Exception:
             pass
     # 2) фолбэк: калибровка из истории купонов

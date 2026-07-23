@@ -60,6 +60,17 @@ def build_cashflow_from_moex(
     _amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in _am_all)
     _orig_face = ref.face_value + sum(v for d, v in _am_all if d <= calc_date)
 
+    # кэп/флор ставки купона (MIN/«не более», MAX/«не менее») — клэмп прогнозных
+    # купонов, как в pricing build_cashflows (таблица совпадает с DM/SM/YTM)
+    _cap_pct = _floor_pct = None
+    if ref.base in ("RUONIA", "KEYRATE"):
+        try:
+            from services.ref_data import coupon_formula as _cf
+            _sp = _cf(ref.isin)
+            _cap_pct, _floor_pct = _sp.get("cap_pct"), _sp.get("floor_pct")
+        except Exception:
+            _cap_pct = _floor_pct = None
+
     # Оферта с пересмотром купона → режем поток к первой будущей оферте, как pricing.
     # Обычный флоатер с путом (лишь опция ликвидности) НЕ режем: cut_at_offer=False.
     put = None
@@ -155,6 +166,17 @@ def build_cashflow_from_moex(
                 amount = face * factor
                 base_pct = round(f * 100, 4)
                 rate_pct = round(r * 100, 4)
+
+            # кэп/флор: клэмп годовой ставки прогнозного купона в [floor, cap]
+            if (_cap_pct is not None or _floor_pct is not None) and alpha > 0:
+                cl = rate_pct
+                if _cap_pct is not None:
+                    cl = min(cl, _cap_pct)
+                if _floor_pct is not None:
+                    cl = max(cl, _floor_pct)
+                if cl != rate_pct:
+                    rate_pct = round(cl, 4)
+                    amount = face * (cl / 100.0) * alpha
 
         n += 1
         items.append(_item(

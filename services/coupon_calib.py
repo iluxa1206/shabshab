@@ -119,9 +119,29 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
             best_point = best_point or {"mode": "point", "lag": lag, "lag_unit": unit}
         elif _AVG_ANCHOR.search(fwd) or _AVG_GLOBAL.search(tl):
             best_avg = best_avg or {"mode": "average", "lag": lag, "lag_unit": unit}
-    # кэп/флор: MIN(КС+m; X%) / «не более/не выше» — линейная спека неполна,
-    # помечаем (потребитель пока кэп не прайсит; важно, когда кэп биндится)
-    capped = bool(re.search(r"\bmin\s*\(|не\s+более|не\s+выше|но\s+не\s+прев", tl))
+    # кэп/флор купона: MIN(КС+m; X%) / «не более X%» → потолок ставки;
+    # MAX(…; Y%) / «не менее Y%» → пол ставки. Достаём ЧИСЛО (%, годовых) для
+    # клэмпа купонной проекции. Берём самый связывающий: min(потолков)/max(полов).
+    _NUM = r"([\d]+(?:[.,]\d+)?)\s*%"
+
+    def _nums(pattern: str) -> list:
+        vals = []
+        for m in re.finditer(pattern, tl):
+            try:
+                vals.append(float(m.group(1).replace(",", ".")))
+            except (ValueError, TypeError):
+                pass
+        return vals
+
+    cap_vals = (_nums(r"min\s*\([^;)]*;\s*" + _NUM)
+                + _nums(r"(?:не\s+более|не\s+выше|но\s+не\s+прев\w*)\s*(?:чем\s+)?" + _NUM))
+    floor_vals = (_nums(r"max\s*\([^;)]*;\s*" + _NUM)
+                  + _nums(r"(?:не\s+менее|не\s+ниже)\s*(?:чем\s+)?" + _NUM))
+    cap_pct = min(cap_vals) if cap_vals else None
+    floor_pct = max(floor_vals) if floor_vals else None
+    capped = bool(cap_vals or floor_vals
+                  or re.search(r"\bmin\s*\(|\bmax\s*\(|не\s+более|не\s+выше|не\s+менее|не\s+ниже|но\s+не\s+прев", tl))
+
     out = best_point or best_avg           # «дате начала» специфичнее — приоритет
     if out is None:
         # без лага: «действующая на дату начала купонного периода»
@@ -134,9 +154,17 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         # «среднее значение … за … период» без явного лага
         elif re.search(r"средн\w+\s+(значени|арифметическ)", tl):
             out = {"mode": "average", "lag": 0, "lag_unit": "cal"}
-    if out is not None and capped:
-        out["capped"] = True
-    return out
+    # кэп/флор биндится к бумаге даже если режим фиксинга не распознан
+    if out is None and (cap_pct is not None or floor_pct is not None):
+        out = {}
+    if out is not None:
+        if capped:
+            out["capped"] = True
+        if cap_pct is not None:
+            out["cap_pct"] = cap_pct
+        if floor_pct is not None:
+            out["floor_pct"] = floor_pct
+    return out or None
 
 
 def _obs_date(d: date, lag: int, unit: str) -> date:

@@ -446,6 +446,17 @@ def build_cashflows_to_maturity(
     # причитающегося покупателю.
     pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
 
+    # Кэп/флор купона (MIN(КС+m;X%)/«не более», MAX/«не менее») — потолок/пол ставки
+    # годовых. Прайсим прогнозные купоны с клэмпом (зафикс. value уже с кэпом фактом).
+    cap_pct = floor_pct = None
+    if bond.base in ("RUONIA", "KEYRATE"):
+        try:
+            from services.ref_data import coupon_formula as _cf
+            _sp = _cf(bond.isin)
+            cap_pct, floor_pct = _sp.get("cap_pct"), _sp.get("floor_pct")
+        except Exception:
+            cap_pct = floor_pct = None
+
     cfs = []
 
     # 3. generate coupons
@@ -522,6 +533,19 @@ def build_cashflows_to_maturity(
                     factor = (f_rate + sp) * alpha
                 else:
                     raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
+
+            # Кэп/флор: клэмп ГОДОВОЙ ставки купона (factor/alpha) в [floor, cap],
+            # затем обратно в factor. Работает для обеих конвенций (RUONIA daily-comp
+            # и KEYRATE simple), т.к. годовая ставка = coupon/face·365/days = factor/alpha.
+            if (cap_pct is not None or floor_pct is not None) and alpha > 0:
+                ann = factor / alpha * 100.0
+                clamped = ann
+                if cap_pct is not None:
+                    clamped = min(clamped, cap_pct)
+                if floor_pct is not None:
+                    clamped = max(clamped, floor_pct)
+                if clamped != ann:
+                    factor = clamped / 100.0 * alpha
 
             coupon_amt = face * factor
 
