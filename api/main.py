@@ -20,7 +20,7 @@ from fastapi import Depends
 from services.exceptions import APIException
 from contextlib import asynccontextmanager
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from services.market_data import MarketDataService
 from services import nrd as nrd_service
 

@@ -62,7 +62,7 @@ export const COLS = [
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num",
     cell: (b) => <td className="num" key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
-  { key: "sm_bps", label: "SM", sub: "MODEL", align: "num",
+  { key: "dm_bps", label: "SM", sub: "MODEL", align: "num",
     cell: (b) => <td className="num" key="sm_bps"><Chip value={b.dm_bps} /></td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num",
     cell: (b) => <td className="num" key="disc_margin_bps"><Chip value={b.disc_margin_bps} /></td> },

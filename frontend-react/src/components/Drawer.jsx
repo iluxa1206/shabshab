@@ -230,9 +230,17 @@ function Content({ d }) {
   const [repriced, setRepriced] = useState(null);
   useEffect(() => { setPriceInput(""); setRepriced(null); }, [r.isin]);
 
+  // guard от гонки: поздний ответ по бумаге A не должен красить открытую бумагу B.
+  // Также клеймим только результат ПОСЛЕДНЕГО запроса (быстрый ввод → out-of-order).
+  const isinRef = useRef(r.isin);
+  const seqRef = useRef(0);
+  useEffect(() => { isinRef.current = r.isin; }, [r.isin]);
+
   const repriceMut = useMutation({
-    mutationFn: (p) => repriceBond(r.isin, p),
-    onSuccess: (data) => setRepriced(data),
+    mutationFn: ({ isin, p }) => repriceBond(isin, p),
+    onSuccess: (data, { isin, seq }) => {
+      if (isin === isinRef.current && seq === seqRef.current) setRepriced(data);
+    },
     onError: (e) => { if (!(e instanceof UnauthorizedError)) setRepriced(null); },
   });
   const mutate = repriceMut.mutate;
@@ -242,7 +250,7 @@ function Content({ d }) {
     if (!raw) { setRepriced(null); return; }
     const p = parseFloat(raw);
     if (!Number.isFinite(p) || p <= 0 || p > 1000) return;
-    const t = setTimeout(() => mutate(p), 350);
+    const t = setTimeout(() => mutate({ isin: r.isin, p, seq: ++seqRef.current }), 350);
     return () => clearTimeout(t);
   }, [priceInput, r.isin, mutate]);
 

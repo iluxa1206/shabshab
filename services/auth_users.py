@@ -78,10 +78,12 @@ def _pwd_version(rec: dict) -> str:
     return hashlib.sha256((rec.get("hash") or "").encode("ascii")).hexdigest()[:12]
 
 
-# Фиксированный dummy-хеш для сверки при отсутствии юзера: bcrypt.checkpw
-# отрабатывает то же время, что и для реального аккаунта → нет user enumeration
-# по таймингу отклика (SEC #4). Хеш заведомо ничему не соответствует.
-_DUMMY_HASH = "$2b$12$0000000000000000000000000000000000000000000000000000u".encode("ascii")
+# Dummy-хеш для сверки при отсутствии юзера: bcrypt.checkpw отрабатывает то же
+# время, что и для реального аккаунта → нет user enumeration по таймингу (SEC #4).
+# ВАЖНО: должен быть ВАЛИДНЫМ bcrypt-хешем (cost 12, как боевые) — иначе checkpw
+# сразу бросает ValueError("Invalid salt") и возвращается мгновенно, что само по
+# себе создаёт timing-оракул. Генерим реальный хеш заведомо-неугадываемого пароля.
+_DUMMY_HASH = bcrypt.hashpw(b"\x00 dummy-never-matches-any-password \x00", bcrypt.gensalt(rounds=12))
 
 
 def verify_credentials(email: str, password: str) -> Optional[dict]:
