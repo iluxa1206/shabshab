@@ -112,10 +112,11 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # к оферте ухудшает совпадение на всех горизонтах), но цена бумаги
     # с близкой офертой может прайситься к ней → DM/z несопоставимы.
     # горизонт оферты — от settle (как pricing), не от today; состоявшиеся оферты
-    # отфильтрованы (не будущее событие). Прежде: today + без фильтра типа.
-    from valuation import settle_date as _settle
+    # отфильтрованы (не будущее событие). Показываем и call, и put, но вид (kind)
+    # различаем: только put — гарантированный горизонт держателя (см. offer_kind).
+    from valuation import settle_date as _settle, offer_kind
     _off_ref = _settle(calc_date) if calc_date else date.today()
-    next_offer = None
+    next_offer = None       # (date, type_str, kind) ближайшей будущей оферты
     try:
         future_offers = []
         for o in sched_full.get("offers", []):
@@ -123,11 +124,13 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             if "состоя" in typ or "исполн" in typ:
                 continue
             if o.get("date") and date.fromisoformat(o["date"]) > _off_ref:
-                future_offers.append((date.fromisoformat(o["date"]), o.get("type")))
+                future_offers.append((date.fromisoformat(o["date"]), o.get("type"),
+                                      offer_kind(o.get("type"))))
         if future_offers:
-            next_offer = min(future_offers)
+            next_offer = min(future_offers, key=lambda x: x[0])
             ref_dict["offer_date"] = next_offer[0]
             ref_dict["offer_type"] = next_offer[1]
+            ref_dict["offer_kind"] = next_offer[2]
     except (ValueError, TypeError):
         pass
 
@@ -246,11 +249,15 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             logger.warning(f"Floater risk error for {isin}: {e}")
 
     warnings = []
-    if next_offer:
+    if next_offer and next_offer[2] == "put":
         warnings.append(
-            f"Оферта {next_offer[0].isoformat()}: первостепенны метрики к оферте "
+            f"Пут-оферта {next_offer[0].isoformat()}: первостепенны метрики к оферте "
             "(sm/dm/yield_to_offer, yield-to-put); к погашению — вторичные "
             "(sm_bps/disc_margin_bps, сверка с НРД)")
+    elif next_offer and next_offer[2] == "call":
+        warnings.append(
+            f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): держатель "
+            "её не форсирует — первостепенны метрики к ПОГАШЕНИЮ, к оферте лишь справочно")
     nrd_block = None
     try:
         nrd_block = nrd_view(nrd_metrics.get(isin, {}), last_price)

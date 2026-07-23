@@ -320,7 +320,7 @@ function Content({ d }) {
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>
         <RefCell k="Размещение">{fmt.date(r.start_date)}</RefCell>
         <RefCell k="Погашение">{fmt.date(r.maturity_date)}</RefCell>
-        {r.offer_date && <RefCell k="Оферта">{fmt.date(r.offer_date) + (r.offer_type ? " · " + r.offer_type : "")}</RefCell>}
+        {r.offer_date && <RefCell k={r.offer_kind === "call" ? "Оферта (эмитент/call)" : "Оферта (пут)"}>{fmt.date(r.offer_date) + (r.offer_type ? " · " + r.offer_type : "")}</RefCell>}
         <RefCell k="След. купон">{fmt.date(r.next_coupon_date)}</RefCell>
         <RefCell k="Период / год">{(r.coupon_period_days || "—") + " дн · " + (r.coupons_per_year || "—") + "×"}</RefCell>
         <RefCell k="НКД">{fmt.num(r.accrued_interest) + " ₽"}</RefCell>

@@ -46,6 +46,7 @@ class BondReference(BaseModel):
     # всех горизонтах), но рынок может прайсить бумагу к оферте.
     offer_date: Optional[date] = None
     offer_type: Optional[str] = None
+    offer_kind: Optional[str] = None   # 'put' (держателя) | 'call' (эмитента)
 
 # --- 5.2 BondMarketData ---
 class BondMarketData(BaseModel):
