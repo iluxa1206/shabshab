@@ -30,7 +30,7 @@ function Dashboard() {
   const [ratingsSel, setRatingsSel] = useState([]); // AAA / AA / A / BBB / BELOW / NR
   const [query, setQuery] = useState("");
   const [showAnalytics, setShowAnalytics] = useState(false);
-  const [sort, setSort] = useState({ key: "dm_bps", dir: "asc" });
+  const [sort, setSort] = useState({ key: "disc_margin_bps", dir: "asc" });
 
   // drawer бумаги — в URL (?isin=): deep-link + back закрывает
   const [searchParams, setSearchParams] = useSearchParams();

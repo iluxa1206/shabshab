@@ -158,7 +158,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         "clean_price_pct": last_price or 100.0,
         "dirty_price_rub": ref_obj.face_value + ref_obj.accrued_rub,  # fallback
         "dm_bps": None, "dm_label": None, "yield_xirr_pct": None,
-        "base_yield_pct": None, "spread_to_base_bps": None,
+        "index_yield_pct": None, "yield_over_index_bps": None,
         "pricing_status": "NO_MARKET_DATA",
         "warnings": ["No market price available, using Par (100.00) for dirty calc where needed"]
     }

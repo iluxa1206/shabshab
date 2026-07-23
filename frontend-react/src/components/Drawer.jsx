@@ -222,7 +222,7 @@ function StaleChips({ m, n }) {
 
 function Content({ d }) {
   const r = d.reference, m = d.market, v = d.valuation;
-  const dc = dmColor(v.dm_bps);
+  const dc = dmColor(v.disc_margin_bps);
   const warnings = [...(v.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
   const today = new Date().toISOString().slice(0, 10);
@@ -238,14 +238,14 @@ function Content({ d }) {
       <StaleChips m={m} n={d.nrd} />
       <div className="val-cards">
         <div className="vc">
-          <div className="vc-label">SM (simple)</div>
-          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">simple margin</div>
+          <div className="vc-label">DM (discount)</div>
+          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">discount margin · основная</div>
         </div>
         <div className="vc">
-          <div className="vc-label">DM (discount)</div>
-          <div className="vc-val" style={{ color: dmColor(v.disc_margin_bps).color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">discount margin</div>
+          <div className="vc-label">SM (simple)</div>
+          <div className="vc-val" style={{ color: dmColor(v.sm_bps ?? v.dm_bps).color }}>{fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">simple margin · вспом.</div>
         </div>
         <div className="vc">
           <div className="vc-label">Dirty price</div>
@@ -255,7 +255,7 @@ function Content({ d }) {
         <div className="vc">
           <div className="vc-label">YTM (XIRR)</div>
           <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
-          <div className="vc-sub">base {fmt.pct(v.base_yield_pct) ?? "—"}% · spread {fmt.bps(v.spread_to_base_bps) ?? "—"}</div>
+          <div className="vc-sub">индекс {fmt.pct(v.index_yield_pct) ?? "—"}% · спред {fmt.bps(v.yield_over_index_bps) ?? "—"}</div>
         </div>
       </div>
 

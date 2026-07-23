@@ -70,6 +70,8 @@ export const COLS = [
     cell: (b) => <td className="num" style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
   { key: "carry_bps", label: "CARRY", sub: "vs БАЗА", align: "num",
     cell: (b) => <td className="num" style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
+  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
+    cell: (b) => <td className="num" style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
   { key: "z_pctile", label: "z%ile", sub: "RATING", align: "num",
     cell: (b) => <td className="num" key="z_pctile">{b.z_pctile == null ? <D /> : <PctileBar p={b.z_pctile} />}</td> },
   { key: "delta_z_dod", label: "Δz", sub: "D/D BPS", align: "num",

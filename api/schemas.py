@@ -67,8 +67,8 @@ class BondValuation(BaseModel):
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
     dm_label: Optional[str]
     yield_xirr_pct: Optional[float]
-    base_yield_pct: Optional[float]
-    spread_to_base_bps: Optional[int]
+    index_yield_pct: Optional[float]        # эфф. годовая доходность роллирования индекса (форвард)
+    yield_over_index_bps: Optional[int]     # IRR бумаги − доходность индекса, bps
     pricing_status: str
     warnings: List[str] = Field(default_factory=list)
     # ПОДСКАЗКА потребителю, какой горизонт показывать первым: "offer", если у
@@ -179,8 +179,8 @@ class ValuationResponse(BaseModel):
     dm_bps: Optional[int]
     dm_label: Optional[str]
     yield_xirr_pct: Optional[float]
-    base_yield_pct: Optional[float]
-    spread_to_base_bps: Optional[int]
+    index_yield_pct: Optional[float]
+    yield_over_index_bps: Optional[int]
     warnings: List[str] = Field(default_factory=list)
 
 # --- 6.2 Bond List / Dashboard Models ---
@@ -205,6 +205,7 @@ class BondListItem(BaseModel):
     # (наш dm_bps = simple margin ≈ НРД simple_margin)
     simple_margin_bps: Optional[int] = None
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
+    yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
     z_spread_bps: Optional[int] = None
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ (методика НРД)
     rating: Optional[str] = None

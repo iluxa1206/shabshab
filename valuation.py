@@ -929,6 +929,55 @@ def implied_yield_pct(
     return y_effective * 100.0
 
 
+def index_rolling_yield_pct(
+    base: str,
+    curve: DiscountCurve,
+    calc_date: date,
+    maturity: date,
+) -> Optional[float]:
+    """Эффективная годовая доходность РОЛЛИРОВАНИЯ голого индекса по ожидаемым
+    будущим ставкам (форвардная кривая, СПФИ/OIS), calc_date → maturity.
+
+    База сравнения (base leg) для «доходность бумаги − доходность индекса»:
+    считаем, во сколько вырастет рубль, если весь горизонт держать сам индекс с
+    реинвестом, по конвенции КАЖДОГО индекса:
+      RUONIA — ЕЖЕДНЕВНЫЙ компаундинг: рост = Π_дни (1+f_d/365).
+               curve.forward(RUONIA) уже отдаёт дневную-комп эквивалентную ставку
+               f, где (1+f/365)^days = DF(t1)/DF(t2), поэтому за весь горизонт
+               рост = (1+f/365)^D одним вызовом (телескопирование точное).
+      KEYRATE — ЕЖЕКВАРТАЛЬНЫЙ компаундинг: рост = Π_кварталы (1+f_q·τ_q),
+               f_q — simple ACT/365 форвард на квартал.
+    Итог обеих ветвей приводим к ЭФФЕКТИВНОЙ ГОДОВОЙ: рост^(365/D)−1 — та же
+    аннуализация, что у xirr бумаги ((1+y)^t), поэтому разность доходностей
+    (bps) корректна. Возвращает % годовых или None.
+    """
+    D = (maturity - calc_date).days
+    if D <= 0:
+        return None
+    tau_years = D / 365.0
+
+    if base == "RUONIA":
+        f = curve.forward(calc_date, maturity)
+        growth = (1.0 + f / 365.0) ** D
+    elif base == "KEYRATE":
+        growth = 1.0
+        prev = calc_date
+        while prev < maturity:
+            nxt = min(prev + timedelta(days=91), maturity)  # ≈ квартал
+            days = (nxt - prev).days
+            tau = days / 365.0
+            f_q = curve.forward(prev, nxt)
+            growth *= 1.0 + f_q * tau
+            prev = nxt
+    else:
+        return None
+
+    if growth <= 0.0:
+        return None
+    y_effective = math.pow(growth, 1.0 / tau_years) - 1.0
+    return y_effective * 100.0
+
+
 # -------------------------------------------------------------------------
 # 3) Выходной API Pipeline
 # -------------------------------------------------------------------------

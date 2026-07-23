@@ -13,6 +13,7 @@ from valuation import (
     current_index_pct,
     FlatForwardCurve,
     implied_yield_pct,
+    index_rolling_yield_pct,
 )
 
 import logging
@@ -64,7 +65,7 @@ def calculate_valuation_metrics(
         return {
             "clean_price_pct": price, "dirty_price_rub": None,
             "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
-            "yield_xirr_pct": None, "base_yield_pct": None, "spread_to_base_bps": None,
+            "yield_xirr_pct": None, "index_yield_pct": None, "yield_over_index_bps": None,
             "pricing_status": "MATURED", "warnings": ["Погашение ≤ T+1 — потоки покупателю не достаются"],
         }
 
@@ -74,7 +75,7 @@ def calculate_valuation_metrics(
         return {
             "clean_price_pct": price, "dirty_price_rub": None,
             "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
-            "yield_xirr_pct": None, "base_yield_pct": None, "spread_to_base_bps": None,
+            "yield_xirr_pct": None, "index_yield_pct": None, "yield_over_index_bps": None,
             "pricing_status": "NO_MATURITY", "warnings": ["Нет даты погашения (перп/суборд)"],
         }
 
@@ -89,33 +90,31 @@ def calculate_valuation_metrics(
     index_pct_fn, hist_pairs = _index_provider(bond.base, warnings)
 
     # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
-    # (факт MOEX), амортизации учитываем. base_cfs (spread=0) — контрфактуал только
-    # для spread_to_base_bps: там купон проектируем (value не применим к spread=0),
-    # поэтому передаём стрипнутые пары без value.
-    base_periods = [(p[0], p[1]) for p in periods] if periods else None
-
+    # (факт MOEX), амортизации учитываем.
     cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
                                       explicit_periods=periods, amorts=amorts, offers=offers,
                                       index_pct_fn=index_pct_fn, warnings_out=warnings)
-    base_cfs = build_cashflows_with_spread(bond, curve, calc_date, 0,
-                                           explicit_periods=base_periods, amorts=amorts,
-                                           offers=offers,
-                                           index_pct_fn=index_pct_fn, warnings_out=warnings)
 
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
     except Exception as e:
         logger.warning(f"XIRR error for {bond.isin}: {e}")
         impl_yield = None
-        
-    try:
-        base_yield = xirr_yield_pct(dirty_rub, base_cfs, calc_date)
-    except Exception as e:
-        base_yield = None
 
-    spread_to_base_bps = None
-    if impl_yield is not None and base_yield is not None:
-        spread_to_base_bps = round((impl_yield - base_yield) * 100.0)
+    # ДОХОДНОСТЬ БУМАГИ vs ДОХОДНОСТЬ ИНДЕКСА (заменяет прежний spread_to_base_bps
+    # = разность двух XIRR, которая как нелинейная разность систематически врала
+    # off-par). Теперь base leg — эффективная годовая доходность роллирования
+    # самого индекса по ожидаемым форвардным ставкам (RUONIA daily-comp / КС
+    # quarterly-comp), а спред = IRR_бумаги − доходность_индекса.
+    try:
+        index_yield = index_rolling_yield_pct(bond.base, curve, calc_date, bond.maturity_date)
+    except Exception as e:
+        logger.warning(f"Index rolling-yield error for {bond.isin}: {e}")
+        index_yield = None
+
+    yield_over_index_bps = None
+    if impl_yield is not None and index_yield is not None:
+        yield_over_index_bps = round((impl_yield - index_yield) * 100.0)
         
     # SIMPLE MARGIN (наш sm_bps): дисконт по форвард-кривей+спред. Воспроизводит
     # НРД simple_margin (сверка: ликвид near-par med 0-2bps). Поле dm_bps сохранено
@@ -185,7 +184,7 @@ def calculate_valuation_metrics(
     # широкие: ловят только явную дичь (SM −30000bps, ytm 900%), не режут дистресс.
     sm_bps = _sane_bps(sm_bps, warnings, "sm")
     disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
-    spread_to_base_bps = _sane_bps(spread_to_base_bps, warnings, "spread_to_base")
+    yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
     sm_to_offer = _sane_bps(sm_to_offer, warnings, "sm_to_offer")
     dm_to_offer = _sane_bps(dm_to_offer, warnings, "disc_margin_to_offer")
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
@@ -205,8 +204,8 @@ def calculate_valuation_metrics(
         "disc_margin_bps": disc_margin_bps,    # discount margin (наш) ≈ НРД discount_margin
         "dm_label": "simple_margin" if sm_bps is not None else None,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
-        "base_yield_pct": round(base_yield, 4) if base_yield is not None else None,
-        "spread_to_base_bps": spread_to_base_bps,
+        "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,
+        "yield_over_index_bps": yield_over_index_bps,
         "pricing_status": status,
         "warnings": sorted(set(warnings)),
         "preferred_horizon": horizon,

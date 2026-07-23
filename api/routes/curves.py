@@ -61,6 +61,19 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
     y_mkt = floater_xirr_pct(cfs_mkt, dirty_pct, cd)
 
+    # bond-vs-index: по каждому будущему периоду — ставка индекса (среднее пути КС
+    # по окну рефиксинга) и ставка купона бумаги (= индекс + спред). Зазор = carry.
+    from services.floater_model import _avg_over_window
+    rate_series = []
+    for s, e in periods:
+        days = (e - s).days or 1
+        base = _avg_over_window(path, e, 7, days)
+        rate_series.append({
+            "date": e.isoformat(),
+            "base_pct": round(base * 100.0, 4),
+            "coupon_pct": round((base + spread_pct) * 100.0, 4),
+        })
+
     # actual_ks → cbr.ks_history: на холодном/протухшем кэше это 2 requests.get
     # (таймауты 20+15с) — в потоке, не блокируем event loop (как в /ks-path)
     cur_ks = await asyncio.to_thread(actual_ks, cd)
@@ -72,6 +85,7 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
         "current_ks_pct": round((cur_ks or 0) * 100, 2),
         "ytm_pct": y_mkt,
         "coupons_market": [{"date": d.isoformat(), "amount_pct": a} for d, a in cfs_mkt[:12]],
+        "rate_series": rate_series,
     }
 
 

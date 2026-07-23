@@ -68,7 +68,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
-    dirty = dm = disc_dm = z_model = None
+    dirty = dm = disc_dm = z_model = yoi = None
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
         try:
@@ -77,6 +77,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             periods=periods or None,
                                             amorts=amorts, offers=offers)
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
+            yoi = m.get("yield_over_index_bps")
             hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
             sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
         except Exception as e:
@@ -116,7 +117,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     except Exception as e:
         logger.warning(f"carry block error {isin}: {e}")
 
-    return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "delta": delta,
+    return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
             "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
             "refix": refix, "current_coupon": cur_cpn,
             "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}

@@ -314,6 +314,20 @@ function FloaterScenariosView() {
       {status === "loading" && <div className="muted">Считаю…</div>}
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
+        <>
+        {data.rate_series?.length > 0 && (
+          <div style={{ marginBottom: 18 }}>
+            <BondVsIndexChart series={data.rate_series} calcDate={data.calc_date} />
+            <Legend>
+              <LegendLine color="var(--fg)" label="Купон бумаги (индекс + спред)" />
+              <LegendLine color="var(--up)" label="Индекс КС (форвард СПФИ)" />
+            </Legend>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4, maxWidth: 720 }}>
+              Зазор между линиями = спред выпуска ({data.spread_bps} бп). Индекс — среднее
+              рыночного пути КС по окну рефиксинга каждого купона.
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div>
             <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>YTM (рынок, СПФИ)</div>
@@ -336,7 +350,50 @@ function FloaterScenariosView() {
             </table>
           </div>
         </div>
+        </>
       )}
     </>
+  );
+}
+
+// bond-vs-index: ступени ставки купона бумаги vs пути индекса КС по датам купонов
+function BondVsIndexChart({ series, calcDate }) {
+  const W = 900, H = 320, L = 46, R = 16, T = 16, B = 40;
+  const g = useMemo(() => {
+    const pts = series.map((s) => ({ ...s, t: new Date(s.date).getTime() }));
+    const xs = pts.map((p) => p.t);
+    const xmin = Math.min(...xs, new Date(calcDate).getTime());
+    const xmax = Math.max(...xs);
+    const ys = pts.flatMap((p) => [p.base_pct, p.coupon_pct]);
+    const [ymin, ymax] = extent(ys, 0.15, 0.4);
+    const X = timeScale([xmin, xmax], [L, W - R]);
+    const Y = linearScale([ymin, ymax], [H - B, T]);
+    return { pts, X, Y, xmin, xmax, ymin, ymax };
+  }, [series, calcDate]);
+
+  const { pts, X, Y, ymin, ymax, xmin, xmax } = g;
+  const { hover, handlers } = useNearestHover({ viewW: W, points: pts, px: (p) => X(p.t) });
+  const step = (key) => stepPath(pts, (p) => X(p.t), (p) => Y(p[key]));
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+        <GridY ticks={linTicks(ymin, ymax, 5)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(1)} />
+        <XTicks ticks={yearTicks(xmin, xmax).filter((t) => t >= xmin && t <= xmax).map((t) => ({ x: X(t), label: new Date(t).getFullYear() }))}
+          y={H - B + 14} />
+        {/* купон бумаги (индекс + спред) */}
+        <path d={step("coupon_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
+        {/* индекс КС */}
+        <path d={step("base_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
+        {hover && (
+          <line x1={X(hover.t)} y1={T} x2={X(hover.t)} y2={H - B} stroke="var(--mut)" strokeDasharray="1 2" />
+        )}
+      </svg>
+      {hover && (
+        <Tooltip x={X(hover.t)} viewW={W} top={4} dy={0} padding="3px 7px">
+          {fmt.date(hover.date)} · купон {hover.coupon_pct}% · индекс {hover.base_pct}%
+        </Tooltip>
+      )}
+    </div>
   );
 }
