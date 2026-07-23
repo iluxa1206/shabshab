@@ -309,27 +309,24 @@ async def get_bond_cashflow(isin: str = Path(...)):
         raise NotFoundException(f"Bond {isin} not found in cache", {"isin": isin})
         
     ref_obj = create_bond_ref_data(data, isin)
-    ref_dict = extract_bond_reference_dict(isin, data, ref_obj)
 
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     if not calc_date:
         calc_date = rates_date or date.today()
 
-    cfs, fv = get_cashflow_items(
-        isin=isin,
-        start_date=ref_obj.issue_date,
-        end_date=ref_obj.maturity_date,
-        coupon_period_days=ref_obj.coupon_period_days,
-        face_value=ref_obj.face_value,
-        formula=data.get("FORMULA", ""),
-        base_rate=ref_obj.base,
-        ruonia_curve=ruonia_curve,
-        keyrate_curve=keyrate_curve,
-        calc_date=calc_date,
-        coupon_percent=data.get("COUPONPERCENT") and float(data.get("COUPONPERCENT")) or None,
-        next_coupon_date=ref_dict.get("next_coupon_date")
+    # Amort/offer-aware builder (тот же, что карточка) — прежний get_cashflow_items
+    # игнорировал амортизацию: купоны на полный номинал + принципал одним бул-платежом.
+    sched_full = await MarketDataService.fetch_bond_schedule_full(isin)
+    curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
+    from services.cashflow import build_cashflow_from_moex
+    from services.bonds import external_formula
+    formula = data.get("FORMULA", "") or external_formula(ref_obj)
+    cfs, fv = build_cashflow_from_moex(
+        ref_obj, curve, calc_date,
+        sched_full.get("coupons", []), sched_full.get("amorts", []), formula,
+        offers=sched_full.get("offers"),
     )
-    
+
     return CashflowResponse(
         isin=isin,
         calc_date=calc_date,

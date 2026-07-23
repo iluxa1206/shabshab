@@ -67,8 +67,8 @@ def build_cashflow_from_moex(
         try:
             from services.ref_data import cut_at_offer
             if cut_at_offer(ref.isin):
-                from valuation import first_offer_date
-                put = first_offer_date(offers, calc_date)
+                from valuation import first_offer_date, settle_date
+                put = first_offer_date(offers, settle_date(calc_date))
         except Exception:
             put = None
     if put and ref.maturity_date and put >= ref.maturity_date:
@@ -201,6 +201,21 @@ def build_cashflow_from_moex(
                 number=n, period_start=d, period_end=d, payment_date=d,
                 coupon_formula="", base_rate_pct=0.0, spread_bps=0,
                 coupon_rate_pct=0.0, amount_rub=round(amt, 2), type="REDEMPTION",
+            ))
+        # закрыть БУДУЩИЙ поток к остатку номинала: MOEX иногда не включает
+        # финальный принципал в список (он идёт строкой погашения) → future-амортов
+        # меньше, чем outstanding. Формула как в pricing (pricing_face − future_am):
+        # берём остаток минус будущие амортизации, а не original − все (робастно к
+        # ещё не шагнувшему FACEVALUE). Аудит: build_cashflow_from_moex F2.
+        _future_am = sum(v for dd, v in _am_all if dd > calc_date)
+        residual = ref.face_value - _future_am
+        if residual > 1e-6 and ref.maturity_date:
+            redemption_total += residual
+            n += 1
+            items.append(_item(
+                number=n, period_start=ref.maturity_date, period_end=ref.maturity_date,
+                payment_date=ref.maturity_date, coupon_formula="", base_rate_pct=0.0,
+                spread_bps=0, coupon_rate_pct=0.0, amount_rub=round(residual, 2), type="REDEMPTION",
             ))
     elif ref.maturity_date:
         redemption_total = ref.face_value

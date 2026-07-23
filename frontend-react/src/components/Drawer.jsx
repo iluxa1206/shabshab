@@ -186,9 +186,9 @@ function FloaterSection({ f, base }) {
         <RefCell k="Текущий купон">{f.current_coupon_pct != null ? fmt.pct(f.current_coupon_pct) + " %" : null}</RefCell>
         <RefCell k={`Уровень ${baseLbl}`}>{f.base_rate_pct != null ? fmt.pct(f.base_rate_pct) + " %" : null}</RefCell>
         <RefCell k="Breakeven базы">{f.breakeven_base_pct != null ? fmt.pct(f.breakeven_base_pct) + " %" : null}</RefCell>
-        <RefCell k="Mod duration">{fmt.num(f.mod_duration)}</RefCell>
+        <RefCell k="Mod dur (spread)">{fmt.num(f.mod_duration)}</RefCell>
         <RefCell k="Convexity">{fmt.num(f.convexity, 4)}</RefCell>
-        <RefCell k="PVBP">{fmt.num(f.pvbp, 4)}</RefCell>
+        <RefCell k="PVBP ₽/bp (spread)">{fmt.num(f.pvbp, 4)}</RefCell>
       </div>
       <div className="fnote">
         Если {baseLbl} опустится ниже <b>{f.breakeven_base_pct != null ? fmt.pct(f.breakeven_base_pct) + "%" : "—"}</b>,

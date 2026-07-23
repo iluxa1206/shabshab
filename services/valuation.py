@@ -21,17 +21,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _index_provider(base: str, warnings: list):
+def _index_provider(base: str, warnings: list, calc_date: date = None):
     """I/O-граница: история индекса ЦБ фетчится ЗДЕСЬ (раз на запрос), ядро
     получает готовый провайдер. Сбой фетча → warning + провайдер-заглушка
     (ядро уходит на форвард-проекцию, но это видно в ответе), history-пары для
     current_index_pct → None (DM посчитается от back-out из купона или не
-    посчитается — тоже видимо по disc_margin_bps=None)."""
+    посчитается — тоже видимо по disc_margin_bps=None).
+
+    calc_date — для проверки СВЕЖЕСТИ истории: если последняя дата отстаёт от
+    calc_date больше допуска, фиксинги начавшихся периодов частично уходят на
+    форвард (см. projected_ks_pct._realized) — помечаем warning'ом, иначе
+    стейл-ставка тихо утекала бы в купон (аудит F1)."""
     try:
-        from services.coupon_calib import period_index_pct, index_history
+        from services.coupon_calib import period_index_pct, index_history, _HIST_STALE_GRACE_DAYS
         idx = index_history(base)
         if not idx[0]:
             raise RuntimeError("пустая история индекса")
+        if calc_date is not None:
+            last = idx[0][-1]
+            lag_days = (calc_date - last).days
+            if lag_days > _HIST_STALE_GRACE_DAYS:
+                warnings.append(
+                    f"история {base} отстаёт на {lag_days} дн (последняя {last.isoformat()}) "
+                    "— фиксинги начавшихся периодов за пределом покрытия спроецированы форвардом")
         return partial(period_index_pct, idx=idx), list(zip(idx[0], idx[1]))
     except Exception as e:
         warnings.append(f"история {base} недоступна ({type(e).__name__}) — "
@@ -87,7 +99,18 @@ def calculate_valuation_metrics(
 
     # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
     warnings: list = []
-    index_pct_fn, hist_pairs = _index_provider(bond.base, warnings)
+    index_pct_fn, hist_pairs = _index_provider(bond.base, warnings, calc_date)
+
+    # кэп/флор купона: проекция линейна (КС/RUONIA+m), ограничение ставки не
+    # прайсится → при высокой базе DM/SM/YTM завышают. Помечаем (числовой клэмп —
+    # отдельно, требует валидации парса кэпа на юниверсе).
+    try:
+        from services.ref_data import coupon_formula as _cf
+        if _cf(bond.isin).get("capped"):
+            warnings.append("купон с кэпом/флором (MIN/«не более») — проекция линейна, "
+                            "ограничение ставки не учтено: DM/SM/YTM могут завышать")
+    except Exception:
+        pass
 
     # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
     # (факт MOEX), амортизации учитываем.

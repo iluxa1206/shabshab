@@ -165,9 +165,10 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "fixing_lag": p.get("fixing_lag"),
         "fixing_lag_unit": p.get("fixing_lag_unit"),
         "coupon_mode": p.get("coupon_mode"),
+        "capped": p.get("capped"),   # кэп/флор купона (MIN/«не более») — проекция линейна
     }
     # 1) текст формулы из проспекта (точный режим + лаг, включая рабочие дни)
-    if (out["fixing_lag"] is None or out["coupon_mode"] is None) and p.get("coupon_text"):
+    if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
         try:
             from services.coupon_calib import parse_prospectus_formula
             ps = parse_prospectus_formula(p["coupon_text"])
@@ -177,6 +178,8 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                 if out["fixing_lag"] is None:
                     out["fixing_lag"] = ps["lag"]
                     out["fixing_lag_unit"] = ps.get("lag_unit", "cal")
+                if out["capped"] is None:
+                    out["capped"] = ps.get("capped", False)
         except Exception:
             pass
     # 2) фолбэк: калибровка из истории купонов

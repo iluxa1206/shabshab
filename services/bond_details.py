@@ -111,11 +111,19 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # Оценку НЕ клэмпим: НРД dm тоже к погашению (сверка 2026-07-08 — клэмп
     # к оферте ухудшает совпадение на всех горизонтах), но цена бумаги
     # с близкой офертой может прайситься к ней → DM/z несопоставимы.
+    # горизонт оферты — от settle (как pricing), не от today; состоявшиеся оферты
+    # отфильтрованы (не будущее событие). Прежде: today + без фильтра типа.
+    from valuation import settle_date as _settle
+    _off_ref = _settle(calc_date) if calc_date else date.today()
     next_offer = None
     try:
-        future_offers = [(date.fromisoformat(o["date"]), o.get("type"))
-                         for o in sched_full.get("offers", [])
-                         if o.get("date") and date.fromisoformat(o["date"]) > date.today()]
+        future_offers = []
+        for o in sched_full.get("offers", []):
+            typ = (o.get("type") or "").lower()
+            if "состоя" in typ or "исполн" in typ:
+                continue
+            if o.get("date") and date.fromisoformat(o["date"]) > _off_ref:
+                future_offers.append((date.fromisoformat(o["date"]), o.get("type")))
         if future_offers:
             next_offer = min(future_offers)
             ref_dict["offer_date"] = next_offer[0]

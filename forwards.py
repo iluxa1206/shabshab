@@ -179,6 +179,14 @@ class BootstrappedForwardCurve(DiscountCurve):
             return 0.0
         if self.base_type == "RUONIA":
             return 365.0 * (math.pow(factor, 1.0 / days) - 1.0)
+        # KEYRATE simple ACT/365 точен только на КОРОТКОМ сегменте (купон/квартал):
+        # на длинном одиночном пролёте (1+f·days/365)=factor раздувает f (10Y ~35%).
+        # Все текущие потребители зовут forward() короткими смежными сегментами
+        # (телескопирование). Одиночный длинный вызов — ошибка использования.
+        if days > 400:
+            logger.warning(
+                "KEYRATE forward() на длинном пролёте %d дн — simple-ставка раздувается; "
+                "используйте короткие сегменты или df()-спот (spot_pct в /curves/plot)", days)
         return (factor - 1.0) * 365.0 / days
 
     def forward(self, t1: date, t2: date) -> float:
@@ -263,6 +271,13 @@ class CurveBootstrapper:
                 df = (lo + hi) / 2.0
 
             if nodes and df > nodes[-1][1]:
+                # DF растёт (форвард < 0) — не-арбитражный клэмп до ~плоского.
+                # Раньше молча: на инвертированном коротком конце (цикл снижения)
+                # это зануляло реальный форвард сегмента. Логируем — видно в prod.
+                logger.warning(
+                    "%s curve: DF инверсия на теноре %s (DF %.6f > пред %.6f) — "
+                    "форвард сегмента зажат в ~0%%, проекция купона на нём занижена",
+                    base_type, end_date.isoformat(), df, nodes[-1][1])
                 df = max(nodes[-1][1] * (1.0 - 1e-12), 1e-12)
             nodes.append((end_date, df))
 

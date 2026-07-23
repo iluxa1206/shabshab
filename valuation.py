@@ -199,7 +199,8 @@ def _amort_date(a) -> Optional[date]:
 # ["YYYY-MM-DD", ...]} (extra — нерабочие сверх базовых, trading — рабочие
 # вопреки базовым, напр. перенесённая рабочая суббота). Файл опционален,
 # обновляется по календарю MOEX (https://www.moex.com/s371) без правки кода.
-_MOEX_HOLIDAYS_MD = {(1, 1), (1, 2), (1, 7), (2, 23), (3, 8), (5, 1), (5, 9), (6, 12), (11, 4)}
+_MOEX_HOLIDAYS_MD = {(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8),
+                     (2, 23), (3, 8), (5, 1), (5, 9), (6, 12), (11, 4)}
 
 
 def _load_holiday_overrides():
@@ -246,6 +247,11 @@ def first_offer_date(offers: Optional[List[dict]], settle: date) -> Optional[dat
     (yield-to-offer, как НРД): купоны до неё + выкуп остатка номинала."""
     dates = []
     for o in offers or []:
+        # уже состоявшаяся оферта («Оферта (состоялось)») — не будущее событие,
+        # не должна двигать горизонт оценки, даже если дата распарсилась в будущее
+        typ = (o.get("type") or "").lower()
+        if "состоя" in typ or "исполн" in typ:
+            continue
         d = o.get("date")
         if isinstance(d, str):
             try:

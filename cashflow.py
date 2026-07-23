@@ -176,10 +176,14 @@ def parse_base_and_spread(formula: str, base_rate: str | None) -> tuple[str | No
     spread_bps = 0
     if formula and "+" in formula:
         parts = formula.split("+", 1)
-        rhs = parts[1].strip()
+        # нормализуем русскую десятичную запятую и хвостовой %: "1,5%" → 1.50
+        rhs = parts[1].strip().replace("%", "").replace(",", ".").strip()
+        # берём первое число из хвоста (отсекаем возможный текст после спреда)
+        import re as _re
+        m = _re.match(r"-?\d+(?:\.\d+)?", rhs)
         try:
-            spread_bps = int(float(rhs.replace("%", "").strip()) * 100)
-        except ValueError:
+            spread_bps = int(float(m.group(0)) * 100) if m else 0
+        except (ValueError, AttributeError):
             spread_bps = 0
     return base, spread_bps
 

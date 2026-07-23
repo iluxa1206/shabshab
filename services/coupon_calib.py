@@ -327,11 +327,32 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
     return None
 
 
+# Допуск запаздывания истории индекса: обычный лаг публикации (выходные/до
+# обновления) — до этого порога carry-forward последнего значения корректен
+# (RUONIA/КС держат ставку предыдущего рабочего дня). За порогом история СТЕЙЛ:
+# день с obs > last_hist больше НЕ считается «фактом» — уходит на форвард, иначе
+# стейл-ставка молча текла бы в купон начавшегося периода (аудит F1).
+_HIST_STALE_GRACE_DAYS = 4
+
+
+def _realized(idx, obs: date, calc_date: date) -> bool:
+    """obs — реализованный факт (а не проекция), если он в прошлом ОТНОСИТЕЛЬНО
+    calc_date И покрыт историей (obs ≤ последней даты истории + grace). Выходной/
+    праздник у самого края покрывается carry-forward'ом (в пределах grace); при
+    настоящем застое фида день уходит на форвард."""
+    if obs > calc_date:
+        return False
+    last = idx[0][-1] if idx and idx[0] else None
+    if last is None:
+        return False
+    return obs <= last + timedelta(days=_HIST_STALE_GRACE_DAYS)
+
+
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float], idx=None) -> float:
     """Компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ (КС/RUONIA),
-    будущие — fwd_pct(date). point → одна дата; average → среднее по дням.
-    lag_unit='work' — лаг в рабочих днях (конвенция части проспектов).
+    будущие ИЛИ не покрытые стейл-историей — fwd_pct(date). point → одна дата;
+    average → среднее по дням. lag_unit='work' — лаг в рабочих днях.
     idx — инжектированная история (index_history); None → сам фетчит."""
     if idx is None:
         idx = _index(spec.get("base", "KEYRATE"))
@@ -339,11 +360,11 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
     unit = spec.get("lag_unit", "cal")
     if spec.get("mode") == "point":
         fix = _obs_date(start, lag, unit)
-        return (_rate_at(idx, fix) if fix <= calc_date else fwd_pct(fix)) or 0.0
+        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
     tot, n, cur = 0.0, 0, start
     while cur < end:
         obs = _obs_date(cur, lag, unit)
-        k = _rate_at(idx, obs) if obs <= calc_date else fwd_pct(obs)
+        k = _rate_at(idx, obs) if _realized(idx, obs, calc_date) else fwd_pct(obs)
         if k is not None:
             tot += k
             n += 1
