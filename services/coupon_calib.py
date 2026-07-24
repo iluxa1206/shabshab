@@ -365,15 +365,21 @@ _HIST_STALE_GRACE_DAYS = 4
 
 def _realized(idx, obs: date, calc_date: date) -> bool:
     """obs — реализованный факт (а не проекция), если он в прошлом ОТНОСИТЕЛЬНО
-    calc_date И покрыт историей (obs ≤ последней даты истории + grace). Выходной/
-    праздник у самого края покрывается carry-forward'ом (в пределах grace); при
-    настоящем застое фида день уходит на форвард."""
+    calc_date И ЛОКАЛЬНО покрыт историей: ближайшая известная дата ≤ obs отстоит
+    не больше чем на grace. Проверяем ЛОКАЛЬНОЕ покрытие, а не только max-дату —
+    иначе внутренняя ДЫРА в истории (напр. RC_F до 08.07, live с 21.07) была бы
+    невидима: bisect тянул бы 08.07 вперёд, а last=21.07 говорил бы «факт».
+    Выходной/праздник у края (obs−предыдущий фиксинг ≤ grace) остаётся фактом
+    (carry-forward корректен); настоящая дыра/застой уходит на форвард."""
     if obs > calc_date:
         return False
-    last = idx[0][-1] if idx and idx[0] else None
-    if last is None:
+    dts = idx[0] if idx else None
+    if not dts:
         return False
-    return obs <= last + timedelta(days=_HIST_STALE_GRACE_DAYS)
+    i = bisect.bisect_right(dts, obs) - 1     # последняя дата истории ≤ obs
+    if i < 0:
+        return False
+    return (obs - dts[i]).days <= _HIST_STALE_GRACE_DAYS
 
 
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,

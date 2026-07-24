@@ -127,6 +127,18 @@ def test_realized_boundary():
     assert _realized(idx, CALC_DATE + timedelta(days=5), CALC_DATE) is False
 
 
+def test_realized_internal_hole():
+    """ЛОКАЛЬНОЕ покрытие: внутренняя дыра (плотно до −15д, затем свежая точка −1д)
+    не должна выдавать день В ДЫРЕ за факт, хотя max-дата свежая."""
+    d = CALC_DATE
+    dts = [d - timedelta(days=17), d - timedelta(days=16), d - timedelta(days=15),
+           d - timedelta(days=1)]           # дыра −14..−2
+    idx = (dts, [15.0] * 4)
+    assert _realized(idx, d - timedelta(days=15), d) is True    # край плотного участка
+    assert _realized(idx, d - timedelta(days=8), d) is False    # в дыре → форвард
+    assert _realized(idx, d - timedelta(days=1), d) is True     # свежая точка
+
+
 def test_stale_history_routes_to_forward():
     """Стейл-история (последняя дата 15 дней назад): начавшийся период за пределом
     покрытия проецируется форвардом (99), не последним фактом (15)."""

@@ -33,6 +33,11 @@ _RUONIA_SEED = os.path.join(_DIR, "ruonia_seed.json")
 _UA = {"User-Agent": "Mozilla/5.0"}
 _KS_URL = "https://www.cbr.ru/hd_base/KeyRate/"
 _RUONIA_URL = "https://cbr.ru/hd_base/ruonia/"
+# /dynamics/ — в ОТЛИЧИЕ от базового /ruonia/ (всегда ~2 дня) уважает From/To и
+# отдаёт полную дневную историю обычной таблицей [дата, ставка, ...]. Закрывает
+# разрыв между статическим RC_F и live-текущей БЕЗ ручного обновления RC_F.
+_RUONIA_DYN_URL = "https://www.cbr.ru/hd_base/ruonia/dynamics/"
+_RUONIA_DYN_DAYS = 220   # окно live-истории (перекрывает типичный лаг RC_F с запасом)
 
 
 def _num(s: str) -> Optional[float]:
@@ -70,7 +75,8 @@ def _fetch_ks_live() -> List[Tuple[date, float]]:
 
 
 def _fetch_ruonia_current_live() -> List[Tuple[date, float]]:
-    """Последние доступные точки RUONIA с cbr.ru (транспонированная таблица, ~2 дня)."""
+    """Последние доступные точки RUONIA с cbr.ru (транспонированная таблица, ~2 дня).
+    Фолбэк, если /dynamics/ недоступен."""
     resp = requests.get(_RUONIA_URL, headers=_UA, timeout=15)
     resp.raise_for_status()
     table = BeautifulSoup(resp.text, "html.parser").find("table")
@@ -81,6 +87,30 @@ def _fetch_ruonia_current_live() -> List[Tuple[date, float]]:
     dates = [_ddmmyyyy(x) for x in rows[0][1:]]
     rates = [_num(x) for x in rows[1][1:]]
     return [(d, r) for d, r in zip(dates, rates) if d and r is not None]
+
+
+def _fetch_ruonia_dynamics(days_back: int = _RUONIA_DYN_DAYS) -> List[Tuple[date, float]]:
+    """Дневная история RUONIA за последние days_back дней с /dynamics/ (обычная
+    таблица [дата, ставка, объём, кол-во]). Закрывает разрыв RC_F↔live живьём."""
+    frm = (date.today() - _dt.timedelta(days=days_back)).strftime("%d.%m.%Y")
+    to = date.today().strftime("%d.%m.%Y")
+    url = (f"{_RUONIA_DYN_URL}?UniDbQuery.Posted=True"
+           f"&UniDbQuery.From={frm}&UniDbQuery.To={to}")
+    resp = requests.get(url, headers=_UA, timeout=20)
+    resp.raise_for_status()
+    table = BeautifulSoup(resp.text, "html.parser").find("table")
+    if table is None:
+        return []
+    out: List[Tuple[date, float]] = []
+    for tr in table.find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+        if len(cells) < 2:
+            continue
+        d, r = _ddmmyyyy(cells[0]), _num(cells[1])   # col0 дата, col1 ставка
+        if d and r is not None:
+            out.append((d, r))
+    out.sort(key=lambda x: x[0])
+    return out
 
 
 def _load_seed() -> List[Tuple[date, float]]:
@@ -167,15 +197,21 @@ def _refresh_locked(today: str) -> None:
     except Exception as e:
         logger.warning(f"WARNING: CBR KeyRate fetch failed ({e}) — фолбэк на кэш")
     try:
-        ruonia_live = _fetch_ruonia_current_live()
+        # /dynamics/ — полное окно (закрывает разрыв RC_F↔сегодня живьём)
+        ruonia_live = _fetch_ruonia_dynamics()
     except Exception as e:
-        logger.warning(f"WARNING: CBR RUONIA fetch failed ({e})")
+        logger.warning(f"WARNING: CBR RUONIA dynamics fetch failed ({e}) — фолбэк на /ruonia/")
+        try:
+            ruonia_live = _fetch_ruonia_current_live()
+        except Exception as e2:
+            logger.warning(f"WARNING: CBR RUONIA current fetch failed ({e2})")
 
     if len(ks) < 100 and cache.get("ks"):  # фетч куцый → stale-кэш
         ks = [(date.fromisoformat(d), v) for d, v in cache["ks"]]
         logger.warning("WARNING: CBR KeyRate stale cache fallback")
     if not ruonia_live and cache.get("ruonia_live"):
         ruonia_live = [(date.fromisoformat(d), v) for d, v in cache["ruonia_live"]]
+        logger.warning("WARNING: CBR RUONIA stale cache fallback")
 
     if ks or ruonia_live:
         _save_cache(ks, ruonia_live)
