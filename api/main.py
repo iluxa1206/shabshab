@@ -81,16 +81,26 @@ async def universe_price_poller():
                     _last_reg_sync = _today
                 except Exception as e:
                     logger.warning(f"instruments sync error: {e}")
-            # бэкфилл эмитента (MOEX EMITTER_ID) — постепенно, ~40/цикл, статичен →
-            # кэш навсегда в реестре. Для фильтра/агрегатов по эмитентам.
+            # бэкфилл эмитента (MOEX EMITTER_ID) — drain-loop: сливаем ВСЕ
+            # resolvable за один цикл (эмитент статичен → кэш навсегда). Бумаги без
+            # EMITTER_ID (len(emap)<len(miss)) не зацикливаем — выходим. Для
+            # фильтра/агрегатов по эмитентам.
             try:
                 from services import instruments_registry as _reg
-                _miss = _reg.isins_missing_emitter(40)
-                if _miss:
+                _filled = 0
+                for _ in range(20):   # 20·40=800 > юниверса — хватает на первый проход
+                    _miss = _reg.isins_missing_emitter(40)
+                    if not _miss:
+                        break
                     _emap = await MarketDataService.fetch_emitter_info(_miss)
                     for _i, (_eid, _enm) in _emap.items():
                         _reg.set_emitter(_i, _eid, _enm)
-                    logger.info(f"emitter backfill: {len(_emap)}/{len(_miss)}")
+                    _filled += len(_emap)
+                    if len(_emap) < len(_miss):   # часть не резолвится — не крутимся
+                        break
+                    await asyncio.sleep(0.5)      # мягкий rate-limit между батчами
+                if _filled:
+                    logger.info(f"emitter backfill: +{_filled}")
             except Exception as e:
                 logger.warning(f"emitter backfill error: {e}")
             if _in_moex_trading_hours():
