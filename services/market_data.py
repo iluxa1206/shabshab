@@ -95,7 +95,13 @@ class MarketDataService:
                 market_cache["ruonia_curve"] = None
                 market_cache["keyrate_curve"] = None
             if market_cache["ruonia_curve"] and market_cache["keyrate_curve"]:
-                return market_cache["ruonia_curve"], market_cache["keyrate_curve"], market_cache["calc_date"], market_cache["rates_date"]
+                # свежие кривые (rates_date=сегодня) пиним на день; кривые, собранные
+                # из СТЕЙЛ-котировок (транзиентный сбой Cbonds на warmup), перепробуем
+                # раз в ~15 мин — иначе весь день на протухшей кривой даже после
+                # восстановления Cbonds (аудит: all-day stale pin).
+                fresh = market_cache.get("rates_date") == date.today()
+                if fresh or (time.time() - market_cache.get("curves_ts", 0)) < 900:
+                    return market_cache["ruonia_curve"], market_cache["keyrate_curve"], market_cache["calc_date"], market_cache["rates_date"]
 
             try:
                 # Load curves from rates.py logic
@@ -117,6 +123,7 @@ class MarketDataService:
                     "rates_date": rates_date,
                     "ois_quotes": ois_quotes,   # для кривых ожиданий z-спреда
                     "irs_quotes": irs_quotes,
+                    "curves_ts": time.time(),   # для перепопытки стейл-кривых
                 })
 
                 return ruonia_curve, irs_curve, calc_date, rates_date
@@ -708,18 +715,32 @@ class MarketDataService:
         if missing:
             async def fetch_one(client: httpx.AsyncClient, isin: str):
                 try:
-                    url = f"https://iss.moex.com/iss/securities/{isin}/bondization.json?iss.only=coupons&limit=400"
-                    resp = await _moex_get(client, url, timeout=8)
-                    if resp is None or resp.status_code != 200:
-                        return
-                    cp = resp.json().get("coupons", {})
-                    cols = cp.get("columns", [])
-                    if "startdate" not in cols or "coupondate" not in cols:
-                        return
-                    si, ei = cols.index("startdate"), cols.index("coupondate")
-                    vi = cols.index("value") if "value" in cols else None
-                    sched = [(row[si], row[ei], (row[vi] if vi is not None else None))
-                             for row in cp.get("data", []) if row[si] and row[ei]]
+                    # ISS отдаёт bondization страницами по 100 (limit>100 игнорится) —
+                    # ПАГИНИРУЕМ по start=, иначе у месячных бумаг >100 купонов
+                    # хвост дропался: текущий зафикс. купон терялся → перепрогноз.
+                    sched = []
+                    start_pg, PAGE, guard = 0, 100, 0
+                    while guard < 40:
+                        guard += 1
+                        resp = await _moex_get(
+                            client,
+                            f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
+                            params={"iss.only": "coupons", "limit": PAGE, "start": start_pg},
+                            timeout=8)
+                        if resp is None or resp.status_code != 200:
+                            break
+                        cp = resp.json().get("coupons", {})
+                        cols = cp.get("columns", [])
+                        if "startdate" not in cols or "coupondate" not in cols:
+                            break
+                        si, ei = cols.index("startdate"), cols.index("coupondate")
+                        vi = cols.index("value") if "value" in cols else None
+                        rows = cp.get("data", [])
+                        sched.extend((row[si], row[ei], (row[vi] if vi is not None else None))
+                                     for row in rows if row[si] and row[ei])
+                        if len(rows) < PAGE:
+                            break
+                        start_pg += PAGE
                     if sched:
                         disk[isin] = sched
                         cls._schedule_mem[isin] = [(date.fromisoformat(a), date.fromisoformat(b), v)

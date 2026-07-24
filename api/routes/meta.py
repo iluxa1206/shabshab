@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from datetime import date
@@ -22,6 +23,22 @@ async def get_meta():
     # (T-1 норма: клиринг вчерашний; допускаем до 4 дней на выходные+праздник)
     elif (date.today() - rates_date).days > 4:
         warnings.append(f"Rates quotes are {(date.today() - rates_date).days} days old (Cbonds stale fallback?).")
+
+    # свежесть истории ЦБ (КС/RUONIA) — раньше выводилась только в логи, не в UI
+    from services import cbr
+    def _last(hist):
+        return hist[-1][0] if hist else None
+    try:
+        ks_last, ruo_last = await asyncio.gather(
+            asyncio.to_thread(lambda: _last(cbr.ks_history())),
+            asyncio.to_thread(lambda: _last(cbr.ruonia_history())),
+        )
+        for lbl, d in (("КС", ks_last), ("RUONIA", ruo_last)):
+            if d and (date.today() - d).days > 4:
+                warnings.append(f"История {lbl} ЦБ отстаёт на {(date.today() - d).days} дн "
+                                f"(последняя {d.isoformat()}).")
+    except Exception:
+        pass
 
     # дрейф наших метрик vs НРД (наполняет universe_price_poller)
     from services.market_data import market_cache

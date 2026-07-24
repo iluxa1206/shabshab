@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, Literal
 from datetime import date, timedelta
+
+logger = logging.getLogger(__name__)
 from api.schemas import (CurveResponse, ForwardRateResponse, CurveNode, CurveSegment,
                          CurvePlotResponse, CurveQuote, CurveSample,
                          KsPathResponse, KsPathPoint)
@@ -222,4 +225,5 @@ async def get_forward_rate(
             forward_pct=round(fwd_rate * 100, 4)
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calculation error: {e}")
+        logger.warning(f"forward-rate calc error ({type}, {start_date}..{end_date}): {e}")
+        raise HTTPException(status_code=500, detail="Ошибка расчёта форвардной ставки")

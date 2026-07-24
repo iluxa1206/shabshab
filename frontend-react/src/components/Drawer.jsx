@@ -201,7 +201,8 @@ function FloaterSection({ f, base }) {
 
 // staleness: возраст каждого источника данных
 function StaleChips({ m, n }) {
-  const today = new Date().toISOString().slice(0, 10);
+  // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
+  const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
   const chip = (label, dateStr, liveOk) => {
     const stale = dateStr && dateStr < today;
     const cls = liveOk === false ? "off" : stale ? "stale" : "fresh";
@@ -259,7 +260,8 @@ function Content({ d }) {
   const dc = dmColor(v.disc_margin_bps);
   const warnings = [...(baseVal.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
-  const today = new Date().toISOString().slice(0, 10);
+  // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
+  const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
   const coupons = cf.filter((c) => c.type === "COUPON"); // без погашения — оно в 20× больше
   // поток обрезан к оферте (pricing cut_at_offer): последняя выплата ≤ оферта < погашение.
   // Тогда таблица и метрики SM/z считаются к одному горизонту.
@@ -271,9 +273,10 @@ function Content({ d }) {
     <>
       <StaleChips m={m} n={d.nrd} />
       <div className="price-calc">
-        <label className="pc-label">Калькулятор цены</label>
+        <label className="pc-label" htmlFor="pc-price">Калькулятор цены</label>
         <div className="pc-input-wrap">
           <input
+            id="pc-price"
             className="pc-input"
             inputMode="decimal"
             placeholder={fmt.pct(baseVal.clean_price_pct) ?? "цена"}

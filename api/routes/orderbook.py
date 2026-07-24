@@ -1,18 +1,23 @@
 from fastapi import APIRouter, Query, HTTPException, Path
 from typing import Optional
 from datetime import datetime, date, timezone
+import os
+import re
 import asyncio
 import aiohttp
 from api.schemas import OrderbookResponse, OrderbookSnapshot, OrderbookLevel
 from services.market_data import MarketDataService
 from services.bonds import create_bond_ref_data
 from services.valuation import calculate_valuation_metrics
+from api.routes.bonds import get_base_dir
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]:
     access_token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
@@ -39,9 +44,12 @@ async def get_orderbook(
     depth: int = Query(10, ge=1, le=50)
 ):
     # 1. Get Bond Data
-    cache = MarketDataService.get_local_bond_cache("isins_cache.json")
+    isin = (isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
     data = cache.get(isin)
-    
+
     if not data:
         raise HTTPException(status_code=404, detail="Bond not found in cache")
         
