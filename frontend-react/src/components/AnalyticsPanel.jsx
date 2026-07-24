@@ -24,6 +24,14 @@ const plu = (n) => {
   return "бумаг";
 };
 
+// z для аналитики: наш z_model (к КБД ОФЗ) первичен, НРД z_spread — фолбэк
+// (НРД-доступ отключён → z_spread_bps=null у всех, графики пустовали).
+// Бэнд отсекает мусор от стейл/тонких цен неликвида (напр. z −2167).
+const zval = (b) => {
+  const z = b.z_model_bps != null ? b.z_model_bps : b.z_spread_bps;
+  return z != null && z < 3000 && z > -1500 ? z : null;
+};
+
 const median = (a) => {
   if (!a.length) return null;
   const s = a.slice().sort((x, y) => x - y);
@@ -41,8 +49,9 @@ const quantile = (a, q) => {
 function ScatterZDur({ rows }) {
   const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
   const pts = rows
-    .filter((b) => b.spread_dur_yrs != null && b.z_spread_bps != null && b.z_spread_bps < 3000)
-    .map((b) => ({ x: b.spread_dur_yrs, y: b.z_spread_bps, r: norm(b.rating), isin: b.isin, name: b.short_name }));
+    .map((b) => ({ b, z: zval(b) }))
+    .filter(({ b, z }) => b.spread_dur_yrs != null && z != null)
+    .map(({ b, z }) => ({ x: b.spread_dur_yrs, y: z, r: norm(b.rating), isin: b.isin, name: b.short_name }));
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
@@ -58,7 +67,7 @@ function ScatterZDur({ rows }) {
         y={H - pad.b + 14} textClass="an-axis" />
       {pts.map((p) => (
         <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}>
-          <title>{`${p.name} — один выпуск\nz-спред: ${p.y} bps (НРД, к кривой ОФЗ)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
+          <title>{`${p.name} — один выпуск\nz-спред: ${p.y} bps (наш, к кривой КБД ОФЗ)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
         </circle>
       ))}
       <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">spread duration →</text>
@@ -72,8 +81,9 @@ function RatingDist({ rows }) {
   const groups = useMemo(() => {
     const g = {};
     for (const b of rows) {
-      if (b.z_spread_bps == null || b.z_spread_bps >= 3000) continue;
-      (g[norm(b.rating)] ||= []).push(b.z_spread_bps);
+      const z = zval(b);
+      if (z == null) continue;
+      (g[norm(b.rating)] ||= []).push(z);
     }
     return g;
   }, [rows]);
