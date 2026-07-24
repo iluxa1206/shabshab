@@ -34,7 +34,10 @@ export const COLS = [
   { key: "short_name", label: "INSTRUMENT", align: "left",
     cell: (b) => (
       <td className="left" key="short_name">
-        <div className="bond-name">{b.short_name || b.isin}</div>
+        <div className="bond-name">
+          {b.short_name || b.isin}
+          {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
+        </div>
         <div className="mono muted" style={{ fontSize: 11 }}>{b.isin}</div>
       </td>
     ) },

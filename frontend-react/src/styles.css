@@ -221,6 +221,9 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 /* производная метрика устарела: цена тикнула по WS, расчёт ещё под старой ценой.
    Приглушаем + курсив, чтобы трейдер видел рассинхрон с живой ценой. */
 td.mstale { opacity: 0.4; font-style: italic; }
+/* бейдж «стейл» — цена подразумевает номинальный убыток (битая/тонкая) */
+.badge-stale { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--neg); border: 1px solid var(--neg); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }
 td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .loading { text-align: center; color: var(--mut); padding: 48px; text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; }
 .empty { text-align: center; padding: 56px 24px; }

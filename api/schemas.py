@@ -214,6 +214,7 @@ class BondListItem(BaseModel):
     simple_margin_bps: Optional[int] = None
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
+    price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
     z_spread_bps: Optional[int] = None
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ (методика НРД)
     rating: Optional[str] = None

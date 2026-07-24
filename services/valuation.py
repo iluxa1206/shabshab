@@ -127,6 +127,14 @@ def calculate_valuation_metrics(
                                       explicit_periods=periods, amorts=amorts, offers=offers,
                                       index_pct_fn=index_pct_fn, warnings_out=warnings)
 
+    # ГАРАНТИРОВАННЫЙ НОМИНАЛЬНЫЙ УБЫТОК: dirty > Σ всех будущих потоков (даже без
+    # дисконта). Держать до погашения = точно потерять деньги → цена явно битая
+    # (стейл/тонкий принт неликвида), SM/DM/z экономически бессмысленны и лезут в
+    # топ сортировки мусором (напр. DM −2221). Помечаем → чистим спред-метрики.
+    _future_sum = sum(cf.amount_rub for cf in cfs if cf.pay_date > calc_date)
+    price_implausible = bool(dirty_rub is not None and _future_sum > 0
+                             and dirty_rub > _future_sum * 1.0005)  # 5bps допуск на округление
+
     try:
         impl_yield = xirr_yield_pct(dirty_rub, cfs, calc_date)
     except Exception as e:
@@ -224,7 +232,16 @@ def calculate_valuation_metrics(
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
 
-    status = "SUCCESS" if sm_bps is not None else "DM_FAILED"
+    # гарант. номинальный убыток → цена битая, спред-метрики бессмысленны: чистим
+    # (иначе −2221 DM лезет в топ). yield/dirty оставляем (факт от цены).
+    if price_implausible:
+        warnings.append(f"цена {price}% подразумевает номинальный убыток "
+                        f"(dirty {dirty_rub:.0f}₽ > Σ будущих потоков {_future_sum:.0f}₽) — "
+                        "вероятно стейл/тонкая цена неликвида; SM/DM/спред скрыты")
+        sm_bps = disc_margin_bps = yield_over_index_bps = None
+        sm_to_offer = dm_to_offer = None
+
+    status = "SUCCESS" if sm_bps is not None else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
     if any(w.startswith("sanity:") for w in warnings):
         status = "SANITY_FLAG"
 
@@ -238,6 +255,7 @@ def calculate_valuation_metrics(
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,
         "yield_over_index_bps": yield_over_index_bps,
+        "price_implausible": price_implausible,   # гарант. убыток → z тоже занулить
         "pricing_status": status,
         "warnings": sorted(set(warnings)),
         "preferred_horizon": horizon,

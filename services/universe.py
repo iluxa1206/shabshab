@@ -69,6 +69,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = None
+    implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
         try:
@@ -78,6 +79,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             amorts=amorts, offers=offers)
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             yoi = m.get("yield_over_index_bps")
+            implausible = bool(m.get("price_implausible"))
             hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
             sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
         except Exception as e:
@@ -94,7 +96,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             pass
 
     exp = exp_ru if base == "RUONIA" else exp_ks
-    if exp and g_curve and price_calc is not None and base in ("RUONIA", "KEYRATE"):
+    if exp and g_curve and price_calc is not None and base in ("RUONIA", "KEYRATE") and not implausible:
         try:
             coupons = ([{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")}
                         for c in coupons_full]
@@ -119,7 +121,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
 
     return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
             "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
-            "refix": refix, "current_coupon": cur_cpn,
+            "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}
 
 
