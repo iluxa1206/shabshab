@@ -127,7 +127,13 @@ function Dashboard() {
       (isin, price) => {
         if (price == null) return;
         setBonds((prev) =>
-          prev.map((b) => (b.isin === isin ? { ...b, last_price_pct: price } : b))
+          prev.map((b) => {
+            if (b.isin !== isin || b.last_price_pct === price) return b;
+            // WS тикает только цену; производные (DM/SM/z/carry/dirty/CHG/Y-IDX)
+            // остаются от прошлого расчёта бэка → помечаем стейл, пока поллер/рефетч
+            // не пересчитает под новую цену. _mprice — цена, под которой метрики верны.
+            return { ...b, last_price_pct: price, _mstale: true, _mprice: b._mprice ?? b.last_price_pct };
+          })
         );
       }
     );

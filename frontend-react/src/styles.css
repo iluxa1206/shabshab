@@ -218,6 +218,10 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .bond-formula { color: var(--mut); font-size: 12px; }
 .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; padding: 2px 7px; border: 1px solid var(--line-2); color: var(--fg); }
 .dm-chip { font-weight: 700; }
+/* производная метрика устарела: цена тикнула по WS, расчёт ещё под старой ценой.
+   Приглушаем + курсив, чтобы трейдер видел рассинхрон с живой ценой. */
+td.mstale { opacity: 0.4; font-style: italic; }
+td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .loading { text-align: center; color: var(--mut); padding: 48px; text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; }
 .empty { text-align: center; padding: 56px 24px; }
 .empty-msg { color: var(--mut); font-size: 13px; margin-bottom: 18px; letter-spacing: 0.02em; }

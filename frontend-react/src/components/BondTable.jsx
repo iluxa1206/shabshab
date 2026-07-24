@@ -4,6 +4,10 @@ import { fmt, dmColor } from "../format.js";
 
 const D = () => <span className="dash">—</span>;
 
+// WS тикнул цену, но производные метрики (DM/SM/z/carry/dirty/CHG/Y-IDX) ещё
+// от прошлого расчёта бэка → dim-класс, чтобы трейдер не читал их как актуальные.
+const ms = (b) => (b._mstale ? " mstale" : "");
+
 // Δz: расширение спреда (>0) = цена упала = красный; сужение = зелёный
 const dzColor = (v) => (v == null ? { color: "var(--mut-2)" } : { color: v > 0 ? "var(--down)" : "var(--up)" });
 
@@ -58,20 +62,20 @@ export const COLS = [
     cell: (b) => {
       const delta = b.delta_to_prev_close;
       const deltaCls = delta == null ? "" : delta >= 0 ? "pos" : "neg";
-      return <td className={"num " + deltaCls} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
+      return <td className={"num " + deltaCls + ms(b)} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num",
-    cell: (b) => <td className="num" key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
+    cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num",
-    cell: (b) => <td className="num" key="sm_bps"><Chip value={b.dm_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b)} key="sm_bps"><Chip value={b.dm_bps} /></td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num",
-    cell: (b) => <td className="num" key="disc_margin_bps"><Chip value={b.disc_margin_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b)} key="disc_margin_bps"><Chip value={b.disc_margin_bps} /></td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num",
-    cell: (b) => <td className="num" style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
+    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
   { key: "carry_bps", label: "CARRY", sub: "vs БАЗА", align: "num",
-    cell: (b) => <td className="num" style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
+    cell: (b) => <td className={"num" + ms(b)} style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
-    cell: (b) => <td className="num" style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
+    cell: (b) => <td className={"num" + ms(b)} style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
   { key: "z_pctile", label: "z%ile", sub: "RATING", align: "num",
     cell: (b) => <td className="num" key="z_pctile">{b.z_pctile == null ? <D /> : <PctileBar p={b.z_pctile} />}</td> },
   { key: "delta_z_dod", label: "Δz", sub: "D/D BPS", align: "num",
