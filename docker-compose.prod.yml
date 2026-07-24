@@ -13,6 +13,14 @@ services:
   floaters:
     build: .
     restart: unless-stopped
+    # Хардненинг RCE: запрет эскалации привилегий + сброс ВСЕХ Linux-caps
+    # (uvicorn на :8000 не требует ни одной). Полный non-root отложен: data/ —
+    # root-owned bind-mount (users.json/funds-БД), наивный USER сломал бы запись;
+    # нужен entrypoint-drop (gosu) с chown volume на старте.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     env_file:
       - .env
     # Лимит памяти: idle ~95MB, пик на pandas+юниверс НРД. 768MB — потолок,

@@ -10,12 +10,19 @@ import re
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from services import portfolio, portfolio_db as db
+from api.routes.auth import require_admin
 
 router = APIRouter()
+
+# Мутации фондов (create/delete/snapshot/position/repo) — только admin: раньше
+# любой авторизованный (require_user на роутере) мог удалить фонд/заменить снапшот.
+# Чтение (GET) остаётся под require_user. Если деску нужно, чтобы обычные юзеры
+# редактировали фонды — снять этот гейт с нужных роутов.
+_admin = [Depends(require_admin)]
 
 _ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b")
 
@@ -101,20 +108,20 @@ async def get_funds():
     return {"funds": await portfolio.funds_overview()}
 
 
-@router.post("", tags=["Funds"], status_code=201)
+@router.post("", tags=["Funds"], status_code=201, dependencies=_admin)
 async def create_fund(body: FundIn):
     if db.get_fund(body.code.upper()):
         raise HTTPException(status_code=409, detail=f"Фонд {body.code} уже существует")
     return db.create_fund(body.code, body.name, body.base_ccy)
 
 
-@router.patch("/{code}", tags=["Funds"])
+@router.patch("/{code}", tags=["Funds"], dependencies=_admin)
 async def patch_fund(code: str, body: FundPatch):
     _fund_or_404(code)
     return db.update_fund(code.upper(), **body.model_dump(exclude_none=True))
 
 
-@router.delete("/{code}", tags=["Funds"])
+@router.delete("/{code}", tags=["Funds"], dependencies=_admin)
 async def remove_fund(code: str):
     _fund_or_404(code)
     db.delete_fund(code.upper())
@@ -184,7 +191,7 @@ async def get_benchmarks_route(days: int = 180):
     return out
 
 
-@router.put("/{code}/snapshot", tags=["Funds"])
+@router.put("/{code}/snapshot", tags=["Funds"], dependencies=_admin)
 async def put_snapshot(code: str, body: SnapshotIn):
     """Заменяет снапшот позиций целиком из CSV `ISIN;кол-во`."""
     _fund_or_404(code)
@@ -196,7 +203,7 @@ async def put_snapshot(code: str, body: SnapshotIn):
     return {"ok": True, "positions": n, "errors": errors, "snap_date": snap}
 
 
-@router.put("/{code}/position", tags=["Funds"])
+@router.put("/{code}/position", tags=["Funds"], dependencies=_admin)
 async def put_position(code: str, body: PositionIn):
     """Точечное редактирование: qty<=0 удаляет позицию."""
     _fund_or_404(code)
@@ -213,14 +220,14 @@ async def get_repos(code: str):
     return {"repos": db.list_repos(code.upper())}
 
 
-@router.post("/{code}/repo", tags=["Funds"], status_code=201)
+@router.post("/{code}/repo", tags=["Funds"], status_code=201, dependencies=_admin)
 async def post_repo(code: str, body: RepoIn):
     _fund_or_404(code)
     return db.add_repo(code.upper(), body.amount, body.rate_pct, body.ccy,
                        body.open_date, body.term_days, body.note)
 
 
-@router.delete("/{code}/repo/{repo_id}", tags=["Funds"])
+@router.delete("/{code}/repo/{repo_id}", tags=["Funds"], dependencies=_admin)
 async def remove_repo(code: str, repo_id: int):
     _fund_or_404(code)
     if not db.delete_repo(code.upper(), repo_id):
