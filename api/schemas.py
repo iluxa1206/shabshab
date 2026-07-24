@@ -86,6 +86,13 @@ class BondValuation(BaseModel):
     disc_margin_to_offer_bps: Optional[int] = None   # discount margin к оферте
     yield_to_offer_pct: Optional[float] = None       # XIRR к оферте
 
+
+# Ответ /reprice: BondValuation + цена-зависимые z_model/carry (для live-рефреша
+# всей строки таблицы по WS-тику, не только карточки-калькулятора)
+class RepriceResponse(BondValuation):
+    z_model_bps: Optional[int] = None
+    carry_bps: Optional[int] = None
+
 # --- 5.4 CashflowItem ---
 class CashflowItem(BaseModel):
     number: int

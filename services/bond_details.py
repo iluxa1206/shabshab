@@ -297,6 +297,7 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
         MarketDataService.fetch_moex_snapshot([isin]),                                # 3
         MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 4
         nrd_service.fetch_nrd_metrics([isin]) if external else _aempty(),             # 5
+        MarketDataService.get_zspread_ctx(),                                          # 6
         return_exceptions=True,
     )
     _ok = lambda x, d: d if isinstance(x, Exception) else x
@@ -306,6 +307,7 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     snapshot = _ok(res[3], {})
     mo_map = _ok(res[4], {})
     nrd_metrics = _ok(res[5], {})
+    exp_ks, exp_ru, g_curve = _ok(res[6], (None, None, None))
 
     if data:
         ref_obj = create_bond_ref_data(data, isin)
@@ -328,8 +330,39 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     if curve is None:
         raise CalculationException("Curve unavailable to reprice", {"isin": isin})
 
-    return calculate_valuation_metrics(
+    amorts = sched_full.get("amorts")
+    offers = sched_full.get("offers")
+    out = calculate_valuation_metrics(
         ref_obj, price, curve, calc_date,
         accrued_override=accrued_live, periods=schedules.get(isin),
-        amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
+        amorts=amorts, offers=offers,
     )
+
+    # z_model + carry — тоже цена-зависимы; нужны для live-рефреша всей строки
+    # таблицы по WS-тику (не только карточка-калькулятор). Мирроринг universe.
+    out = dict(out)
+    exp = exp_ru if ref_obj.base == "RUONIA" else exp_ks
+    coupons = sched_full.get("coupons", [])
+    z_model = None
+    if exp and g_curve and ref_obj.base in ("RUONIA", "KEYRATE"):
+        try:
+            from services.zspread import compute_z_bps
+            cpn_dicts = [{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")}
+                         for c in coupons]
+            z_model = compute_z_bps(
+                ref_obj, exp, g_curve, calc_date, price,
+                accrued_live if accrued_live is not None else ref_obj.accrued_rub,
+                cpn_dicts, amorts, offers)
+        except Exception as e:
+            logger.warning(f"reprice z_model error {isin}: {e}")
+    carry = None
+    try:
+        from services import metrics as _metrics
+        cb = _metrics.carry_refix_block(coupons, amorts, ref_obj.face_value, price,
+                                        exp, None, calc_date)
+        carry = cb["carry_bps"]
+    except Exception as e:
+        logger.warning(f"reprice carry error {isin}: {e}")
+    out["z_model_bps"] = z_model
+    out["carry_bps"] = carry
+    return out

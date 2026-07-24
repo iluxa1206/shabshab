@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
-import { fetchBonds, fetchMeta, connectMarketWs, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { fetchBonds, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
@@ -119,6 +119,35 @@ function Dashboard() {
     loadBonds();
   }, [watch, loadBonds]);
 
+  // debounced live-пересчёт производных строки под новую цену (WS тикает только
+  // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model/carry под введённой ценой.
+  const repriceTimers = useRef({});
+  const scheduleReprice = useCallback((isin, price) => {
+    const t = repriceTimers.current;
+    if (t[isin]) clearTimeout(t[isin]);
+    t[isin] = setTimeout(async () => {
+      delete t[isin];
+      try {
+        const r = await repriceBond(isin, price);
+        setBonds((prev) =>
+          prev.map((b) => {
+            // новее тикнуло за время запроса — этот reprice устарел, не затираем
+            if (b.isin !== isin || b.last_price_pct !== price) return b;
+            return {
+              ...b, _mstale: false,
+              dirty_price_rub: r.dirty_price_rub ?? b.dirty_price_rub,
+              dm_bps: r.dm_bps ?? b.dm_bps,
+              disc_margin_bps: r.disc_margin_bps ?? b.disc_margin_bps,
+              z_model_bps: r.z_model_bps ?? b.z_model_bps,
+              carry_bps: r.carry_bps,
+              yield_over_index_bps: r.yield_over_index_bps ?? b.yield_over_index_bps,
+            };
+          })
+        );
+      } catch { /* 401 → глобальный logout; прочее — строка остаётся dim */ }
+    }, 500);
+  }, []);
+
   // WS once
   useEffect(() => {
     const ctrl = connectMarketWs(
@@ -129,12 +158,19 @@ function Dashboard() {
         setBonds((prev) =>
           prev.map((b) => {
             if (b.isin !== isin || b.last_price_pct === price) return b;
-            // WS тикает только цену; производные (DM/SM/z/carry/dirty/CHG/Y-IDX)
-            // остаются от прошлого расчёта бэка → помечаем стейл, пока поллер/рефетч
-            // не пересчитает под новую цену. _mprice — цена, под которой метрики верны.
-            return { ...b, last_price_pct: price, _mstale: true, _mprice: b._mprice ?? b.last_price_pct };
+            // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
+            // last − delta (инвариант дня) → delta_new = price − prev_close.
+            let delta = b.delta_to_prev_close;
+            if (delta != null && b.last_price_pct != null) {
+              const prevClose = b.last_price_pct - delta;
+              delta = Math.round((price - prevClose) * 10000) / 10000;
+            }
+            // DM/SM/z/carry/dirty/Y-IDX — от прошлого расчёта → dim до reprice
+            return { ...b, last_price_pct: price, delta_to_prev_close: delta,
+                     _mstale: true, _mprice: b._mprice ?? b.last_price_pct };
           })
         );
+        scheduleReprice(isin, price);
       }
     );
     wsRef.current = ctrl;

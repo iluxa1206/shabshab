@@ -62,7 +62,7 @@ export const COLS = [
     cell: (b) => {
       const delta = b.delta_to_prev_close;
       const deltaCls = delta == null ? "" : delta >= 0 ? "pos" : "neg";
-      return <td className={"num " + deltaCls + ms(b)} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
+      return <td className={"num " + deltaCls} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num",
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },

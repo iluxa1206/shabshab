@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Path, HTTPException
 from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
     BondDetailsResponse, CashflowResponse, BondNrd,
-    BondValuation,
+    RepriceResponse,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
@@ -333,16 +333,17 @@ async def get_bond_cashflow(isin: str = Path(...)):
         redemption_amount=fv
     )
 
-@router.get("/{isin}/reprice", response_model=BondValuation, tags=["Bonds"])
+@router.get("/{isin}/reprice", response_model=RepriceResponse, tags=["Bonds"])
 async def reprice_bond_valuation(
     isin: str = Path(...),
     price: float = Query(..., gt=0, le=1000, description="Чистая цена, % от номинала"),
 ):
-    """Калькулятор карточки: пересчёт всех метрик оценки (SM/DM/YTM/доходность vs
-    индекса/dirty) под введённую пользователем чистую цену. Тёплые кэши → мгновенно."""
+    """Пересчёт цена-зависимых метрик (SM/DM/YTM/dirty/Y-IDX/z_model/carry) под
+    произвольную чистую цену. Использует калькулятор карточки И live-рефреш строки
+    таблицы по WS-тику. Тёплые кэши → мгновенно."""
     isin = _require_isin(isin)
     base_dir = get_base_dir()
     cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
     from services.bond_details import reprice_bond
     metrics = await reprice_bond(isin, price, cache)
-    return BondValuation(**metrics)
+    return RepriceResponse(**metrics)
