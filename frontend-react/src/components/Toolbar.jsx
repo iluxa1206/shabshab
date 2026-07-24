@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import ColumnsMenu from "./ColumnsMenu.jsx";
+import IssuerFilter from "./IssuerFilter.jsx";
 
 const RATINGS = [
   ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
@@ -7,6 +8,7 @@ const RATINGS = [
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
+  issuers, emittersSel, toggleEmitter, clearEmitters,
   query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
   onImportCsv, posCount, onClearPositions,
   visibleCols, onToggleCol, onResetCols,
@@ -56,6 +58,12 @@ export default function Toolbar({
         {RATINGS.map(([v, l]) => (
           <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")} onClick={() => toggleRating(v)}>{l}</button>
         ))}
+      </div>
+
+      {/* группа: эмитент */}
+      <div className="fgroup">
+        <IssuerFilter issuers={issuers || []} selected={emittersSel || []}
+          onToggle={toggleEmitter} onClear={clearEmitters} />
       </div>
 
       <div className="fgroup">

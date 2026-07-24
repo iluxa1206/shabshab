@@ -27,6 +27,7 @@ export default function Topbar({ meta, live, onRefresh, theme, onToggleTheme, us
         <span className="wordmark">DESK</span>
         <span className="seg module-seg" role="tablist" aria-label="Модуль">
           <NavLink className={tabCls} to="/floaters">Флоатеры</NavLink>
+          <NavLink className={tabCls} to="/issuers">Эмитенты</NavLink>
           <NavLink className={tabCls} to="/funds">Фонды</NavLink>
           <NavLink className={tabCls} to="/curves">Кривые</NavLink>
         </span>

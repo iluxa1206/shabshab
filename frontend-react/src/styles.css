@@ -224,6 +224,32 @@ td.mstale { opacity: 0.4; font-style: italic; }
 /* бейдж «стейл» — цена подразумевает номинальный убыток (битая/тонкая) */
 .badge-stale { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--neg); border: 1px solid var(--neg); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }
+
+/* фильтр по эмитенту */
+.issuer-filter { position: relative; display: inline-block; }
+.issuer-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; width: 280px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.issuer-search { width: 100%; padding: 6px 8px; font-size: 13px; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; outline: none; }
+.issuer-search:focus { border-color: var(--accent); }
+.issuer-clear { align-self: flex-start; font-size: 11px; color: var(--accent); background: none; border: none; cursor: pointer; padding: 0; }
+.issuer-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; }
+.issuer-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+.issuer-row:hover { background: var(--line-2); }
+.issuer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issuer-cnt { color: var(--mut); font-variant-numeric: tabular-nums; font-size: 11px; }
+.issuer-empty { color: var(--mut); font-size: 12px; padding: 6px; }
+
+/* агрегаты по эмитентам */
+.issuer-agg { padding: 14px 18px; color: var(--fg); }
+.ia-head { margin-bottom: 14px; }
+.ia-title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+.ia-hint { font-size: 12px; color: var(--mut); }
+.ia-empty { color: var(--mut); padding: 40px; text-align: center; }
+.ia-table-wrap { overflow-x: auto; }
+.ia-table th { user-select: none; }
+.ia-row:hover td { background: var(--line-2); }
 td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .loading { text-align: center; color: var(--mut); padding: 48px; text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; }
 .empty { text-align: center; padding: 56px 24px; }

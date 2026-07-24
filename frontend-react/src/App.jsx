@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
@@ -14,6 +14,7 @@ import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import FundsModule from "./components/funds/FundsModule.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
+import IssuerAggregates from "./components/IssuerAggregates.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard() {
@@ -28,6 +29,7 @@ function Dashboard() {
   const [onlyWatch, setOnlyWatch] = useState(false);
   const [basesSel, setBasesSel] = useState([]);    // KEYRATE / RUONIA
   const [ratingsSel, setRatingsSel] = useState([]); // AAA / AA / A / BBB / BELOW / NR
+  const [emittersSel, setEmittersSel] = useState([]); // имена эмитентов (мульти)
   const [query, setQuery] = useState("");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "disc_margin_bps", dir: "asc" });
@@ -192,6 +194,7 @@ function Dashboard() {
     if (onlyWatch) rows = rows.filter((b) => watch.includes(b.isin));
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
     if (ratingsSel.length) rows = rows.filter((b) => ratingMatch(b.rating));
+    if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
     const q = query.trim().toLowerCase();
     if (q) {
       rows = rows.filter((b) =>
@@ -209,7 +212,18 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, query, sort, watch, positions]);
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, query, sort, watch, positions]);
+
+  // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
+  const issuers = useMemo(() => {
+    const m = new Map();
+    for (const b of bonds) {
+      if (!b.emitter_name) continue;
+      m.set(b.emitter_name, (m.get(b.emitter_name) || 0) + 1);
+    }
+    return [...m.entries()].map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [bonds]);
 
   const toggleIn = (setter) => (val) =>
     setter((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
@@ -229,6 +243,13 @@ function Dashboard() {
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
 
+  const navigate = useNavigate();
+  // из агрегатов эмитента → фильтр «Флоатеры» по этому эмитенту
+  const pickIssuer = useCallback((name) => {
+    setEmittersSel([name]);
+    navigate("/floaters");
+  }, [navigate]);
+
   const floatersView = (
     <>
       <Kpis bonds={filtered} />
@@ -236,6 +257,8 @@ function Dashboard() {
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
         ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+        issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
+        clearEmitters={() => setEmittersSel([])}
         query={query} setQuery={setQuery}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
@@ -254,8 +277,8 @@ function Dashboard() {
         onOpen={openDrawer}
         watch={watch}
         onToggleStar={toggleStar}
-        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || query !== ""}
-        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setQuery(""); }}
+        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || emittersSel.length > 0 || query !== ""}
+        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setQuery(""); }}
         onRetry={loadBonds}
         visibleCols={visibleCols}
       />
@@ -278,6 +301,7 @@ function Dashboard() {
       <Routes>
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
+        <Route path="/issuers" element={<IssuerAggregates bonds={bonds} onPickIssuer={pickIssuer} />} />
         <Route path="/funds" element={<FundsModule />} />
         <Route path="/funds/:code" element={<FundsModule />} />
         <Route path="/curves" element={<CurvesModule />} />
