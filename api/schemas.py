@@ -197,6 +197,8 @@ class BondListItem(BaseModel):
     short_name: str
     base_rate_type: str
     formula: str
+    emitter_id: Optional[int] = None       # MOEX EMITTER_ID (фильтр/агрегаты по эмитенту)
+    emitter_name: Optional[str] = None
     spread_issue_bps: int
     maturity_date: Optional[date]
     next_coupon_date: Optional[date]

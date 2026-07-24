@@ -81,6 +81,18 @@ async def universe_price_poller():
                     _last_reg_sync = _today
                 except Exception as e:
                     logger.warning(f"instruments sync error: {e}")
+            # бэкфилл эмитента (MOEX EMITTER_ID) — постепенно, ~40/цикл, статичен →
+            # кэш навсегда в реестре. Для фильтра/агрегатов по эмитентам.
+            try:
+                from services import instruments_registry as _reg
+                _miss = _reg.isins_missing_emitter(40)
+                if _miss:
+                    _emap = await MarketDataService.fetch_emitter_info(_miss)
+                    for _i, (_eid, _enm) in _emap.items():
+                        _reg.set_emitter(_i, _eid, _enm)
+                    logger.info(f"emitter backfill: {len(_emap)}/{len(_miss)}")
+            except Exception as e:
+                logger.warning(f"emitter backfill error: {e}")
             if _in_moex_trading_hours():
                 uni = await nrd_service.fetch_floater_universe()  # реестр / НРД
                 isins = [u["isin"] for u in uni if u.get("isin")]

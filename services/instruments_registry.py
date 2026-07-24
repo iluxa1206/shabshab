@@ -60,6 +60,8 @@ CREATE INDEX IF NOT EXISTS ix_instruments_active ON instruments(active);
 # ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
 _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN margin_check_pp REAL",
+    "ALTER TABLE instruments ADD COLUMN emitter_id INTEGER",   # MOEX EMITTER_ID (группировка)
+    "ALTER TABLE instruments ADD COLUMN emitter_name TEXT",    # имя эмитента (display)
 ]
 
 
@@ -192,6 +194,24 @@ def is_priceable(row) -> bool:
             and bool(row["maturity_date"]))
 
 
+def set_emitter(isin: str, emitter_id, emitter_name: str) -> None:
+    """Записать эмитента (MOEX EMITTER_ID + имя). Статичен → кэш навсегда."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET emitter_id=?, emitter_name=?, updated_at=? WHERE isin=?",
+                  (emitter_id, emitter_name, _now(), isin))
+
+
+def isins_missing_emitter(limit: int = 40) -> list[str]:
+    """Активные бумаги без emitter_id — для постепенного бэкфилла в поллере."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin FROM instruments WHERE active=1 AND emitter_id IS NULL LIMIT ?",
+            (limit,)).fetchall()
+    return [r["isin"] for r in rows]
+
+
 def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> list[dict]:
     """Список бумаг в форме universe-строки (совместимо с fetch_floater_universe):
     NRD-поля (nrd_price_pct/discount_margin_bps/...) = None — их наполняет NRD-слой,
@@ -217,6 +237,8 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "spread_issue_bps": r["margin_bps"],
             "maturity_date": r["maturity_date"],
             "rating": r["rating"],
+            "emitter_id": r["emitter_id"],
+            "emitter_name": r["emitter_name"],
             # NRD-слой (пусто без НРД):
             "nrd_price_pct": None, "discount_margin_bps": None,
             "simple_margin_bps": None, "z_spread_bps": None,

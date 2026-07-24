@@ -530,6 +530,45 @@ class MarketDataService:
                 cls._snap_cache[isin] = (out[isin], now)
         return out
 
+    @classmethod
+    async def fetch_emitter_info(cls, isins: List[str]) -> Dict[str, tuple]:
+        """{isin: (emitter_id:int, emitter_name:str)} из MOEX /securities/{isin}
+        description (EMITTER_ID + NAME). Эмитент статичен → вызывающий кэширует
+        навсегда (реестр). Имя чистим от серии выпуска ('ВТБ Факторинг 001P-01'
+        → 'ВТБ Факторинг')."""
+        import re as _re
+        out: Dict[str, tuple] = {}
+        if not isins:
+            return out
+
+        def _clean(name: str) -> str:
+            # срезаем хвостовой токен-серию (содержит цифру): '... 001P-01'/'... 2Р5'
+            return _re.sub(r"\s+\S*\d\S*\s*$", "", name or "").strip() or (name or "").strip()
+
+        async def fetch_one(client: httpx.AsyncClient, isin: str):
+            try:
+                resp = await _moex_get(
+                    client, f"https://iss.moex.com/iss/securities/{isin}.json",
+                    params={"iss.only": "description", "iss.meta": "off"}, timeout=8)
+                if resp is None or resp.status_code != 200:
+                    return
+                desc = resp.json().get("description", {})
+                cols, rows = desc.get("columns", []), desc.get("data", [])
+                if "name" not in cols or "value" not in cols:
+                    return
+                ni, vi = cols.index("name"), cols.index("value")
+                d = {r[ni]: r[vi] for r in rows}
+                eid = d.get("EMITTER_ID")
+                nm = _clean(d.get("NAME") or d.get("ISSUENAME") or "")
+                if eid is not None:
+                    out[isin] = (int(eid), nm or isin)
+            except Exception:
+                pass
+
+        async with httpx.AsyncClient() as client:
+            await asyncio.gather(*(fetch_one(client, i) for i in isins))
+        return out
+
     _board_snap: Dict[str, dict] = {}
     _board_snap_ts: float = 0.0
 
