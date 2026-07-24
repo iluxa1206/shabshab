@@ -46,10 +46,19 @@ class Cashflow:
     """
     Simulated cashflow modeled on forward rates.
     type: "COUPON" or "REDEMPTION"
+
+    Метаданные периода (опциональны, для display-таблицы карточки; солверы их не
+    читают — только pay_date/amount_rub/type): чтобы display-строки строились из
+    ТОГО ЖЕ потока, что прайсинг (без ручного форка build_cashflow_from_moex).
     """
     pay_date: date
     amount_rub: float
-    type: str  
+    type: str
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    coupon_rate_pct: Optional[float] = None   # годовая ставка купона, %
+    base_rate_pct: Optional[float] = None      # индекс-компонента, %
+    spread_bps: int = 0
 
 
 # -------------------------------------------------------------------------
@@ -466,25 +475,24 @@ def build_cashflows_to_maturity(
         if eff_maturity and end > eff_maturity:
             continue
 
+        # #3: для амортизируемых начисляем от остаточного номинала на начало
+        # периода = текущий номинал − амортизации до start (формула инвариантна
+        # к обрезке future_am на оферте, в отличие от Σ будущих после start)
+        face = pricing_face
+        if amortizing:
+            paid_by_start = sum(v for d, v in future_am if d <= start)
+            face = max(pricing_face - paid_by_start, 0.0)
+        # Купон за ПОЛНЫЙ период [start, end]; days по полному периоду.
+        days = (end - start).days
+        alpha = days / 365.0
+        base_pct = None   # индекс-компонента (для display); зафикс. купон — None
+
         if value is not None:
             # #1: зафиксированный купон — факт MOEX, без перепрогноза форвардом
             coupon_amt = float(value)
         else:
-            # #3: для амортизируемых начисляем от остаточного номинала на начало
-            # периода = текущий номинал − амортизации до start (формула инвариантна
-            # к обрезке future_am на оферте, в отличие от Σ будущих после start)
-            face = pricing_face
-            if amortizing:
-                paid_by_start = sum(v for d, v in future_am if d <= start)
-                face = max(pricing_face - paid_by_start, 0.0)
-
-            # Купон начисляется за ПОЛНЫЙ период [start, end] (покупатель платит НКД
-            # за истёкший стаб и получает весь купон на дату выплаты) — days по полному
-            # периоду. Форвард-ставку для прошлого стаба клэмпим к calc_date: кривая
+            # Форвард-ставку для прошлого стаба клэмпим к calc_date: кривая
             # стартует с calc_date+1 и за прошлые даты осмысленной ставки не даёт.
-            # Для зафикс. купона этот прогноз не используется (#1).
-            days = (end - start).days
-            alpha = days / 365.0
             # Начавшийся период (start ≤ calc): индекс уже (частично) определён по
             # факту — спека формулы выпуска (point/average+лаг, manual > калибратор,
             # та же логика, что display в services/cashflow) с фолбэком на точечный
@@ -519,6 +527,7 @@ def build_cashflows_to_maturity(
             if idx_pct is not None:
                 # конвенция выпуска: (индекс + маржа) simple ACT/365
                 factor = (idx_pct / 100.0 + bond.spread_issue_bps / 10000.0) * alpha
+                base_pct = idx_pct
             else:
                 f_start = start if start > calc_date else calc_date
                 f_rate = curve.forward(f_start, end) if f_start < end else 0.0
@@ -533,6 +542,7 @@ def build_cashflows_to_maturity(
                     factor = (f_rate + sp) * alpha
                 else:
                     raise ValueError(f"Unknown base rate type: {bond.base} for ISIN: {bond.isin}")
+                base_pct = f_rate * 100.0
 
             # Кэп/флор: клэмп ГОДОВОЙ ставки купона (factor/alpha) в [floor, cap],
             # затем обратно в factor. Работает для обеих конвенций (RUONIA daily-comp
@@ -549,21 +559,32 @@ def build_cashflows_to_maturity(
 
             coupon_amt = face * factor
 
-        cfs.append(Cashflow(pay_date=end, amount_rub=coupon_amt, type="COUPON"))
+        # ставка купона годовых (для display-таблицы): coupon/face·365/days
+        cpn_rate = (coupon_amt / face * 365.0 / days * 100.0) if (face > 0 and days > 0) else None
+        cfs.append(Cashflow(
+            pay_date=end, amount_rub=coupon_amt, type="COUPON",
+            period_start=start, period_end=end,
+            coupon_rate_pct=round(cpn_rate, 4) if cpn_rate is not None else None,
+            base_rate_pct=round(base_pct, 4) if base_pct is not None else None,
+            spread_bps=bond.spread_issue_bps or 0,
+        ))
 
     # 4. Выплата принципала. Единая схема вместо трёх веток: сначала все будущие
     # амортизации по графику, затем НЕПОГАШЕННЫЙ ОСТАТОК одним платежом — на дату
     # оферты (по её цене) либо на погашение. Инвариант: Σ принципала == pricing_face
     # ровно, при любой комбинации (bullet / амортизируемая / оферта / T+1 окно).
     for d, v in future_am:
-        cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION"))
+        cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION",
+                            period_start=d, period_end=d))
     residual = pricing_face - sum(v for _d, v in future_am)
     if residual > 1e-9:
         if put:
             px = _offer_price_pct(offers, put) / 100.0
-            cfs.append(Cashflow(pay_date=put, amount_rub=residual * px, type="REDEMPTION"))
+            cfs.append(Cashflow(pay_date=put, amount_rub=residual * px, type="REDEMPTION",
+                                period_start=put, period_end=put))
         elif bond.maturity_date and bond.maturity_date > calc_date:
-            cfs.append(Cashflow(pay_date=bond.maturity_date, amount_rub=residual, type="REDEMPTION"))
+            cfs.append(Cashflow(pay_date=bond.maturity_date, amount_rub=residual, type="REDEMPTION",
+                                period_start=bond.maturity_date, period_end=bond.maturity_date))
 
     # 5. Sort by pay_date
     cfs.sort(key=lambda cf: cf.pay_date)

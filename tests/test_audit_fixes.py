@@ -156,6 +156,29 @@ def test_stale_history_routes_to_forward():
 from services.cashflow import build_cashflow_from_moex
 
 
+def test_display_future_matches_pricing(keyrate_curve, calc_date, flat_index_15):
+    """Консолидация: БУДУЩИЕ купонные суммы display-таблицы == суммы канонического
+    build_cashflows_with_spread (единый источник, карточка не расходится с SM/z)."""
+    from valuation import build_cashflows_with_spread, settle_date
+    fn, _ = flat_index_15
+    bond = make_bond(margin_bps=150)
+    periods = quarterly_periods(calc_date, bond.maturity_date)
+    coupons = [{"start": s, "end": e, "value": v} for s, e, v in periods]
+    items, _ = build_cashflow_from_moex(bond, keyrate_curve, calc_date, coupons, [], "КС+1.5%")
+    canon = build_cashflows_with_spread(bond, keyrate_curve, calc_date, 150,
+                                        explicit_periods=periods, index_pct_fn=fn)
+    disp = {c["payment_date"]: c["amount_rub"] for c in items if c["type"] == "COUPON"}
+    checked = 0
+    for cf in canon:
+        # чисто будущие периоды (start > calc) — forward-проекция, детерминирована;
+        # начавшийся период зависит от индекс-истории, в тесте не сверяем
+        if cf.type == "COUPON" and cf.period_start and cf.period_start > calc_date:
+            assert disp.get(cf.pay_date) == pytest.approx(round(cf.amount_rub, 2), abs=0.01), \
+                f"{cf.pay_date}: display {disp.get(cf.pay_date)} != pricing {cf.amount_rub}"
+            checked += 1
+    assert checked >= 3
+
+
 def test_amort_residual_closes_to_outstanding(keyrate_curve, calc_date):
     """MOEX-список амортизаций недосчитывает финальный принципал → residual
     добивает будущий поток до остатка номинала."""
