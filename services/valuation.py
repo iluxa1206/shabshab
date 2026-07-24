@@ -12,7 +12,6 @@ from valuation import (
     solve_discount_margin_bps,
     current_index_pct,
     FlatForwardCurve,
-    implied_yield_pct,
     index_rolling_yield_pct,
 )
 

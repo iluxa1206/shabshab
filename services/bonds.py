@@ -2,7 +2,7 @@ from datetime import date
 from typing import Dict, Any, Optional
 
 from valuation import BondRefData
-from services.cashflow import parse_base_and_spread
+from cashflow import parse_base_and_spread
 from forwards import add_months
 
 

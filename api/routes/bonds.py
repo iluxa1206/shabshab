@@ -7,16 +7,15 @@ from fastapi import APIRouter, Query, Path, HTTPException
 
 from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
-    BondDetailsResponse, CashflowResponse, ValuationResponse, BondNrd,
+    BondDetailsResponse, CashflowResponse, BondNrd,
     BondValuation,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, external_formula, next_coupon_after,
 )
-from services.cashflow import get_cashflow_items
 from services.valuation import calculate_valuation_metrics
-from services.exceptions import NotFoundException, CalculationException
+from services.exceptions import NotFoundException
 from services import nrd as nrd_service
 from cashflow import read_isins_from_file
 
@@ -347,34 +346,3 @@ async def reprice_bond_valuation(
     from services.bond_details import reprice_bond
     metrics = await reprice_bond(isin, price, cache)
     return BondValuation(**metrics)
-
-
-@router.get("/{isin}/valuation", response_model=ValuationResponse, tags=["Bonds"])
-async def get_bond_valuation(isin: str = Path(...)):
-    isin = _require_isin(isin)
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
-    data = cache.get(isin)
-    
-    if not data:
-        raise NotFoundException(f"Bond {isin} not found in cache", {"isin": isin})
-        
-    ref_obj = create_bond_ref_data(data, isin)
-    ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
-    if not calc_date:
-        calc_date = rates_date or date.today()
-
-    market_prices = await MarketDataService.fetch_last_prices([isin])
-    last_price = market_prices.get(isin)
-
-    if last_price is None:
-        raise CalculationException("No market price available to compute valuation", {"isin": isin})
-        
-    curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
-    metrics = calculate_valuation_metrics(ref_obj, last_price, curve, calc_date)
-    
-    return ValuationResponse(
-        isin=isin,
-        calc_date=calc_date,
-        **metrics
-    )

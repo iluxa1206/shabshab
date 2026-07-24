@@ -104,9 +104,6 @@ export function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
   return request(url, { signal });
 }
 
-export const searchBonds = (q, signal) =>
-  request(`/api/bonds/search?q=${encodeURIComponent(q)}`, { signal }).then((d) => d.items || []);
-
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
 // Калькулятор карточки: пересчёт метрик оценки под произвольную чистую цену.
@@ -144,9 +141,6 @@ export const deleteFundRepo = (code, id) =>
 
 export const fetchFundCashflow = (code, months = 12) =>
   request(`/api/funds/${encodeURIComponent(code)}/cashflow?months=${months}`);
-
-export const fetchFundNavHistory = (code, days = 120) =>
-  request(`/api/funds/${encodeURIComponent(code)}/nav_history?days=${days}`).then((d) => d.items || []);
 
 export const fetchFundScenarios = (code) =>
   request(`/api/funds/${encodeURIComponent(code)}/scenarios`);

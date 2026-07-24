@@ -111,50 +111,6 @@ def get_moex_secid(isin: str) -> str | None:
         return None
 
 
-def get_moex_coupon_fallback(isin: str) -> dict | None:
-    secid = get_moex_secid(isin)
-    if not secid:
-        return None
-
-    url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/securities/{secid}/coupons.json"
-    resp = requests.get(url, timeout=5)
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-        cols = data["coupons"]["columns"]
-        rows = data["coupons"]["data"]
-    except (KeyError, TypeError):
-        return None
-
-    if not rows:
-        return None
-
-    today = date.today()
-    parsed = []
-    for row in rows:
-        rec = dict(zip(cols, row))
-        cdate_str = rec.get("COUPONDATE")
-        try:
-            cdate = date.fromisoformat(cdate_str) if cdate_str else None
-        except ValueError:
-            cdate = None
-        parsed.append((cdate, rec))
-
-    # pick nearest future coupon, else last available
-    future = [r for r in parsed if r[0] and r[0] >= today]
-    chosen = min(future, key=lambda x: x[0]) if future else parsed[-1]
-
-    cdate, rec = chosen
-    return {
-        "COUPONRATE": rec.get("COUPONRATE"),
-        "COUPONVALUE": rec.get("VALUE"),
-        "COUPONDATE": rec.get("COUPONDATE"),
-        "STARTDATE": rec.get("STARTDATE"),
-        "ENDDATE": rec.get("ENDDATE"),
-    }
-
-
 def adjust_following(d: date) -> date:
     if d.weekday() == 5:
         return d + timedelta(days=2)
