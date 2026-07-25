@@ -989,12 +989,12 @@ def implied_yield_pct(
         prev = d
         
     if not found_maturity or df_dm_at_maturity <= 0.0 or df_dm_at_maturity >= 1.0:
-        return 0.0
-        
+        return None   # maturity не в сетке платежей → None, не вводящий в заблуждение 0.0
+
     tau_days = (bond.maturity_date - calc_date).days
     if tau_days <= 0:
-        return 0.0
-        
+        return None
+
     tau_years = tau_days / 365.0
     
     # Эффективная годовая доходность (Effective Annual Yield), 
@@ -1157,4 +1157,4 @@ if __name__ == "__main__":
     
     if dm_calculated is not None:
         y_pct = implied_yield_pct(mock_bond, mock_curve, cfs, calc_d, dm_calculated)
-        print(f"Implied Yield out: {y_pct:.4f} %")
+        print(f"Implied Yield out: {y_pct if y_pct is None else round(y_pct, 4)} %")

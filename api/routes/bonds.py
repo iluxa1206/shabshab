@@ -69,6 +69,7 @@ def _uni_item(u, name, mx, cross):
         discount_margin_bps=u.get("discount_margin_bps"),
         simple_margin_bps=u.get("simple_margin_bps"), disc_margin_bps=mx.get("disc_dm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
+        price_thin=mx.get("price_thin") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
         z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"),
         z_model_bps=mx.get("z_model"), spread_dur_yrs=sd, z_pctile=zp,

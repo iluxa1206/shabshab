@@ -502,23 +502,28 @@ class MarketDataService:
                 j = resp.json()
                 sec = j.get("securities", {})
                 s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
-                prev = accrued = None
+                prev = accrued = prev_date = None
                 if s_rows:
                     row = s_rows[0]
+                    sg = lambda n: row[s_cols.index(n)] if n in s_cols else None
                     # PREVPRICE и ACCRUEDINT — оба в блоке securities (стабильны при закрытом рынке)
-                    if "PREVPRICE" in s_cols:
-                        prev = row[s_cols.index("PREVPRICE")]
-                    if "ACCRUEDINT" in s_cols:
-                        accrued = row[s_cols.index("ACCRUEDINT")]
-                    # фолбэк на marketdata.LAST/PREVPRICE если в securities пусто
-                if prev is None:
-                    md = j.get("marketdata", {})
-                    md_cols, md_rows = md.get("columns", []), md.get("data", [])
-                    if md_rows and "PREVPRICE" in md_cols:
-                        prev = md_rows[0][md_cols.index("PREVPRICE")]
+                    prev = sg("PREVPRICE")
+                    accrued = sg("ACCRUEDINT")
+                    prev_date = sg("PREVDATE")   # дата prev-цены → возраст цены (стейл?)
+                # marketdata: NUMTRADES (сделок сегодня → ликвидность/тонкая цена) + фолбэк prev
+                numtrades = None
+                md = j.get("marketdata", {})
+                md_cols, md_rows = md.get("columns", []), md.get("data", [])
+                if md_rows:
+                    mg = lambda n: md_rows[0][md_cols.index(n)] if n in md_cols else None
+                    numtrades = mg("NUMTRADES")
+                    if prev is None:
+                        prev = mg("PREVPRICE")
                 out[isin] = {
                     "prev": float(prev) if prev is not None else None,
                     "accrued": float(accrued) if accrued is not None else None,
+                    "prev_date": prev_date,
+                    "numtrades": int(numtrades) if numtrades is not None else None,
                 }
             except Exception:
                 pass
@@ -585,24 +590,33 @@ class MarketDataService:
                 resp = await _moex_get(
                     client,
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
-                    params={"iss.only": "securities",
-                            "securities.columns": "ISIN,PREVPRICE,ACCRUEDINT"},
+                    params={"iss.only": "securities,marketdata",
+                            "securities.columns": "ISIN,SECID,PREVPRICE,ACCRUEDINT,PREVDATE",
+                            "marketdata.columns": "SECID,NUMTRADES"},
                     timeout=15)
             if resp is not None and resp.status_code == 200:
-                sec = resp.json().get("securities", {})
+                j = resp.json()
+                # NUMTRADES (сделок сегодня) из marketdata, по SECID
+                md = j.get("marketdata", {})
+                mc, mr = md.get("columns", []), md.get("data", [])
+                _nt = {}
+                if "SECID" in mc and "NUMTRADES" in mc:
+                    si, ni = mc.index("SECID"), mc.index("NUMTRADES")
+                    _nt = {r[si]: r[ni] for r in mr if r[si]}
+                sec = j.get("securities", {})
                 cols, rows = sec.get("columns", []), sec.get("data", [])
-                ii = cols.index("ISIN") if "ISIN" in cols else -1
-                pi = cols.index("PREVPRICE") if "PREVPRICE" in cols else -1
-                ai = cols.index("ACCRUEDINT") if "ACCRUEDINT" in cols else -1
+                g = lambda row, n: row[cols.index(n)] if n in cols else None
                 for row in rows:
-                    isin = row[ii] if ii >= 0 else None
+                    isin = g(row, "ISIN")
                     if not isin:
                         continue
-                    prev = row[pi] if pi >= 0 else None
-                    acc = row[ai] if ai >= 0 else None
+                    prev, acc = g(row, "PREVPRICE"), g(row, "ACCRUEDINT")
+                    nt = _nt.get(g(row, "SECID"))
                     out[isin] = {
                         "prev": float(prev) if prev is not None else None,
                         "accrued": float(acc) if acc is not None else None,
+                        "prev_date": g(row, "PREVDATE"),
+                        "numtrades": int(nt) if nt is not None else None,
                     }
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")

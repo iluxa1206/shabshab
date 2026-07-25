@@ -183,7 +183,9 @@ class BootstrappedForwardCurve(DiscountCurve):
         # на длинном одиночном пролёте (1+f·days/365)=factor раздувает f (10Y ~35%).
         # Все текущие потребители зовут forward() короткими смежными сегментами
         # (телескопирование). Одиночный длинный вызов — ошибка использования.
-        if days > 400:
+        # Порог 370д: ловит даже смежные ноды 1Y→2Y (366д уже раздувает до 15.9%);
+        # полугодовой купон (182д) — легитимная конвенция, не алармим.
+        if days > 370:
             logger.warning(
                 "KEYRATE forward() на длинном пролёте %d дн — simple-ставка раздувается; "
                 "используйте короткие сегменты или df()-спот (spot_pct в /curves/plot)", days)
@@ -199,11 +201,16 @@ class BootstrappedForwardCurve(DiscountCurve):
 class CurveBootstrapper:
     @staticmethod
     def _fixed_leg_schedule(start: date, end: date, months: int) -> List[date]:
-        """Даты платежей фикс-ноги каждые `months` месяцев; последняя = end."""
+        """Даты платежей фикс-ноги каждые `months` месяцев; последняя = end.
+
+        Промежуточные даты СОГЛАСОВАНЫ с конвенцией `end` (=get_maturity_date,
+        add_months+1день): добавляем тот же +1, иначе последний период выходил на
+        1 день короче и создавал паразитный 1-дневный stub в annuity (дрейф DF
+        дальних узлов в единицы bps). Теперь при 3i·мес==тенор дата совпадает с end."""
         out: List[date] = []
         i = 1
         while True:
-            d = add_months(start, months * i)
+            d = add_months(start, months * i) + timedelta(days=1)
             if d >= end:
                 break
             out.append(d)

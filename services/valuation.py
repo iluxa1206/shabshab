@@ -98,6 +98,14 @@ def calculate_valuation_metrics(
 
     # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
     warnings: list = []
+
+    # маржа выпуска = 0/None у флоатера почти всегда = пробел данных (формула не
+    # распарсилась / нет в Cbonds): SM/DM тогда занижены на всю маржу, молча.
+    # Помечаем (не зануляем — иногда 0 реален для дисконт-маржа бумаг).
+    if not bond.spread_issue_bps:
+        warnings.append("маржа выпуска не определена (0) — SM/DM/carry занижены на величину "
+                        "маржи; формула купона не распарсилась или бумаги нет в справочнике")
+
     index_pct_fn, hist_pairs = _index_provider(bond.base, warnings, calc_date)
 
     # кэп/флор купона: если число распарсилось — прогноз клэмпится в
@@ -194,6 +202,21 @@ def calculate_valuation_metrics(
     from valuation import first_offer_date as _fod, _offer_price_pct as _opp, settle_date as _sd2
     _settle = _sd2(calc_date)
     _put = _fod(offers, _settle) if offers else None
+
+    # ПРОПУЩЕННАЯ ОФЕРТА: купон после оферты у reset-бумаг не определён (эмитент
+    # переставит), но MOEX часто отдаёт пустой OFFERDATE → оферта не распознана,
+    # поток проецируется старым спредом к погашению, а рынок торгует к оферте →
+    # DM/z несопоставимы. Если var_type=reset, но оферту не нашли — помечаем.
+    if _put is None:
+        try:
+            from services.ref_data import cut_at_offer as _coa
+            if _coa(bond.isin):
+                warnings.append("var_type=пересмотр купона, но оферта не распознана "
+                                "(пустой OFFERDATE у MOEX) — поток к погашению старым спредом; "
+                                "DM/z могут быть несопоставимы с рынком (торгует к оферте)")
+        except Exception:
+            pass
+
     if _put is not None and (bond.maturity_date is None or _put < bond.maturity_date):
         horizon = "offer"
         offer_date = _put

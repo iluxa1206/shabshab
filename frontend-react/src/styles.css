@@ -224,6 +224,9 @@ td.mstale { opacity: 0.4; font-style: italic; }
 /* бейдж «стейл» — цена подразумевает номинальный убыток (битая/тонкая) */
 .badge-stale { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--neg); border: 1px solid var(--neg); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }
+/* «тонк» — 0 сделок сегодня, цена несвежая (мягче красного «стейл») */
+.badge-thin { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--mut); border: 1px solid var(--line-2); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }
 
 /* фильтр по эмитенту */
 .issuer-filter { position: relative; display: inline-block; }

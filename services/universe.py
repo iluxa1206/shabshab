@@ -41,7 +41,7 @@ def build_universe_ref(u: dict, isin: str, cache: dict, secs: dict):
 def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 prev: Optional[float], accrued: Optional[float],
                 ruonia_curve, keyrate_curve, exp_ks, exp_ru, g_curve,
-                calc_date: date) -> dict:
+                calc_date: date, prev_date: Optional[str] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
     вызывающий (фон — board snapshot + кэш поллера; watch — live-цена +
@@ -119,9 +119,19 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     except Exception as e:
         logger.warning(f"carry block error {isin}: {e}")
 
+    # тонкая цена: PREVDATE (дата последней цены MOEX) старше 4 дней → бумага не
+    # торговалась, цена несвежая, DM/z с ненадёжной цены. Возраст PREVDATE, а не
+    # NUMTRADES: последний по выходным=0 у ВСЕХ (рынок закрыт) → ложный флаг.
+    price_thin = False
+    if prev_date:
+        try:
+            price_thin = (calc_date - date.fromisoformat(prev_date)).days > 4
+        except (ValueError, TypeError):
+            price_thin = False
     return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
             "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
+            "price_thin": price_thin,
             "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}
 
 
@@ -160,6 +170,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
         out[isin] = enrich_bond(
             u, ref, full_by.get(isin) or {},
             last=prices.get(isin), prev=snap.get("prev"), accrued=snap.get("accrued"),
+            prev_date=snap.get("prev_date"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
     return out
@@ -197,6 +208,7 @@ async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
         out[isin] = enrich_bond(
             u, ref, full_by.get(isin) or {},
             last=prices.get(isin), prev=prev, accrued=snap.get("accrued"),
+            prev_date=snap.get("prev_date"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
     return out

@@ -133,9 +133,11 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
                 pass
         return vals
 
-    cap_vals = (_nums(r"min\s*\([^;)]*;\s*" + _NUM)
+    # ЖАДНЫЙ .* до ПОСЛЕДНЕГО ';' — кэп = аргумент после последнего разделителя,
+    # чтобы вложенный MIN(MAX(КС;0);X%) брал X, а не внутренний 0.
+    cap_vals = (_nums(r"min\s*\(.*;\s*" + _NUM)
                 + _nums(r"(?:не\s+более|не\s+выше|но\s+не\s+прев\w*)\s*(?:чем\s+)?" + _NUM))
-    floor_vals = (_nums(r"max\s*\([^;)]*;\s*" + _NUM)
+    floor_vals = (_nums(r"max\s*\(.*;\s*" + _NUM)
                   + _nums(r"(?:не\s+менее|не\s+ниже)\s*(?:чем\s+)?" + _NUM))
     cap_pct = min(cap_vals) if cap_vals else None
     floor_pct = max(floor_vals) if floor_vals else None
