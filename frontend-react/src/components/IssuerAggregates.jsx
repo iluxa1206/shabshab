@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { fmt, dmColor } from "../format.js";
 
+const RATINGS = [["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"]];
+const RORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"];
+const ratingMatch = (r, sel) => sel.some((k) =>
+  k === "NR" ? !r : k === "BELOW" ? (r && RORDER.indexOf(r) > RORDER.indexOf("BBB")) : k === r);
+
 const median = (a) => {
   const s = a.filter((x) => x != null).sort((x, y) => x - y);
   if (!s.length) return null;
@@ -16,12 +21,16 @@ const avg = (a) => {
 // Группируем по emitter_name; implausible-цены уже занулены на бэке (не искажают).
 export default function IssuerAggregates({ bonds, onPickIssuer }) {
   const [sort, setSort] = useState({ key: "n", dir: "desc" });
+  const [ratingsSel, setRatingsSel] = useState([]);
+  const toggleRating = (v) =>
+    setRatingsSel((a) => (a.includes(v) ? a.filter((x) => x !== v) : [...a, v]));
 
   const rows = useMemo(() => {
     const g = new Map();
     for (const b of bonds) {
       const k = b.emitter_name;
       if (!k) continue;
+      if (ratingsSel.length && !ratingMatch(b.rating, ratingsSel)) continue;   // фильтр по рейтингу
       (g.get(k) || g.set(k, []).get(k)).push(b);
     }
     const out = [];
@@ -47,7 +56,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
       return typeof x === "string" ? x.localeCompare(y) * m : (x - y) * m;
     });
     return out;
-  }, [bonds, sort]);
+  }, [bonds, sort, ratingsSel]);
 
   const onSort = (key) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
@@ -71,6 +80,16 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
       <div className="ia-head">
         <h2 className="ia-title">Агрегаты по эмитентам</h2>
         <span className="ia-hint">медианы DM/z/carry по бумагам эмитента — справедливые уровни. Клик по строке → фильтр в «Флоатеры». Стейл-цены исключены.</span>
+        <div className="ia-filters">
+          <span className="ia-flabel">рейтинг:</span>
+          {RATINGS.map(([v, l]) => (
+            <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")}
+              onClick={() => toggleRating(v)}>{l}</button>
+          ))}
+          {ratingsSel.length > 0 && (
+            <button className="chip-btn" onClick={() => setRatingsSel([])}>сброс ×</button>
+          )}
+        </div>
       </div>
       {rows.length === 0 ? (
         <div className="ia-empty">эмитенты подгружаются (бэкфилл MOEX EMITTER_ID, ~40/цикл) — обнови позже</div>

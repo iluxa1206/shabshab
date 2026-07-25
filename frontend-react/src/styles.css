@@ -250,6 +250,8 @@ td.mstale { opacity: 0.4; font-style: italic; }
 .ia-table-wrap { overflow-x: auto; }
 .ia-table th { user-select: none; }
 .ia-row:hover td { background: var(--line-2); }
+.ia-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.ia-flabel { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; margin-right: 4px; }
 td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .loading { text-align: center; color: var(--mut); padding: 48px; text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; }
 .empty { text-align: center; padding: 56px 24px; }
