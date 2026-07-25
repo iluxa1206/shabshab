@@ -141,7 +141,7 @@ function Dashboard() {
               dm_bps: r.dm_bps ?? b.dm_bps,
               disc_margin_bps: r.disc_margin_bps ?? b.disc_margin_bps,
               z_model_bps: r.z_model_bps ?? b.z_model_bps,
-              carry_bps: r.carry_bps,
+              carry_bps: r.carry_bps ?? b.carry_bps,   // не стираем при транзиентном None
               yield_over_index_bps: r.yield_over_index_bps ?? b.yield_over_index_bps,
             };
           })
@@ -168,16 +168,21 @@ function Dashboard() {
               delta = Math.round((price - prevClose) * 10000) / 10000;
             }
             // DM/SM/z/carry/dirty/Y-IDX — от прошлого расчёта → dim до reprice
-            return { ...b, last_price_pct: price, delta_to_prev_close: delta,
-                     _mstale: true, _mprice: b._mprice ?? b.last_price_pct };
+            return { ...b, last_price_pct: price, delta_to_prev_close: delta, _mstale: true };
           })
         );
         scheduleReprice(isin, price);
       }
     );
     wsRef.current = ctrl;
-    return () => ctrl.close();
-  }, []);
+    return () => {
+      ctrl.close();
+      // гасим отложенные reprice-таймеры, иначе setBonds на размонтированном Dashboard
+      const t = repriceTimers.current;
+      Object.values(t).forEach(clearTimeout);
+      repriceTimers.current = {};
+    };
+  }, [scheduleReprice]);
 
   const filtered = useMemo(() => {
     const ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"];

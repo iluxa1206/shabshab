@@ -510,20 +510,16 @@ class MarketDataService:
                     prev = sg("PREVPRICE")
                     accrued = sg("ACCRUEDINT")
                     prev_date = sg("PREVDATE")   # дата prev-цены → возраст цены (стейл?)
-                # marketdata: NUMTRADES (сделок сегодня → ликвидность/тонкая цена) + фолбэк prev
-                numtrades = None
-                md = j.get("marketdata", {})
-                md_cols, md_rows = md.get("columns", []), md.get("data", [])
-                if md_rows:
-                    mg = lambda n: md_rows[0][md_cols.index(n)] if n in md_cols else None
-                    numtrades = mg("NUMTRADES")
-                    if prev is None:
-                        prev = mg("PREVPRICE")
+                # фолбэк prev на marketdata, если в securities пусто
+                if prev is None:
+                    md = j.get("marketdata", {})
+                    md_cols, md_rows = md.get("columns", []), md.get("data", [])
+                    if md_rows and "PREVPRICE" in md_cols:
+                        prev = md_rows[0][md_cols.index("PREVPRICE")]
                 out[isin] = {
                     "prev": float(prev) if prev is not None else None,
                     "accrued": float(accrued) if accrued is not None else None,
                     "prev_date": prev_date,
-                    "numtrades": int(numtrades) if numtrades is not None else None,
                 }
             except Exception:
                 pass
@@ -590,20 +586,11 @@ class MarketDataService:
                 resp = await _moex_get(
                     client,
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
-                    params={"iss.only": "securities,marketdata",
-                            "securities.columns": "ISIN,SECID,PREVPRICE,ACCRUEDINT,PREVDATE",
-                            "marketdata.columns": "SECID,NUMTRADES"},
+                    params={"iss.only": "securities",
+                            "securities.columns": "ISIN,PREVPRICE,ACCRUEDINT,PREVDATE"},
                     timeout=15)
             if resp is not None and resp.status_code == 200:
-                j = resp.json()
-                # NUMTRADES (сделок сегодня) из marketdata, по SECID
-                md = j.get("marketdata", {})
-                mc, mr = md.get("columns", []), md.get("data", [])
-                _nt = {}
-                if "SECID" in mc and "NUMTRADES" in mc:
-                    si, ni = mc.index("SECID"), mc.index("NUMTRADES")
-                    _nt = {r[si]: r[ni] for r in mr if r[si]}
-                sec = j.get("securities", {})
+                sec = resp.json().get("securities", {})
                 cols, rows = sec.get("columns", []), sec.get("data", [])
                 g = lambda row, n: row[cols.index(n)] if n in cols else None
                 for row in rows:
@@ -611,12 +598,10 @@ class MarketDataService:
                     if not isin:
                         continue
                     prev, acc = g(row, "PREVPRICE"), g(row, "ACCRUEDINT")
-                    nt = _nt.get(g(row, "SECID"))
                     out[isin] = {
                         "prev": float(prev) if prev is not None else None,
                         "accrued": float(acc) if acc is not None else None,
                         "prev_date": g(row, "PREVDATE"),
-                        "numtrades": int(nt) if nt is not None else None,
                     }
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")

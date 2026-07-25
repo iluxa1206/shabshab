@@ -30,8 +30,10 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
     for (const b of bonds) {
       const k = b.emitter_name;
       if (!k) continue;
+      if (b.price_implausible || b.price_thin) continue;   // стейл/тонкие цены — вне медиан
       if (ratingsSel.length && !ratingMatch(b.rating, ratingsSel)) continue;   // фильтр по рейтингу
-      (g.get(k) || g.set(k, []).get(k)).push(b);
+      if (!g.has(k)) g.set(k, []);
+      g.get(k).push(b);
     }
     const out = [];
     for (const [name, arr] of g.entries()) {

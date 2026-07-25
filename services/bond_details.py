@@ -358,8 +358,24 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     carry = None
     try:
         from services import metrics as _metrics
+        # ставка начавшегося периода из модельного cashflow — override текущего
+        # купона (как build_bond_details): для RUONIA-average MOEX не даёт valueprc,
+        # без override carry=None и скачет при reprice. Мирроринг карточки.
+        cur_cpn_model = None
+        try:
+            from valuation import build_cashflows_with_spread
+            _cfs = build_cashflows_with_spread(
+                ref_obj, curve, calc_date, ref_obj.spread_issue_bps or 0,
+                explicit_periods=schedules.get(isin), amorts=amorts, offers=offers)
+            for _cf in _cfs:
+                if (_cf.type == "COUPON" and _cf.period_start
+                        and _cf.period_start <= calc_date < _cf.period_end):
+                    cur_cpn_model = _cf.coupon_rate_pct
+                    break
+        except Exception:
+            cur_cpn_model = None
         cb = _metrics.carry_refix_block(coupons, amorts, ref_obj.face_value, price,
-                                        exp, None, calc_date)
+                                        exp, None, calc_date, current_coupon_override=cur_cpn_model)
         carry = cb["carry_bps"]
     except Exception as e:
         logger.warning(f"reprice carry error {isin}: {e}")
