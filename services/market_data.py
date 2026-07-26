@@ -575,8 +575,10 @@ class MarketDataService:
 
     @classmethod
     async def fetch_board_snapshot(cls) -> Dict[str, dict]:
-        """{isin: {'prev','accrued'}} по ВСЕМУ борду TQCB одним запросом — для
-        фонового расчёта метрик юниверса без 453 per-isin вызовов. Кэш TTL 120с."""
+        """{isin: {'prev','accrued','prev_date','last'}} по ВСЕМУ борду TQCB одним
+        запросом — для фонового расчёта метрик юниверса без 453 per-isin вызовов.
+        `last` — цена сегодняшней сделки MOEX (LAST → LCURRENTPRICE → WAPRICE):
+        полная картина цен по всему рынку, а не только по подписанным Alor. TTL 120с."""
         now = time.time()
         if cls._board_snap and now - cls._board_snap_ts < _SNAP_TTL:
             return cls._board_snap
@@ -586,13 +588,31 @@ class MarketDataService:
                 resp = await _moex_get(
                     client,
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
-                    params={"iss.only": "securities",
-                            "securities.columns": "ISIN,PREVPRICE,ACCRUEDINT,PREVDATE"},
+                    params={"iss.only": "securities,marketdata",
+                            "securities.columns": "SECID,ISIN,PREVPRICE,ACCRUEDINT,PREVDATE",
+                            "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE"},
                     timeout=15)
             if resp is not None and resp.status_code == 200:
-                sec = resp.json().get("securities", {})
+                data = resp.json()
+                sec = data.get("securities", {})
                 cols, rows = sec.get("columns", []), sec.get("data", [])
                 g = lambda row, n: row[cols.index(n)] if n in cols else None
+                # marketdata: SECID → сегодняшняя цена сделки (LAST приоритетно)
+                md = data.get("marketdata", {})
+                mcols, mrows = md.get("columns", []), md.get("data", [])
+                mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
+                last_by_secid: Dict[str, float] = {}
+                for mr in mrows:
+                    secid = mg(mr, "SECID")
+                    if not secid:
+                        continue
+                    px = mg(mr, "LAST")
+                    if px is None:
+                        px = mg(mr, "LCURRENTPRICE")
+                    if px is None:
+                        px = mg(mr, "WAPRICE")
+                    if px is not None:
+                        last_by_secid[secid] = float(px)
                 for row in rows:
                     isin = g(row, "ISIN")
                     if not isin:
@@ -602,6 +622,7 @@ class MarketDataService:
                         "prev": float(prev) if prev is not None else None,
                         "accrued": float(acc) if acc is not None else None,
                         "prev_date": g(row, "PREVDATE"),
+                        "last": last_by_secid.get(g(row, "SECID")),
                     }
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")

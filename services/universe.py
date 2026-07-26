@@ -61,8 +61,12 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             pass
 
     delta = round(last - float(prev), 4) if (last is not None and prev is not None) else None
-    # цена для расчёта: live → prev-close (не зависим от момента WS-цены)
+    # цена для расчёта: live/сделка сегодня → prev-close (не зависим от момента WS-цены)
     price_calc = last if last is not None else prev
+    # отображаемая цена: реальная (live/сделка) или prev-close как fallback (нет
+    # сделок сегодня / бумага не в Alor-потоке) → строка не пустует, но помечена
+    px_display = last if last is not None else prev
+    price_stale = last is None and prev is not None
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
@@ -126,8 +130,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             price_thin = (calc_date - date.fromisoformat(prev_date)).days > 4
         except (ValueError, TypeError):
             price_thin = False
-    return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
-            "ytm": ytm, "base_ytm": base_ytm,
+    return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
+            "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
             "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
@@ -168,8 +172,8 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
         ref = build_universe_ref(u, isin, cache, secs)
         out[isin] = enrich_bond(
             u, ref, full_by.get(isin) or {},
-            last=prices.get(isin), prev=snap.get("prev"), accrued=snap.get("accrued"),
-            prev_date=snap.get("prev_date"),
+            last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
+            accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
     return out

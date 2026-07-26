@@ -64,7 +64,7 @@ def _uni_item(u, name, mx, spread_dur):
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
-        price_thin=mx.get("price_thin") or False,
+        price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
         rating=u.get("rating"),
         z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur, carry_bps=mx.get("carry"),

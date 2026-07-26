@@ -48,7 +48,9 @@ export const COLS = [
     cell: (b) => <td className="num" key="pos_value">{b.pos_value == null ? <D /> : fmt.num(b.pos_value, 0)}</td> },
   // ── НАША МОДЕЛЬ (цена → CHG → dirty → SM → DM → Z → carry → Y−IDX) ──
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
-    cell: (b) => <td className="num col-sep" key="last_price_pct">{fmt.pct(b.last_price_pct) ?? <D />}</td> },
+    cell: (b) => <td className={"num col-sep" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
+      title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
+      {fmt.pct(b.last_price_pct) ?? <D />}</td> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num",
     cell: (b) => {
       const delta = b.delta_to_prev_close;

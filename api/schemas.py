@@ -170,6 +170,7 @@ class BondListItem(BaseModel):
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
     price_thin: bool = False                    # 0 сделок сегодня → цена несвежая, DM/z с ненадёжной цены
+    price_stale: bool = False                   # показана prev-close (нет live/сделки сегодня), не текущая
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ
     rating: Optional[str] = None
     # флоатер-метрики (кросс-секция — по всему юниверсу; carry/refix — только watch)
