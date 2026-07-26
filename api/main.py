@@ -137,14 +137,19 @@ async def universe_price_poller():
                 if metrics:
                     market_cache["universe_metrics"] = metrics
                 await _warm_fixed(market_cache)
-                # рейтинги с corpbonds — раз в день по всем бумагам (drain, cap/цикл)
-                try:
-                    from services import ratings
-                    fx = [u["isin"] for u in (market_cache.get("fixed_universe") or []) if u.get("isin")]
-                    allids = list(dict.fromkeys(fx + isins))
-                    await ratings.refresh(allids, cap=80)
-                except Exception as e:
-                    logger.warning(f"ratings drain error: {e}")
+            # рейтинги с corpbonds — НЕ зависят от торговых часов (парсятся всегда),
+            # драйн 24/7: cap/цикл, negative-кэш промахов → сходится за проход.
+            # Универсы тянем независимо (кэшированы), чтобы драйн шёл и ночью.
+            try:
+                from services import ratings, fixed_income as fi
+                fx_uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
+                fl_uni = await instruments_registry.fetch_floater_universe()
+                fx = [u["isin"] for u in fx_uni if u.get("isin")]
+                fl = [u["isin"] for u in fl_uni if u.get("isin")]
+                allids = list(dict.fromkeys(fx + fl))
+                await ratings.refresh(allids, cap=80)
+            except Exception as e:
+                logger.warning(f"ratings drain error: {e}")
         except Exception as e:
             logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)

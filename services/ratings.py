@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _FILE = cache_path("ratings_cache.json")
 _TTL = 7 * 86400          # перезапрашиваем не чаще раза в неделю на бумагу
+_NEG_TTL = 86400          # промах corpbonds (404/ошибка) — ретрай через день, не каждый
+                          # цикл: иначе драйн вечно упирается в те же битые бумаги
+                          # в начале списка и не доходит до остальных
 _cache: Optional[dict] = None
 
 # порядок проверки: длинные грейды раньше коротких (BBB до BB до B)
@@ -134,12 +137,19 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
     # Реестр хранит рейтинг постоянно (set_rating), поэтому уже-рейтингованные
     # бумаги пропускаем (ратинги меняются редко; corpbonds часто 404).
     rated = reg.ratings_map(isins) if reg is not None else {}
-    todo = [i for i in isins
-            if not rated.get(i)
-            and (not cache.get(i) or now - cache[i].get("ts", 0) > _TTL)][:cap]
+
+    def _fresh(entry) -> bool:
+        # запись свежа (пропускаем): рейтинг — _TTL, промах (miss) — короткий _NEG_TTL
+        if not entry:
+            return False
+        ttl = _NEG_TTL if entry.get("miss") else _TTL
+        return now - entry.get("ts", 0) <= ttl
+
+    todo = [i for i in isins if not rated.get(i) and not _fresh(cache.get(i))][:cap]
     if not todo:
         return 0
     n = 0
+    misses = 0
     async with httpx.AsyncClient(headers=_UA, timeout=15) as client:
         for isin in todo:
             try:
@@ -148,11 +158,17 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
                 r = None
             await asyncio.sleep(delay)
             if r is None:
-                continue  # страница не загрузилась → не кэшируем NR, ретрай позже
+                # промах (404/ошибка) — negative-кэш с коротким TTL, чтобы драйн
+                # прошёл дальше, а не застревал на битых бумагах начала списка.
+                cache[isin] = {"raw": None, "bucket": None, "ts": now, "miss": True}
+                misses += 1
+                continue
             raw = r.get("rating_raw")
             bucket = rating_to_bucket(raw)
             cache[isin] = {"raw": raw, "bucket": bucket, "ts": now}
             n += 1
+            # durable-персист: json-кэш (переживает рестарт через _save) — основной
+            # для фиксов; в реестр дублируем, если бумага там есть (флоатеры).
             if reg is not None and bucket != "NR":
                 try:
                     if reg.get(isin):
@@ -160,5 +176,5 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
                 except Exception:
                     pass
     _save()
-    logger.info("ratings refresh: +%d (todo %d)", n, len(todo))
+    logger.info("ratings refresh: +%d rated, %d miss (todo %d)", n, misses, len(todo))
     return n
