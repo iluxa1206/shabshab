@@ -18,8 +18,8 @@ router = APIRouter()
 @router.get("/floater-yield", tags=["Curves"])
 async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-флоатера")):
     """YTM/купоны флоатера по методу 502_504 (Floater spread): проекция купона =
-    среднее рыночного пути КС (форвард СПФИ) по окну рефиксинга + спред, XIRR.
-    Пока только KEYRATE."""
+    среднее рыночного пути КС (форвард bootstrap-кривой IRS KEYRATE) по окну
+    рефиксинга + спред, XIRR. Пока только KEYRATE."""
     from services import nrd as nrd_service
     from services.bonds import build_ref_external
     from services.floater_model import make_ks_path, project_floater, floater_xirr_pct, actual_ks
@@ -97,7 +97,8 @@ async def get_ks_path(
     series: Literal["ks", "ruonia"] = Query("ks", description="ks | ruonia")
 ):
     """Путь базовой ставки: факт живьём с ЦБ РФ (дневная история) + рыночный
-    форвард из СПФИ (наш bootstrap). series=ks — ключевая, ruonia — RUONIA."""
+    форвард нашей bootstrap-кривой (IRS KEYRATE / OIS RUONIA свопы). series=ks —
+    ключевая, ruonia — RUONIA."""
     from services.ks_path import build_path, current_rate_pct
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     cd = calc_date or date.today()
@@ -120,9 +121,10 @@ async def get_ks_path(
 async def get_curve_plot(
     type: Literal["ruonia", "keyrate"] = Query(..., description="ruonia | keyrate")
 ):
-    """Котировки СПФИ (что запарсилось) + построенная кривая (spot/forward-сэмплы)
-    для визуализации. spot_pct — средняя ставка индекса на срок (из DF, конвенция
-    индекса); forward_pct — мгновенный форвард ~30д вперёд."""
+    """Par-котировки свопов (что запарсилось: IRS KEYRATE / OIS RUONIA) +
+    построенная bootstrap-кривая (spot/forward-сэмплы) для визуализации.
+    spot_pct — средняя ставка на срок (из DF, компаундированная); forward_pct —
+    мгновенный форвард ~30д вперёд."""
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     curve = ruonia_curve if type == "ruonia" else keyrate_curve
     quotes = market_cache.get("ois_quotes" if type == "ruonia" else "irs_quotes") or []

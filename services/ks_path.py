@@ -1,12 +1,15 @@
 """Путь базовой ставки (КС или RUONIA): исторический факт (живьём с ЦБ РФ) +
-рыночная траектория ожиданий из СПФИ.
+рыночная траектория ожиданий из bootstrap-кривой свопов.
 
 Факт — из services.cbr (дневная история). Траектория ожиданий:
-  КС    — форвардные сегменты СПФИ по логике Excel-файла 502_504 (лист IRS кол.K,
-          services.implied_curve.excel_ks_forward_segments): ступени маржинального
-          форварда между тенорами до 10Y. Затухания к нейтрали за последним свопом
-          нет — горизонт кончается последним тенором.
-  RUONIA — форвард нашей bootstrap-кривой (Смита-Уилсона Прил.2 пока не реализован).
+  КС    — короткий (~помесячный) форвард НАШЕЙ bootstrap-кривой IRS KEYRATE (та же,
+          что дисконтирует SM/z — арбитраж-консистентно с прайсингом). Горизонт —
+          последний узел кривой (10Y). Плюс DISPLAY-ONLY линии: прогноз ЦБ (ступени
+          на заседаниях) и НРД Прил.3 (KsExpectationCurve: сплайн свопов + экспо-
+          затухание к нейтрали за последним тенором). Реплика листа IRS файла
+          502_504 (excel_ks_forward_segments) осталась в implied_curve для сверки с
+          файлом, в путь НЕ идёт (её форвард не арбитражен, чарт расходился с ценой).
+  RUONIA — короткий форвард нашей bootstrap-кривой OIS (Смита-Уилсона Прил.2 пока нет).
 """
 from __future__ import annotations
 from datetime import date, timedelta
@@ -32,9 +35,9 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     """Точки пути: факт (≤ calc_date, дневной с ЦБ, обрезан на hist_years назад) +
     рыночная траектория (помесячно вперёд).
 
-    КС: траектория = excel_ks_forward_segments (ступени форвардов СПФИ, лист IRS)
-    на ks_quotes; горизонт — последний тенор (10Y). RUONIA: форвард
-    bootstrap-кривой до её последнего узла.
+    КС: траектория = короткий (~помесячный) форвард bootstrap-кривой IRS KEYRATE
+    на ks_quotes; горизонт — последний тенор (10Y). + DISPLAY-линии прогноз ЦБ и
+    НРД Прил.3. RUONIA: форвард bootstrap-кривой OIS до её последнего узла.
     """
     hist = cbr.ks_history() if series == "ks" else cbr.ruonia_history()
     cutoff = date(calc_date.year - hist_years, calc_date.month, min(calc_date.day, 28))
@@ -46,9 +49,8 @@ def build_path(curve, calc_date: date, series: str = "ks", hist_years: int = 3,
     if out:
         out[-1]["market_pct"] = out[-1]["actual_pct"]  # стыковка факт→прогноз
 
-    # --- КС: рыночная траектория = форвардные сегменты СПФИ (логика Excel-файла:
-    # лист IRS кол.K — маржинальный форвард КС между тенорами), ступени по сегментам.
-    # + прогноз ЦБ (ступени на заседаниях) ---
+    # --- КС: рыночная траектория = короткий форвард bootstrap-кривой IRS KEYRATE
+    # (помесячные сегменты, см. ниже) + прогноз ЦБ (ступени на заседаниях) ---
     if series == "ks" and ks_quotes and curve is not None:
         from services.implied_curve import KsExpectationCurve
         from services import cbr_forecast

@@ -300,7 +300,7 @@ class CurvePlotResponse(BaseModel):
 class KsPathPoint(BaseModel):
     date: date
     actual_pct: Optional[float] = None     # факт КС (прошедшие заседания)
-    market_pct: Optional[float] = None     # рыночный форвард СПФИ (реплика листа IRS)
+    market_pct: Optional[float] = None     # рыночный форвард bootstrap-кривой IRS KEYRATE
     forecast_pct: Optional[float] = None    # среднесрочный прогноз ЦБ (avg КС по годам)
     nrd_pril3_pct: Optional[float] = None  # ожидаемая КС по НРД met_float Прил.3
                                            # (сплайн свопов + затухание к нейтрали)
