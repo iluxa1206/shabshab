@@ -52,8 +52,16 @@ function Chart({ candles, type, tf }) {
             </g>
           );
         })}
-        {hover && <line x1={cx(hover.i)} x2={cx(hover.i)} y1={pad.t} y2={H - pad.b}
-          stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" pointerEvents="none" />}
+        {hover && (
+          <g pointerEvents="none">
+            <line x1={cx(hover.i)} x2={cx(hover.i)} y1={pad.t} y2={H - pad.b}
+              stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
+            <line x1={pad.l} x2={W - pad.r} y1={sy(hover.c)} y2={sy(hover.c)}
+              stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
+            <text x={pad.l - 4} y={sy(hover.c) + 3} textAnchor="end" className="an-axis"
+              style={{ fill: "var(--fg)" }}>{hover.c.toFixed(2)}</text>
+          </g>
+        )}
       </svg>
       {hover && (
         <Tooltip x={cx(hover.i)} viewW={W} top={2}>
