@@ -53,6 +53,30 @@
   --rt-b: #fa5252;
 }
 
+/* Grey = графит, средняя ступень между белым и чёрным (мягче тёмной) */
+.theme-grey {
+  --bg: #33383f;
+  --fg: #eceef1;
+  --mut: #b0b5bd;
+  --mut-2: #8b919b;
+  --line: #454b54;
+  --line-2: #565d67;
+  --hover: #3c424a;
+  --inv-bg: #eceef1;
+  --inv-fg: #33383f;
+  --up: #4ecb76;
+  --down: #ff6b6b;
+  --accent: #6b9bff;
+  --pos: var(--up);
+  --neg: var(--down);
+  --rt-aaa: #51cf66;
+  --rt-aa: #94d82d;
+  --rt-a: #ffa94d;
+  --rt-bbb: #ff922b;
+  --rt-bb: #ff6b6b;
+  --rt-b: #fa5252;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -352,6 +376,12 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .counter { color: var(--fg); letter-spacing: 0.18em; }
 .status-cell.src { color: var(--mut-2); }
 .status-cell.src.on { color: var(--fg); }
+/* переключатель цветовой гаммы (низ-лево): 3 оттенка light/grey/dark */
+.status-cell.theme-switch { gap: 7px; padding: 0 14px; }
+.theme-dot { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line-2);
+  padding: 0; cursor: pointer; display: block; }
+.theme-dot:hover { border-color: var(--fg); }
+.theme-dot.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
 .src-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 8px; }
 .src-dot.on { background: var(--up); box-shadow: 0 0 4px var(--up); }
 .src-dot.off { background: var(--mut-2); }

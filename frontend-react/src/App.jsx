@@ -290,17 +290,16 @@ function Dashboard() {
         visibleCols={visibleCols}
       />
       <Drawer isin={drawerIsin} onClose={closeDrawer} />
-      <StatusBar count={bonds.length} live={live} sources={meta.source_status} />
+      <StatusBar count={bonds.length} live={live} sources={meta.source_status}
+        theme={theme} onSetTheme={setTheme} />
     </>
   );
 
   return (
-    <div id="app" className={theme === "dark" ? "theme-dark" : ""}>
+    <div id="app" className={theme === "light" ? "" : "theme-" + theme}>
       <Topbar
         meta={meta} live={live}
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }}
-        theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
@@ -325,12 +324,13 @@ function AuthGate() {
   const { auth, onLogin } = useAuth();
   const [theme] = useState(() => localStorage.getItem("theme") || "light");
 
+  const themeCls = theme === "light" ? "" : "theme-" + theme;
   if (auth === "checking") {
-    return <div className={"login-wrap" + (theme === "dark" ? " theme-dark" : "")} />;
+    return <div className={("login-wrap " + themeCls).trim()} />;
   }
   if (auth === "anon") {
     return (
-      <div className={theme === "dark" ? "theme-dark" : ""}>
+      <div className={themeCls}>
         <Login onSuccess={onLogin} />
       </div>
     );
