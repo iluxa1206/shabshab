@@ -181,6 +181,11 @@ function KsPathView() {
         {data && (
           <span className="muted" style={{ fontSize: 11 }}>
             действующая {label}: <b style={{ color: "var(--fg)" }}>{data.current_ks_pct ?? "—"}%</b> · calc {fmt.date(data.calc_date)}
+            {data.decided_rate_pct != null && (
+              <b style={{ color: "var(--accent)", marginLeft: 8 }}>
+                → решение {fmt.date(data.decided_decision)}: {data.decided_rate_pct}% с {fmt.date(data.decided_effective)}
+              </b>
+            )}
           </span>
         )}
       </div>

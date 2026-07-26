@@ -308,6 +308,10 @@ class KsPathPoint(BaseModel):
 class KsPathResponse(BaseModel):
     calc_date: date
     current_ks_pct: Optional[float] = None
+    # принятое, но ещё не вступившее решение ЦБ по КС (эффект со след. раб. дня)
+    decided_rate_pct: Optional[float] = None
+    decided_effective: Optional[str] = None
+    decided_decision: Optional[str] = None
     points: List[KsPathPoint]
     warnings: List[str] = Field(default_factory=list)
 

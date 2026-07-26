@@ -61,6 +61,24 @@ def neutral_pct(default: float = 8.0) -> float:
     return m if m is not None else default
 
 
+def key_rate_decision(today: Optional[date] = None) -> Optional[dict]:
+    """ПРИНЯТОЕ, но ещё не вступившее в силу решение ЦБ по КС:
+    {decided_pct, effective_date, decision_date} | None. Возвращает None, если
+    effective_date уже наступила (ставка в силе — показывать нечего) или блока нет."""
+    d = _load().get("key_rate_decision")
+    if not isinstance(d, dict) or d.get("decided_pct") is None or not d.get("effective_date"):
+        return None
+    try:
+        eff = date.fromisoformat(d["effective_date"])
+    except (ValueError, TypeError):
+        return None
+    if eff <= (today or date.today()):
+        return None   # уже действует — пометка не нужна
+    return {"decided_pct": float(d["decided_pct"]),
+            "effective_date": d["effective_date"],
+            "decision_date": d.get("decision_date")}
+
+
 def avg_ks_by_year() -> Dict[int, float]:
     """{год: средняя прогнозная КС ЦБ, %} (середина диапазонов)."""
     out: Dict[int, float] = {}

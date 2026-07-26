@@ -111,8 +111,16 @@ async def get_ks_path(
         warnings.append("Кривая недоступна — рыночный форвард не построен.")
     if rates_date and (date.today() - rates_date).days > 4:
         warnings.append(f"Котировки устарели на {(date.today() - rates_date).days} дн.")
+    # принятое, но ещё не вступившее решение ЦБ по КС (только для series=ks)
+    dec = None
+    if series == "ks":
+        from services import cbr_forecast
+        dec = cbr_forecast.key_rate_decision(cd)
     return KsPathResponse(
         calc_date=cd, current_ks_pct=cur,
+        decided_rate_pct=dec["decided_pct"] if dec else None,
+        decided_effective=dec["effective_date"] if dec else None,
+        decided_decision=dec["decision_date"] if dec else None,
         points=[KsPathPoint(**p) for p in points], warnings=warnings,
     )
 
