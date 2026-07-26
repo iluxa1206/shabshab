@@ -106,6 +106,7 @@ def parse_corpbonds_html(html: str) -> dict:
     out["has_call"] = kv.get("Наличие сall-опциона", kv.get("Наличие call-опциона", "")) == "Да"
     out["is_step"] = kv.get("Купон лесенкой", "") == "Да"
     out["is_subord"] = kv.get("Субординированная облигация", "") == "Да"
+    out["rating_raw"] = (kv.get("Кредитный рейтинг") or "").strip() or None
     return out
 
 

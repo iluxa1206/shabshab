@@ -45,6 +45,8 @@ export default function FixedCard({ d }) {
       </div>
 
       <div className="ref-grid">
+        <Cell k="Эмитент">{r.issuer}</Cell>
+        <Cell k="Рейтинг">{r.rating && r.rating !== "NR" ? r.rating : null}</Cell>
         <Cell k="Цена">{mk.last_price_pct != null ? fmt.pct(mk.last_price_pct) + " %" : null}{mk.price_stale ? " (пред.)" : ""}</Cell>
         <Cell k="Dirty">{mk.dirty_rub != null ? fmt.num(mk.dirty_rub) + " ₽" : null}</Cell>
         <Cell k="НКД">{mk.accrued_rub != null ? fmt.num(mk.accrued_rub) + " ₽" : null}</Cell>

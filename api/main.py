@@ -137,6 +137,14 @@ async def universe_price_poller():
                 if metrics:
                     market_cache["universe_metrics"] = metrics
                 await _warm_fixed(market_cache)
+                # рейтинги с corpbonds — раз в день по всем бумагам (drain, cap/цикл)
+                try:
+                    from services import ratings
+                    fx = [u["isin"] for u in (market_cache.get("fixed_universe") or []) if u.get("isin")]
+                    allids = list(dict.fromkeys(fx + isins))
+                    await ratings.refresh(allids, cap=80)
+                except Exception as e:
+                    logger.warning(f"ratings drain error: {e}")
         except Exception as e:
             logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)

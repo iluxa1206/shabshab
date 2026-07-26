@@ -182,6 +182,11 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .fx-ofz { background: var(--accent); color: var(--bg); }
 .fx-corp { background: var(--line-2); color: var(--fg); }
 td.mut { color: var(--mut); }
+.fx-rt { font-weight: 700; font-size: 11px; }
+.fx-rt-filter { display: inline-flex; gap: 3px; }
+.fx-rt-chip { font: 10px var(--mono); font-weight: 700; padding: 3px 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--line-2); border-radius: 3px; }
+.fx-rt-chip.on { color: var(--bg) !important; }
 
 /* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
 .pchart { margin-bottom: 20px; }

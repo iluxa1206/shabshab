@@ -204,6 +204,16 @@ def set_emitter(isin: str, emitter_id, emitter_name: str) -> None:
                   (emitter_id, emitter_name, _now(), isin))
 
 
+def set_rating(isin: str, rating: str) -> None:
+    """Записать рейтинг-бакет (AAA…B/NR) из corpbonds. Обновляется раз в день."""
+    if not rating:
+        return
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET rating=?, updated_at=? WHERE isin=?",
+                  (rating, _now(), isin))
+
+
 def isins_missing_emitter(limit: int = 40) -> list[str]:
     """Активные бумаги без emitter_id — для постепенного бэкфилла в поллере."""
     _ensure()

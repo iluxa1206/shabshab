@@ -4,6 +4,11 @@ import { fetchFixed } from "../api.js";
 import { fmt, dmColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 
+const RT = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
+const RTCOLOR = {
+  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
+  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
+};
 const D = () => <span className="dash">—</span>;
 const median = (a) => {
   if (!a.length) return null;
@@ -43,6 +48,10 @@ const COLS = [
     get: (b) => b.mod_dur, cell: (b) => <td className="num" key="d">{b.mod_dur == null ? <D /> : fmt.num(b.mod_dur, 2)}</td> },
   { key: "convexity", label: "CONV", sub: "выпукл.", align: "num",
     get: (b) => b.convexity, cell: (b) => <td className="num" key="cx">{b.convexity == null ? <D /> : fmt.num(b.convexity, 1)}</td> },
+  { key: "rating", label: "РЕЙТИНГ", sub: "", align: "num",
+    get: (b) => (b.rating ? RT.indexOf(b.rating) : 99),
+    cell: (b) => <td className="num" key="r">{b.rating
+      ? <span className="fx-rt" style={{ color: RTCOLOR[b.rating] }}>{b.rating}</span> : <D />}</td> },
   { key: "coupon_pct", label: "COUPON", sub: "%", align: "num",
     get: (b) => b.coupon_pct, cell: (b) => <td className="num" key="c">{b.coupon_pct == null ? <D /> : fmt.pct(b.coupon_pct)}</td> },
   { key: "maturity_date", label: "MATURITY", sub: "", align: "num",
@@ -66,6 +75,7 @@ export default function FixedModule({ onOpen }) {
   const [clsF, setClsF] = useState("all");     // all | ofz | corp
   const [query, setQuery] = useState("");
   const [emittersSel, setEmittersSel] = useState([]);
+  const [ratingsSel, setRatingsSel] = useState([]);
   const [sort, setSort] = useState({ key: "val_today", dir: "desc" });
 
   const all = q.data?.items || [];
@@ -77,6 +87,7 @@ export default function FixedModule({ onOpen }) {
   const rows = useMemo(() => {
     let r = all;
     if (clsF !== "all") r = r.filter((b) => b.cls === clsF);
+    if (ratingsSel.length) { const set = new Set(ratingsSel); r = r.filter((b) => set.has(b.rating || "NR")); }
     if (emittersSel.length) { const set = new Set(emittersSel); r = r.filter((b) => set.has(b.issuer || b.name)); }
     if (query.trim()) {
       const s = query.trim().toLowerCase();
@@ -92,7 +103,7 @@ export default function FixedModule({ onOpen }) {
       if (vb == null) return -1;
       return va > vb ? dir : va < vb ? -dir : 0;
     });
-  }, [all, clsF, emittersSel, query, sort]);
+  }, [all, clsF, ratingsSel, emittersSel, query, sort]);
 
   const k = useMemo(() => {
     const ys = rows.map((b) => b.ytm).filter((v) => v != null);
@@ -121,6 +132,13 @@ export default function FixedModule({ onOpen }) {
         <span className="seg">
           {[["all", "Все"], ["ofz", "ОФЗ"], ["corp", "Корпораты"]].map(([v, l]) => (
             <button key={v} className={"seg-btn" + (clsF === v ? " active" : "")} onClick={() => setClsF(v)}>{l}</button>
+          ))}
+        </span>
+        <span className="fx-rt-filter">
+          {RT.map((rt) => (
+            <button key={rt} className={"fx-rt-chip" + (ratingsSel.includes(rt) ? " on" : "")}
+              style={ratingsSel.includes(rt) ? { background: RTCOLOR[rt], borderColor: RTCOLOR[rt] } : { color: RTCOLOR[rt] }}
+              onClick={() => setRatingsSel((s) => s.includes(rt) ? s.filter((x) => x !== rt) : [...s, rt])}>{rt}</button>
           ))}
         </span>
         <IssuerFilter issuers={issuers} selected={emittersSel}

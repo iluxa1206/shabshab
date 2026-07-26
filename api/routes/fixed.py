@@ -30,12 +30,13 @@ async def get_fixed():
         uni = await fi.fetch_fixed_universe()
     metrics = market_cache.get("fixed_metrics") or {}
 
+    from services import ratings
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
         item = {
             "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
-            "issuer": u.get("issuer"),
+            "issuer": u.get("issuer"), "rating": ratings.bucket_of(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             # цена: из метрик (last→prev с флагом) иначе сырой board
@@ -75,7 +76,7 @@ async def get_fixed_details(isin: str = Path(...)):
     isin = isin.strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="bad isin")
-    from services import fixed_income as fi
+    from services import fixed_income as fi, ratings
     uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
     row = next((u for u in uni if u.get("isin") == isin), None)
     if row is None:
@@ -94,6 +95,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "isin": isin, "secid": secid, "name": row.get("name"), "cls": row.get("cls"),
             "board": board, "maturity_date": row.get("maturity_date"),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
+            "issuer": row.get("issuer"), "rating": ratings.bucket_of(isin),
         },
         "market": {
             "last_price_pct": m.get("last"), "prev_close_pct": row.get("prev"),
