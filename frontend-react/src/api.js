@@ -63,12 +63,6 @@ export const adminUpdateUser = (email, patch) =>
 export const adminDeleteUser = (email) =>
   request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "DELETE" });
 
-// --- НРД-слой: статус + переключение (admin) ---
-export const fetchNrdStatus = () => request("/api/nrd");
-
-export const setNrdEnabled = (enabled) =>
-  request("/api/nrd", { method: "POST", json: { enabled } });
-
 // --- Реестр инструментов (admin): ревью новых бумаг + ручной ввод параметров ---
 export const fetchUnreviewedInstruments = () => request("/api/instruments/unreviewed");
 
@@ -91,14 +85,14 @@ export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?serie
 export const fetchFloaterYield = (isin) =>
   request(`/api/curves/floater-yield?isin=${encodeURIComponent(isin)}`);
 
-export function fetchBonds({ withVal, withNrd, universe, extra, signal }) {
+export function fetchBonds({ withVal, universe, extra, signal }) {
   let url;
   if (universe) {
     url = `/api/bonds?universe=true&limit=2000`;
     // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
   } else {
-    url = `/api/bonds?with_market=true&with_valuation=${withVal}&with_nrd=${withNrd}&limit=500`;
+    url = `/api/bonds?with_market=true&with_valuation=${withVal}&limit=500`;
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
   }
   return request(url, { signal });
@@ -144,9 +138,6 @@ export const fetchFundCashflow = (code, months = 12) =>
 
 export const fetchFundScenarios = (code) =>
   request(`/api/funds/${encodeURIComponent(code)}/scenarios`);
-
-export const fetchFundAlerts = (code, threshold = 20) =>
-  request(`/api/funds/${encodeURIComponent(code)}/alerts?threshold=${threshold}`);
 
 export const fetchFundsCalendar = (days = 90) =>
   request(`/api/funds/_meta/calendar?days=${days}`);

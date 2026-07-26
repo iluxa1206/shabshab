@@ -160,13 +160,6 @@ async def get_scenarios(code: str):
     return await portfolio.fund_scenarios(code.upper())
 
 
-@router.get("/{code}/alerts", tags=["Funds"])
-async def get_alerts(code: str, threshold: float = 20.0):
-    """Repricing-алерты D/D (Δz/Δdm из истории НРД) по бумагам фонда."""
-    _fund_or_404(code)
-    return await portfolio.fund_alerts(code.upper(), threshold_bps=threshold)
-
-
 # префикс _meta, чтобы не пересекаться с /{code}-путями
 @router.get("/_meta/calendar", tags=["Funds"])
 async def get_calendar(days: int = 90):

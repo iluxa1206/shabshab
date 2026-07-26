@@ -1,20 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { fmt, DASH } from "../../format.js";
-import { fetchFundScenarios, fetchFundAlerts } from "../../api.js";
+import { fetchFundScenarios } from "../../api.js";
 import { conv } from "./ccy.js";
 
 const sgnCls = (v) => (v == null ? "" : v >= 0 ? "pos" : "neg");
 const mln = (v, rate) => (v == null ? DASH : fmt.signed(conv(v, rate) / 1e6, 2));
 
 // Сценарный анализ: КС ±100/±200, наклон кривой, FX ±10% → ΔNAV (MtM) и Δcarry.
-// Плюс repricing-алерты D/D (Δz/Δdm из истории НРД) по бумагам фонда.
-// Рефреш после мутаций — через invalidateFund (ключи ["scenarios"|"fundAlerts", code]).
+// Рефреш после мутаций — через invalidateFund (ключ ["scenarios", code]).
 export default function ScenariosSection({ code, rate, sign }) {
   const scQ = useQuery({ queryKey: ["scenarios", code], queryFn: () => fetchFundScenarios(code) });
-  const alQ = useQuery({ queryKey: ["fundAlerts", code], queryFn: () => fetchFundAlerts(code) });
   const data = scQ.data;
-  const alerts = alQ.data;
-  const err = scQ.error?.message || alQ.error?.message || "";
+  const err = scQ.error?.message || "";
 
   const items = data?.items || [];
   return (
@@ -44,16 +41,6 @@ export default function ScenariosSection({ code, rate, sign }) {
             ))}
           </tbody>
         </table>
-      )}
-      {alerts?.items?.length > 0 && (
-        <div className="fund-alerts">
-          <span className="warn-badge">REPRICING D/D</span>
-          {alerts.items.map((a) => (
-            <span key={a.isin} className="mono" style={{ fontSize: 11 }}>
-              {a.isin}{a.dz_bps != null ? ` Δz ${fmt.bps(a.dz_bps)}` : ""}{a.ddm_bps != null ? ` Δdm ${fmt.bps(a.ddm_bps)}` : ""}
-            </span>
-          ))}
-        </div>
       )}
     </div>
   );

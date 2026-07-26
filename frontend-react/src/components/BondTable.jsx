@@ -8,27 +8,14 @@ const D = () => <span className="dash">—</span>;
 // от прошлого расчёта бэка → dim-класс, чтобы трейдер не читал их как актуальные.
 const ms = (b) => (b._mstale ? " mstale" : "");
 
-// Δz: расширение спреда (>0) = цена упала = красный; сужение = зелёный
-const dzColor = (v) => (v == null ? { color: "var(--mut-2)" } : { color: v > 0 ? "var(--down)" : "var(--up)" });
-
 function Chip({ value }) {
   if (value == null) return <D />;
   return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
 }
 
-// перцентиль z внутри рейтинг-бакета: мини-бар + число (высокий = дёшево к группе)
-function PctileBar({ p }) {
-  return (
-    <span className="pctile" title={`${p}-й перцентиль z в рейтинг-бакете`}>
-      <span className="pctile-track"><span className="pctile-fill" style={{ width: p + "%" }} /></span>
-      <span className="pctile-num">{p}</span>
-    </span>
-  );
-}
-
-// Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align/nrd (стили шапки),
+// Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align (стили шапки),
 // cell(b) — полный <td>. Порядок = порядок в таблице.
-// sep: true — начало блока (портфель / наша модель / НРД) → вертикальный разделитель слева.
+// sep: true — начало блока (портфель / наша модель) → вертикальный разделитель слева.
 export const COLS = [
   // ── статика бумаги ──
   { key: "short_name", label: "INSTRUMENT", align: "left",
@@ -59,7 +46,7 @@ export const COLS = [
     cell: (b) => <td className="num col-sep" key="qty">{b.qty == null ? <D /> : fmt.num(b.qty, 0)}</td> },
   { key: "pos_value", label: "СТОИМОСТЬ", sub: "RUB", align: "num", portfolio: true,
     cell: (b) => <td className="num" key="pos_value">{b.pos_value == null ? <D /> : fmt.num(b.pos_value, 0)}</td> },
-  // ── НАША МОДЕЛЬ (цена → CHG → dirty → DM → Z → carry → z%ile → Δz) ──
+  // ── НАША МОДЕЛЬ (цена → CHG → dirty → SM → DM → Z → carry → Y−IDX) ──
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
     cell: (b) => <td className="num col-sep" key="last_price_pct">{fmt.pct(b.last_price_pct) ?? <D />}</td> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num",
@@ -80,21 +67,6 @@ export const COLS = [
     cell: (b) => <td className={"num" + ms(b)} style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
     cell: (b) => <td className={"num" + ms(b)} style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
-  { key: "z_pctile", label: "z%ile", sub: "RATING", align: "num",
-    cell: (b) => <td className="num" key="z_pctile">{b.z_pctile == null ? <D /> : <PctileBar p={b.z_pctile} />}</td> },
-  { key: "delta_z_dod", label: "Δz", sub: "D/D BPS", align: "num",
-    cell: (b) => <td className="num" style={dzColor(b.delta_z_dod)} key="delta_z_dod">{b.delta_z_dod == null ? <D /> : fmt.bps(b.delta_z_dod)}</td> },
-  { key: "delta_z_mom", label: "Δz", sub: "M/M BPS", align: "num",
-    cell: (b) => <td className="num" style={dzColor(b.delta_z_mom)} key="delta_z_mom">{b.delta_z_mom == null ? <D /> : fmt.bps(b.delta_z_mom)}</td> },
-  // ── НРД (тот же порядок: цена → SM → DM → Z; наш SM↔НРД simple, наш DM↔НРД discount) ──
-  { key: "nrd_price_pct", label: "NRD PX", sub: "CLN %", align: "num", nrd: true, sep: true,
-    cell: (b) => <td className="num nrd-col col-sep" key="nrd_price_pct">{fmt.pct(b.nrd_price_pct) ?? <D />}</td> },
-  { key: "simple_margin_bps", label: "NRD SM", sub: "BPS", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" key="simple_margin_bps"><Chip value={b.simple_margin_bps} /></td> },
-  { key: "discount_margin_bps", label: "NRD DM", sub: "BPS", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" key="discount_margin_bps"><Chip value={b.discount_margin_bps} /></td> },
-  { key: "z_spread_bps", label: "NRD Z", sub: "SPRD", align: "num", nrd: true,
-    cell: (b) => <td className="num nrd-col" style={dmColor(b.z_spread_bps)} key="z_spread_bps">{fmt.bps(b.z_spread_bps) ?? <D />}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)
@@ -146,7 +118,6 @@ function HeaderCell({ col, sort, onSort }) {
   const active = sort.key === col.key;
   const cls =
     (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
-    (col.nrd ? "nrd-col " : "") +
     (col.sep ? "col-sep " : "") +
     (active ? "sorted " + (sort.dir === "asc" ? "asc" : "") : "");
   return (

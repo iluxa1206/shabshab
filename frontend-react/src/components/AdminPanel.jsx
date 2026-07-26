@@ -2,16 +2,15 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
-  fetchNrdStatus, setNrdEnabled, fetchUnreviewedInstruments,
+  fetchUnreviewedInstruments,
   setInstrumentParams, markInstrumentReviewed, fetchInstrument,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
-const NRD_KEY = ["admin", "nrd"];
 const UNREVIEWED_KEY = ["admin", "instruments", "unreviewed"];
 
 // Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление
-// юзерами, НРД-слоем и реестром инструментов.
+// юзерами и реестром инструментов.
 export default function AdminPanel({ user, onClose }) {
   const isAdmin = user?.role === "admin";
 
@@ -24,7 +23,6 @@ export default function AdminPanel({ user, onClose }) {
           <button className="btn" onClick={onClose}>Закрыть</button>
         </div>
         <PasswordSection />
-        {isAdmin && <NrdSection />}
         {isAdmin && <InstrumentsSection />}
         {isAdmin && <UsersSection me={user.email} />}
       </div>
@@ -78,66 +76,6 @@ function PasswordSection() {
           {busy ? "Сохранение…" : "Сменить пароль"}
         </button>
       </form>
-    </section>
-  );
-}
-
-// --- НРД-слой: тумблер вкл/выкл + статус реестра инструментов ---
-function NrdSection() {
-  const qc = useQueryClient();
-  const [err, setErr] = useState("");
-  const q = useQuery({ queryKey: NRD_KEY, queryFn: fetchNrdStatus });
-  const s = q.data;
-
-  const toggle = useMutation({
-    mutationFn: () => setNrdEnabled(!s?.enabled),
-    onMutate: () => setErr(""),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: NRD_KEY });
-      qc.invalidateQueries({ queryKey: ["meta"] });   // индикатор-точка NRD в топбаре
-    },
-    onError: (ex) => setErr(ex.message || "Ошибка"),
-  });
-
-  return (
-    <section className="admin-sec">
-      <h3 className="admin-h">Ценовой центр НРД</h3>
-      {err && <Msg err={err} />}
-      {q.isPending ? (
-        <div className="admin-msg">Загрузка…</div>
-      ) : (
-        <>
-          <div className="nrd-row">
-            <div>
-              <div className="nrd-state">
-                Слой:{" "}
-                <b style={{ color: s?.active ? "var(--pos)" : "var(--mut)" }}>
-                  {s?.active ? "активен" : "выключен"}
-                </b>
-                {s?.enabled && !s?.configured && (
-                  <span className="muted"> (нет кред NRD_LOGIN/NRD_APIKEY)</span>
-                )}
-              </div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                Реестр: {s?.registry?.floaters ?? "—"} флоатеров
-                {s?.registry?.unreviewed ? ` · ${s.registry.unreviewed} на ревью` : ""}
-              </div>
-            </div>
-            <button
-              className={"btn admin-btn-primary" + (s?.enabled ? " admin-btn-danger" : "")}
-              onClick={() => toggle.mutate()}
-              disabled={toggle.isPending}
-              title="НРД — опциональный слой обогащения (цена/fair-value). Расчёт работает и без него."
-            >
-              {toggle.isPending ? "…" : s?.enabled ? "Выключить НРД" : "Включить НРД"}
-            </button>
-          </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            Универс и расчёт (SM/DM/z) работают из реестра инструментов без НРД.
-            НРД добавляет цену/справедливую стоимость/duration, когда доступ к API есть.
-          </div>
-        </>
-      )}
     </section>
   );
 }

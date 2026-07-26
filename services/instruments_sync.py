@@ -9,22 +9,35 @@ issue/face из MOEX (Cbonds-выгрузка их не содержит). Об�
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 
+from services.paths import cache_path
+
 logger = logging.getLogger(__name__)
+
+# Замороженный seed-файл универса флоатеров (исторический дамп, читается без сети).
+# Используется только для холодного bootstrap реестра инструментов.
+_FROZEN_SEED = cache_path("nrd_universe_cache.json")
+
+
+def load_frozen_seed() -> list[dict]:
+    """Замороженный seed универса флоатеров с диска (bootstrap холодного реестра)."""
+    try:
+        with open(_FROZEN_SEED, "r", encoding="utf-8") as f:
+            return json.load(f).get("items", [])
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
 
 
 async def sync_instruments() -> dict:
     """Полный проход синка. Возвращает статистику (new/updated/enriched)."""
-    from services import instruments_registry as reg, ref_data, nrd
+    from services import instruments_registry as reg, ref_data
     from services.market_data import MarketDataService
 
-    # 1. источники без сети: замороженный NRD-кэш + Cbonds + ручной слой
-    try:
-        frozen = nrd._load_json(nrd.UNIVERSE_FILE).get("items", [])
-    except Exception:
-        frozen = []
+    # 1. источники без сети: замороженный seed универса + Cbonds + ручной слой
+    frozen = load_frozen_seed()
     try:
         cbonds = ref_data.load_cbonds()
         manual = ref_data.load_manual()

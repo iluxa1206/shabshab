@@ -14,7 +14,6 @@ class MetaResponse(BaseModel):
     sources: Dict[str, Any]
     source_status: Dict[str, bool] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
-    nrd_drift: Optional[Dict[str, Any]] = None   # срез дрейфа наших метрик vs НРД
 
 # --- Error Models ---
 class ErrorDetail(BaseModel):
@@ -106,45 +105,6 @@ class CashflowItem(BaseModel):
     amount_rub: float
     type: str
 
-# --- 5.6 BondNrd (НРД Ценовой центр: valuationnewadd; fair value — при доступе) ---
-class BondNrd(BaseModel):
-    # цены НРД
-    fair_value_pct: Optional[float] = None        # справедливая чистая цена (valuationnew, если есть доступ)
-    fair_dirty_rub: Optional[float] = None
-    nrd_price_pct: Optional[float] = None         # средневзвешенная цена осн. сессии (wa_price), %
-    nrd_close_pct: Optional[float] = None         # цена аукциона закрытия, %
-    price_vs_nrd_pct: Optional[float] = None      # рыночная clean − цена НРД (>0 дорого, <0 дёшево)
-    valuation_method: Optional[Any] = None
-    # доходности (%)
-    ytm_pct: Optional[float] = None
-    ytm_close_pct: Optional[float] = None
-    current_yield_pct: Optional[float] = None
-    yield_maturity_pct: Optional[float] = None
-    yield_call_pct: Optional[float] = None
-    yield_put_pct: Optional[float] = None
-    # риск-метрики
-    duration: Optional[float] = None
-    mod_duration: Optional[float] = None
-    convexity: Optional[float] = None
-    pvbp: Optional[float] = None
-    # спреды НРД (bps)
-    z_spread_bps: Optional[int] = None
-    g_spread_bps: Optional[int] = None
-    discount_margin_bps: Optional[int] = None
-    simple_margin_bps: Optional[int] = None
-    nominal_margin_bps: Optional[int] = None
-    # параметры флоатера
-    base_coupon_index: Optional[str] = None       # CBRATED / RUONIARATED / ...
-    coupon_type: Optional[str] = None             # fix / float
-    # рейтинги / ликвидность
-    ratings: Optional[Dict[str, Any]] = None
-    liquidity: Optional[Dict[str, Any]] = None
-    # служебное
-    nrd_calc_date: Optional[str] = None
-    source: str = "NRD Price Center"
-    is_stale: bool = False
-
-
 # --- 5.7 FloaterRisk (специфика бумаг с плавающим купоном) ---
 class FloaterRisk(BaseModel):
     spread_duration_yrs: Optional[float] = None   # Macaulay потоков ≈ чувствительность к ΔDM/Δz
@@ -154,7 +114,6 @@ class FloaterRisk(BaseModel):
     base_rate_pct: Optional[float] = None          # текущий уровень базы (КС/RUONIA), %
     carry_bps: Optional[int] = None                # купон-доходность − база, bps
     breakeven_base_pct: Optional[float] = None     # уровень базы, где carry-эдж исчезает, %
-    # риск-метрики НРД (дублируем для полноты карточки риска)
     mod_duration: Optional[float] = None
     convexity: Optional[float] = None
     pvbp: Optional[float] = None
@@ -166,7 +125,6 @@ class BondDetailsResponse(BaseModel):
     market: BondMarketData
     valuation: BondValuation
     cashflow: List[CashflowItem]
-    nrd: Optional[BondNrd] = None
     floater: Optional[FloaterRisk] = None
     sources: Dict[str, Any]
     warnings: List[str] = Field(default_factory=list)
@@ -206,26 +164,14 @@ class BondListItem(BaseModel):
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
     delta_to_prev_close: Optional[float] = None # placeholder
-    # НРД (лёгкие поля для таблицы; заполняются при with_nrd=true)
-    nrd_price_pct: Optional[float] = None
-    price_vs_nrd_pct: Optional[float] = None
-    nrd_duration: Optional[float] = None
-    discount_margin_bps: Optional[int] = None
-    # simple_margin — like-for-like якорь для нашего dm_bps/sm_bps
-    # (наш dm_bps = simple margin ≈ НРД simple_margin)
-    simple_margin_bps: Optional[int] = None
-    disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
+    disc_margin_bps: Optional[int] = None      # наш discount margin (Fabozzi)
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
     price_thin: bool = False                    # 0 сделок сегодня → цена несвежая, DM/z с ненадёжной цены
-    z_spread_bps: Optional[int] = None
-    z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ (методика НРД)
+    z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ
     rating: Optional[str] = None
     # флоатер-метрики (кросс-секция — по всему юниверсу; carry/refix — только watch)
     spread_dur_yrs: Optional[float] = None     # ≈ срок до погашения (лет) = spread duration
-    z_pctile: Optional[int] = None             # перцентиль z внутри рейтинг-бакета (0..100)
-    delta_z_dod: Optional[int] = None          # Δ z-спреда день-к-дню, bps (из истории)
-    delta_z_mom: Optional[int] = None          # Δ z-спреда за ~месяц, bps (из истории)
     carry_bps: Optional[int] = None            # текущий купон-доходность − база, bps (watch)
     days_to_refix: Optional[int] = None        # дни до следующего рефиксинга (watch)
     current_coupon_pct: Optional[float] = None # зафикс. ставка текущего купона, % (watch)

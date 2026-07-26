@@ -17,23 +17,17 @@ const quantile = (arr, q) => {
   return s[b + 1] !== undefined ? s[b] + rest * (s[b + 1] - s[b]) : s[b];
 };
 
-// расширение спреда / цена выше fair = дорого = neg (красный); наоборот = pos (зелёный)
-const richCls = (v) => (v == null ? "" : v > 0 ? "neg" : v < 0 ? "pos" : "");
 // carry: положительный = несём над базой = pos (зелёный)
 const carryCls = (v) => (v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "");
 
 export default function Kpis({ bonds }) {
   const k = useMemo(() => {
-    // единый DM (discount margin): наш расчётный, иначе НРД discount margin
-    const dmOf = (x) => (x.disc_margin_bps != null ? x.disc_margin_bps : x.discount_margin_bps);
-    const dms = bonds.map(dmOf).filter((v) => v != null);
+    // DM (discount margin, Fabozzi) — наш расчёт
+    const dms = bonds.map((x) => x.disc_margin_bps).filter((v) => v != null);
     const avgDm = dms.length ? Math.round(dms.reduce((s, v) => s + v, 0) / dms.length) : null;
     const medDm = dms.length ? Math.round(median(dms)) : null;
     const ru = bonds.filter((x) => x.base_rate_type === "RUONIA").length;
     const kr = bonds.filter((x) => x.base_rate_type === "KEYRATE").length;
-    // mispricing: медиана цена − НРД fair, % (минус = торгуется ниже оценки = дёшево)
-    const pvn = bonds.map((x) => x.price_vs_nrd_pct).filter((v) => v != null);
-    const medPvn = pvn.length ? median(pvn) : null;
     // разброс DM: межквартиль p25–p75, bps (ширина возможностей рынка)
     const dmP25 = dms.length ? Math.round(quantile(dms, 0.25)) : null;
     const dmP75 = dms.length ? Math.round(quantile(dms, 0.75)) : null;
@@ -42,7 +36,7 @@ export default function Kpis({ bonds }) {
     const avgCarry = carries.length ? Math.round(carries.reduce((s, v) => s + v, 0) / carries.length) : null;
     return {
       count: bonds.length, avgDm, medDm, ru, kr,
-      medPvn, dmP25, dmP75, hasDm: dms.length > 0, avgCarry, nCarry: carries.length,
+      dmP25, dmP75, hasDm: dms.length > 0, avgCarry, nCarry: carries.length,
     };
   }, [bonds]);
 
@@ -64,7 +58,6 @@ export default function Kpis({ bonds }) {
       {cell("INSTRUMENTS", k.count || "—", { sub: `RUONIA ${k.ru} · KEYRATE ${k.kr}` })}
       {cell("MEDIAN DM", k.medDm, { unit: "BPS" })}
       {cell("AVG DM", k.avgDm, { unit: "BPS" })}
-      {cell("MISPRICING", k.medPvn == null ? null : sgn(k.medPvn, 2), { unit: "MED vs НРД %", cls: richCls(k.medPvn) })}
       {cell("DM РАЗБРОС", k.hasDm ? `${k.dmP25}–${k.dmP75}` : null, { unit: "P25–P75 BPS" })}
       {cell("AVG CARRY", k.avgCarry == null ? null : sgn(k.avgCarry), { unit: "BPS", cls: carryCls(k.avgCarry), sub: k.nCarry ? `${k.nCarry} бумаг` : undefined })}
     </section>

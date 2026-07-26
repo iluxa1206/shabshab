@@ -510,19 +510,3 @@ async def funds_calendar(days: int = 90) -> dict:
     return {"calc_date": calc_date.isoformat(), "days": days, "items": events}
 
 
-# ---------- repricing-алерты (Ф4) ----------
-
-async def fund_alerts(code: str, threshold_bps: float = 20.0) -> Optional[dict]:
-    """Day-over-day repricing бумаг фонда из НРД-истории (services/history.py):
-    |Δz| или |Δdm| ≥ порога. Работает для бумаг, покрытых юниверсом НРД (флоатеры)."""
-    from services import history
-    fund = db.get_fund(code)
-    if fund is None:
-        return None
-    isins = {p["isin"] for p in db.get_positions(code)}
-    dz, ddm = history.dod_map("z"), history.dod_map("dm")
-    items = [
-        {"isin": i, "dz_bps": dz.get(i), "ddm_bps": ddm.get(i)}
-        for i in sorted(isins)
-        if abs(dz.get(i) or 0) >= threshold_bps or abs(ddm.get(i) or 0) >= threshold_bps]
-    return {"code": code, "threshold_bps": threshold_bps, "items": items}

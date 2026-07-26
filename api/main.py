@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 from services.market_data import MarketDataService
-from services import nrd as nrd_service
+from services import instruments_registry
 
 async def ws_market_data_broadcaster():
     """Background task to push updates to connected WS clients."""
@@ -66,7 +66,6 @@ async def universe_price_poller():
     Данные MOEX кэшируются на день, поэтому тяжёлый прогрев (bondization) — раз/день."""
     from services.universe import compute_universe_metrics
     from services.market_data import market_cache
-    from services import history
     from services.instruments_sync import sync_instruments
     await asyncio.sleep(30)  # прогрев: не конкурировать со стартом
     _last_reg_sync = None
@@ -108,14 +107,8 @@ async def universe_price_poller():
             except Exception as e:
                 logger.warning(f"emitter backfill error: {e}")
             if _in_moex_trading_hours():
-                uni = await nrd_service.fetch_floater_universe()  # реестр / НРД
+                uni = await instruments_registry.fetch_floater_universe()
                 isins = [u["isin"] for u in uni if u.get("isin")]
-                # дневной срез истории НРД-метрик — здесь, а не по первому запросу
-                # дашборда (раньше история писалась, только если кто-то зашёл)
-                try:
-                    history.record_snapshot(uni)
-                except Exception as e:
-                    logger.warning(f"history snapshot error: {e}")
                 for i in range(0, len(isins), UNIVERSE_POLL_CHUNK):
                     await MarketDataService.fetch_last_prices(isins[i:i + UNIVERSE_POLL_CHUNK])
                     await asyncio.sleep(1)  # мягкий rate-limit между чанками
@@ -123,10 +116,6 @@ async def universe_price_poller():
                 metrics = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if metrics:
                     market_cache["universe_metrics"] = metrics
-                    # дрейф наших SM/DM/z против публикаций НРД (алерт в лог,
-                    # срез в /meta) — ловим молчаливую смену методики НРД
-                    from services.drift import compute_nrd_drift
-                    market_cache["nrd_drift"] = compute_nrd_drift(uni, metrics)
         except Exception as e:
             logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
@@ -151,25 +140,20 @@ async def warmup_caches():
     и bootstrap кривых. Идёт конкурентно, старт сервера не блокирует; поллер
     отдельно (он спит 30с и греет ещё и цены Alor + метрики юниверса)."""
     try:
-        from services import cbr, history
+        from services import cbr
         from services.market_data import MarketDataService, market_cache
-        import services.nrd as nrd_service
         from services.universe import compute_universe_metrics
         await asyncio.to_thread(cbr.ks_history)      # триггерит _refresh (сеть)
         await asyncio.to_thread(cbr.ruonia_history)
         await MarketDataService.get_curves()          # bootstrap RUONIA/KEYRATE
         await MarketDataService.get_zspread_ctx()      # ExpCurve + g-curve
-        # Метрики юниверса (dm/z/carry) — сразу из НРД-цен, НЕ дожидаясь медленного
+        # Метрики юниверса (dm/z/carry) — сразу на prev-close, НЕ дожидаясь медленного
         # прогрева live-цен Alor поллером (30с сон + чанки по 4с WS-таймаута = ~60с
         # пустых метрик после рестарта). Поллер потом уточнит их live-ценами.
         if not market_cache.get("universe_metrics"):
-            uni = await nrd_service.fetch_floater_universe()
+            uni = await instruments_registry.fetch_floater_universe()
             isins = [u["isin"] for u in uni if u.get("isin")]
             if uni:
-                try:
-                    history.record_snapshot(uni)
-                except Exception as e:
-                    logger.warning(f"history snapshot error: {e}")
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if m:
                     market_cache["universe_metrics"] = m

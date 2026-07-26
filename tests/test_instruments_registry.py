@@ -55,12 +55,11 @@ def test_universe_rows_shape_and_filter(reg):
     rows = reg.universe_rows(only_floaters=True)
     assert len(rows) == 1
     r = rows[0]
-    # форма совместима с fetch_floater_universe
+    # форма universe-строки (совместима с fetch_floater_universe)
     for k in ("isin", "name", "base_rate_type", "spread_issue_bps", "maturity_date",
-              "nrd_price_pct", "discount_margin_bps", "simple_margin_bps", "z_spread_bps"):
+              "rating", "emitter_id", "emitter_name"):
         assert k in r
     assert r["base_rate_type"] == "KEYRATE" and r["spread_issue_bps"] == 150
-    assert r["nrd_price_pct"] is None  # NRD-поля пусты без НРД
 
 
 def test_sync_merges_sources_cbonds_priority(reg):
@@ -186,15 +185,3 @@ def test_margin_check_and_suspect(reg):
     suspect = {r["isin"] for r in reg.list_suspect()}
     assert suspect == {"RU2"}
     assert reg.count()["suspect"] == 1
-
-
-def test_nrd_disabled_by_default(monkeypatch):
-    monkeypatch.setenv("NRD_CONFIG_FILE", tempfile.mktemp(suffix=".json"))
-    import importlib
-    import services.nrd_config as cfg
-    importlib.reload(cfg)
-    assert cfg.is_enabled() is False           # базово ВЫКЛЮЧЕН
-    cfg.set_enabled(True)
-    assert cfg.is_enabled() is True
-    cfg.set_enabled(False)
-    assert cfg.is_enabled() is False

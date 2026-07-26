@@ -64,8 +64,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             pass
 
     delta = round(last - float(prev), 4) if (last is not None and prev is not None) else None
-    # цена для расчёта: live → prev-close → НРД (не зависим от момента WS-цены)
-    price_calc = last if last is not None else (prev if prev is not None else u.get("nrd_price_pct"))
+    # цена для расчёта: live → prev-close (не зависим от момента WS-цены)
+    price_calc = last if last is not None else prev
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = None
@@ -218,29 +218,15 @@ _cross_cache = {"date": None, "map": {}}
 
 
 def cross_section_map(uni: list) -> dict:
-    """{isin: (spread_dur_yrs, z_pctile, Δz_dod, Δz_mom)} по всему рынку, раз в день.
-    Побочного эффекта записи истории здесь больше НЕТ — record_snapshot зовёт
-    поллер/warmup (раньше запись истории зависела от захода юзера на дашборд)."""
-    from services import history
+    """{isin: spread_dur_yrs} по всему рынку, раз в день (кэш на дату)."""
     today = date.today().isoformat()
     if _cross_cache["date"] == today and _cross_cache["map"]:
         return _cross_cache["map"]
-    dod_z = mom_z = {}
-    try:
-        dod_z = history.dod_map("z")
-        mom_z = history.change_map("z", 30)
-    except Exception:
-        pass
-    bucket_z: dict = {}
-    for u in uni:
-        bucket_z.setdefault(u.get("rating"), []).append(u.get("z_spread_bps"))
     today0 = date.today()
     out: dict = {}
     for u in uni:
         mat = u.get("maturity_date")
-        sd = metrics.years_to(date.fromisoformat(mat), today0) if mat else None
-        zp = metrics.rank_pct(u.get("z_spread_bps"), bucket_z.get(u.get("rating"), []))
-        out[u.get("isin")] = (sd, zp, dod_z.get(u.get("isin")), mom_z.get(u.get("isin")))
+        out[u.get("isin")] = metrics.years_to(date.fromisoformat(mat), today0) if mat else None
     _cross_cache["date"] = today
     _cross_cache["map"] = out
     return out

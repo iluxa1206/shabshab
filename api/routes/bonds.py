@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Path, HTTPException
 
 from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
-    BondDetailsResponse, CashflowResponse, BondNrd,
+    BondDetailsResponse, CashflowResponse,
     RepriceResponse,
 )
 from services.market_data import MarketDataService
@@ -16,7 +16,7 @@ from services.bonds import (
 )
 from services.valuation import calculate_valuation_metrics
 from services.exceptions import NotFoundException
-from services import nrd as nrd_service
+from services import instruments_registry
 from cashflow import read_isins_from_file
 
 logger = logging.getLogger(__name__)
@@ -48,32 +48,25 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
     return await _cum(uni, isins, os.path.join(get_base_dir(), "isins_cache.json"))
 
 
-def _uni_item(u, name, mx, cross):
-    """BondListItem: строка НРД-юниверса + наши метрики mx (universe.enrich_bond)
-    + кросс-секция (spread_dur, z-перцентиль, Δz)."""
+def _uni_item(u, name, mx, spread_dur):
+    """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond)
+    + spread duration (кросс-секция)."""
     base = u.get("base_rate_type", "UNKNOWN")
     spread = u.get("spread_issue_bps") or 0
     label = _BASE_LABEL.get(base, base)
     formula = f"{label} + {spread / 100:g}%" if spread else label
     last = mx.get("last")
-    nrd_price = u.get("nrd_price_pct")
-    vs_nrd = round(last - nrd_price, 4) if (last is not None and nrd_price is not None) else None
-    sd, zp, dz, dzm = cross
     return BondListItem(
         isin=u["isin"], short_name=name, base_rate_type=base, formula=formula,
         spread_issue_bps=int(spread), maturity_date=u.get("maturity_date"),
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
-        delta_to_prev_close=mx.get("delta"), nrd_price_pct=nrd_price,
-        price_vs_nrd_pct=vs_nrd, nrd_duration=u.get("nrd_duration"),
-        discount_margin_bps=u.get("discount_margin_bps"),
-        simple_margin_bps=u.get("simple_margin_bps"), disc_margin_bps=mx.get("disc_dm"),
+        delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
         price_thin=mx.get("price_thin") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
-        z_spread_bps=u.get("z_spread_bps"), rating=u.get("rating"),
-        z_model_bps=mx.get("z_model"), spread_dur_yrs=sd, z_pctile=zp,
-        delta_z_dod=dz, delta_z_mom=dzm, carry_bps=mx.get("carry"),
+        rating=u.get("rating"),
+        z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur, carry_bps=mx.get("carry"),
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
         sm_to_offer_bps=mx.get("sm_to_offer"), disc_margin_to_offer_bps=mx.get("dm_to_offer"),
@@ -81,10 +74,10 @@ def _uni_item(u, name, mx, cross):
 
 
 async def _universe_bonds(extra_list, cache, limit, offset):
-    """Весь рынок флоатеров из НРД (кэш на день). НРД-аналитика по всем;
+    """Весь рынок флоатеров из реестра инструментов. Аналитика по всем;
     live-метрики — только для watchlist (extra). Расчёты в services.universe."""
     from services import universe as universe_svc
-    uni = await nrd_service.fetch_floater_universe()
+    uni = await instruments_registry.fetch_floater_universe()
     if not uni:
         return BondListResponse(items=[], total=0, limit=limit, offset=offset)
 
@@ -92,7 +85,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
     uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
     shortnames = await MarketDataService.fetch_moex_shortnames()
     watch = set(extra_list)
-    cross = universe_svc.cross_section_map(uni)
+    spread_dur = universe_svc.cross_section_map(uni)
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
     watch_metrics = await universe_svc.compute_watch_metrics(watch_rows, cache) if watch_rows else {}
@@ -104,7 +97,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
         mx = watch_metrics.get(isin) or uni_metrics.get(isin)
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
-        items.append(_uni_item(u, name, mx, cross.get(isin, (None, None, None, None))))
+        items.append(_uni_item(u, name, mx, spread_dur.get(isin)))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 
 
@@ -114,8 +107,7 @@ async def get_bonds(
     offset: int = Query(0, ge=0),
     with_market: bool = Query(True),
     with_valuation: bool = Query(False),
-    with_nrd: bool = Query(False),
-    universe: bool = Query(False, description="Весь юниверс флоатеров из НРД"),
+    universe: bool = Query(False, description="Весь юниверс флоатеров из реестра"),
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
     fields: Optional[str] = Query(None)
 ):
@@ -147,7 +139,6 @@ async def get_bonds(
     market_prices = {}
     prev_close_prices = {}
     ruonia_curve = keyrate_curve = calc_date = rates_date = None
-    nrd_metrics = {}
     moex_snapshot = {}
     moex_ref = {}
     schedules = {}
@@ -160,12 +151,6 @@ async def get_bonds(
 
     if with_valuation:
         schedules = await MarketDataService.fetch_coupon_schedules(paginated_isins)
-
-    if with_nrd or external:
-        try:
-            nrd_metrics = await nrd_service.fetch_nrd_metrics(paginated_isins if with_nrd else external)
-        except Exception as e:
-            logger.warning(f"NRD list fetch error: {e}")
 
     if external:
         moex_ref = await MarketDataService.fetch_moex_securities(external)
@@ -182,8 +167,8 @@ async def get_bonds(
             short_name = data.get("SHORTNAME", "")
             formula = data.get("FORMULA", "")
         else:
-            # внешняя бумага: справочник MOEX + база/спред из НРД
-            ref_obj = build_ref_external(isin, moex_ref.get(isin, {}), nrd_metrics.get(isin))
+            # внешняя бумага: справочник MOEX + база/спред из Cbonds-справки
+            ref_obj = build_ref_external(isin, moex_ref.get(isin, {}))
             short_name = (moex_ref.get(isin) or {}).get("name") or isin
             formula = external_formula(ref_obj)
 
@@ -208,17 +193,6 @@ async def get_bonds(
             except Exception:
                 pass
 
-        nrd_price_pct = price_vs_nrd_pct = nrd_duration = nrd_dm_bps = nrd_z_bps = nrd_sm_bps = None
-        nm = nrd_metrics.get(isin)
-        if nm:
-            nrd_price_pct = nm.get("fair_value_pct") or nm.get("nrd_price_pct")
-            nrd_duration = nm.get("duration")
-            nrd_dm_bps = nm.get("discount_margin_bps")
-            nrd_sm_bps = nm.get("simple_margin_bps")
-            nrd_z_bps = nm.get("z_spread_bps")
-            if last_price_pct is not None and nrd_price_pct is not None:
-                price_vs_nrd_pct = round(last_price_pct - nrd_price_pct, 4)
-
         items.append(
             BondListItem(
                 isin=isin,
@@ -232,12 +206,6 @@ async def get_bonds(
                 dirty_price_rub=dirty_price_rub,
                 dm_bps=dm_bps,
                 delta_to_prev_close=delta_to_prev_close,
-                nrd_price_pct=nrd_price_pct,
-                price_vs_nrd_pct=price_vs_nrd_pct,
-                nrd_duration=nrd_duration,
-                discount_margin_bps=nrd_dm_bps,
-                simple_margin_bps=nrd_sm_bps,
-                z_spread_bps=nrd_z_bps,
             )
         )
 
@@ -276,25 +244,6 @@ async def get_bond_details(isin: str = Path(...)):
     from services.bond_details import build_bond_details
     return BondDetailsResponse(**await build_bond_details(isin, cache))
 
-
-
-@router.get("/{isin}/nrd", response_model=BondNrd, tags=["Bonds"])
-async def get_bond_nrd(isin: str = Path(...)):
-    isin = _require_isin(isin)
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
-    if isin not in cache:
-        raise NotFoundException(f"Bond {isin} not found in cache", {"isin": isin})
-
-    market_prices = await MarketDataService.fetch_last_prices([isin])
-    last_price = market_prices.get(isin)
-
-    nrd_metrics = await nrd_service.fetch_nrd_metrics([isin])
-    from services.bond_details import nrd_view
-    block = nrd_view(nrd_metrics.get(isin, {}), last_price)
-    if block is None:
-        raise NotFoundException(f"NRD data unavailable for {isin}", {"isin": isin})
-    return BondNrd(**{k: v for k, v in block.items() if k in BondNrd.model_fields})
 
 
 @router.get("/{isin}/cashflow", response_model=CashflowResponse, tags=["Bonds"])

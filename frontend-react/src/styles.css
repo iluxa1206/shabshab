@@ -263,9 +263,7 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .empty-msg { color: var(--mut); font-size: 13px; margin-bottom: 18px; letter-spacing: 0.02em; }
 .empty .btn { margin: 0 auto; }
 .dash { color: var(--mut-2); }
-.nrd-col { color: var(--fg); }
-.grid thead th.nrd-col { color: var(--mut); }
-/* Разделитель блоков: портфель | наша модель | НРД */
+/* Разделитель блоков: портфель | наша модель */
 .grid thead th.col-sep, .grid tbody td.col-sep { border-left: 2px solid var(--line-2); }
 
 /* ---- Drawer ---- */
@@ -324,9 +322,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 
 .warn-box { border: 1px solid var(--fg); padding: 10px 14px; font-size: 11px; margin-bottom: 20px; }
 .warn-box::before { content: "! "; font-weight: 700; }
-.nrd-note { border: 1px solid var(--line); padding: 12px 14px; font-size: 11px; color: var(--mut); margin-bottom: 20px; line-height: 1.7; }
-.nrd-note b { color: var(--fg); }
-.nrd-note code { color: var(--fg); border-bottom: 1px solid var(--line-2); }
 .rating-row { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--line); margin-bottom: 28px; }
 .rating-badge { display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-right: 1px solid var(--line); flex: 1; }
 .rating-badge:last-child { border-right: none; }
@@ -394,10 +389,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 }
 
 /* ── флоатер-метрики: перцентиль-бар в таблице ── */
-.pctile { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
-.pctile-track { width: 34px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
-.pctile-fill { display: block; height: 100%; background: var(--mut); }
-.pctile-num { font-size: 11px; color: var(--mut); min-width: 18px; text-align: right; }
 
 /* ── drawer: юниты в карточках, заметка, staleness-чипы ── */
 .vc-u { font-size: 12px; color: var(--mut); }
@@ -584,7 +575,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .fund-cf { border-top: 1px solid var(--line); }
 .fund-scenarios { border-top: 1px solid var(--line); }
 .scen-table td, .scen-table th { font-variant-numeric: tabular-nums; }
-.fund-alerts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .risk-strip { display: flex; gap: 10px; flex-wrap: wrap; padding: 8px 24px; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: 0.03em; }
 .risk-strip .fg { color: var(--fg); font-weight: 600; }
 .compare-table th, .compare-table td { text-align: right; }
@@ -604,9 +594,7 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   .fund-cards { grid-template-columns: 1fr; padding: 16px; }
 }
 
-/* --- Admin: НРД-тумблер + реестр инструментов (Фаза 2) --- */
-.nrd-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.nrd-state { font-size: 13px; }
+/* --- Admin: реестр инструментов (Фаза 2) --- */
 .admin-badge { margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px;
   background: var(--line-2); color: var(--fg); vertical-align: middle; letter-spacing: normal; }
 .admin-warn { color: var(--neg, #c0392b); font-weight: 600; }

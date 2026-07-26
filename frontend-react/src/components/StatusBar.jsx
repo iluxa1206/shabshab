@@ -1,9 +1,8 @@
 export default function StatusBar({ count, live, sources = {} }) {
-  // ALOR = живой WS-поток; CBONDS/NRD — из meta (доступ/данные загружены)
+  // ALOR = живой WS-поток; CBONDS — из meta (кривые ставок построены)
   const src = [
     { k: "ALOR", on: live },
     { k: "CBONDS", on: !!sources.cbonds },
-    { k: "NRD", on: !!sources.nrd },
   ];
   return (
     <footer className="statusbar">

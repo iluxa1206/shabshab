@@ -6,8 +6,6 @@ from cashflow import parse_base_and_spread
 from forwards import add_months
 
 
-# База купона НРД -> наш тип
-_NRD_BASE = {"CBRATED": "KEYRATE", "KEYRATE": "KEYRATE", "RUONIARATED": "RUONIA", "RUONIA": "RUONIA"}
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 
 
@@ -18,9 +16,11 @@ def _to_date(s):
         return None
 
 
-def build_ref_external(isin: str, mo: dict, nrd: Optional[dict]) -> BondRefData:
+def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
+                       spread_bps: Optional[int] = None) -> BondRefData:
     """Строит BondRefData для ПРОИЗВОЛЬНОЙ бумаги (нет в isins_cache).
-    Справочник — MOEX ISS; база+спред флоатера — из НРД (base_coupon_index, nominal_margin)."""
+    Справочник — MOEX ISS; база+спред флоатера — из Cbonds-справки (ref_data),
+    либо явно переданные base/spread_bps (напр. из universe-строки реестра)."""
     mo = mo or {}
     try:
         face = float(mo.get("face") or 1000)
@@ -35,15 +35,11 @@ def build_ref_external(isin: str, mo: dict, nrd: Optional[dict]) -> BondRefData:
     except (ValueError, TypeError):
         accrued = 0.0
 
-    base, spread = "UNKNOWN", 0
-    if nrd:
-        base = _NRD_BASE.get((nrd.get("base_coupon_index") or "").upper(), "UNKNOWN")
-        nm = nrd.get("nominal_margin_bps")
-        if nm is not None:
-            spread = int(nm)
+    base = base or "UNKNOWN"
+    spread = int(spread_bps) if spread_bps is not None else 0
 
-    # Cbonds-справка (ref_data) как источник базы/маржи: заполняет то, чего нет у
-    # НРД (шире покрытие: точная маржа сверена 317/326 ±5бп), не перетирая НРД.
+    # Cbonds-справка (ref_data) как источник базы/маржи: точная маржа сверена
+    # 317/326 ±5бп; заполняет то, чего нет в переданных base/spread.
     try:
         from services.ref_data import params as _ref_params
         rp = _ref_params(isin)

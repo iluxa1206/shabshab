@@ -1,22 +1,24 @@
-"""Реестр инструментов — НРД-независимый источник универса.
+"""Реестр инструментов — источник универса флоатеров.
 
-Ранее список бумаг был на 100% из НРД (fetch_floater_universe). Реестр хранит все
-известные ISIN + ключевые расчётные параметры (база/маржа/погашение/частота/...)
-в SQLite (data/instruments.db, Docker-том — переживает редеплой). Наполняется
-ежедневным sync из Cbonds-выгрузки + замороженного NRD-кэша + MOEX; ручной слой
-(source='manual', manual_locked=1) sync не затирает.
+Реестр хранит все известные ISIN + ключевые расчётные параметры (база/маржа/
+погашение/частота/...) в SQLite (data/instruments.db, Docker-том — переживает
+редеплой). Наполняется ежедневным sync из Cbonds-выгрузки + замороженного
+seed-дампа универса + MOEX; ручной слой (source='manual', manual_locked=1) sync
+не затирает.
 
-Расчётная часть (SM/DM/z по нашим кривым) работает поверх реестра без НРД.
-НРД — опциональный слой обогащения (цена/fair-value), см. services.nrd_config.
+Расчётная часть (SM/DM/z) работает по нашим кривым поверх реестра.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+_log = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("INSTRUMENTS_DB", _ROOT / "data" / "instruments.db"))
@@ -213,9 +215,8 @@ def isins_missing_emitter(limit: int = 40) -> list[str]:
 
 
 def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> list[dict]:
-    """Список бумаг в форме universe-строки (совместимо с fetch_floater_universe):
-    NRD-поля (nrd_price_pct/discount_margin_bps/...) = None — их наполняет NRD-слой,
-    когда включён. Расчётные поля (base/margin/maturity) — из реестра.
+    """Список бумаг в форме universe-строки. Расчётные поля (base/margin/maturity/
+    rating/emitter) — из реестра инструментов.
 
     only_priceable=True (по умолчанию) — в основной универс попадают только бумаги
     с полным набором расчётных параметров (B3): непрайсуемые (без базы/маржи/
@@ -239,12 +240,24 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "rating": r["rating"],
             "emitter_id": r["emitter_id"],
             "emitter_name": r["emitter_name"],
-            # NRD-слой (пусто без НРД):
-            "nrd_price_pct": None, "discount_margin_bps": None,
-            "simple_margin_bps": None, "z_spread_bps": None,
-            "nrd_duration": None, "current_yield_pct": None, "nrd_calc_date": None,
         })
     return out
+
+
+async def fetch_floater_universe() -> list[dict]:
+    """Весь юниверс рублёвых флоатеров (KEYRATE/RUONIA) из реестра инструментов.
+    Холодный реестр → разовый bootstrap-sync из локальных источников (замороженный
+    seed универса + Cbonds + ручной слой), без сети."""
+    rows = universe_rows()
+    if rows:
+        return rows
+    try:
+        from services import ref_data
+        from services.instruments_sync import load_frozen_seed
+        sync_from_sources(load_frozen_seed(), ref_data.load_cbonds(), ref_data.load_manual())
+    except Exception as e:
+        _log.warning("registry bootstrap sync failed: %s", e)
+    return universe_rows()
 
 
 def sync_active_set(traded_isins: set, min_expected: int = 500) -> dict:

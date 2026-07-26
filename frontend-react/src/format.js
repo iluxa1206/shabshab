@@ -20,8 +20,3 @@ export function dmColor(dm) {
   if (dm == null) return { color: "var(--mut-2)" };
   return { color: dm >= 0 ? "var(--up)" : "var(--down)" };
 }
-// vs Fair: рынок дешевле НРД (v<0) = up; дороже (v>0) = down.
-export function vsFairColor(v) {
-  if (v == null) return { color: "var(--mut-2)" };
-  return { color: v < 0 ? "var(--up)" : "var(--down)" };
-}

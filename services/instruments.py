@@ -137,11 +137,11 @@ async def classify(isins: List[str]) -> Dict[str, dict]:
     """{isin: {'cls', 'label', 'ccy', 'name', 'sec'}} — класс + справочник MOEX."""
     if not isins:
         return {}
-    from services import nrd as nrd_service
+    from services import instruments_registry
     sec_map, desc_map, uni = await asyncio.gather(
         MarketDataService.fetch_moex_securities(isins),
         _fetch_descriptions(isins),
-        nrd_service.fetch_floater_universe(),
+        instruments_registry.fetch_floater_universe(),
     )
     floater_isins = {u.get("isin") for u in (uni or []) if u.get("isin")}
     out: Dict[str, dict] = {}

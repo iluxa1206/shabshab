@@ -8,7 +8,6 @@ from datetime import datetime, date, timezone
 from typing import Optional
 
 from services.market_data import MarketDataService
-from services import nrd as nrd_service
 from services import metrics
 from services.bonds import (
     create_bond_ref_data, extract_bond_reference_dict,
@@ -26,56 +25,43 @@ async def _aempty():
     return {}
 
 
-def nrd_view(mapped: dict, last_price: Optional[float]) -> Optional[dict]:
-    """НРД-блок карточки + price_vs_nrd (рынок vs справедливая/цена НРД)."""
-    if not mapped:
-        return None
-    data = dict(mapped)
-    ref = data.get("fair_value_pct") or data.get("nrd_price_pct")
-    if last_price is not None and ref is not None:
-        data["price_vs_nrd_pct"] = round(last_price - ref, 4)
-    return data
-
-
 async def build_bond_details(isin: str, cache: dict) -> dict:
-    """Полная карточка: reference/market/valuation/cashflow/nrd/floater/warnings."""
+    """Полная карточка: reference/market/valuation/cashflow/floater/warnings."""
     data = cache.get(isin)
     external = data is None
 
     # все независимые сетевые вызовы — одним gather (MOEX ISS ~3.5с/запрос,
     # последовательно карточка грузилась 10-17с)
     res = await asyncio.gather(
-        nrd_service.fetch_nrd_metrics([isin]),                                        # 0
-        MarketDataService.fetch_last_prices([isin]),                                  # 1
-        MarketDataService.fetch_moex_snapshot([isin]),                                # 2
-        MarketDataService.fetch_coupon_schedules([isin]),                             # 3
-        MarketDataService.get_curves(),                                               # 4
-        MarketDataService.fetch_bond_schedule_full(isin),                             # 5
-        MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 6
-        MarketDataService.fetch_moex_shortnames() if external else _aempty(),         # 7
-        MarketDataService.get_zspread_ctx(),                                          # 8
+        MarketDataService.fetch_last_prices([isin]),                                  # 0
+        MarketDataService.fetch_moex_snapshot([isin]),                                # 1
+        MarketDataService.fetch_coupon_schedules([isin]),                             # 2
+        MarketDataService.get_curves(),                                               # 3
+        MarketDataService.fetch_bond_schedule_full(isin),                             # 4
+        MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 5
+        MarketDataService.fetch_moex_shortnames() if external else _aempty(),         # 6
+        MarketDataService.get_zspread_ctx(),                                          # 7
         return_exceptions=True,
     )
     _ok = lambda x, d: d if isinstance(x, Exception) else x
-    nrd_metrics = _ok(res[0], {})
-    market_prices = _ok(res[1], {})
-    snapshot = _ok(res[2], {})
-    schedules = _ok(res[3], {})
-    ruonia_curve, keyrate_curve, calc_date, rates_date = _ok(res[4], (None, None, None, None))
-    sched_full = _ok(res[5], {"coupons": [], "amorts": []})
-    mo_map = _ok(res[6], {})
-    shortnames = _ok(res[7], {})
-    exp_ks, exp_ru, g_curve = _ok(res[8], (None, None, None))
+    market_prices = _ok(res[0], {})
+    snapshot = _ok(res[1], {})
+    schedules = _ok(res[2], {})
+    ruonia_curve, keyrate_curve, calc_date, rates_date = _ok(res[3], (None, None, None, None))
+    sched_full = _ok(res[4], {"coupons": [], "amorts": []})
+    mo_map = _ok(res[5], {})
+    shortnames = _ok(res[6], {})
+    exp_ks, exp_ru, g_curve = _ok(res[7], (None, None, None))
 
     if data:
         ref_obj = create_bond_ref_data(data, isin)
         ref_dict = extract_bond_reference_dict(isin, data, ref_obj)
     else:
-        # любая бумага вне кэша — справочник MOEX + база/спред из НРД
+        # любая бумага вне кэша — справочник MOEX + база/спред из Cbonds-справки
         mo = mo_map.get(isin, {})
-        if not mo and not nrd_metrics.get(isin):
-            raise NotFoundException(f"Bond {isin} not found on MOEX/NRD", {"isin": isin})
-        ref_obj = build_ref_external(isin, mo, nrd_metrics.get(isin))
+        if not mo:
+            raise NotFoundException(f"Bond {isin} not found on MOEX", {"isin": isin})
+        ref_obj = build_ref_external(isin, mo)
         ref_dict = {
             "isin": isin,
             "short_name": shortnames.get(isin) or mo.get("name") or isin,
@@ -201,10 +187,9 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     floater_block = None
     if ref_obj.base in ("RUONIA", "KEYRATE"):
         try:
-            nm = nrd_metrics.get(isin, {}) or {}
             exp = exp_ru if ref_obj.base == "RUONIA" else exp_ks
             coupons = sched_full.get("coupons", [])
-            px = last_price or prev_close_pct or nm.get("nrd_price_pct")
+            px = last_price or prev_close_pct
             spread_dur = None
             mod_dur = convexity = pvbp = None
             if exp and px:
@@ -230,7 +215,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                     break
             cb = metrics.carry_refix_block(coupons, sched_full.get("amorts"),
                                            ref_obj.face_value, px, exp,
-                                           nm.get("current_yield_pct"), calc_date,
+                                           None, calc_date,
                                            current_coupon_override=cur_cpn_model)
             refix = cb["days_to_refix"]
             floater_block = {
@@ -240,10 +225,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 "base_rate_pct": cb["base_rate_pct"], "carry_bps": cb["carry_bps"],
                 "breakeven_base_pct": metrics.breakeven_base_pct(
                     cb["coupon_yield_pct"], cb["base_rate_pct"], ref_obj.spread_issue_bps),
-                # наш расчёт (fallback на НРД, если наш не вышел и НРД доступен)
-                "mod_duration": mod_dur if mod_dur is not None else nm.get("mod_duration"),
-                "convexity": convexity if convexity is not None else nm.get("convexity"),
-                "pvbp": pvbp if pvbp is not None else nm.get("pvbp"),
+                "mod_duration": mod_dur, "convexity": convexity, "pvbp": pvbp,
             }
         except Exception as e:
             logger.warning(f"Floater risk error for {isin}: {e}")
@@ -253,31 +235,19 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         warnings.append(
             f"Пут-оферта {next_offer[0].isoformat()}: первостепенны метрики к оферте "
             "(sm/dm/yield_to_offer, yield-to-put); к погашению — вторичные "
-            "(sm_bps/disc_margin_bps, сверка с НРД)")
+            "(sm_bps/disc_margin_bps)")
     elif next_offer and next_offer[2] == "call":
         warnings.append(
             f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): держатель "
             "её не форсирует — первостепенны метрики к ПОГАШЕНИЮ, к оферте лишь справочно")
-    nrd_block = None
-    try:
-        nrd_block = nrd_view(nrd_metrics.get(isin, {}), last_price)
-    except Exception as e:
-        logger.warning(f"NRD details error for {isin}: {e}")
-    if nrd_block is None and nrd_service.is_active():
-        warnings.append("NRD data unavailable for this bond")
-    elif not nrd_service.is_active():
-        # НРД-слой выключен (базовый режим) — метрики считаются по нашим кривым,
-        # NRD-обогащение (цена/fair-value/duration) недоступно
-        warnings.append("NRD source disabled")
 
     return {
         "reference": ref_dict,
         "market": market_data,
         "valuation": val_dict,
         "cashflow": cfs,
-        "nrd": nrd_block,
         "floater": floater_block,
-        "sources": {"details": "MOEX", "market": "Alor", "nrd": "NRD Price Center"},
+        "sources": {"details": "MOEX", "market": "Alor"},
         "warnings": warnings,
     }
 
@@ -296,8 +266,7 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
         MarketDataService.fetch_bond_schedule_full(isin),                             # 2
         MarketDataService.fetch_moex_snapshot([isin]),                                # 3
         MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 4
-        nrd_service.fetch_nrd_metrics([isin]) if external else _aempty(),             # 5
-        MarketDataService.get_zspread_ctx(),                                          # 6
+        MarketDataService.get_zspread_ctx(),                                          # 5
         return_exceptions=True,
     )
     _ok = lambda x, d: d if isinstance(x, Exception) else x
@@ -306,16 +275,15 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     sched_full = _ok(res[2], {"coupons": [], "amorts": []})
     snapshot = _ok(res[3], {})
     mo_map = _ok(res[4], {})
-    nrd_metrics = _ok(res[5], {})
-    exp_ks, exp_ru, g_curve = _ok(res[6], (None, None, None))
+    exp_ks, exp_ru, g_curve = _ok(res[5], (None, None, None))
 
     if data:
         ref_obj = create_bond_ref_data(data, isin)
     else:
         mo = mo_map.get(isin, {})
-        if not mo and not nrd_metrics.get(isin):
-            raise NotFoundException(f"Bond {isin} not found on MOEX/NRD", {"isin": isin})
-        ref_obj = build_ref_external(isin, mo, nrd_metrics.get(isin))
+        if not mo:
+            raise NotFoundException(f"Bond {isin} not found on MOEX", {"isin": isin})
+        ref_obj = build_ref_external(isin, mo)
 
     if not calc_date:
         calc_date = rates_date or date.today()

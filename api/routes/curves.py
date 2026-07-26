@@ -20,13 +20,13 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     """YTM/купоны флоатера по методу 502_504 (Floater spread): проекция купона =
     среднее рыночного пути КС (форвард bootstrap-кривой IRS KEYRATE) по окну
     рефиксинга + спред, XIRR. Пока только KEYRATE."""
-    from services import nrd as nrd_service
+    from services import instruments_registry
     from services.bonds import build_ref_external
     from services.floater_model import make_ks_path, project_floater, floater_xirr_pct, actual_ks
 
     _ruonia, keyrate_curve, calc_date, _rd = await MarketDataService.get_curves()
     cd = calc_date or date.today()
-    uni = await nrd_service.fetch_floater_universe()
+    uni = await instruments_registry.fetch_floater_universe()
     u = next((x for x in uni if x.get("isin") == isin), None)
     if u is None:
         raise HTTPException(status_code=404, detail=f"{isin} не найден в юниверсе флоатеров")
@@ -40,8 +40,7 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     full = await MarketDataService.fetch_bond_schedule_full(isin)
     snap = (await MarketDataService.fetch_moex_snapshot([isin])).get(isin, {})
     ref = build_ref_external(isin, secs.get(isin, {}),
-                             {"base_coupon_index": "CBRATED",
-                              "nominal_margin_bps": u.get("spread_issue_bps") or 0})
+                             base="KEYRATE", spread_bps=u.get("spread_issue_bps") or 0)
     spread_pct = (u.get("spread_issue_bps") or 0) / 10000.0
 
     # будущие периоды (start,end) из расписания MOEX
@@ -55,7 +54,7 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     if not periods:
         raise HTTPException(status_code=422, detail="Нет будущих купонов")
 
-    price = snap.get("prev") or u.get("nrd_price_pct") or 100.0
+    price = snap.get("prev") or 100.0
     accrued = snap.get("accrued") if snap.get("accrued") is not None else ref.accrued_rub
     dirty_pct = price + (accrued or 0.0) / ref.face_value * 100.0
     mat = ref.maturity_date

@@ -6,7 +6,6 @@ export function invalidateFund(qc, code) {
   qc.invalidateQueries({ queryKey: ["fundRepos", code] });
   qc.invalidateQueries({ queryKey: ["scenarios", code] });
   qc.invalidateQueries({ queryKey: ["cashflow", code] });
-  qc.invalidateQueries({ queryKey: ["fundAlerts", code] });
   qc.invalidateQueries({ queryKey: ["funds"] });
   qc.invalidateQueries({ queryKey: ["fundsCalendar"] });
 }

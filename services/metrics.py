@@ -162,7 +162,7 @@ def base_level_pct(exp_curve) -> Optional[float]:
 
 
 def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[float],
-                      exp_curve, nrd_current_yield: Optional[float],
+                      exp_curve, current_yield_override: Optional[float],
                       calc_date: date,
                       current_coupon_override: Optional[float] = None) -> dict:
     """{carry_bps, days_to_refix, current_coupon_pct, coupon_yield_pct,
@@ -174,8 +174,8 @@ def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[fl
     current_coupon_override (ставка начавшегося периода из модельного cashflow —
     нужен для RUONIA-average, где MOEX не публикует valueprc/value до конца
     периода → без него carry/breakeven пустовали);
-    carry = купонная доходность на вложенное (купон/цена, как НРД current_yield;
-    фолбэк из ставки-на-номинал приводится к цене) − уровень базы с короткого
+    carry = купонная доходность на вложенное (купон/цена; фолбэк из
+    ставки-на-номинал приводится к цене) − уровень базы с короткого
     конца кривой ожиданий."""
     refix = days_to_refix(coupons, calc_date)
     cur_cpn = current_coupon_pct(coupons, calc_date)
@@ -187,7 +187,7 @@ def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[fl
             cur_cpn = round(float(cp["value"]) / face_p * 365.0 / cdays * 100.0, 3)
     if cur_cpn is None and current_coupon_override is not None:
         cur_cpn = round(float(current_coupon_override), 3)
-    coupon_yield = nrd_current_yield
+    coupon_yield = current_yield_override
     if coupon_yield is None and cur_cpn is not None:
         coupon_yield = round(cur_cpn / (price_pct / 100.0), 3) if price_pct else cur_cpn
     base_lvl = base_level_pct(exp_curve)

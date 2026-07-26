@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { fmt, dmColor, vsFairColor } from "../format.js";
+import { fmt, dmColor } from "../format.js";
 import { fetchBondDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
@@ -67,95 +67,6 @@ function RefCell({ k, children }) {
   );
 }
 
-function NrdSection({ n, v }) {
-  if (!n) {
-    return (
-      <>
-        <div className="section-title">НРД Ценовой центр</div>
-        <div className="nrd-note">
-          <b>Данные НРД недоступны.</b> Источник не настроен или нет оценки по бумаге.
-          Заполни <code>NRD_LOGIN</code> и <code>NRD_APIKEY</code> в <code>.env</code>.
-        </div>
-      </>
-    );
-  }
-  const nrdPrice = n.fair_value_pct ?? n.nrd_price_pct;
-  const priceLbl = n.fair_value_pct != null ? "Fair value НРД" : "Цена НРД (VWAP)";
-  const vf = vsFairColor(n.price_vs_nrd_pct);
-  const vfLabel = n.price_vs_nrd_pct == null ? "—" : n.price_vs_nrd_pct < 0 ? "рынок дешевле НРД" : "рынок дороже НРД";
-  const ndc = dmColor(n.discount_margin_bps), odc = dmColor(v?.disc_margin_bps);
-  const nsc = dmColor(n.simple_margin_bps), osc = dmColor(v?.sm_bps ?? v?.dm_bps);
-  const r = n.ratings || {};
-  const ragMap = { akra: "АКРА", expert_ra: "Эксперт РА", nkr: "НКР", nra: "НРА" };
-  const lq = n.liquidity || {};
-
-  return (
-    <>
-      <div className="section-title">НРД Ценовой центр</div>
-      <div className="val-cards">
-        <div className="vc">
-          <div className="vc-label">{priceLbl}</div>
-          <div className="vc-val">{fmt.pct(nrdPrice) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
-          <div className="vc-sub">close {fmt.pct(n.nrd_close_pct) ?? "—"}%</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">vs рынок</div>
-          <div className="vc-val" style={{ color: vf.color }}>{fmt.signed(n.price_vs_nrd_pct) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
-          <div className="vc-sub">{vfLabel}</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">SM НРД vs наш</div>
-          <div className="vc-val">
-            <span style={{ color: nsc.color }}>{fmt.bps(n.simple_margin_bps) ?? "—"}</span>
-            <span style={{ fontSize: 12, color: "var(--mut-2)" }}> / </span>
-            <span style={{ color: osc.color }}>{fmt.bps(v?.sm_bps ?? v?.dm_bps) ?? "—"}</span>
-          </div>
-          <div className="vc-sub">simple margin, bps</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">DM НРД vs наш</div>
-          <div className="vc-val">
-            <span style={{ color: ndc.color }}>{fmt.bps(n.discount_margin_bps) ?? "—"}</span>
-            <span style={{ fontSize: 12, color: "var(--mut-2)" }}> / </span>
-            <span style={{ color: odc.color }}>{v?.disc_margin_bps != null ? fmt.bps(v.disc_margin_bps) : "—"}</span>
-          </div>
-          <div className="vc-sub">discount margin, bps</div>
-        </div>
-      </div>
-      <div className="ref-grid">
-        <RefCell k="Duration / Mod">{`${fmt.num(n.duration) ?? "—"} / ${fmt.num(n.mod_duration) ?? "—"}`}</RefCell>
-        <RefCell k="Convexity / PVBP">{`${fmt.num(n.convexity) ?? "—"} / ${fmt.num(n.pvbp) ?? "—"}`}</RefCell>
-        <RefCell k="Z-spread">{n.z_spread_bps != null ? n.z_spread_bps + " bps" : null}</RefCell>
-        <RefCell k="G-spread">{n.g_spread_bps != null ? n.g_spread_bps + " bps" : null}</RefCell>
-        <RefCell k="Nominal margin">{n.nominal_margin_bps != null ? fmt.bps(n.nominal_margin_bps) + " bps" : null}</RefCell>
-        <RefCell k="Simple margin">{n.simple_margin_bps != null ? fmt.bps(n.simple_margin_bps) + " bps" : null}</RefCell>
-        <RefCell k="YTM НРД">{n.yield_maturity_pct != null ? fmt.pct(n.yield_maturity_pct) + " %" : null}</RefCell>
-        <RefCell k="YTM к close">{n.ytm_close_pct != null ? fmt.pct(n.ytm_close_pct) + " %" : null}</RefCell>
-        <RefCell k="Current yield">{n.current_yield_pct != null ? fmt.pct(n.current_yield_pct) + " %" : null}</RefCell>
-        <RefCell k="База купона">{n.base_coupon_index}</RefCell>
-        <RefCell k="Тип купона">{n.coupon_type}</RefCell>
-        <RefCell k="Дата расчёта НРД">{n.nrd_calc_date}</RefCell>
-      </div>
-      {Object.keys(ragMap).some((kk) => r[kk]) && (
-        <div className="rating-row">
-          {Object.entries(ragMap).map(([kk, label]) =>
-            r[kk] ? (
-              <span className="rating-badge" key={kk}>
-                <span className="rb-k">{label}</span><span className="rb-v">{r[kk]}</span>
-              </span>
-            ) : null
-          )}
-        </div>
-      )}
-      {Object.keys(lq).length > 0 && (
-        <div className="ref-grid">
-          {Object.entries(lq).map(([kk, val]) => <RefCell k={kk} key={kk}>{fmt.num(val)}</RefCell>)}
-        </div>
-      )}
-    </>
-  );
-}
-
 // специфика флоатера: rate duration мала (до рефиксинга), spread duration = весь
 // кредитный риск до погашения; carry — платит ли бумага больше стоимости базы
 function FloaterSection({ f, base }) {
@@ -200,7 +111,7 @@ function FloaterSection({ f, base }) {
 }
 
 // staleness: возраст каждого источника данных
-function StaleChips({ m, n }) {
+function StaleChips({ m }) {
   // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
   const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
   const chip = (label, dateStr, liveOk) => {
@@ -216,7 +127,6 @@ function StaleChips({ m, n }) {
     <div className="stale-row">
       {chip("Цена", m.market_timestamp ? m.market_timestamp.slice(0, 10) : (m.calc_date || null), m.last_price_pct != null)}
       {chip("Ставки", m.rates_date || null)}
-      {chip("НРД", n?.nrd_calc_date || null)}
     </div>
   );
 }
@@ -271,7 +181,7 @@ function Content({ d }) {
 
   return (
     <>
-      <StaleChips m={m} n={d.nrd} />
+      <StaleChips m={m} />
       <div className="price-calc">
         <label className="pc-label" htmlFor="pc-price">Калькулятор цены</label>
         <div className="pc-input-wrap">
@@ -344,8 +254,6 @@ function Content({ d }) {
 
       <div className="section-title">Купоны · факт + прогноз{cutToOffer ? " · до оферты" : ""}</div>
       <div className="chart-box"><CashflowChart items={coupons} today={today} /></div>
-
-      <NrdSection n={d.nrd} v={v} />
 
       <div className="section-title">Cashflow{cutToOffer ? " · до оферты " + fmt.date(r.offer_date) : ""} ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>
