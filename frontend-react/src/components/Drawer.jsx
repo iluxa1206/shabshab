@@ -81,12 +81,12 @@ function FloaterSection({ f, base }) {
       <div className="section-title">Флоатер-риск</div>
       <div className="val-cards">
         <div className="vc">
-          <div className="vc-label">Spread duration</div>
+          <div className="vc-label">Спред-дюрация</div>
           <div className="vc-val">{fmt.num(f.spread_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
           <div className="vc-sub">риск ΔDM/Δz (до погашения)</div>
         </div>
         <div className="vc">
-          <div className="vc-label">Rate duration</div>
+          <div className="vc-label">Дюрация к ставке</div>
           <div className="vc-val">{fmt.num(f.rate_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
           <div className="vc-sub">до рефиксинга {f.days_to_refix != null ? f.days_to_refix + " дн" : "—"}</div>
         </div>
@@ -211,17 +211,17 @@ function Content({ d }) {
       </div>
       <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
         <div className="vc">
-          <div className="vc-label">DM (discount)</div>
+          <div className="vc-label">DM (дисконтная)</div>
           <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">discount margin · основная</div>
+          <div className="vc-sub">дисконт-маржа · основная</div>
         </div>
         <div className="vc">
-          <div className="vc-label">SM (simple)</div>
+          <div className="vc-label">SM (простая)</div>
           <div className="vc-val" style={{ color: dmColor(v.sm_bps ?? v.dm_bps).color }}>{fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">simple margin · вспом.</div>
+          <div className="vc-sub">простая маржа · вспом.</div>
         </div>
         <div className="vc">
-          <div className="vc-label">Dirty price</div>
+          <div className="vc-label">Грязная цена</div>
           <div className="vc-val">{fmt.num(v.dirty_price_rub) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> ₽</span></div>
           <div className="vc-sub">clean {fmt.pct(v.clean_price_pct) ?? "—"}% + НКД</div>
         </div>
@@ -358,11 +358,11 @@ export default function Drawer({ isin, kind, onClose }) {
                   title="Стакан выпуска"
                 >СТАКАН</button>
               </div>
-              <button ref={closeRef} className="btn" onClick={onClose}>CLOSE</button>
+              <button ref={closeRef} className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
             </div>
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
-                : !data ? <div className="loading">LOADING</div>
+                : !data ? <div className="loading">ЗАГРУЗКА</div>
                 : isFixed ? <FixedCard d={data} />
                 : <Content d={data} />}
             </div>

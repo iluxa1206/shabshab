@@ -67,15 +67,15 @@ export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSe
       </div>
       <div className="topbar-right">
         <span className="meta-chip">
-          <span className="meta-k">CALC</span><span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
+          <span className="meta-k">РАСЧЁТ</span><span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
           <span className="meta-sep">/</span>
-          <span className="meta-k">RATES</span><span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
+          <span className="meta-k">СТАВКИ</span><span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
         </span>
         <Clock />
         <span className={"live " + (live ? "live-on" : "live-off")}>
-          <span className="dot" />{live ? "LIVE" : "OFFLINE"}
+          <span className="dot" />{live ? "ОНЛАЙН" : "ОФФЛАЙН"}
         </span>
-        <button className="btn" onClick={onRefresh}>Sync</button>
+        <button className="btn" onClick={onRefresh}>Обновить</button>
         {user && (
           <button className="btn" onClick={onOpenSettings} title="Настройки доступа">
             {user.email}{user.role === "admin" ? " ⚙" : ""}

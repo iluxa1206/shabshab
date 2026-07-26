@@ -91,7 +91,7 @@ function ScatterZDur({ rows }) {
           <title>{`${p.name} — один выпуск\nDM: ${p.y} bps (Fabozzi)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
         </circle>
       ))}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">spread duration →</text>
+      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
       <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>DM, bps</text>
     </svg>
   );
@@ -127,7 +127,7 @@ function ScatterIssuer({ rows }) {
           <title>{`${p.name}\nмедиана DM: ${Math.round(p.y)} bps · медиана spread dur: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`}</title>
         </circle>
       ))}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">spread duration →</text>
+      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
       <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>DM, bps</text>
     </svg>
   );

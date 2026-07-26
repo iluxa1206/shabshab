@@ -198,7 +198,7 @@ export default function FundDetail({ code, dispCcy, onSetCcy, onBack }) {
         </span>
         <CcySwitch dispCcy={dispCcy} onSetCcy={onSetCcy} rates={s.fx} fxLabel={s.fx_label} />
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={reload}>Sync</button>
+        <button className="btn" onClick={reload}>Обновить</button>
         <button className="btn" onClick={() => setShowSnapshot(true)}>Снапшот CSV</button>
         <button className="btn" onClick={() => exportPositionsCsv(s)}
           disabled={!s.positions?.length} title="Скачать позиции с метриками">Экспорт</button>

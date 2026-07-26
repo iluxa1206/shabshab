@@ -35,7 +35,7 @@ export default function Toolbar({
         <input
           className="search"
           type="text"
-          placeholder="ISIN / NAME"
+          placeholder="ISIN / имя"
           aria-label="Поиск по рынку — ISIN или название"
           autoComplete="off"
           spellCheck={false}

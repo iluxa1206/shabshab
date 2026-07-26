@@ -155,11 +155,11 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
   const ncols = cols.length + 1; // + star
 
   let body;
-  if (status === "loading") body = <tr><td colSpan={ncols} className="loading">LOADING MARKET DATA</td></tr>;
+  if (status === "loading") body = <tr><td colSpan={ncols} className="loading">ЗАГРУЗКА ДАННЫХ</td></tr>;
   else if (status === "error") body = (
     <tr><td colSpan={ncols} className="empty">
-      <div className="empty-msg">ERROR — {errMsg}</div>
-      <button className="btn" onClick={onRetry}>Retry</button>
+      <div className="empty-msg">Ошибка — {errMsg}</div>
+      <button className="btn" onClick={onRetry}>Повторить</button>
     </td></tr>
   );
   else if (!rows.length) body = (

@@ -55,7 +55,7 @@ export function BenchmarksRow() {
       <div className="fund-sec-title">Бенчмарки</div>
       <table className="admin-table">
         <thead>
-          <tr><th className="left">Индекс</th><th>Close</th><th>1д</th><th>30д</th><th>YTD</th></tr>
+          <tr><th className="left">Индекс</th><th>Закр.</th><th>1д</th><th>30д</th><th>YTD</th></tr>
         </thead>
         <tbody>
           {Object.entries(bm).map(([code, v]) => (

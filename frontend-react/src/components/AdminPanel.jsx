@@ -350,8 +350,8 @@ function AddUserForm() {
       <input type="password" placeholder="Пароль (мин. 8)" value={password}
         autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} required />
       <select value={role} onChange={(e) => setRole(e.target.value)}>
-        <option value="user">user</option>
-        <option value="admin">admin</option>
+        <option value="user">пользователь</option>
+        <option value="admin">админ</option>
       </select>
       <Msg err={err} ok={ok} />
       <button className="btn admin-btn-primary" type="submit" disabled={busy}>

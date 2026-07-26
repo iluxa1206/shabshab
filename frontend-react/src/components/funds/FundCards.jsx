@@ -138,7 +138,7 @@ export default function FundCards({ funds, status, errMsg, dispCcy, onSetCcy, on
       <div className="funds-toolbar">
         <CcySwitch dispCcy={dispCcy} onSetCcy={onSetCcy} rates={rates} fxLabel={funds[0]?.fx_label} />
         <span style={{ flex: 1 }} />
-        <button className="btn" onClick={onReload}>Sync</button>
+        <button className="btn" onClick={onReload}>Обновить</button>
       </div>
       <div className="fund-cards">
         {funds.map((f) => <FundCard key={f.code} f={f} rate={rate} sign={sign} onSelect={onSelect} />)}
