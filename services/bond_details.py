@@ -252,12 +252,15 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     }
 
 
-async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
-    """Пересчёт всех метрик оценки под ПРОИЗВОЛЬНУЮ чистую цену (калькулятор в
-    карточке). Считает тем же богатым путём, что build_bond_details
-    (periods/amorts/offers/НКД), но без НРД/cashflow-сборки. Переиспользует тёплые
-    кэши (кривые в памяти, расписание на диске с day-TTL, снапшот) — после
-    открытия карточки сетевых вызовов нет, пересчёт мгновенный."""
+async def load_reprice_ctx(isin: str, cache: dict) -> dict:
+    """Тёплый контекст для пересчёта под произвольную цену: ref_obj, кривая,
+    calc_date, НКД, amorts/offers/periods/coupons и z-spread ctx. Один сетевой
+    gather на isin — далее reprice_at_price(ctx, price) работает БЕЗ I/O, что
+    позволяет батчить десятки уровней стакана по одной бумаге.
+
+    Тот же богатый путь, что build_bond_details (periods/amorts/offers/НКД), но
+    без cashflow-сборки. Переиспользует тёплые кэши (кривые в памяти, расписание
+    на диске с day-TTL, снапшот)."""
     data = cache.get(isin)
     external = data is None
     res = await asyncio.gather(
@@ -298,19 +301,43 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     if curve is None:
         raise CalculationException("Curve unavailable to reprice", {"isin": isin})
 
-    amorts = sched_full.get("amorts")
-    offers = sched_full.get("offers")
-    out = calculate_valuation_metrics(
-        ref_obj, price, curve, calc_date,
-        accrued_override=accrued_live, periods=schedules.get(isin),
-        amorts=amorts, offers=offers,
+    return {
+        "isin": isin,
+        "ref_obj": ref_obj,
+        "curve": curve,
+        "calc_date": calc_date,
+        "accrued_live": accrued_live,
+        "periods": schedules.get(isin),
+        "coupons": sched_full.get("coupons", []),
+        "amorts": sched_full.get("amorts"),
+        "offers": sched_full.get("offers"),
+        "exp": exp_ru if ref_obj.base == "RUONIA" else exp_ks,
+        "g_curve": g_curve,
+    }
+
+
+def reprice_at_price(ctx: dict, price: float) -> dict:
+    """Чистая цена → цена-зависимые метрики оценки (SM/DM/YTM/dirty/Y-IDX) на
+    тёплом ctx (load_reprice_ctx) — БЕЗ сетевых вызовов и БЕЗ z/carry. Батчится
+    по уровням стакана (тот же расчёт, что калькулятор карточки, с полными
+    amorts/offers/periods/НКД → результаты совпадают с карточкой поштучно)."""
+    return calculate_valuation_metrics(
+        ctx["ref_obj"], price, ctx["curve"], ctx["calc_date"],
+        accrued_override=ctx["accrued_live"], periods=ctx["periods"],
+        amorts=ctx["amorts"], offers=ctx["offers"],
     )
 
-    # z_model + carry — тоже цена-зависимы; нужны для live-рефреша всей строки
-    # таблицы по WS-тику (не только карточка-калькулятор). Мирроринг universe.
-    out = dict(out)
-    exp = exp_ru if ref_obj.base == "RUONIA" else exp_ks
-    coupons = sched_full.get("coupons", [])
+
+def _reprice_z_carry(ctx: dict, price: float) -> dict:
+    """z_model + carry (тоже цена-зависимы) поверх reprice_at_price. Отдельно от
+    core: нужны live-рефрешу строки таблицы по WS-тику, но НЕ уровням стакана."""
+    ref_obj = ctx["ref_obj"]
+    curve, calc_date = ctx["curve"], ctx["calc_date"]
+    amorts, offers = ctx["amorts"], ctx["offers"]
+    accrued_live, exp, g_curve = ctx["accrued_live"], ctx["exp"], ctx["g_curve"]
+    coupons, periods = ctx["coupons"], ctx["periods"]
+    isin = ctx["isin"]
+
     z_model = None
     if exp and g_curve and ref_obj.base in ("RUONIA", "KEYRATE"):
         try:
@@ -334,7 +361,7 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
             from valuation import build_cashflows_with_spread
             _cfs = build_cashflows_with_spread(
                 ref_obj, curve, calc_date, ref_obj.spread_issue_bps or 0,
-                explicit_periods=schedules.get(isin), amorts=amorts, offers=offers)
+                explicit_periods=periods, amorts=amorts, offers=offers)
             for _cf in _cfs:
                 if (_cf.type == "COUPON" and _cf.period_start
                         and _cf.period_start <= calc_date < _cf.period_end):
@@ -347,6 +374,13 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
         carry = cb["carry_bps"]
     except Exception as e:
         logger.warning(f"reprice carry error {isin}: {e}")
-    out["z_model_bps"] = z_model
-    out["carry_bps"] = carry
+    return {"z_model_bps": z_model, "carry_bps": carry}
+
+
+async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
+    """Пересчёт всех метрик оценки под ПРОИЗВОЛЬНУЮ чистую цену (калькулятор в
+    карточке И live-рефреш строки таблицы по WS-тику). Тёплые кэши → мгновенно."""
+    ctx = await load_reprice_ctx(isin, cache)
+    out = dict(reprice_at_price(ctx, price))
+    out.update(_reprice_z_carry(ctx, price))
     return out

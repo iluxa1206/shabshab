@@ -7,8 +7,7 @@ import asyncio
 import aiohttp
 from api.schemas import OrderbookResponse, OrderbookSnapshot, OrderbookLevel
 from services.market_data import MarketDataService
-from services.bonds import create_bond_ref_data
-from services.valuation import calculate_valuation_metrics
+from services.exceptions import NotFoundException
 from api.routes.bonds import get_base_dir
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
 import logging
@@ -48,26 +47,24 @@ async def get_orderbook(
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
     cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
-    data = cache.get(isin)
 
-    if not data:
-        raise HTTPException(status_code=404, detail="Bond not found in cache")
-        
-    ref_obj = create_bond_ref_data(data, isin)
-    
-    # 2. Get Curves
-    ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
-    if not calc_date:
-        calc_date = rates_date or date.today()
-        
-    curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
-    
+    # 2. Тёплый контекст пересчёта (ref_obj/кривая/calc_date + amorts/offers/
+    # periods/НКД) — один раз на выпуск, далее reprice_at_price по уровням без I/O.
+    # Полные amorts/offers → per-level SM/DM совпадают с калькулятором карточки
+    # (раньше orderbook звал calculate_valuation_metrics без них → расхождение).
+    from services.bond_details import load_reprice_ctx, reprice_at_price
+    try:
+        ctx = await load_reprice_ctx(isin, cache)
+    except NotFoundException:
+        raise HTTPException(status_code=404, detail="Bond not found")
+    calc_date = ctx["calc_date"]
+
     # 3. Fetch Snapshot
     snapshot = await fetch_alor_orderbook_snapshot(isin, depth)
-    
+
     pricing_status = "SUCCESS"
     warnings = []
-    
+
     if not snapshot:
         return OrderbookResponse(
             isin=isin,
@@ -77,33 +74,36 @@ async def get_orderbook(
             orderbook=OrderbookSnapshot(bids=[], asks=[]),
             warnings=["Could not fetch orderbook from Alor"]
         )
-        
+
     # 4. Process and Calculate
     processed_bids = []
     processed_asks = []
-    
+
     def process_level(level_list, limit, target_array):
         for entry in level_list[:limit]:
             price = entry.get("price")
             qty = entry.get("volume")
             ytm = entry.get("yield") # sometimes Alor natively sends YTM, let's keep it if we can
-            
+
+            sm_bps = None
             dm_bps = None
             calc_yield = ytm
-            
-            if price is not None and curve:
+
+            if price is not None:
                 try:
-                    metrics = calculate_valuation_metrics(ref_obj, price, curve, calc_date)
+                    metrics = reprice_at_price(ctx, price)
+                    sm_bps = metrics.get("sm_bps")
                     dm_bps = metrics.get("dm_bps")
                     calc_yield = metrics.get("yield_xirr_pct")
                 except Exception:
                     pass
-                    
+
             if price is not None and qty is not None:
                 target_array.append(OrderbookLevel(
                     price_pct=price,
                     quantity=qty,
                     yield_pct=calc_yield,
+                    sm_bps=sm_bps,
                     dm_bps=dm_bps
                 ))
 

@@ -269,6 +269,7 @@ class OrderbookLevel(BaseModel):
     price_pct: float
     quantity: int
     yield_pct: Optional[float] = None
+    sm_bps: Optional[int] = None
     dm_bps: Optional[int] = None
 
 class OrderbookSnapshot(BaseModel):
