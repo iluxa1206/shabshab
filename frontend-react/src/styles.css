@@ -125,6 +125,18 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .kpi-sub { font-size: 12px; color: var(--mut); letter-spacing: 0.02em; margin-top: 2px; }
 .kpi-sep { color: var(--mut-2); font-weight: 400; }
 
+/* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
+.pchart { margin-bottom: 20px; }
+.pchart-ctl { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.pchart-tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.pchart-tab { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mut);
+  background: transparent; border: 0; padding: 3px 9px; cursor: pointer; }
+.pchart-tab + .pchart-tab { border-left: 1px solid var(--line); }
+.pchart-tab:hover { color: var(--fg); }
+.pchart-tab.on { background: var(--accent); color: var(--bg); }
+.pchart-body { position: relative; }
+.pchart-empty { font-size: 12px; color: var(--mut-2); padding: 40px 8px; text-align: center; border: 1px solid var(--line); border-radius: 4px; }
+
 /* ---- Toolbar ---- */
 .toolbar { display: flex; align-items: center; gap: 20px; padding: 0 24px; height: 46px; border-bottom: 1px solid var(--line); }
 .toolbar::before { content: "/ search"; font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.14em; }

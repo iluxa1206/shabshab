@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from datetime import date
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, Query, Path, HTTPException
 
 from api.schemas import (
@@ -249,6 +249,16 @@ async def get_bond_details(isin: str = Path(...)):
         os.path.join(get_base_dir(), "isins_cache.json"))
     from services.bond_details import build_bond_details
     return BondDetailsResponse(**await build_bond_details(isin, cache))
+
+
+@router.get("/{isin}/candles", tags=["Bonds"])
+async def get_bond_candles(
+    isin: str = Path(...),
+    tf: Literal["5m", "1h", "1d", "1w"] = Query("1d", description="Таймфрейм свечи"),
+):
+    """OHLCV-свечи MOEX (борд TQCB) для графика карточки. 5m — агрегация 1-мин."""
+    isin = _require_isin(isin)
+    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(isin, tf)}
 
 
 

@@ -5,7 +5,7 @@ import asyncio
 import threading
 import httpx
 from typing import Dict, Optional, Tuple, List
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from services.paths import cache_path, atomic_write_json
 
@@ -629,6 +629,84 @@ class MarketDataService:
         if out:
             cls._board_snap = out
             cls._board_snap_ts = now
+        return out
+
+    # tf → (MOEX interval, глубина в днях, размер бакета агрегации в мин|None)
+    # MOEX нативно: 1(мин),10,60(час),24(день),7(неделя),31(месяц). 5-мин нет →
+    # берём 1-мин и агрегируем в 5-мин бакеты.
+    _CANDLE_TF = {
+        "5m": (1, 4, 5),
+        "1h": (60, 45, None),
+        "1d": (24, 550, None),
+        "1w": (7, 365 * 4, None),
+    }
+
+    @classmethod
+    async def fetch_candles(cls, isin: str, tf: str = "1d") -> List[dict]:
+        """OHLCV-свечи MOEX (борд TQCB) для карточки. tf ∈ 5m/1h/1d/1w.
+        Возвращает [{'t','o','h','l','c','v'}] по возрастанию времени. 5-мин
+        собираются агрегацией 1-мин свечей (MOEX не отдаёт 5-мин нативно)."""
+        interval, days, bucket_min = cls._CANDLE_TF.get(tf, cls._CANDLE_TF["1d"])
+        frm = (date.today() - timedelta(days=days)).isoformat()
+        url = (f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/"
+               f"securities/{isin}/candles.json")
+        raw: List[dict] = []
+        try:
+            async with httpx.AsyncClient() as client:
+                # iss.reverse=true → MOEX отдаёт СВЕЖИЕ свечи первыми; при лимите
+                # страницы 500 так гарантированно получаем последние (до сегодня),
+                # а не обрезанный старый хвост. Сортируем по времени ниже.
+                resp = await _moex_get(client, url,
+                                       params={"interval": interval, "from": frm,
+                                               "iss.reverse": "true"}, timeout=20)
+            if resp is not None and resp.status_code == 200:
+                c = resp.json().get("candles", {})
+                cols, data = c.get("columns", []), c.get("data", [])
+                idx = {n: cols.index(n) for n in cols}
+                for row in data:
+                    try:
+                        raw.append({
+                            "t": row[idx["begin"]],
+                            "o": float(row[idx["open"]]), "h": float(row[idx["high"]]),
+                            "l": float(row[idx["low"]]), "c": float(row[idx["close"]]),
+                            "v": float(row[idx["volume"]] or 0),
+                        })
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        except Exception as e:
+            logger.warning(f"candles error {isin} tf={tf}: {e}")
+            return []
+        raw.sort(key=lambda x: x["t"])  # ISO-строки → лексикографически = хронологически
+        if bucket_min:
+            raw = cls._agg_candles(raw, bucket_min)
+        return raw
+
+    @staticmethod
+    def _agg_candles(rows: List[dict], bucket_min: int) -> List[dict]:
+        """Свернуть свечи в бакеты по bucket_min минут (o=первый, c=последний,
+        h=max, l=min, v=сумма). Ключ бакета — время, округлённое вниз."""
+        out: List[dict] = []
+        cur = None
+        cur_key = None
+        for r in rows:
+            try:
+                dt = datetime.strptime(r["t"], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+            key = dt.replace(minute=(dt.minute // bucket_min) * bucket_min, second=0)
+            if cur_key != key:
+                if cur is not None:
+                    out.append(cur)
+                cur_key = key
+                cur = {"t": key.strftime("%Y-%m-%d %H:%M:%S"),
+                       "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"], "v": r["v"]}
+            else:
+                cur["h"] = max(cur["h"], r["h"])
+                cur["l"] = min(cur["l"], r["l"])
+                cur["c"] = r["c"]
+                cur["v"] += r["v"]
+        if cur is not None:
+            out.append(cur)
         return out
 
     @classmethod

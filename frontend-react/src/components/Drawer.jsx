@@ -5,6 +5,7 @@ import { fmt, dmColor } from "../format.js";
 import { fetchBondDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
+import PriceChart from "./PriceChart.jsx";
 
 // Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
 // Список фондов — из общего кэша ['funds'] (делится с модулем «Фонды»).
@@ -249,6 +250,9 @@ function Content({ d }) {
       </div>
 
       <AddToFund isin={r.isin} />
+
+      <div className="section-title">Цена · MOEX</div>
+      <PriceChart isin={r.isin} />
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
