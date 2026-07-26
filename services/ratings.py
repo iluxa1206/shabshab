@@ -67,6 +67,29 @@ def bucket_of(isin: str) -> Optional[str]:
     return r.get("bucket") if r else None
 
 
+def bucket_of_fixed(isin: str, cls: Optional[str]) -> Optional[str]:
+    """Рейтинг фикс-бумаги с учётом класса. ОФЗ — суверенный рублёвый долг,
+    безрисковый бенчмарк рынка; corpbonds их не рейтингует → форсим AAA (иначе
+    все ОФЗ молча падают в NR и портят фильтр/аналитику).
+
+    Корпораты: сначала json-кэш corpbonds, при промахе — фолбэк на реестр
+    инструментов (тот же источник рейтинга, что у флоатеров; corpbonds-кэш может
+    быть ещё не прогрет для этой бумаги)."""
+    if cls == "ofz":
+        return "AAA"
+    b = bucket_of(isin)
+    if b:
+        return b
+    try:
+        from services import instruments_registry as reg
+        rec = reg.get(isin)
+        if rec and rec.get("rating"):
+            return rec["rating"]
+    except Exception:
+        pass
+    return None
+
+
 def bucket_map(isins: List[str]) -> Dict[str, str]:
     c = _load()
     return {i: c[i]["bucket"] for i in isins if i in c and c[i].get("bucket")}

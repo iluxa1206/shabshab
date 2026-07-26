@@ -36,7 +36,7 @@ async def get_fixed():
         m = metrics.get(u["isin"], {})
         item = {
             "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
-            "issuer": u.get("issuer"), "rating": ratings.bucket_of(u["isin"]),
+            "issuer": u.get("issuer"), "rating": ratings.bucket_of_fixed(u["isin"], u.get("cls")),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             # цена: из метрик (last→prev с флагом) иначе сырой board
@@ -95,7 +95,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "isin": isin, "secid": secid, "name": row.get("name"), "cls": row.get("cls"),
             "board": board, "maturity_date": row.get("maturity_date"),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
-            "issuer": row.get("issuer"), "rating": ratings.bucket_of(isin),
+            "issuer": row.get("issuer"), "rating": ratings.bucket_of_fixed(isin, row.get("cls")),
         },
         "market": {
             "last_price_pct": m.get("last"), "prev_close_pct": row.get("prev"),
