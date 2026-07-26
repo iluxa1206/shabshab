@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments, fixed
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -57,6 +57,25 @@ def _in_moex_trading_hours() -> bool:
         return False
     minutes = now.hour * 60 + now.minute
     return 7 * 60 <= minutes <= 23 * 60 + 50
+
+async def _warm_fixed(market_cache):
+    """Прогрев вкладки ФИКСЫ: универс (ОФЗ-ПД + ликвидные корпораты) + метрики
+    к погашению (YTM/g-спред/z-спред/дюрация). Расписания MOEX day-кэшируются →
+    первый прогон тяжёлый (bondization ~700 бумаг), дальше дёшево. Кладём в
+    market_cache, эндпоинт /api/fixed отдаёт кэш."""
+    try:
+        from services import fixed_income as fi
+        funi = await fi.fetch_fixed_universe()
+        _r, _k, _cd, _rd = await MarketDataService.get_curves()
+        _ek, _eu, g = await MarketDataService.get_zspread_ctx()
+        fcd = _cd or _rd or date.today()
+        fm = await fi.compute_fixed_metrics_all(funi, g, fcd)
+        market_cache["fixed_universe"] = funi
+        market_cache["fixed_metrics"] = fm
+        market_cache["fixed_calc_date"] = fcd.isoformat()
+    except Exception as e:
+        logger.warning(f"fixed warm error: {e}")
+
 
 async def universe_price_poller():
     """Раз в UNIVERSE_POLL_INTERVAL: (1) тянет last-price Alor по всему юниверсу
@@ -116,6 +135,7 @@ async def universe_price_poller():
                 metrics = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if metrics:
                     market_cache["universe_metrics"] = metrics
+                await _warm_fixed(market_cache)
         except Exception as e:
             logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
@@ -157,6 +177,7 @@ async def warmup_caches():
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if m:
                     market_cache["universe_metrics"] = m
+        await _warm_fixed(market_cache)
     except Exception as e:
         logger.warning(f"warmup error: {e}")
 
@@ -213,6 +234,7 @@ app.include_router(curves.router, prefix="/api/curves", dependencies=_gate)
 app.include_router(orderbook.router, prefix="/api/orderbook", dependencies=_gate)
 app.include_router(funds.router, prefix="/api/funds", dependencies=_gate)
 app.include_router(instruments.router, prefix="/api/instruments", dependencies=_gate)
+app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

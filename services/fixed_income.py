@@ -11,11 +11,17 @@ YTM — через xirr (эффективная годовая, ACT/365, как 
 """
 from __future__ import annotations
 
+import time
+import logging
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
+
+import httpx
 
 from valuation import xirr, xnpv, settle_date
-from services.market_data import MarketDataService
+from services.market_data import MarketDataService, _moex_get
+
+logger = logging.getLogger(__name__)
 
 
 def _d(s) -> Optional[date]:
@@ -152,3 +158,184 @@ async def fixed_metrics(isin: str, price_pct: float, accrued: float,
     """Обёртка: тянет bondization из кэша MarketDataService и считает метрики."""
     schedule = await MarketDataService.fetch_bond_schedule_full(isin)
     return fixed_metrics_from_schedule(schedule, price_pct, accrued, calc_date, g_curve)
+
+
+# ─────────────────────────── Универс ФИКСОВ ───────────────────────────
+# Борды MOEX: TQOB — ОФЗ (берём ПД, серии SU25/SU26), TQCB — корпораты.
+_BOARDS = {"TQOB": "ofz", "TQCB": "corp"}
+_UNI_TTL = 3600.0
+_CORP_CAP = 700          # максимум корпоратов (топ по обороту) — bounds прогрев
+_uni_mem: dict = {"ts": 0.0, "rows": None}
+# отсекаем по имени: валютные/замещающие (не прямой рублёвый фикс)
+_SKIP_NAME = ("CNY", "USD", "EUR", "GLD", "ЗАМ", "ЗО2", "ЗО3")
+
+
+def _numf(v) -> Optional[float]:
+    try:
+        return float(v) if v is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+async def _fetch_fixed_board(client, board: str) -> List[dict]:
+    """Строки борда (securities+marketdata одним запросом): справка + цена."""
+    url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/securities.json"
+    resp = await _moex_get(client, url, params={
+        "iss.only": "securities,marketdata",
+        "securities.columns": "SECID,ISIN,SHORTNAME,MATDATE,COUPONPERCENT,"
+                              "FACEVALUE,ACCRUEDINT,PREVPRICE,PREVDATE",
+        "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY",
+    }, timeout=20)
+    if resp is None or resp.status_code != 200:
+        return []
+    data = resp.json()
+    sec = data.get("securities", {})
+    cols, rows = sec.get("columns", []), sec.get("data", [])
+    g = lambda row, n: row[cols.index(n)] if n in cols else None
+    md = data.get("marketdata", {})
+    mcols, mrows = md.get("columns", []), md.get("data", [])
+    mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
+    last_by: Dict[str, float] = {}
+    val_by: Dict[str, float] = {}
+    for mr in mrows:
+        sid = mg(mr, "SECID")
+        if sid:
+            px = mg(mr, "LAST") or mg(mr, "LCURRENTPRICE") or mg(mr, "WAPRICE")
+            if px is not None:
+                last_by[sid] = _numf(px)
+            val_by[sid] = _numf(mg(mr, "VALTODAY")) or 0.0
+    out = []
+    for row in rows:
+        isin = g(row, "ISIN")
+        if not isin:
+            continue
+        out.append({
+            "isin": isin, "secid": g(row, "SECID"),
+            "name": g(row, "SHORTNAME") or isin,
+            "maturity_date": g(row, "MATDATE") or None,
+            "coupon_pct": _numf(g(row, "COUPONPERCENT")),
+            "face": _numf(g(row, "FACEVALUE")) or 1000.0,
+            "accrued": _numf(g(row, "ACCRUEDINT")) or 0.0,
+            "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
+            "last": last_by.get(g(row, "SECID")),
+            "val_today": val_by.get(g(row, "SECID")) or 0.0, "board": board,
+        })
+    return out
+
+
+def _is_fixed(row: dict, board: str, floaters: set) -> bool:
+    """Рублёвый фикс? ОФЗ-ПД — серии SU25/SU26 (SU29=ПК, SU52=ИН отсекаются).
+    Корпорат — купон>0 и НЕ известный флоатер (реестр)."""
+    if row["isin"] in floaters:
+        return False
+    if (row.get("secid") or "").startswith("BYM"):
+        return False  # РесБел (Белоруссия) — квазисуверен под санкциями, вне скоупа
+    name = (row.get("name") or "").upper()
+    if any(s in name for s in _SKIP_NAME):
+        return False
+    cp = row.get("coupon_pct")
+    if cp is None or cp <= 0 or not row.get("maturity_date"):
+        return False
+    if board == "TQOB":
+        return (row.get("secid") or "")[:4] in ("SU25", "SU26")
+    return True
+
+
+_LIQ_VAL = 1_000_000.0   # порог оборота, ₽/день
+
+def _liquid(row: dict, today: date) -> bool:
+    """Ликвидная: оборот сегодня ≥ 1млн ₽ ИЛИ торговалась за последние 5 дней
+    (prev_date). Стабильно вне торгов (по prev_date), отсекает мёртвый неликвид."""
+    if (row.get("val_today") or 0.0) >= _LIQ_VAL:
+        return True
+    pd = row.get("prev_date")
+    if row.get("prev") is None or not pd:
+        return False
+    try:
+        return (today - date.fromisoformat(pd)).days <= 5
+    except (ValueError, TypeError):
+        return False
+
+
+async def fetch_fixed_universe() -> List[dict]:
+    """Универс фиксов: ОФЗ-ПД (TQOB) + ликвидные корпораты (TQCB), только с ценой
+    (last/prev). Флоатеры исключены по реестру. Кэш в памяти на час."""
+    now = time.time()
+    if _uni_mem["rows"] is not None and now - _uni_mem["ts"] < _UNI_TTL:
+        return _uni_mem["rows"]
+    from services import instruments_registry as reg
+    floaters = {r["isin"] for r in reg.universe_rows(only_floaters=True, only_priceable=False)}
+    today = date.today()
+    rows: List[dict] = []
+    try:
+        async with httpx.AsyncClient() as client:
+            for board in _BOARDS:
+                for r in await _fetch_fixed_board(client, board):
+                    if not _is_fixed(r, board, floaters):
+                        continue
+                    if not _liquid(r, today):
+                        continue
+                    r["cls"] = _BOARDS[board]
+                    rows.append(r)
+    except Exception as e:
+        logger.warning(f"fixed universe error: {e}")
+        return _uni_mem["rows"] or []
+    # ОФЗ держим все; корпораты — топ по обороту (кап bounds прогрев поллера)
+    ofz = [r for r in rows if r["cls"] == "ofz"]
+    corp = sorted((r for r in rows if r["cls"] == "corp"),
+                  key=lambda r: r.get("val_today") or 0.0, reverse=True)[:_CORP_CAP]
+    rows = ofz + corp
+    _uni_mem["rows"] = rows
+    _uni_mem["ts"] = now
+    return rows
+
+
+def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date) -> dict:
+    """Полный набор метрик фикс-бумаги для строки таблицы: цена (last→prev),
+    YTM/тек.доходность/g-спред/z-спред/дюрация/convexity/DV01."""
+    px = row.get("last") if row.get("last") is not None else row.get("prev")
+    out = {"last": px, "prev": row.get("prev"),
+           "price_stale": row.get("last") is None and row.get("prev") is not None}
+    if px is None or not full.get("coupons"):
+        return out
+    m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date, g_curve)
+    out.update({
+        "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
+        "convexity": m.get("convexity"), "dv01": m.get("dv01"),
+        "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
+        "put_date": m.get("put_date"),
+    })
+    # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
+    if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
+        try:
+            from services.zspread import solve_z_discrete
+            cfs, _face, _put = build_fixed_cashflows(full, calc_date)
+            if cfs:
+                out["z_spread_bps"] = solve_z_discrete(g_curve, cfs, calc_date, m["dirty"])
+        except Exception as e:
+            logger.warning(f"fixed z-spread error {row.get('isin')}: {e}")
+    # текущая доходность = годовой купон / чистая цена
+    cp = row.get("coupon_pct")
+    if cp is not None and px:
+        out["cur_yield"] = round(cp / (px / 100.0), 4)
+    return out
+
+
+async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: date) -> Dict[str, dict]:
+    """{isin: метрики} по всему универсу фиксов. Расписания MOEX (bondization)
+    батчатся из day-кэша; фоновый прогрев — в универс-поллере."""
+    import asyncio
+    universe = [u for u in universe if u.get("isin")]
+    if not universe:
+        return {}
+    # расписание MOEX тянем по SECID: у ОФЗ ISIN (RU000…) в bondization не
+    # резолвится, а SECID (SU26…) — да. У корпов SECID обычно = ISIN.
+    fulls = await asyncio.gather(
+        *(MarketDataService.fetch_bond_schedule_full(u.get("secid") or u["isin"]) for u in universe),
+        return_exceptions=True)
+    out: Dict[str, dict] = {}
+    for u, full in zip(universe, fulls):
+        if isinstance(full, Exception):
+            full = {}
+        out[u["isin"]] = compute_fixed_row(u, full or {}, g_curve, calc_date)
+    return out
