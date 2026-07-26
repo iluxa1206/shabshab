@@ -62,6 +62,7 @@ def _uni_item(u, name, mx, spread_dur):
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
+        yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
         price_thin=mx.get("price_thin") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
@@ -173,6 +174,7 @@ async def get_bonds(
             formula = external_formula(ref_obj)
 
         last_price_pct = prev_close_pct = dirty_price_rub = dm_bps = delta_to_prev_close = None
+        yield_xirr_pct = index_yield_pct = None
 
         if with_market:
             last_price_pct = market_prices.get(isin)
@@ -190,6 +192,8 @@ async def get_bonds(
                 )
                 dirty_price_rub = metrics.get("dirty_price_rub")
                 dm_bps = metrics.get("dm_bps")
+                yield_xirr_pct = metrics.get("yield_xirr_pct")
+                index_yield_pct = metrics.get("index_yield_pct")
             except Exception:
                 pass
 
@@ -206,6 +210,8 @@ async def get_bonds(
                 dirty_price_rub=dirty_price_rub,
                 dm_bps=dm_bps,
                 delta_to_prev_close=delta_to_prev_close,
+                yield_xirr_pct=yield_xirr_pct,
+                index_yield_pct=index_yield_pct,
             )
         )
 

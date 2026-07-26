@@ -143,6 +143,8 @@ function Dashboard() {
               z_model_bps: r.z_model_bps ?? b.z_model_bps,
               carry_bps: r.carry_bps ?? b.carry_bps,   // не стираем при транзиентном None
               yield_over_index_bps: r.yield_over_index_bps ?? b.yield_over_index_bps,
+              yield_xirr_pct: r.yield_xirr_pct ?? b.yield_xirr_pct,
+              index_yield_pct: r.index_yield_pct ?? b.index_yield_pct,
             };
           })
         );

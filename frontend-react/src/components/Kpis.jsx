@@ -34,9 +34,15 @@ export default function Kpis({ bonds }) {
     // средний carry vs база по показанным бумагам, bps
     const carries = bonds.map((x) => x.carry_bps).filter((v) => v != null);
     const avgCarry = carries.length ? Math.round(carries.reduce((s, v) => s + v, 0) / carries.length) : null;
+    // breadth: тон рынка за день по CHG (delta_to_prev_close, % от номинала)
+    const deltas = bonds.map((x) => x.delta_to_prev_close).filter((v) => v != null);
+    const up = deltas.filter((v) => v > 0).length;
+    const down = deltas.filter((v) => v < 0).length;
+    const medChg = deltas.length ? median(deltas) : null;
     return {
       count: bonds.length, avgDm, medDm, ru, kr,
       dmP25, dmP75, hasDm: dms.length > 0, avgCarry, nCarry: carries.length,
+      up, down, medChg, nChg: deltas.length,
     };
   }, [bonds]);
 
@@ -53,9 +59,14 @@ export default function Kpis({ bonds }) {
 
   const sgn = (v, digits = 0) => (v > 0 ? "+" : "") + v.toFixed(digits);
 
+  const breadth = k.nChg ? (
+    <><span className="pos">▲{k.up}</span> <span className="kpi-sep">·</span> <span className="neg">▼{k.down}</span></>
+  ) : null;
+
   return (
     <section className="kpis">
       {cell("INSTRUMENTS", k.count || "—", { sub: `RUONIA ${k.ru} · KEYRATE ${k.kr}` })}
+      {cell("ДВИЖЕНИЕ", breadth, { unit: "ЗА ДЕНЬ", sub: k.medChg == null ? undefined : `med ${sgn(k.medChg, 2)}` })}
       {cell("MEDIAN DM", k.medDm, { unit: "BPS" })}
       {cell("AVG DM", k.avgDm, { unit: "BPS" })}
       {cell("DM РАЗБРОС", k.hasDm ? `${k.dmP25}–${k.dmP75}` : null, { unit: "P25–P75 BPS" })}

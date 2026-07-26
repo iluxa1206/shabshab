@@ -67,6 +67,10 @@ export const COLS = [
     cell: (b) => <td className={"num" + ms(b)} style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
     cell: (b) => <td className={"num" + ms(b)} style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
+  { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num",
+    cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
+  { key: "index_yield_pct", label: "YTM", sub: "БАЗА %", align: "num",
+    cell: (b) => <td className="num" key="index_yield_pct">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)

@@ -164,6 +164,8 @@ class BondListItem(BaseModel):
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
     delta_to_prev_close: Optional[float] = None # placeholder
+    yield_xirr_pct: Optional[float] = None     # YTM бумаги (XIRR на проекции купонов по форварду), %
+    index_yield_pct: Optional[float] = None    # YTM роллирования базы (КС/RUONIA) на тот же срок, %
     disc_margin_bps: Optional[int] = None      # наш discount margin (Fabozzi)
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты

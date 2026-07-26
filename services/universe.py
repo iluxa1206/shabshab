@@ -25,17 +25,14 @@ async def _aempty():
 
 def build_universe_ref(u: dict, isin: str, cache: dict, secs: dict):
     """BondRefData из локального кэша (isins_cache) или внешних источников
-    (справочник MOEX + база/спред из строки НРД-юниверса)."""
+    (справочник MOEX + база/спред из строки универса реестра)."""
     data = cache.get(isin)
     if data:
         return create_bond_ref_data(data, isin)
-    base = u.get("base_rate_type", "UNKNOWN")
-    spread = u.get("spread_issue_bps") or 0
-    return build_ref_external(isin, secs.get(isin, {}), {
-        "base_coupon_index": ("CBRATED" if base == "KEYRATE"
-                              else "RUONIARATED" if base == "RUONIA" else None),
-        "nominal_margin_bps": spread,
-    })
+    base = u.get("base_rate_type") or None
+    return build_ref_external(isin, secs.get(isin, {}),
+                              base=base if base != "UNKNOWN" else None,
+                              spread_bps=u.get("spread_issue_bps") or 0)
 
 
 def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
@@ -68,7 +65,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     price_calc = last if last is not None else prev
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
-    dirty = dm = disc_dm = z_model = yoi = None
+    dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
@@ -79,6 +76,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             amorts=amorts, offers=offers)
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             yoi = m.get("yield_over_index_bps")
+            ytm, base_ytm = m.get("yield_xirr_pct"), m.get("index_yield_pct")
             implausible = bool(m.get("price_implausible"))
             hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
             sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
@@ -129,6 +127,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
         except (ValueError, TypeError):
             price_thin = False
     return {"last": last, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
+            "ytm": ytm, "base_ytm": base_ytm,
             "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
