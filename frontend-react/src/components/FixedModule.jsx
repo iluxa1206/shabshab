@@ -138,8 +138,10 @@ export default function FixedModule({ onOpen }) {
         </span>
         <span className="fx-rt-filter">
           {RT.map((rt) => (
-            <button key={rt} className={"fx-rt-chip" + (ratingsSel.includes(rt) ? " on" : "")}
-              style={ratingsSel.includes(rt) ? { background: RTCOLOR[rt], borderColor: RTCOLOR[rt] } : { color: RTCOLOR[rt] }}
+            <button key={rt} className={"chip-btn" + (ratingsSel.includes(rt) ? " on" : "")}
+              style={ratingsSel.includes(rt)
+                ? { background: RTCOLOR[rt], borderColor: RTCOLOR[rt], color: "var(--bg)" }
+                : { color: RTCOLOR[rt] }}
               onClick={() => setRatingsSel((s) => s.includes(rt) ? s.filter((x) => x !== rt) : [...s, rt])}>{rt}</button>
           ))}
         </span>
