@@ -11,6 +11,8 @@ YTM — через xirr (эффективная годовая, ACT/365, как 
 """
 from __future__ import annotations
 
+import re
+import json
 import time
 import logging
 from datetime import date
@@ -20,8 +22,17 @@ import httpx
 
 from valuation import xirr, xnpv, settle_date
 from services.market_data import MarketDataService, _moex_get
+from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
+
+
+def _issuer_of(name: str) -> str:
+    """Эмитент из имени выпуска: срезаем хвостовой токен-серию с цифрой
+    ('Самолет P13'→'Самолет', 'ЗСД 01'→'ЗСД', 'ОФЗ 26212'→'ОФЗ'). Дёшево, без
+    сети (в отличие от MOEX EMITTER_ID)."""
+    n = (name or "").strip()
+    return re.sub(r"\s+\S*\d\S*\s*$", "", n).strip() or n
 
 
 def _d(s) -> Optional[date]:
@@ -209,9 +220,10 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
         isin = g(row, "ISIN")
         if not isin:
             continue
+        nm = g(row, "SHORTNAME") or isin
         out.append({
             "isin": isin, "secid": g(row, "SECID"),
-            "name": g(row, "SHORTNAME") or isin,
+            "name": nm, "issuer": _issuer_of(nm),
             "maturity_date": g(row, "MATDATE") or None,
             "coupon_pct": _numf(g(row, "COUPONPERCENT")),
             "face": _numf(g(row, "FACEVALUE")) or 1000.0,
@@ -344,3 +356,30 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
             full = {}
         out[u["isin"]] = compute_fixed_row(u, full or {}, g_curve, calc_date)
     return out
+
+
+_YTM_HIST_FILE = cache_path("fixed_ytm_history.json")
+
+
+def apply_ytm_delta(metrics: Dict[str, dict], today_iso: str) -> None:
+    """Проставляет delta_ytm (изменение YTM к предыдущему торговому дню, п.п.) в
+    каждую метрику и сохраняет сегодняшний срез YTM на диск. Храним ~40 дней."""
+    try:
+        with open(_YTM_HIST_FILE, encoding="utf-8") as f:
+            hist = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        hist = {}
+    prev_days = sorted(d for d in hist if d < today_iso)
+    prev = hist.get(prev_days[-1], {}) if prev_days else {}
+    for isin, m in metrics.items():
+        y, p = m.get("ytm"), prev.get(isin)
+        if y is not None and p is not None:
+            m["delta_ytm"] = round(y - p, 2)
+    hist[today_iso] = {i: m["ytm"] for i, m in metrics.items() if m.get("ytm") is not None}
+    for d in sorted(hist)[:-40]:
+        hist.pop(d, None)
+    try:
+        with open(_YTM_HIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(hist, f)
+    except OSError as e:
+        logger.warning(f"ytm history save failed: {e}")

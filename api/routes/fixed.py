@@ -16,7 +16,7 @@ router = APIRouter()
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 # поля метрик, доливаемые в строку из market_cache['fixed_metrics']
-_METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "cur_yield",
+_METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
                 "dv01", "put_date")
 
@@ -35,6 +35,7 @@ async def get_fixed():
         m = metrics.get(u["isin"], {})
         item = {
             "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
+            "issuer": u.get("issuer"),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             # цена: из метрик (last→prev с флагом) иначе сырой board

@@ -1,3 +1,5 @@
+import { useLocation } from "react-router-dom";
+
 const THEMES = [["light", "#ffffff", "Светлая"], ["grey", "#3a3f47", "Серая"], ["dark", "#000000", "Тёмная"]];
 
 function ThemeSwitch({ theme, onSetTheme }) {
@@ -18,11 +20,12 @@ export default function StatusBar({ count, live, sources = {}, theme, onSetTheme
     { k: "ALOR", on: live },
     { k: "CBONDS", on: !!sources.cbonds },
   ];
+  const onFloaters = useLocation().pathname.startsWith("/floaters");
   return (
     <footer className="statusbar">
       {onSetTheme && <ThemeSwitch theme={theme} onSetTheme={onSetTheme} />}
       <span className="status-cell">{live ? "READY" : "CONNECTING"}</span>
-      <span className="status-cell">INSTRUMENTS <span className="counter">{String(count).padStart(3, "0")}</span></span>
+      {onFloaters && <span className="status-cell">INSTRUMENTS <span className="counter">{String(count).padStart(3, "0")}</span></span>}
       <span className="status-cell grow" />
       {src.map((s) => (
         <span key={s.k} className={"status-cell src" + (s.on ? " on" : "")} title={s.on ? "связь активна" : "нет связи"}>

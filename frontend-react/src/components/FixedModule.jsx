@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchFixed } from "../api.js";
 import { fmt, dmColor } from "../format.js";
+import IssuerFilter from "./IssuerFilter.jsx";
 
 const D = () => <span className="dash">—</span>;
 const median = (a) => {
@@ -27,6 +28,9 @@ const COLS = [
       title={b.price_stale ? "пред. закрытие — нет сделок сегодня" : undefined}>{fmt.pct(b.last_price_pct) ?? <D />}</td> },
   { key: "ytm", label: "YTM", sub: "%", align: "num",
     get: (b) => b.ytm, cell: (b) => <td className="num" key="y">{b.ytm == null ? <D /> : fmt.pct(b.ytm)}</td> },
+  { key: "delta_ytm", label: "Δ YTM", sub: "D/D пп", align: "num",
+    get: (b) => b.delta_ytm,
+    cell: (b) => <td className="num" style={b.delta_ytm != null ? dmColor(-b.delta_ytm) : undefined} key="dy">{b.delta_ytm == null ? <D /> : (b.delta_ytm > 0 ? "+" : "") + fmt.num(b.delta_ytm, 2)}</td> },
   { key: "cur_yield", label: "CUR Y", sub: "%", align: "num",
     get: (b) => b.cur_yield, cell: (b) => <td className="num" key="cy">{b.cur_yield == null ? <D /> : fmt.pct(b.cur_yield)}</td> },
   { key: "g_spread_bps", label: "G-SPRD", sub: "vs ОФЗ", align: "num",
@@ -61,12 +65,19 @@ export default function FixedModule({ onOpen }) {
   const q = useQuery({ queryKey: ["fixed"], queryFn: fetchFixed, staleTime: 60_000, refetchInterval: 120_000 });
   const [clsF, setClsF] = useState("all");     // all | ofz | corp
   const [query, setQuery] = useState("");
+  const [emittersSel, setEmittersSel] = useState([]);
   const [sort, setSort] = useState({ key: "val_today", dir: "desc" });
 
   const all = q.data?.items || [];
+  const issuers = useMemo(() => {
+    const m = new Map();
+    for (const b of all) { const k = b.issuer || b.name; if (k) m.set(k, (m.get(k) || 0) + 1); }
+    return [...m.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+  }, [all]);
   const rows = useMemo(() => {
     let r = all;
     if (clsF !== "all") r = r.filter((b) => b.cls === clsF);
+    if (emittersSel.length) { const set = new Set(emittersSel); r = r.filter((b) => set.has(b.issuer || b.name)); }
     if (query.trim()) {
       const s = query.trim().toLowerCase();
       r = r.filter((b) => (b.name || "").toLowerCase().includes(s) || (b.isin || "").toLowerCase().includes(s));
@@ -81,7 +92,7 @@ export default function FixedModule({ onOpen }) {
       if (vb == null) return -1;
       return va > vb ? dir : va < vb ? -dir : 0;
     });
-  }, [all, clsF, query, sort]);
+  }, [all, clsF, emittersSel, query, sort]);
 
   const k = useMemo(() => {
     const ys = rows.map((b) => b.ytm).filter((v) => v != null);
@@ -112,6 +123,9 @@ export default function FixedModule({ onOpen }) {
             <button key={v} className={"seg-btn" + (clsF === v ? " active" : "")} onClick={() => setClsF(v)}>{l}</button>
           ))}
         </span>
+        <IssuerFilter issuers={issuers} selected={emittersSel}
+          onToggle={(name) => setEmittersSel((s) => s.includes(name) ? s.filter((x) => x !== name) : [...s, name])}
+          onClear={() => setEmittersSel([])} />
         <input className="fx-search" placeholder="Поиск ISIN / имя" value={query}
           onChange={(e) => setQuery(e.target.value)} />
         <span className="fx-count">{rows.length}</span>

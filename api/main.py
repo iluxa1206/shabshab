@@ -70,6 +70,7 @@ async def _warm_fixed(market_cache):
         _ek, _eu, g = await MarketDataService.get_zspread_ctx()
         fcd = _cd or _rd or date.today()
         fm = await fi.compute_fixed_metrics_all(funi, g, fcd)
+        fi.apply_ytm_delta(fm, fcd.isoformat())   # Δ YTM день-к-дню
         market_cache["fixed_universe"] = funi
         market_cache["fixed_metrics"] = fm
         market_cache["fixed_calc_date"] = fcd.isoformat()
