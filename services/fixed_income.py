@@ -307,12 +307,20 @@ async def fetch_fixed_universe() -> List[dict]:
     return rows
 
 
-def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date) -> dict:
+def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
+                      price_override: float = None) -> dict:
     """Полный набор метрик фикс-бумаги для строки таблицы: цена (last→prev),
-    YTM/тек.доходность/g-спред/z-спред/дюрация/convexity/DV01."""
-    px = row.get("last") if row.get("last") is not None else row.get("prev")
-    out = {"last": px, "prev": row.get("prev"),
-           "price_stale": row.get("last") is None and row.get("prev") is not None}
+    YTM/тек.доходность/g-спред/z-спред/дюрация/convexity/DV01.
+
+    price_override — чистая цена калькулятора карточки: считает все метрики под
+    произвольную цену вместо рыночной (last→prev). НКД/поток не зависят от цены."""
+    if price_override is not None:
+        px = price_override
+        out = {"last": px, "prev": row.get("prev"), "price_stale": False}
+    else:
+        px = row.get("last") if row.get("last") is not None else row.get("prev")
+        out = {"last": px, "prev": row.get("prev"),
+               "price_stale": row.get("last") is None and row.get("prev") is not None}
     if px is None or not full.get("coupons"):
         return out
     m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date, g_curve)

@@ -5,7 +5,7 @@
 import re
 import logging
 from datetime import date
-from fastapi import APIRouter, Path, HTTPException
+from fastapi import APIRouter, Path, Query, HTTPException
 
 from services.market_data import market_cache, MarketDataService
 from services.exceptions import NotFoundException
@@ -110,5 +110,40 @@ async def get_fixed_details(isin: str = Path(...)):
             "put_date": m.get("put_date"),
         },
         "cashflow": _display_cashflow(full, calc_date),
+        "calc_date": calc_date.isoformat(),
+    }
+
+
+@router.get("/{isin}/reprice", tags=["Fixed"])
+async def reprice_fixed(
+    isin: str = Path(...),
+    price: float = Query(..., gt=0, le=1000, description="Чистая цена, % от номинала"),
+):
+    """Калькулятор карточки фикса: пересчёт YTM/g-спред/z-спред/дюрации/dirty под
+    произвольную чистую цену. Тот же путь, что строка таблицы (compute_fixed_row),
+    но с price_override."""
+    isin = isin.strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=400, detail="bad isin")
+    from services import fixed_income as fi
+    uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
+    row = next((u for u in uni if u.get("isin") == isin), None)
+    if row is None:
+        raise NotFoundException(f"{isin} не найден в универсе фиксов", {"isin": isin})
+
+    secid = row.get("secid") or isin
+    full = await MarketDataService.fetch_bond_schedule_full(secid)
+    _r, _k, cd, rd = await MarketDataService.get_curves()
+    _ek, _eu, g = await MarketDataService.get_zspread_ctx()
+    calc_date = cd or rd or date.today()
+    m = fi.compute_fixed_row(row, full, g, calc_date, price_override=price)
+
+    return {
+        "clean_price_pct": price,
+        "dirty_rub": m.get("dirty"),
+        "ytm_pct": m.get("ytm"), "cur_yield_pct": m.get("cur_yield"),
+        "g_spread_bps": m.get("g_spread_bps"), "z_spread_bps": m.get("z_spread_bps"),
+        "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
+        "convexity": m.get("convexity"), "dv01": m.get("dv01"),
         "calc_date": calc_date.isoformat(),
     }

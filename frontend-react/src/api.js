@@ -111,6 +111,10 @@ export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
 export const fetchFixed = () => request("/api/fixed");
 export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 
+// Калькулятор карточки фикса: YTM/g-спред/z-спред/дюрация/dirty под произвольную цену.
+export const repriceFixed = (isin, price, signal) =>
+  request(`/api/fixed/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });
+
 // Калькулятор карточки: пересчёт метрик оценки под произвольную чистую цену.
 export const repriceBond = (isin, price, signal) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });

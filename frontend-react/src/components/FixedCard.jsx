@@ -1,4 +1,7 @@
+import { useEffect, useRef, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
+import { repriceFixed, UnauthorizedError } from "../api.js";
 import PriceChart from "./PriceChart.jsx";
 
 const D = "—";
@@ -13,15 +16,75 @@ function Cell({ k, children }) {
 
 // Карточка фикс-бумаги: метрики к погашению + график цены + поток платежей.
 export default function FixedCard({ d }) {
-  const r = d.reference || {}, m = d.metrics || {}, mk = d.market || {};
+  const r = d.reference || {}, mBase = d.metrics || {}, mk = d.market || {};
   const cf = d.cashflow || [];
+
+  // Калькулятор цены: чистая цена → пересчёт YTM/g/z/дюрации/dirty под неё
+  // (зеркало флоатер-карточки). Пусто → рыночные метрики (mBase).
+  const [priceInput, setPriceInput] = useState("");
+  const [repriced, setRepriced] = useState(null);
+  useEffect(() => { setPriceInput(""); setRepriced(null); }, [r.isin]);
+
+  // guard от гонки: поздний ответ по бумаге A не должен красить открытую B;
+  // клеймим только результат последнего запроса (быстрый ввод → out-of-order).
+  const isinRef = useRef(r.isin);
+  const seqRef = useRef(0);
+  useEffect(() => { isinRef.current = r.isin; }, [r.isin]);
+
+  const repriceMut = useMutation({
+    mutationFn: ({ isin, p }) => repriceFixed(isin, p),
+    onSuccess: (data, { isin, seq }) => {
+      if (isin === isinRef.current && seq === seqRef.current) setRepriced(data);
+    },
+    onError: (e) => { if (!(e instanceof UnauthorizedError)) setRepriced(null); },
+  });
+  const mutate = repriceMut.mutate;
+
+  useEffect(() => {
+    const raw = priceInput.trim().replace(",", ".");
+    if (!raw) { setRepriced(null); return; }
+    const p = parseFloat(raw);
+    if (!Number.isFinite(p) || p <= 0 || p > 1000) return;
+    const t = setTimeout(() => mutate({ isin: r.isin, p, seq: ++seqRef.current }), 350);
+    return () => clearTimeout(t);
+  }, [priceInput, r.isin, mutate]);
+
+  const isRepriced = repriced != null;
+  const m = isRepriced ? repriced : mBase; // reprice-ответ = те же ключи метрик
+  const dirtyVal = isRepriced ? repriced.dirty_rub : mk.dirty_rub;
+  const priceVal = isRepriced ? repriced.clean_price_pct : mk.last_price_pct;
   const gc = m.g_spread_bps != null ? dmColor(m.g_spread_bps) : {};
-  const putHint = m.put_date ? ` (к оферте ${fmt.date(m.put_date)})` : "";
+  const putHint = mBase.put_date ? ` (к оферте ${fmt.date(mBase.put_date)})` : "";
 
   return (
     <>
+      <div className="price-calc">
+        <label className="pc-label" htmlFor="fc-price">Калькулятор цены</label>
+        <div className="pc-input-wrap">
+          <input
+            id="fc-price"
+            className="pc-input"
+            inputMode="decimal"
+            placeholder={fmt.pct(mk.last_price_pct) ?? "цена"}
+            value={priceInput}
+            onChange={(e) => setPriceInput(e.target.value)}
+          />
+          <span className="pc-unit">%</span>
+        </div>
+        {isRepriced && (
+          <button className="pc-reset" onClick={() => { setPriceInput(""); setRepriced(null); }}>
+            ↺ рынок {fmt.pct(mk.last_price_pct)}%
+          </button>
+        )}
+        <span className="pc-status">
+          {repriceMut.isPending ? "пересчёт…"
+            : isRepriced ? "под введённую цену"
+            : "рыночная цена"}
+        </span>
+      </div>
+
       <div className="section-title">Оценка к погашению{putHint}</div>
-      <div className="val-cards">
+      <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
         <div className="vc">
           <div className="vc-label">YTM</div>
           <div className="vc-val">{m.ytm_pct != null ? fmt.pct(m.ytm_pct) : D}<span className="vc-u"> %</span></div>
@@ -47,8 +110,8 @@ export default function FixedCard({ d }) {
       <div className="ref-grid">
         <Cell k="Эмитент">{r.issuer}</Cell>
         <Cell k="Рейтинг">{r.rating && r.rating !== "NR" ? r.rating : null}</Cell>
-        <Cell k="Цена">{mk.last_price_pct != null ? fmt.pct(mk.last_price_pct) + " %" : null}{mk.price_stale ? " (пред.)" : ""}</Cell>
-        <Cell k="Dirty">{mk.dirty_rub != null ? fmt.num(mk.dirty_rub) + " ₽" : null}</Cell>
+        <Cell k="Цена">{priceVal != null ? fmt.pct(priceVal) + " %" : null}{!isRepriced && mk.price_stale ? " (пред.)" : ""}</Cell>
+        <Cell k="Dirty">{dirtyVal != null ? fmt.num(dirtyVal) + " ₽" : null}</Cell>
         <Cell k="НКД">{mk.accrued_rub != null ? fmt.num(mk.accrued_rub) + " ₽" : null}</Cell>
         <Cell k="Купон">{r.coupon_pct != null ? fmt.pct(r.coupon_pct) + " %" : null}</Cell>
         <Cell k="Погашение">{r.maturity_date ? fmt.date(r.maturity_date) : null}</Cell>
