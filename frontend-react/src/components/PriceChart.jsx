@@ -58,8 +58,17 @@ function Chart({ candles, type, tf }) {
               stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
             <line x1={pad.l} x2={W - pad.r} y1={sy(hover.c)} y2={sy(hover.c)}
               stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
-            <text x={pad.l - 4} y={sy(hover.c) + 3} textAnchor="end" className="an-axis"
-              style={{ fill: "var(--fg)" }}>{hover.c.toFixed(2)}</text>
+            {(() => {
+              const label = hover.c.toFixed(2);
+              const tw = label.length * 6 + 8, ty = sy(hover.c);
+              return (
+                <g>
+                  <rect x={pad.l - 3 - tw} y={ty - 7} width={tw} height={14} rx={2} fill="var(--inv-bg)" />
+                  <text x={pad.l - 3 - tw / 2} y={ty + 3} textAnchor="middle" className="an-axis"
+                    style={{ fill: "var(--inv-fg)" }}>{label}</text>
+                </g>
+              );
+            })()}
           </g>
         )}
       </svg>
