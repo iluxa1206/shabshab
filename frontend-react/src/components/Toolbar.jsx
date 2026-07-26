@@ -5,6 +5,11 @@ import IssuerFilter from "./IssuerFilter.jsx";
 const RATINGS = [
   ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
 ];
+// цвета бакетов как в FixedModule (тема-aware CSS-переменные)
+const RTCOLOR = {
+  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
+  BELOW: "var(--rt-bb)", NR: "var(--mut-2)",
+};
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
@@ -53,10 +58,12 @@ export default function Toolbar({
         <button className={"chip-btn" + (basesSel.includes("RUONIA") ? " on" : "")} onClick={() => toggleBase("RUONIA")}>RUONIA</button>
       </div>
 
-      {/* группа 3: рейтинг */}
-      <div className="fgroup">
+      {/* группа 3: рейтинг — цветные чипы как в фиксах */}
+      <div className="fgroup fx-rt-filter">
         {RATINGS.map(([v, l]) => (
-          <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")} onClick={() => toggleRating(v)}>{l}</button>
+          <button key={v} className={"fx-rt-chip" + (ratingsSel.includes(v) ? " on" : "")}
+            style={ratingsSel.includes(v) ? { background: RTCOLOR[v], borderColor: RTCOLOR[v] } : { color: RTCOLOR[v] }}
+            onClick={() => toggleRating(v)}>{l}</button>
         ))}
       </div>
 

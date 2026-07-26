@@ -19,16 +19,20 @@ function Chip({ value }) {
 export const COLS = [
   // ── статика бумаги ──
   { key: "short_name", label: "INSTRUMENT", align: "left",
-    cell: (b) => (
-      <td className="left" key="short_name">
-        <div className="bond-name">
-          {b.short_name || b.isin}
-          {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
-          {!b.price_implausible && b.price_thin && <span className="badge-thin" title="0 сделок сегодня на MOEX — цена несвежая (вчерашний/старый принт). DM/z сняты с ненадёжной цены.">тонк</span>}
-        </div>
-        <div className="mono muted" style={{ fontSize: 11 }}>{b.isin}</div>
-      </td>
-    ) },
+    cell: (b) => {
+      // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
+      const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
+      return (
+        <td className="left" key="short_name">
+          <div className="bond-name">
+            <span className={"fx-cls fx-" + (isOfz ? "ofz" : "corp")}>{isOfz ? "ОФЗ" : "КОРП"}</span>
+            {b.short_name || b.isin}
+            {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
+            {!b.price_implausible && b.price_thin && <span className="badge-thin" title="0 сделок сегодня на MOEX — цена несвежая (вчерашний/старый принт). DM/z сняты с ненадёжной цены.">тонк</span>}
+          </div>
+        </td>
+      );
+    } },
   { key: "base_rate_type", label: "BASE",
     cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}>{b.base_rate_type}</span></td> },
   { key: "rating", label: "RATING",
