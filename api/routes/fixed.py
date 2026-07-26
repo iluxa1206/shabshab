@@ -31,12 +31,13 @@ async def get_fixed():
     metrics = market_cache.get("fixed_metrics") or {}
 
     from services import ratings
+    rmap = ratings.bucket_map_fixed([(u["isin"], u.get("cls")) for u in uni])  # батч (1 SQL)
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
         item = {
             "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
-            "issuer": u.get("issuer"), "rating": ratings.bucket_of_fixed(u["isin"], u.get("cls")),
+            "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             # цена: из метрик (last→prev с флагом) иначе сырой board

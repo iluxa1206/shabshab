@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -182,6 +182,25 @@ def get(isin: str) -> Optional[dict]:
     with _conn() as c:
         r = c.execute("SELECT * FROM instruments WHERE isin=?", ((isin or "").strip(),)).fetchone()
         return dict(r) if r else None
+
+
+def ratings_map(isins) -> Dict[str, str]:
+    """{isin: rating} для списка ОДНИМ запросом (батч вместо get() в цикле —
+    _conn() открывает соединение + PRAGMA на каждый вызов, в цикле по 700 бумаг
+    это сотни мс). Пустой rating не включаем."""
+    ids = [(i or "").strip() for i in isins if i]
+    if not ids:
+        return {}
+    _ensure()
+    out: Dict[str, str] = {}
+    with _conn() as c:
+        for k in range(0, len(ids), 900):   # лимит SQLite на число переменных
+            chunk = ids[k:k + 900]
+            ph = ",".join("?" * len(chunk))
+            for r in c.execute(f"SELECT isin, rating FROM instruments WHERE isin IN ({ph})", chunk):
+                if r["rating"]:
+                    out[r["isin"]] = r["rating"]
+    return out
 
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}

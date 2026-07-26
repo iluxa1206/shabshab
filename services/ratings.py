@@ -68,13 +68,9 @@ def bucket_of(isin: str) -> Optional[str]:
 
 
 def bucket_of_fixed(isin: str, cls: Optional[str]) -> Optional[str]:
-    """Рейтинг фикс-бумаги с учётом класса. ОФЗ — суверенный рублёвый долг,
-    безрисковый бенчмарк рынка; corpbonds их не рейтингует → форсим AAA (иначе
-    все ОФЗ молча падают в NR и портят фильтр/аналитику).
-
-    Корпораты: сначала json-кэш corpbonds, при промахе — фолбэк на реестр
-    инструментов (тот же источник рейтинга, что у флоатеров; corpbonds-кэш может
-    быть ещё не прогрет для этой бумаги)."""
+    """Рейтинг ОДНОЙ фикс-бумаги (карточка). Для списков — bucket_map_fixed
+    (батч, без per-row SQLite). ОФЗ — суверен → AAA; корп — json-кэш, при
+    промахе фолбэк на реестр."""
     if cls == "ofz":
         return "AAA"
     b = bucket_of(isin)
@@ -90,6 +86,33 @@ def bucket_of_fixed(isin: str, cls: Optional[str]) -> Optional[str]:
     return None
 
 
+def bucket_map_fixed(items) -> Dict[str, Optional[str]]:
+    """Рейтинги СПИСКА фикс-бумаг батчем — {isin: bucket}. items: iterable of
+    (isin, cls). ОФЗ→AAA; корп — json-кэш, остаток ОДНИМ запросом в реестр
+    (было: reg.get() per-row = сотни мс на /api/fixed при пустом json-кэше)."""
+    cache = _load()
+    out: Dict[str, Optional[str]] = {}
+    need = []
+    for isin, cls in items:
+        if cls == "ofz":
+            out[isin] = "AAA"
+        elif isin in cache and cache[isin].get("bucket"):
+            out[isin] = cache[isin]["bucket"]
+        else:
+            out[isin] = None
+            need.append(isin)
+    if need:
+        try:
+            from services import instruments_registry as reg
+            rmap = reg.ratings_map(need)
+            for i in need:
+                if rmap.get(i):
+                    out[i] = rmap[i]
+        except Exception:
+            pass
+    return out
+
+
 def bucket_map(isins: List[str]) -> Dict[str, str]:
     c = _load()
     return {i: c[i]["bucket"] for i in isins if i in c and c[i].get("bucket")}
@@ -102,14 +125,21 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
     import httpx
     cache = _load()
     now = time.time()
-    todo = [i for i in isins if not cache.get(i) or now - cache[i].get("ts", 0) > _TTL][:cap]
-    if not todo:
-        return 0
-    n = 0
     try:
         from services import instruments_registry as reg
     except Exception:
         reg = None
+    # Дедуп по РЕЕСТРУ (durable): json-кэш живёт в памяти и теряется при рестарте
+    # → без этого todo = весь универс каждый рестарт = вечный передрайн corpbonds.
+    # Реестр хранит рейтинг постоянно (set_rating), поэтому уже-рейтингованные
+    # бумаги пропускаем (ратинги меняются редко; corpbonds часто 404).
+    rated = reg.ratings_map(isins) if reg is not None else {}
+    todo = [i for i in isins
+            if not rated.get(i)
+            and (not cache.get(i) or now - cache[i].get("ts", 0) > _TTL)][:cap]
+    if not todo:
+        return 0
+    n = 0
     async with httpx.AsyncClient(headers=_UA, timeout=15) as client:
         for isin in todo:
             try:
