@@ -4,11 +4,10 @@
 Оси (все комбинации за один запуск, сетевые входы грузятся один раз):
   A curve_kind: 'spline'     — прод ExpCurve (natural spline по свопам)
                 'nrd_spline' — сплайн + exp-экстраполяция к ω (Прил.3)
-                'spfi'       — форвардные КС МБ СПФИ (Cbonds), линейная интерп.
   B rate_mode:  'fwd'        — годовой форвард из DF (текущий прод)
                 'spot_start' — значение кривой на дату фиксинга (начало периода;
                                Прил.3/4 НРД: «форвард = спот»)
-                'spot_end'   — значение на конец периода (контроль: старый провал СПФИ)
+                'spot_end'   — значение на конец периода
                 'avg'        — среднее значение кривой по периоду
   C fixing_lag_days: сдвиг даты фиксинга назад (конвенция эмитента)
 
@@ -33,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 
-from rates import get_rates_curves, get_spfi_curve
+from rates import get_rates_curves
 from services.bonds import create_bond_ref_data
 from services.market_data import MarketDataService
 from services.zspread import ExpCurve, GCurve, compute_z_bps, solve_z_bps, TENOR_Y
@@ -99,39 +98,12 @@ class NrdSplineCurve:
         return (D1/D2)**(1/(t2-t1)) - 1
 
 
-class SpfiCurve:
-    """Форвардные КС МБ СПФИ по срокам: spot(τ) = линейная интерп. форварда.
-    Это УЖЕ ожидаемые КС — без конверсии и без DF-трансформации."""
-    def __init__(self, cd, quotes):
-        pts = sorted((TENOR_Y[q.tenor.upper()], q.value/100.0)
-                     for q in quotes if q.tenor.upper() in TENOR_Y)
-        self.cd = cd
-        self.xs = [p[0] for p in pts]; self.ys = [p[1] for p in pts]
-
-    def t(self, d): return (d-self.cd).days/365.0
-
-    def spot(self, tau):
-        xs, ys = self.xs, self.ys
-        if tau <= xs[0]: return ys[0]
-        if tau >= xs[-1]: return ys[-1]
-        for i in range(1, len(xs)):
-            if xs[i] >= tau:
-                w = (tau-xs[i-1])/(xs[i]-xs[i-1])
-                return ys[i-1]+w*(ys[i]-ys[i-1])
-        return ys[-1]
-
-    def fwd(self, d1, d2):  # для fwd-mode смысла нет; среднее концов как заглушка
-        return (self.spot(max(self.t(d1), 0.0)) + self.spot(self.t(d2))) / 2
-
-
 def make_curve(kind, cd, inputs, eff_conv):
     if kind == "spline":
         # ExpCurve применяет (1+r/4)^4-1 только при base='KEYRATE' — трюк для eff_conv=off
         return ExpCurve(cd, inputs.irs, "KEYRATE" if eff_conv else "RUONIA")
     if kind == "nrd_spline":
         return NrdSplineCurve(cd, inputs.irs, eff_conv=eff_conv)
-    if kind == "spfi":
-        return SpfiCurve(cd, inputs.spfi)
     raise ValueError(kind)
 
 
@@ -256,7 +228,6 @@ class Inputs:
     g: GCurve
     ois: list
     irs: list
-    spfi: list
 
 
 async def fetch_gcurve(as_of=None):
@@ -329,9 +300,8 @@ async def load_inputs(as_of=None):
         accrued[i] = accrued_asof(memo[i], as_of, fb if fb is not None else refs[i].accrued_rub)
 
     ois, irs = get_rates_curves(use_cache=True)
-    spfi = get_spfi_curve(use_cache=True)
     g = GCurve(await fetch_gcurve(as_of))
-    return Inputs(as_of, {i: nrd[i] for i in ids}, refs, memo, accrued, g, ois, irs, spfi)
+    return Inputs(as_of, {i: nrd[i] for i in ids}, refs, memo, accrued, g, ois, irs)
 
 
 # ---------- варианты ----------
@@ -352,7 +322,6 @@ SPECS = [
     VariantSpec("V0n  spline raw  fwd",         "spline", False, "fwd"),
     VariantSpec("V1a  spline conv spot_start",  "spline", True, "spot_start"),
     VariantSpec("V1e  spline conv spot_end",    "spline", True, "spot_end"),
-    VariantSpec("V2   spfi spot_start",         "spfi",  False, "spot_start"),
     VariantSpec("V3f  nrdspl conv fwd",         "nrd_spline", True, "fwd"),
     VariantSpec("V7   ytm−G spline conv fwd",   "spline", True, "fwd", solver="ytm_minus_g"),
     VariantSpec("V7s  ytm−G spline conv spot",  "spline", True, "spot_start", solver="ytm_minus_g"),
@@ -476,9 +445,8 @@ async def load_universe_inputs(as_of=None):
     print(f"universe as_of={as_of}: годных {len(refs)}, пропущено {dict(skipped)}")
 
     ois, irs = get_rates_curves(use_cache=True)
-    spfi = get_spfi_curve(use_cache=True)
     g = GCurve(await fetch_gcurve(as_of))
-    return Inputs(as_of, nrd, refs, memo, accrued, g, ois, irs, spfi)
+    return Inputs(as_of, nrd, refs, memo, accrued, g, ois, irs)
 
 
 async def main():
@@ -494,7 +462,6 @@ async def main():
           f"(KEYRATE={sum(1 for r in inputs.refs.values() if r.base=='KEYRATE')}, "
           f"RUONIA={sum(1 for r in inputs.refs.values() if r.base=='RUONIA')})")
     print(f"G-curve pts={len(inputs.g.xs)}: {[(x, round(y*100,2)) for x,y in zip(inputs.g.xs[:3], inputs.g.ys[:3])]}...")
-    print(f"SPFI: {[(q.tenor, q.value) for q in inputs.spfi[:4]]}...")
 
     curve_ru = ExpCurve(inputs.cd, inputs.ois, "RUONIA")
     all_rows = []

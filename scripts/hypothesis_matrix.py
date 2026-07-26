@@ -13,7 +13,7 @@ MOEX расписания/НКД, наши кривые. Гипотезы:
   Разложение Δ (главный инструмент):
     y_our (flat cont → eff) vs ytm_НРД  → CF/yield-часть расхождения
     b_НРД = ytm_НРД − dm_НРД («имплайд-база» НРД, %) → фит к кандидатам:
-      IRS_eff(0.25/1.0/T), SPFI(0.25/T), avgFwd(life), G(0.25)
+      IRS_eff(0.25/1.0/T), avgFwd(life), G(0.25)
     residual-корреляции: Δdm vs duration бумаги, vs (100−P).
 """
 import asyncio, json, math
@@ -22,7 +22,7 @@ from dataclasses import replace
 
 import httpx
 
-from rates import get_rates_curves, get_spfi_curve, tenor_to_days
+from rates import get_rates_curves, tenor_to_days
 from forwards import CurveBootstrapper
 from services.bonds import build_ref_external
 from services.market_data import MarketDataService
@@ -114,20 +114,6 @@ async def main():
     ru_c = CurveBootstrapper.bootstrap_ruonia(ois, cd)
     kr_c = CurveBootstrapper.bootstrap_keyrate(irs, cd)
     exp_ks, exp_ru, g = await MarketDataService.get_zspread_ctx()
-    spfi = {q.tenor: q.value for q in get_spfi_curve(use_cache=True)}
-
-    def spfi_at(tau):
-        pts = sorted((tenor_to_days(t) / 365.0, v) for t, v in spfi.items())
-        if not pts:
-            return None
-        if tau <= pts[0][0]:
-            return pts[0][1]
-        if tau >= pts[-1][0]:
-            return pts[-1][1]
-        for i in range(1, len(pts)):
-            if pts[i][0] >= tau:
-                w = (tau - pts[i-1][0]) / (pts[i][0] - pts[i-1][0])
-                return pts[i-1][1] + w * (pts[i][1] - pts[i-1][1])
 
     # выборка: KEYRATE + RUONIA с dm/price
     isins = [i for i, u in UNI.items()
@@ -222,9 +208,6 @@ async def main():
             cands["avgSpot(life)"] = avg * 100
         except Exception:
             pass
-        if ref.base == "KEYRATE":
-            cands["SPFI(0.25)"] = spfi_at(0.25)
-            cands["SPFI(T)"] = spfi_at(T)
         try:
             cands["G(0.25)"] = g.r(0.25) * 100
         except Exception:
