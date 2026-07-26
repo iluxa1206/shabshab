@@ -144,7 +144,9 @@ async def universe_price_poller():
                 from services import ratings, fixed_income as fi
                 fx_uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
                 fl_uni = await instruments_registry.fetch_floater_universe()
-                fx = [u["isin"] for u in fx_uni if u.get("isin")]
+                # ОФЗ исключаем: суверен → AAA по правилу (bucket_of_fixed), на
+                # corpbonds его нет → 32 гарантированных 404 в начале списка зря.
+                fx = [u["isin"] for u in fx_uni if u.get("isin") and u.get("cls") != "ofz"]
                 fl = [u["isin"] for u in fl_uni if u.get("isin")]
                 allids = list(dict.fromkeys(fx + fl))
                 await ratings.refresh(allids, cap=80)
