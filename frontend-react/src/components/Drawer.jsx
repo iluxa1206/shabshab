@@ -7,6 +7,7 @@ import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import FixedCard from "./FixedCard.jsx";
+import Orderbook from "./Orderbook.jsx";
 
 // Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
 // Список фондов — из общего кэша ['funds'] (делится с модулем «Фонды»).
@@ -302,6 +303,11 @@ export default function Drawer({ isin, kind, onClose }) {
   const panelRef = useRef(null);
   const closeRef = useRef(null);
 
+  // Стакан: вторая панель слева от карточки. Сброс при смене/закрытии бумаги.
+  const [showOb, setShowOb] = useState(false);
+  useEffect(() => { setShowOb(false); }, [isin]);
+  const face = data?.reference?.face_value ?? null;
+
   // focus + esc + tab-trap
   useEffect(() => {
     if (!isin) return;
@@ -345,6 +351,12 @@ export default function Drawer({ isin, kind, onClose }) {
               <div className="dh-title">
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
                 <span className="mono muted">{isin}</span>
+                <button
+                  className={"btn ob-toggle" + (showOb ? " on" : "")}
+                  onClick={() => setShowOb((v) => !v)}
+                  aria-pressed={showOb}
+                  title="Стакан выпуска"
+                >СТАКАН</button>
               </div>
               <button ref={closeRef} className="btn" onClick={onClose}>CLOSE</button>
             </div>
@@ -355,6 +367,18 @@ export default function Drawer({ isin, kind, onClose }) {
                 : <Content d={data} />}
             </div>
           </motion.aside>
+          {showOb && (
+            <motion.aside
+              className="ob-panel"
+              key="ob-panel"
+              initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: reduce ? 0 : 24, opacity: 0 }}
+              transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              <Orderbook isin={isin} face={face} onClose={() => setShowOb(false)} />
+            </motion.aside>
+          )}
         </>
       )}
     </AnimatePresence>

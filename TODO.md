@@ -10,7 +10,7 @@
 - [ ] Кнопка открытия стакана **рядом с названием** вверху карточки облигации.
 - [ ] Панель стакана открывается **слева** от карточки (карточка справа — как сейчас, стакан слева, вторая выезжающая панель).
 - [ ] Данные: `GET /api/orderbook/{isin}` уже есть (Alor snapshot: bids/asks/depth). Live-обновление — Alor WS (см. `api/routes/ws.py`) или поллинг.
-- [ ] **Для КАЖДОГО уровня цены** (bid и ask) считать **SM и DM** по этой цене — переиспользовать солверы из `services/bond_details.reprice_bond` / `services/valuation` (тот же расчёт, что калькулятор цены в карточке, но батчем по всем ценам стакана).
+- [x] **Для КАЖДОГО уровня цены** (bid и ask) считать **SM и DM** — бэкенд готов: `services/bond_details.load_reprice_ctx` (тёплый ctx один раз) + `reprice_at_price(ctx, price)` (чистая, батчится по уровням). `/orderbook` уже считает SM/DM per-level с полными amorts/offers. Осталось UI-панель.
 - [ ] Колонки уровня: цена · объём (шт / ₽) · SM · DM (+ YTM для фиксов).
 - [ ] Работает и для флоатеров, и для фиксов (для фиксов — YTM/g-спред вместо SM/DM).
 
@@ -22,7 +22,7 @@
 - [ ] Состояния алерта: активен / сработал / отменён. История срабатываний.
 
 **Заметки по реализации:**
-- SM/DM per-level: вынести чистую функцию `price → (sm, dm)` из reprice (тёплые кэши расписания/кривой → быстро для 10-50 уровней).
+- [x] SM/DM per-level: чистая `reprice_at_price(ctx, price)` вынесена из reprice (тёплый ctx → быстро для 10-50 уровней).
 - Мониторинг: отдельный воркер в поллере, который для watch-алертов тянет стакан и матчит. Не долбить Alor на каждый алерт — батчить по isin.
 
 ---
@@ -36,8 +36,8 @@
 - [ ] Settle-модель: календарный T+1 vs бизнес — нужен бэктест (референс был НРД, off → отложено бессрочно).
 
 ### Чистка / рефактор
-- [ ] Мёртвый код: `get_cashflow_items`, `get_moex_coupon_fallback`, `calculate_floater_metrics`, `solve_z_bps`, роут `/bonds/{isin}/valuation`, фронт `searchBonds`.
-- [ ] `/valuation` и `/orderbook` роуты не передают amorts/offers → расходятся с карточкой (латентный баг; фронт /valuation не зовёт).
+- [x] Мёртвый код — ПРОВЕРЕНО (список устарел): `get_cashflow_items`/`get_moex_coupon_fallback`/`searchBonds`/роут `/valuation` уже удалены; `calculate_floater_metrics` живой (`last_prices.py:301`); `solve_z_bps` живой (тест + `scripts/nrd_pipeline_probe.py`). Удалять нечего.
+- [x] `/orderbook` не передавал amorts/offers → расходился с карточкой — ПОЧИНЕНО (reprice_at_price). Осталось `/valuation` роут (фронт не зовёт).
 - [ ] Core↔services циклический импорт (держится на lazy-import) — landmine рефактора.
 - [ ] 5 cashflow-builder'ов — консолидация (частично слито).
 

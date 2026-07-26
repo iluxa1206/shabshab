@@ -115,6 +115,11 @@ export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURICompon
 export const repriceBond = (isin, price, signal) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });
 
+// Стакан выпуска (Alor snapshot): bids/asks с per-level SM/DM/YTM (тот же расчёт,
+// что калькулятор карточки, батчем по уровням).
+export const fetchOrderbook = (isin, depth = 10, signal) =>
+  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}`, { signal });
+
 // --- Модуль «Фонды» ---
 export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);
 
