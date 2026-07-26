@@ -1,6 +1,35 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { fmt } from "../format.js";
+
+// Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
+const TYPES = [
+  { id: "floaters", label: "Флоатеры", home: "/floaters" },
+  { id: "fixed", label: "Фиксы", home: "/fixed" },
+  { id: "euro", label: "Евробонды", home: "/euro" },
+];
+const SUBNAV = {
+  floaters: [["/floaters", "Список"], ["/issuers", "Эмитенты"], ["/curves", "Кривые"]],
+  fixed: [["/fixed", "Список"]],
+  euro: [],
+};
+const currentType = (p) =>
+  p.startsWith("/fixed") ? "fixed" : p.startsWith("/euro") ? "euro" : "floaters";
+
+function TypeMenu({ type }) {
+  const cur = TYPES.find((t) => t.id === type) || TYPES[0];
+  return (
+    <div className="type-menu">
+      <button type="button" className="seg-btn type-btn" aria-haspopup="true">{cur.label} ▾</button>
+      <div className="type-drop" role="menu">
+        {TYPES.map((t) => (
+          <NavLink key={t.id} to={t.home} role="menuitem"
+            className={"type-opt" + (t.id === type ? " on" : "")}>{t.label}</NavLink>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function Clock() {
   const [t, setT] = useState(() => new Date());
@@ -21,16 +50,20 @@ function Clock() {
 const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 
 export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSettings }) {
+  const type = currentType(useLocation().pathname);
+  const sub = SUBNAV[type] || [];
   return (
     <header className="menubar">
       <div className="brand-row">
         <span className="wordmark">DESK</span>
-        <span className="seg module-seg" role="tablist" aria-label="Модуль">
-          <NavLink className={tabCls} to="/floaters">Флоатеры</NavLink>
-          <NavLink className={tabCls} to="/issuers">Эмитенты</NavLink>
-          <NavLink className={tabCls} to="/funds">Фонды</NavLink>
-          <NavLink className={tabCls} to="/curves">Кривые</NavLink>
-        </span>
+        <TypeMenu type={type} />
+        {sub.length > 0 && (
+          <span className="seg module-seg" role="tablist" aria-label="Раздел">
+            {sub.map(([to, label]) => (
+              <NavLink key={to} className={tabCls} to={to} end>{label}</NavLink>
+            ))}
+          </span>
+        )}
       </div>
       <div className="topbar-right">
         <span className="meta-chip">

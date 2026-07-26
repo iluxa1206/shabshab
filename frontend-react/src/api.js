@@ -103,6 +103,9 @@ export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 export const fetchCandles = (isin, tf = "1d") =>
   request(`/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`);
 
+// --- Фиксы (ОФЗ-ПД + ликвидные корпораты) ---
+export const fetchFixed = () => request("/api/fixed");
+
 // Калькулятор карточки: пересчёт метрик оценки под произвольную чистую цену.
 export const repriceBond = (isin, price, signal) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });

@@ -12,9 +12,10 @@ import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
-import FundsModule from "./components/funds/FundsModule.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import IssuerAggregates from "./components/IssuerAggregates.jsx";
+import FixedModule from "./components/FixedModule.jsx";
+import EuroStub from "./components/EuroStub.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard() {
@@ -289,9 +290,6 @@ function Dashboard() {
         onRetry={loadBonds}
         visibleCols={visibleCols}
       />
-      <Drawer isin={drawerIsin} onClose={closeDrawer} />
-      <StatusBar count={bonds.length} live={live} sources={meta.source_status}
-        theme={theme} onSetTheme={setTheme} />
     </>
   );
 
@@ -308,12 +306,15 @@ function Dashboard() {
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
         <Route path="/issuers" element={<IssuerAggregates bonds={bonds} onPickIssuer={pickIssuer} />} />
-        <Route path="/funds" element={<FundsModule />} />
-        <Route path="/funds/:code" element={<FundsModule />} />
+        <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
+        <Route path="/euro" element={<EuroStub />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
+      <Drawer isin={drawerIsin} onClose={closeDrawer} />
+      <StatusBar count={bonds.length} live={live} sources={meta.source_status}
+        theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
     </div>
   );
