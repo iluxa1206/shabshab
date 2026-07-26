@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchFixed } from "../api.js";
 import { fmt, dmColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
+import FixedAnalytics from "./FixedAnalytics.jsx";
 
 const RT = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
 const RTCOLOR = {
@@ -77,6 +78,7 @@ export default function FixedModule({ onOpen }) {
   const [emittersSel, setEmittersSel] = useState([]);
   const [ratingsSel, setRatingsSel] = useState([]);
   const [sort, setSort] = useState({ key: "val_today", dir: "desc" });
+  const [view, setView] = useState("list");    // list | analytics
 
   const all = q.data?.items || [];
   const issuers = useMemo(() => {
@@ -146,10 +148,21 @@ export default function FixedModule({ onOpen }) {
           onClear={() => setEmittersSel([])} />
         <input className="fx-search" placeholder="Поиск ISIN / имя" value={query}
           onChange={(e) => setQuery(e.target.value)} />
+        <span className="seg">
+          {[["list", "Список"], ["analytics", "Аналитика"]].map(([v, l]) => (
+            <button key={v} className={"seg-btn" + (view === v ? " active" : "")} onClick={() => setView(v)}>{l}</button>
+          ))}
+        </span>
         <span className="fx-count">{rows.length}</span>
       </div>
 
-      <div className="fx-table-wrap">
+      {view === "analytics" && (
+        q.isPending ? <div className="an-empty">загрузка…</div>
+          : !rows.length ? <div className="an-empty">нет данных (прогрев метрик — до минуты после старта)</div>
+          : <FixedAnalytics rows={rows} />
+      )}
+
+      <div className="fx-table-wrap" style={view === "analytics" ? { display: "none" } : undefined}>
         {q.isPending ? <div className="an-empty">загрузка…</div>
           : q.error ? <div className="an-empty">ошибка загрузки</div>
           : !rows.length ? <div className="an-empty">нет данных (прогрев метрик — до минуты после старта)</div>
