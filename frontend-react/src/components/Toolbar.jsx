@@ -58,11 +58,13 @@ export default function Toolbar({
         <button className={"chip-btn" + (basesSel.includes("RUONIA") ? " on" : "")} onClick={() => toggleBase("RUONIA")}>RUONIA</button>
       </div>
 
-      {/* группа 3: рейтинг — цветные чипы как в фиксах */}
-      <div className="fgroup fx-rt-filter">
+      {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет */}
+      <div className="fgroup">
         {RATINGS.map(([v, l]) => (
-          <button key={v} className={"fx-rt-chip" + (ratingsSel.includes(v) ? " on" : "")}
-            style={ratingsSel.includes(v) ? { background: RTCOLOR[v], borderColor: RTCOLOR[v] } : { color: RTCOLOR[v] }}
+          <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")}
+            style={ratingsSel.includes(v)
+              ? { background: RTCOLOR[v], borderColor: RTCOLOR[v], color: "var(--bg)" }
+              : { color: RTCOLOR[v] }}
             onClick={() => toggleRating(v)}>{l}</button>
         ))}
       </div>
