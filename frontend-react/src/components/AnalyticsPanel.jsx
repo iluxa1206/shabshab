@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { fmt } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks } from "../charts/index.js";
 
@@ -31,6 +31,28 @@ const zval = (b) => {
   const z = b.z_model_bps != null ? b.z_model_bps : b.z_spread_bps;
   return z != null && z < 3000 && z > -1500 ? z : null;
 };
+
+// ключ эмитента (имя первично, id — фолбэк) и группировка строк по эмитенту
+const emKey = (b) => b.emitter_name || (b.emitter_id ? `#${b.emitter_id}` : null);
+const byIssuer = (rows) => {
+  const g = new Map();
+  for (const b of rows) {
+    const k = emKey(b);
+    if (!k) continue;
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(b);
+  }
+  return g;
+};
+// доминирующий рейтинг-бакет группы бумаг → её цвет
+const modalBucket = (bonds) => {
+  const c = {};
+  for (const b of bonds) { const k = norm(b.rating); c[k] = (c[k] || 0) + 1; }
+  let best = "NR", bn = -1;
+  for (const k of Object.keys(c)) if (c[k] > bn) { bn = c[k]; best = k; }
+  return best;
+};
+const trunc = (s) => (s.length > 18 ? s.slice(0, 17) + "…" : s);
 
 const median = (a) => {
   if (!a.length) return null;
@@ -76,44 +98,104 @@ function ScatterZDur({ rows }) {
   );
 }
 
+// ── Scatter агрегированный по эмитенту: точка = (медиана spread dur, медиана z),
+//    размер = число бумаг, цвет = доминирующий рейтинг эмитента ──
+function ScatterIssuer({ rows }) {
+  const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
+  const pts = [];
+  for (const [k, bonds] of byIssuer(rows)) {
+    const zs = bonds.map(zval).filter((v) => v != null);
+    const ds = bonds.map((b) => b.spread_dur_yrs).filter((v) => v != null);
+    if (!zs.length || !ds.length) continue;
+    pts.push({ x: median(ds), y: median(zs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
+  }
+  if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
+  const xmax = Math.max(...pts.map((p) => p.x), 1);
+  const ymax = Math.max(...pts.map((p) => p.y), 100);
+  const ymin = Math.min(...pts.map((p) => p.y), 0);
+  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
+  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
+  const nx = Math.min(Math.ceil(xmax), 6);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="z-спред vs spread duration по эмитентам">
+      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
+        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+        y={H - pad.b + 14} textClass="an-axis" />
+      {pts.map((p) => (
+        <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n))}
+          fill={BCOLOR[p.r]} fillOpacity={0.55} stroke={BCOLOR[p.r]} strokeOpacity={0.9}>
+          <title>{`${p.name}\nмедиана z: ${Math.round(p.y)} bps · медиана spread dur: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`}</title>
+        </circle>
+      ))}
+      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">spread duration →</text>
+      <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>z, bps</text>
+    </svg>
+  );
+}
+
+// ── Общий рендер box-строк (p25–медиана–p75) для рейтингов/эмитентов ──
+function BoxRows({ entries, note, label }) {
+  if (!entries.length) return <div className="an-empty">нет данных</div>;
+  const all = entries.flatMap((e) => e.arr);
+  const zmax = Math.max(...all), zmin = Math.min(0, ...all);
+  const W = 460, rowH = entries.length > 8 ? 22 : 30, pad = { l: 100, r: 40, t: 6 };
+  const H = entries.length * rowH + pad.t + 8 + (note ? 14 : 0);
+  const sx = linearScale([zmin, zmax], [pad.l, W - pad.r]);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label={label}>
+      {entries.map((e, i) => {
+        const arr = e.arr;
+        const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
+        const y = pad.t + i * rowH + rowH / 2;
+        return (
+          <g key={e.key}>
+            <text x={pad.l - 6} y={y + 3} className="an-axis" textAnchor="end">{e.label}</text>
+            <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round">
+              <title>{`${e.label}: линия = разброс z-спреда, p25–p75 = ${Math.round(q1)}–${Math.round(q3)} bps`}</title>
+            </line>
+            <circle cx={sx(md)} cy={y} r={4} fill={e.color}>
+              <title>{`${e.label}: точка = медиана z-спреда ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}`}</title>
+            </circle>
+            <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
+          </g>
+        );
+      })}
+      {note && <text x={W - pad.r} y={H - 4} className="an-mut" textAnchor="end" fontSize="9">{note}</text>}
+    </svg>
+  );
+}
+
 // ── Распределение z по рейтинг-бакетам (p25–медиана–p75) ──
 function RatingDist({ rows }) {
-  const groups = useMemo(() => {
+  const entries = useMemo(() => {
     const g = {};
     for (const b of rows) {
       const z = zval(b);
       if (z == null) continue;
       (g[norm(b.rating)] ||= []).push(z);
     }
-    return g;
+    return BUCKETS.filter((k) => g[k]?.length).map((k) => ({ key: k, label: k, arr: g[k], color: BCOLOR[k] }));
   }, [rows]);
-  const present = BUCKETS.filter((k) => groups[k]?.length);
-  if (!present.length) return <div className="an-empty">нет данных</div>;
-  const all = present.flatMap((k) => groups[k]);
-  const zmax = Math.max(...all), zmin = Math.min(0, ...all);
-  const W = 460, rowH = 30, pad = { l: 44, r: 40, t: 6 };
-  const sx = linearScale([zmin, zmax], [pad.l, W - pad.r]);
-  return (
-    <svg viewBox={`0 0 ${W} ${present.length * rowH + pad.t + 8}`} className="an-svg" role="img" aria-label="распределение z по рейтингам">
-      {present.map((k, i) => {
-        const arr = groups[k];
-        const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
-        const y = pad.t + i * rowH + rowH / 2;
-        return (
-          <g key={k}>
-            <text x={pad.l - 6} y={y + 3} className="an-axis" textAnchor="end">{k}</text>
-            <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={BCOLOR[k]} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round">
-              <title>{`${k}: линия = разброс z-спреда, p25–p75 = ${Math.round(q1)}–${Math.round(q3)} bps`}</title>
-            </line>
-            <circle cx={sx(md)} cy={y} r={4} fill={BCOLOR[k]}>
-              <title>{`${k}: точка = медиана z-спреда ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}`}</title>
-            </circle>
-            <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
-          </g>
-        );
-      })}
-    </svg>
-  );
+  return <BoxRows entries={entries} label="распределение z по рейтингам" />;
+}
+
+// ── Распределение z по эмитентам (≥2 бумаг, сорт по медиане z, топ-N) ──
+const ISSUER_CAP = 22;
+function IssuerDist({ rows }) {
+  const { entries, note } = useMemo(() => {
+    const arr = [];
+    for (const [k, bonds] of byIssuer(rows)) {
+      const zs = bonds.map(zval).filter((v) => v != null);
+      if (zs.length < 2) continue; // одиночные бумаги эмитента — не распределение
+      arr.push({ key: String(k), label: trunc(String(k)), arr: zs, color: BCOLOR[modalBucket(bonds)], md: median(zs) });
+    }
+    arr.sort((a, b) => b.md - a.md);
+    const note = arr.length > ISSUER_CAP ? `+${arr.length - ISSUER_CAP} эмитентов ниже по z скрыто` : null;
+    return { entries: arr.slice(0, ISSUER_CAP), note };
+  }, [rows]);
+  if (!entries.length) return <div className="an-empty">нет эмитентов с ≥2 бумагами (с валидным z)</div>;
+  return <BoxRows entries={entries} note={note} label="распределение z по эмитентам" />;
 }
 
 // ── Профиль рефиксинга портфеля (watch): когда бумаги поймают новую ставку ──
@@ -163,17 +245,36 @@ function RatingLegend() {
   );
 }
 
+function AggToggle({ value, onChange }) {
+  return (
+    <span className="an-toggle" role="group" aria-label="агрегация">
+      {[["rating", "Рейтинг"], ["issuer", "Эмитент"]].map(([v, l]) => (
+        <button key={v} type="button" className={"an-tgl-btn" + (value === v ? " on" : "")}
+          aria-pressed={value === v} onClick={() => onChange(v)}>{l}</button>
+      ))}
+    </span>
+  );
+}
+
 export default function AnalyticsPanel({ rows }) {
+  const [groupBy, setGroupBy] = useState("rating");
+  const byIss = groupBy === "issuer";
   return (
     <section className="analytics">
       <div className="an-card">
-        <div className="an-title">z-спред vs SPREAD DURATION <span className="an-hint">точка = выпуск · цвет = рейтинг · наведи для деталей</span></div>
-        <ScatterZDur rows={rows} />
+        <div className="an-title">z-спред vs SPREAD DURATION
+          <span className="an-hint">{byIss ? "точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
+          <AggToggle value={groupBy} onChange={setGroupBy} />
+        </div>
+        {byIss ? <ScatterIssuer rows={rows} /> : <ScatterZDur rows={rows} />}
         <RatingLegend />
       </div>
       <div className="an-card">
-        <div className="an-title">z по РЕЙТИНГ-БАКЕТАМ <span className="an-hint">линия p25–p75 · точка = медиана · (n)</span></div>
-        <RatingDist rows={rows} />
+        <div className="an-title">{byIss ? "z по ЭМИТЕНТАМ" : "z по РЕЙТИНГ-БАКЕТАМ"}
+          <span className="an-hint">линия p25–p75 · точка = медиана · (n)</span>
+          <AggToggle value={groupBy} onChange={setGroupBy} />
+        </div>
+        {byIss ? <IssuerDist rows={rows} /> : <RatingDist rows={rows} />}
         <RatingLegend />
       </div>
       <div className="an-card">

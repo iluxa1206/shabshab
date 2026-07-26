@@ -430,6 +430,13 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .an-leg-lbl { color: var(--mut-2); }
 .an-leg-item { display: inline-flex; align-items: center; gap: 4px; }
 .an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+/* переключатель агрегации Рейтинг/Эмитент */
+.an-toggle { float: right; display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.an-tgl-btn { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mut);
+  background: transparent; border: 0; padding: 2px 8px; cursor: pointer; }
+.an-tgl-btn + .an-tgl-btn { border-left: 1px solid var(--line); }
+.an-tgl-btn:hover { color: var(--fg); }
+.an-tgl-btn.on { background: var(--accent); color: var(--bg); }
 
 /* ── Меню выбора столбцов (дропдаун) ── */
 .colmenu { position: relative; display: inline-flex; }
