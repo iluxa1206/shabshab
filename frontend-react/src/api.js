@@ -100,11 +100,16 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
-export const fetchCandles = (isin, tf = "1d") =>
-  request(`/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`);
+export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
+  let u = `/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`;
+  if (board) u += `&board=${board}`;
+  if (secid) u += `&secid=${encodeURIComponent(secid)}`;
+  return request(u);
+};
 
 // --- Фиксы (ОФЗ-ПД + ликвидные корпораты) ---
 export const fetchFixed = () => request("/api/fixed");
+export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 
 // Калькулятор карточки: пересчёт метрик оценки под произвольную чистую цену.
 export const repriceBond = (isin, price, signal) =>

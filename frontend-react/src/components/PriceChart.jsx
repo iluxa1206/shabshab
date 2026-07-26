@@ -81,13 +81,14 @@ function Chart({ candles, type, tf }) {
   );
 }
 
-// Интерактивный график цены выпуска (MOEX TQCB): линия/свечи + таймфреймы.
-export default function PriceChart({ isin }) {
+// Интерактивный график цены выпуска (MOEX): линия/свечи + таймфреймы.
+// Для ОФЗ передавать secid + board="TQOB" (по ISIN candles не резолвятся).
+export default function PriceChart({ isin, secid, board }) {
   const [tf, setTf] = useState("1d");
   const [type, setType] = useState("candles");
   const q = useQuery({
-    queryKey: ["candles", isin, tf],
-    queryFn: () => fetchCandles(isin, tf),
+    queryKey: ["candles", isin, secid, board, tf],
+    queryFn: () => fetchCandles(isin, tf, { secid, board }),
     staleTime: 60_000,
   });
   const candles = q.data?.candles || [];

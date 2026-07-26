@@ -137,8 +137,8 @@ export default function FixedModule({ onOpen }) {
               <tbody>
                 {rows.map((b) => (
                   <tr key={b.isin} tabIndex={0} role="button"
-                    onClick={(e) => onOpen(b.isin, e.currentTarget)}
-                    onKeyDown={(e) => { if (e.key === "Enter") onOpen(b.isin, e.currentTarget); }}>
+                    onClick={(e) => onOpen(b.isin, e.currentTarget, "fixed")}
+                    onKeyDown={(e) => { if (e.key === "Enter") onOpen(b.isin, e.currentTarget, "fixed"); }}>
                     {COLS.map((c) => c.cell(b))}
                   </tr>
                 ))}

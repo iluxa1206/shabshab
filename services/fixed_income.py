@@ -183,7 +183,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
     resp = await _moex_get(client, url, params={
         "iss.only": "securities,marketdata",
         "securities.columns": "SECID,ISIN,SHORTNAME,MATDATE,COUPONPERCENT,"
-                              "FACEVALUE,ACCRUEDINT,PREVPRICE,PREVDATE",
+                              "FACEVALUE,FACEUNIT,ACCRUEDINT,PREVPRICE,PREVDATE",
         "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY",
     }, timeout=20)
     if resp is None or resp.status_code != 200:
@@ -215,6 +215,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             "maturity_date": g(row, "MATDATE") or None,
             "coupon_pct": _numf(g(row, "COUPONPERCENT")),
             "face": _numf(g(row, "FACEVALUE")) or 1000.0,
+            "faceunit": (g(row, "FACEUNIT") or "").upper(),
             "accrued": _numf(g(row, "ACCRUEDINT")) or 0.0,
             "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
             "last": last_by.get(g(row, "SECID")),
@@ -230,6 +231,10 @@ def _is_fixed(row: dict, board: str, floaters: set) -> bool:
         return False
     if (row.get("secid") or "").startswith("BYM"):
         return False  # РесБел (Белоруссия) — квазисуверен под санкциями, вне скоупа
+    # только рублёвые: FACEUNIT=SUR/RUB (валютные/замещающие исключаем)
+    fu = row.get("faceunit") or ""
+    if fu and fu not in ("SUR", "RUB", "RUR"):
+        return False
     name = (row.get("name") or "").upper()
     if any(s in name for s in _SKIP_NAME):
         return False

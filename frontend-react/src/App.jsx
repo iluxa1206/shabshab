@@ -240,13 +240,18 @@ function Dashboard() {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   }, []);
 
-  const openDrawer = useCallback((isin, triggerEl) => {
+  const openDrawer = useCallback((isin, triggerEl, kind) => {
     lastTriggerRef.current = triggerEl || document.activeElement;
-    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.set("isin", isin); return n; });
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      n.set("isin", isin);
+      if (kind === "fixed") n.set("k", "fixed"); else n.delete("k");
+      return n;
+    });
   }, [setSearchParams]);
 
   const closeDrawer = useCallback(() => {
-    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); return n; });
+    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); n.delete("k"); return n; });
     const el = lastTriggerRef.current;
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
@@ -312,7 +317,7 @@ function Dashboard() {
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
-      <Drawer isin={drawerIsin} onClose={closeDrawer} />
+      <Drawer isin={drawerIsin} kind={searchParams.get("k")} onClose={closeDrawer} />
       <StatusBar count={bonds.length} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}

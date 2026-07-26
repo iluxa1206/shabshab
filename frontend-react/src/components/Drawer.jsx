@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { fmt, dmColor } from "../format.js";
-import { fetchBondDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
+import FixedCard from "./FixedCard.jsx";
 
 // Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
 // Список фондов — из общего кэша ['funds'] (делится с модулем «Фонды»).
@@ -288,10 +289,11 @@ function Content({ d }) {
   );
 }
 
-export default function Drawer({ isin, onClose }) {
+export default function Drawer({ isin, kind, onClose }) {
+  const isFixed = kind === "fixed";
   const detailsQ = useQuery({
-    queryKey: ["bond", isin],
-    queryFn: () => fetchBondDetails(isin),
+    queryKey: [isFixed ? "fixed-bond" : "bond", isin],
+    queryFn: () => (isFixed ? fetchFixedDetails(isin) : fetchBondDetails(isin)),
     enabled: !!isin,
   });
   const data = detailsQ.data;
@@ -341,7 +343,7 @@ export default function Drawer({ isin, onClose }) {
           >
             <div className="drawer-head">
               <div className="dh-title">
-                <h2 id="d-name">{data?.reference?.short_name || "—"}</h2>
+                <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
                 <span className="mono muted">{isin}</span>
               </div>
               <button ref={closeRef} className="btn" onClick={onClose}>CLOSE</button>
@@ -349,6 +351,7 @@ export default function Drawer({ isin, onClose }) {
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">LOADING</div>
+                : isFixed ? <FixedCard d={data} />
                 : <Content d={data} />}
             </div>
           </motion.aside>

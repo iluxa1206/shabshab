@@ -27,6 +27,7 @@ router = APIRouter()
 # интерполируются в URL к MOEX/Alor f-строками — мусор/`..%2F` не должен уходить
 # во внешние запросы.
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
+_SECID_RE = re.compile(r"[A-Z0-9]{4,20}")
 
 
 def _require_isin(isin: str) -> str:
@@ -255,10 +256,16 @@ async def get_bond_details(isin: str = Path(...)):
 async def get_bond_candles(
     isin: str = Path(...),
     tf: Literal["5m", "1h", "1d", "1w"] = Query("1d", description="Таймфрейм свечи"),
+    board: str = Query("TQCB", description="Борд MOEX (TQCB корп / TQOB ОФЗ)"),
+    secid: Optional[str] = Query(None, description="SECID (для ОФЗ ≠ ISIN)"),
 ):
-    """OHLCV-свечи MOEX (борд TQCB) для графика карточки. 5m — агрегация 1-мин."""
+    """OHLCV-свечи MOEX для графика карточки. 5m — агрегация 1-мин. Для ОФЗ
+    передавать board=TQOB и secid (SU26…), т.к. по ISIN candles не резолвятся."""
     isin = _require_isin(isin)
-    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(isin, tf)}
+    sec = secid or isin
+    if not _SECID_RE.fullmatch(sec) or board not in ("TQCB", "TQOB"):
+        raise HTTPException(status_code=400, detail="bad secid/board")
+    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(sec, tf, board)}
 
 
 

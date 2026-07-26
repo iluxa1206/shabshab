@@ -642,14 +642,15 @@ class MarketDataService:
     }
 
     @classmethod
-    async def fetch_candles(cls, isin: str, tf: str = "1d") -> List[dict]:
-        """OHLCV-свечи MOEX (борд TQCB) для карточки. tf ∈ 5m/1h/1d/1w.
-        Возвращает [{'t','o','h','l','c','v'}] по возрастанию времени. 5-мин
-        собираются агрегацией 1-мин свечей (MOEX не отдаёт 5-мин нативно)."""
+    async def fetch_candles(cls, security: str, tf: str = "1d", board: str = "TQCB") -> List[dict]:
+        """OHLCV-свечи MOEX для карточки. tf ∈ 5m/1h/1d/1w. security — SECID/ISIN
+        бумаги на борде board (корпораты TQCB: SECID=ISIN; ОФЗ TQOB: SECID=SU26…,
+        по ISIN не резолвится). Возвращает [{'t','o','h','l','c','v'}] по возрастанию
+        времени. 5-мин собираются агрегацией 1-мин свечей (MOEX не отдаёт нативно)."""
         interval, days, bucket_min = cls._CANDLE_TF.get(tf, cls._CANDLE_TF["1d"])
         frm = (date.today() - timedelta(days=days)).isoformat()
-        url = (f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/"
-               f"securities/{isin}/candles.json")
+        url = (f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/"
+               f"securities/{security}/candles.json")
         raw: List[dict] = []
         try:
             async with httpx.AsyncClient() as client:
