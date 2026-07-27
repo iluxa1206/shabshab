@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed } from "../api.js";
+import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, cbondsUrl } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
 
 const CATALOG_KEY = ["admin", "catalog"];
@@ -166,8 +166,7 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
         <td className="cat-isin">
           {r.isin}
           <a className="cat-ext" title="страница выпуска на cbonds"
-            href={r.cbonds_id ? `https://cbonds.ru/bonds/${r.cbonds_id}/`
-                              : `https://corpbonds.ru/bond/${r.isin}`}
+            href={cbondsUrl(r.isin, r.cbonds_id)}
             target="_blank" rel="noopener noreferrer">↗</a>
           {r.manual_locked ? <span className="cat-lock" title="ручной lock — sync не затрёт">🔒</span> : null}
           {!r.reviewed ? <span className="cat-new" title="новая, не подтверждена">•</span> : null}

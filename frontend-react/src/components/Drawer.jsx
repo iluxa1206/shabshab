@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { fmt, dmColor } from "../format.js";
-import { fetchBondDetails, fetchFixedDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError, cbondsUrl } from "../api.js";
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
@@ -355,7 +355,12 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
             <div className="drawer-head">
               <div className="dh-title">
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
-                <span className="mono muted">{isin}</span>
+                <span className="mono muted">
+                  {isin}
+                  <a className="cat-ext" title="страница выпуска на cbonds"
+                    href={cbondsUrl(isin, data?.reference?.cbonds_id)}
+                    target="_blank" rel="noopener noreferrer">↗</a>
+                </span>
                 <button
                   className={"btn ob-toggle" + (showOb ? " on" : "")}
                   onClick={() => setShowOb((v) => !v)}
