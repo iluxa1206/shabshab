@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
-import { fetchOrderbook, fetchAlerts } from "../api.js";
+import { fetchOrderbook, fetchAlerts, connectOrderbookWs } from "../api.js";
 import OrderbookAlerts from "./OrderbookAlerts.jsx";
 
 // значение метрики алерта на уровне стакана
@@ -72,11 +72,24 @@ export default function Orderbook({ isin, kind, face, onClose }) {
   const [full, setFull] = useState(false);
   const [armPrefill, setArmPrefill] = useState(null); // {side, price} из Ctrl-клика
 
+  // WS-стакан (реал-тайм) — приоритет над HTTP-поллингом. Только в режиме
+  // «только заявки» (в full режиме лестницу строит бэк по HTTP). Поллинг остаётся
+  // фолбэком: WS лёг / пусто → рендерим q.data. wsFresh — был ли недавний тик.
+  const [wsData, setWsData] = useState(null);
+  const wsTsRef = useRef(0);
+  useEffect(() => {
+    setWsData(null);
+    if (!isin || full) return undefined;
+    const conn = connectOrderbookWs(isin, (data) => { wsTsRef.current = Date.now(); setWsData(data); });
+    return () => conn.close();
+  }, [isin, full]);
+
   const q = useQuery({
     queryKey: ["orderbook", isin, depth, full, kind],
     queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater" }, signal),
     enabled: !!isin,
-    refetchInterval: 3000,
+    // WS живой → редкий фолбэк-поллинг (15с); иначе привычные 3с
+    refetchInterval: () => (!full && Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),
     refetchIntervalInBackground: false,
   });
 
@@ -86,11 +99,12 @@ export default function Orderbook({ isin, kind, face, onClose }) {
     (a) => a.isin === isin && (a.status === "active" || a.status === "fired"));
 
   const d = q.data;
-  const ob = d?.orderbook;
-  // asks: бэк сортирует по возрастанию (лучший=низ). Для DOM показываем сверху
-  // худшую (высокую) цену, лучший ask — внизу, у спреда.
-  const asks = ob?.asks ? [...ob.asks].reverse() : [];
-  const bids = ob?.bids || []; // уже по убыванию, лучший bid — сверху
+  const wsLive = !full && wsData?.orderbook && Date.now() - wsTsRef.current < 6000;
+  const ob = wsLive ? wsData.orderbook : d?.orderbook;
+  // asks best-first (возрастание) → нарезаем depth, reverse для DOM (высокая сверху).
+  // bids best-first (убывание) → нарезаем depth. WS отдаёт depth 50 — режем под селектор.
+  const asks = ob?.asks ? ob.asks.slice(0, depth).slice().reverse() : [];
+  const bids = ob?.bids ? ob.bids.slice(0, depth) : [];
   // лучшие котировки = уровни С заявкой (в full режиме есть пустые синтетические)
   const bestAsk = ob?.asks?.filter((l) => l.quantity != null).slice(-1)[0]?.price_pct
     ?? ob?.asks?.[0]?.price_pct ?? null;
@@ -120,9 +134,10 @@ export default function Orderbook({ isin, kind, face, onClose }) {
       </div>
 
       <div className="ob-status">
-        {q.isLoading ? "загрузка…"
-          : d?.pricing_status === "NO_MARKET_DATA" ? "нет данных Alor"
+        {q.isLoading && !wsLive ? "загрузка…"
+          : d?.pricing_status === "NO_MARKET_DATA" && !wsLive ? "нет данных Alor"
           : empty ? "стакан пуст"
+          : wsLive ? "● live · WS"
           : q.isFetching ? "обновление…" : "live · 3с"}
       </div>
 

@@ -244,3 +244,37 @@ export function connectMarketWs(getIsins, onStatus, onPrice) {
     },
   };
 }
+
+// Реал-тайм стакан по одной бумаге через WS (канал orderbook). onData(payload)
+// — payload = {orderbook:{bids,asks}, pricing_status, warnings}. Reconnect с
+// backoff. Питается фоновым Alor-WS клиентом бэка; фолбэк — HTTP-поллинг.
+export function connectOrderbookWs(isin, onData) {
+  const WS_URL =
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
+  let ws = null, closed = false, reconnectTimer = null, backoff = 1000;
+  const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; open(); }, backoff);
+    backoff = Math.min(backoff * 2, 30000);
+  };
+  const open = () => {
+    try { ws = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
+    ws.onopen = () => { backoff = 1000; send({ action: "subscribe", channel: "orderbook", isin }); };
+    ws.onclose = () => scheduleReconnect();
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.channel === "orderbook" && msg.isin === isin && msg.data) onData(msg.data);
+    };
+  };
+  open();
+  return {
+    close() {
+      closed = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      try { send({ action: "unsubscribe", channel: "orderbook", isin }); } catch { /* ignore */ }
+      if (ws) ws.close();
+    },
+  };
+}

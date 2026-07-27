@@ -306,6 +306,8 @@ async def lifespan(app: FastAPI):
     nav_snap = asyncio.create_task(fund_nav_snapshotter())
     prewarm = asyncio.create_task(daily_prewarm())
     alert_mon = asyncio.create_task(alerts_monitor())
+    from services.alor_ws import alor_orderbook_ws
+    alor_ws = asyncio.create_task(alor_orderbook_ws())
     yield
     warm.cancel()
     task.cancel()
@@ -313,6 +315,7 @@ async def lifespan(app: FastAPI):
     nav_snap.cancel()
     prewarm.cancel()
     alert_mon.cancel()
+    alor_ws.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
