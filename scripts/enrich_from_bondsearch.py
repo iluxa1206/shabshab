@@ -44,32 +44,53 @@ def _num(v, cast):
 
 def parse_formula(txt):
     """Разбор формулы → {coupon_mode, fixing_lag, fixing_lag_unit, cap_pct, floor_pct}.
-    Enum-значения фильтруем под валидацию импорта (coupon_mode∈point|average,
-    fixing_lag_unit∈cal|work) — иначе импорт отклонит строку."""
+
+    mode+lag+unit берём ИЗ ОДНОГО источника — проспект-парсера (авторитет по
+    фиксингу): его ключи 'mode'/'lag'/'lag_unit'. Смешивать mode из corpbonds с
+    lag из проспекта нельзя — рассинхрон (point с lag от average и наоборот).
+    corpbonds-парсер держим только ради флага exotic. Enum фильтруем под
+    валидацию импорта (coupon_mode∈point|average, fixing_lag_unit∈cal|work)."""
     out = {}
-    f = _parse_formula(txt) or {}
     try:
         ps = parse_prospectus_formula(txt) or {}
     except Exception:
         ps = {}
-    mode = f.get("coupon_mode") or ps.get("mode")
-    if mode in ("point", "average"):
-        out["coupon_mode"] = mode
+    if ps.get("mode") in ("point", "average"):
+        out["coupon_mode"] = ps["mode"]
     if ps.get("lag") is not None:
         out["fixing_lag"] = int(ps["lag"])
-    unit = ps.get("fixing_lag_unit")
-    if unit in ("cal", "work"):
-        out["fixing_lag_unit"] = unit
+    if ps.get("lag_unit") in ("cal", "work"):
+        out["fixing_lag_unit"] = ps["lag_unit"]
     if ps.get("cap_pct") is not None:
         out["cap_pct"] = float(ps["cap_pct"])
     if ps.get("floor_pct") is not None:
         out["floor_pct"] = float(ps["floor_pct"])
-    return out, f.get("exotic")
+    exotic = (_parse_formula(txt) or {}).get("exotic")
+    return out, exotic
+
+
+def _full_formulas(path):
+    """{isin: полный текст формулы} из сырой колонки «Купон». load_cbonds режет
+    coupon_text до 300 симв (лимит поля реестра); для РАЗБОРА нужен полный текст
+    (окно усреднения/кэп часто в хвосте)."""
+    if not path:
+        path = ref_data._latest_cbonds_file()
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    it = ws.iter_rows(values_only=True)
+    hdr = list(next(it))
+    ii, ic = hdr.index("ISIN"), hdr.index("Купон")
+    out = {}
+    for row in it:
+        if row[ii] and row[ic]:
+            out[str(row[ii]).strip().upper()] = str(row[ic])
+    return out
 
 
 def main():
     cb = ref_data.load_cbonds(BONDSEARCH) if BONDSEARCH else ref_data.load_cbonds()
     fl = {k: v for k, v in cb.items() if v.get("base") in ("KEYRATE", "RUONIA")}
+    full = _full_formulas(BONDSEARCH)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -80,7 +101,8 @@ def main():
     for isin in sorted(fl):
         v = fl[isin]
         freq = _num(v.get("freq"), float)
-        pf, exotic = parse_formula(v.get("coupon_text") or "")
+        # разбор по ПОЛНОЙ формуле; coupon_text (≤300) — только для поля реестра
+        pf, exotic = parse_formula(full.get(isin) or v.get("coupon_text") or "")
         row = {
             "isin": isin,
             "short_name": v.get("name"),
