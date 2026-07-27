@@ -59,6 +59,13 @@ export default function FixedCard({ d }) {
 
   return (
     <>
+      {r.linked && (
+        <div className="linker-badge">
+          <b>RUONIA-линкер.</b> Номинал индексируется по индексу RUONIA (сейчас {fmt.num(r.face, 0)} ₽).
+          Купон {fmt.pct(r.coupon_pct)}% начисляется на индексированный номинал, поэтому
+          <b> YTM = реальная доходность</b> — спред над RUONIA (аналог маржи флоатера). Цена — % от индекс. номинала.
+        </div>
+      )}
       <div className="price-calc">
         <label className="pc-label" htmlFor="fc-price">Калькулятор цены</label>
         <div className="pc-input-wrap">

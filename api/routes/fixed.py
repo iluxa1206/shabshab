@@ -97,6 +97,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "board": board, "maturity_date": row.get("maturity_date"),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
             "issuer": row.get("issuer"), "rating": ratings.bucket_of_fixed(isin, row.get("cls")),
+            "linked": row.get("linked", False),   # номинал индексирован (RUONIA/инфл.)
         },
         "market": {
             "last_price_pct": m.get("last"), "prev_close_pct": row.get("prev"),

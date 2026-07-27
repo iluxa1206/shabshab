@@ -873,3 +873,12 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cat-ext { margin-left: 5px; text-decoration: none; color: var(--accent); font-weight: 700;
   opacity: 0.7; }
 .cat-ext:hover { opacity: 1; }
+
+/* Бейдж линкера в карточке фикса (RUONIA/инфляция — индексируемый номинал) */
+.linker-badge {
+  margin-bottom: 10px; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  line-height: 1.45; color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.linker-badge b { color: var(--accent); }

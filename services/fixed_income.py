@@ -194,7 +194,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
     resp = await _moex_get(client, url, params={
         "iss.only": "securities,marketdata",
         "securities.columns": "SECID,ISIN,SHORTNAME,MATDATE,COUPONPERCENT,"
-                              "FACEVALUE,FACEUNIT,ACCRUEDINT,PREVPRICE,PREVDATE",
+                              "FACEVALUE,FACEVALUEONSETTLEDATE,FACEUNIT,ACCRUEDINT,PREVPRICE,PREVDATE",
         "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY",
     }, timeout=20)
     if resp is None or resp.status_code != 200:
@@ -221,12 +221,19 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
         if not isin:
             continue
         nm = g(row, "SHORTNAME") or isin
+        face = _numf(g(row, "FACEVALUE")) or 1000.0
+        settle_face = _numf(g(row, "FACEVALUEONSETTLEDATE"))
+        # ЛИНКЕР: номинал РАСТЁТ день ко дню (индексируется по RUONIA/инфляции) →
+        # номинал на дату сеттла > текущего. У фикса он постоянен, у амортизации
+        # не растёт. Тогда фикс-купон начисляется на индексир. номинал, а YTM =
+        # РЕАЛЬНАЯ доходность (спред над базой).
+        linked = bool(settle_face and face and settle_face > face * 1.0002)
         out.append({
             "isin": isin, "secid": g(row, "SECID"),
             "name": nm, "issuer": _issuer_of(nm),
             "maturity_date": g(row, "MATDATE") or None,
             "coupon_pct": _numf(g(row, "COUPONPERCENT")),
-            "face": _numf(g(row, "FACEVALUE")) or 1000.0,
+            "face": face, "linked": linked,
             "faceunit": (g(row, "FACEUNIT") or "").upper(),
             "accrued": _numf(g(row, "ACCRUEDINT")) or 0.0,
             "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
