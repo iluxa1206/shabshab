@@ -376,6 +376,38 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   border: 1px solid var(--line-2); border-radius: 0; padding: 2px 4px; cursor: pointer; }
 .ob-status { padding: 0 20px 10px; font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
 .ob-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* --- Страница СТАТУС --- */
+.status-page { padding: 20px 24px; max-width: 1100px; }
+.st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.st-card { border: 1px solid var(--line); padding: 16px 18px; }
+.st-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.st-title .st-sub { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--mut); margin-left: 8px; font-size: 11px; }
+.st-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.st-dot.up { background: var(--up); } .st-dot.down { background: var(--down); }
+.st-conn { width: 100%; border-collapse: collapse; }
+.st-conn td { padding: 6px 4px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.st-conn-name { font-weight: 600; }
+.st-conn-det { color: var(--mut); font-variant-numeric: tabular-nums; text-align: right; }
+.st-conn-state { text-align: right; font-weight: 700; font-size: 11px; width: 44px; }
+.st-conn-state.up { color: var(--up); } .st-conn-state.down { color: var(--down); }
+.st-data { width: 100%; border-collapse: collapse; }
+.st-data td { padding: 8px 4px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.st-data-key { font-size: 12px; font-weight: 600; width: 44%; }
+.st-data-hint { font-size: 10px; color: var(--mut-2); font-weight: 400; margin-top: 2px; }
+.st-bar-wrap { display: flex; align-items: center; gap: 10px; }
+.st-bar-track { flex: 1; height: 8px; background: var(--line); overflow: hidden; }
+.st-bar-fill { height: 100%; }
+.st-bar-fill.full { background: var(--up); } .st-bar-fill.part { background: var(--rt-bbb); } .st-bar-fill.low { background: var(--down); }
+.st-bar-num { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--mut); white-space: nowrap; }
+.st-bar-num b { color: var(--fg); }
+.st-drain { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; margin-bottom: 6px; }
+.st-drain b { font-size: 15px; }
+.st-ts { width: 100%; border-collapse: collapse; }
+.st-ts td { padding: 5px 4px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.st-ts td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--mut); }
+.st-foot { margin-top: 14px; font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
+@media (max-width: 760px) { .st-grid { grid-template-columns: 1fr; } }
 .ob-row.ob-empty .ob-price, .ob-row.ob-empty .ob-qty { opacity: 0.4; }
 .ob-row.ob-empty td { background: transparent; }
 .ob-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }

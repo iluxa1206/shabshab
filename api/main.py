@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments, fixed
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments, fixed, status
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -198,6 +198,34 @@ async def warmup_caches():
         logger.warning(f"warmup error: {e}")
 
 
+async def daily_prewarm():
+    """Каждый день в 09:00 МСК — контролируемый тяжёлый прогрев дня: расписания
+    bondization (кэш протухает в 09:00 по _trading_day) + фикс-метрики + метрики
+    юниверса. К 10:00 (основная сессия) всё готово; тяжёлый ре-warm не бьёт по
+    карточкам/стакану среди дня (раньше протухал в полночь → лениво утром)."""
+    from services.market_data import MarketDataService, market_cache
+    from services.universe import compute_universe_metrics
+    while True:
+        now = datetime.now(_MSK)
+        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (target - now).total_seconds()))
+        try:
+            logger.info("daily 09:00 prewarm: старт")
+            uni = await instruments_registry.fetch_floater_universe()
+            isins = [u["isin"] for u in uni if u.get("isin")]
+            if uni:
+                m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
+                if m:
+                    market_cache["universe_metrics"] = m
+            await _warm_fixed(market_cache)
+            logger.info("daily 09:00 prewarm: готово (расписаний %d)",
+                        len(MarketDataService._full_mem))
+        except Exception as e:
+            logger.warning(f"daily prewarm error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
@@ -206,11 +234,13 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
     nav_snap = asyncio.create_task(fund_nav_snapshotter())
+    prewarm = asyncio.create_task(daily_prewarm())
     yield
     warm.cancel()
     task.cancel()
     poller.cancel()
     nav_snap.cancel()
+    prewarm.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
@@ -251,6 +281,7 @@ app.include_router(orderbook.router, prefix="/api/orderbook", dependencies=_gate
 app.include_router(funds.router, prefix="/api/funds", dependencies=_gate)
 app.include_router(instruments.router, prefix="/api/instruments", dependencies=_gate)
 app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
+app.include_router(status.router, prefix="/api/status", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

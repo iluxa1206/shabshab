@@ -78,6 +78,9 @@ export const markInstrumentReviewed = (isin) =>
 // --- Мета/кривые/бонды ---
 export const fetchMeta = () => request("/api/meta");
 
+// Страница СТАТУС: подключения + полнота прогрева данных + таймстемпы.
+export const fetchStatus = () => request("/api/status");
+
 export const fetchCurvePlot = (type) => request(`/api/curves/plot?type=${type}`);
 
 export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);

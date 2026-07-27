@@ -16,6 +16,7 @@ import CurvesModule from "./components/CurvesModule.jsx";
 import IssuerAggregates from "./components/IssuerAggregates.jsx";
 import FixedModule from "./components/FixedModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
+import StatusPage from "./components/StatusPage.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard() {
@@ -315,6 +316,7 @@ function Dashboard() {
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
+        <Route path="/status" element={<StatusPage />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} onClose={closeDrawer} />

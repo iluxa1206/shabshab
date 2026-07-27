@@ -7,14 +7,17 @@ const TYPES = [
   { id: "floaters", label: "Флоатеры", home: "/floaters" },
   { id: "fixed", label: "Фиксы", home: "/fixed" },
   { id: "euro", label: "Евробонды", home: "/euro" },
+  { id: "status", label: "Статус", home: "/status" },
 ];
 const SUBNAV = {
   floaters: [["/floaters", "Список"], ["/issuers", "Эмитенты"], ["/curves", "Кривые"]],
   fixed: [["/fixed", "Список"]],
   euro: [],
+  status: [],
 };
 const currentType = (p) =>
-  p.startsWith("/fixed") ? "fixed" : p.startsWith("/euro") ? "euro" : "floaters";
+  p.startsWith("/fixed") ? "fixed" : p.startsWith("/euro") ? "euro"
+    : p.startsWith("/status") ? "status" : "floaters";
 
 function TypeMenu({ type }) {
   const cur = TYPES.find((t) => t.id === type) || TYPES[0];

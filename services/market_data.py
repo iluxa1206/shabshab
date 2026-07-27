@@ -5,7 +5,7 @@ import asyncio
 import threading
 import httpx
 from typing import Dict, Optional, Tuple, List
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from services.paths import cache_path, atomic_write_json
 
@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 SCHEDULE_CACHE_FILE = cache_path("schedule_cache.json")
 SCHEDULE_FULL_CACHE_FILE = cache_path("schedule_full_cache.json")
+
+_MSK = timezone(timedelta(hours=3))
+
+
+def _trading_day() -> str:
+    """«Торговый день» с перекатом в 09:00 МСК (не в полночь). Кэш расписаний
+    держится валидным всю ночь и раннее утро на вчерашних данных, протухает в
+    09:00 → тяжёлый ре-warm bondization идёт одним контролируемым окном перед
+    основной сессией (10:00), а не лениво среди дня. См. daily_prewarm."""
+    now = datetime.now(_MSK)
+    d = now.date() if now.hour >= 9 else now.date() - timedelta(days=1)
+    return d.isoformat()
 
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.
@@ -258,8 +270,9 @@ class MarketDataService:
 
     @classmethod
     def _ensure_full_mem(cls) -> None:
-        """Загружает дисковый кэш bondization в память один раз в день."""
-        today = date.today().isoformat()
+        """Загружает дисковый кэш bondization в память один раз в торговый день
+        (перекат 09:00 МСК, _trading_day)."""
+        today = _trading_day()
         if cls._full_mem_date == today:
             return
         cls._full_mem_date = today
