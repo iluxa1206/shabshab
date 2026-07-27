@@ -22,6 +22,12 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
 
   const pts = (q.data?.points || []).filter((p) => p[key] != null);
 
+  // ВСЕ хуки до early-return (правила хуков). data/sx считаем безопасно даже пустыми.
+  const W = 460, H = 200, pad = { l: 46, r: 12, t: 12, b: 26 };
+  const data = pts.map((p, i) => ({ ...p, i, v: p[key] }));
+  const sx = linearScale([0, Math.max(1, data.length - 1)], [pad.l, W - pad.r]);
+  const { hover, handlers } = useNearestHover({ viewW: W, points: data, px: (p) => sx(p.i) });
+
   const ctl = (
     <span className="sh-range">
       {RANGES.map(([d, l]) => (
@@ -31,19 +37,14 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
   );
 
   if (q.isPending) return <div className="sh-box">{ctl}<div className="an-empty">загрузка…</div></div>;
-  if (pts.length < 2) return <div className="sh-box">{ctl}<div className="an-empty">мало истории для графика</div></div>;
+  if (data.length < 2) return <div className="sh-box">{ctl}<div className="an-empty">мало истории для графика</div></div>;
 
-  const W = 460, H = 200, pad = { l: 46, r: 12, t: 12, b: 26 };
-  const data = pts.map((p, i) => ({ ...p, i, v: p[key] }));
   let ymin = Math.min(...data.map((p) => p.v)), ymax = Math.max(...data.map((p) => p.v));
   if (ymin === ymax) { ymin -= 1; ymax += 1; }
-  const sx = linearScale([0, data.length - 1], [pad.l, W - pad.r]);
   const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
   const path = linePath(data, (d) => sx(d.i), (d) => sy(d.v));
   const last = data[data.length - 1], first = data[0];
   const chg = last.v - first.v;
-
-  const { hover, handlers } = useNearestHover({ viewW: W, points: data, px: (p) => sx(p.i) });
 
   const nx = Math.min(6, data.length);
   const xstep = Math.max(1, Math.floor((data.length - 1) / (nx - 1)));
