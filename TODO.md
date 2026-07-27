@@ -20,7 +20,9 @@
 - [x] Мониторинг: `alerts_monitor` в main.py, каждые 12с в торговые часы, батч по (isin,kind), матч против Alor-стакана «на уровне/лучше» + накопленный объём шт/₽. Нотификация: `AlertsWatcher` (тост+бип WebAudio, поллинг 8с). WS-push/e-mail — позже.
 - [x] Хранение: portfolio.db v3 таблица alerts, per-user. `services/alerts.py` CRUD + evaluate. `api/routes/alerts.py` GET/POST/DELETE.
 - [x] Состояния: active/fired/cancelled + история (list_for_user).
-- [ ] Хвосты: WS-push вместо поллинга; e-mail/push; визуальная пометка сработавшего уровня прямо в стакане; редактирование алерта.
+- [x] Полировка: редактирование алерта (PATCH), подсветка сработавшего уровня в стакане (красный ⚠), плашка в StatusBar + попап + клик→карточка/стакан, красная строка бумаги. Задеплоено 2026-07-27.
+- [x] **Alor WS реал-тайм стакан** — `services/alor_ws.py` персистентный WS, reprice+memo, broadcast через канал orderbook; фронт `connectOrderbookWs`, HTTP-поллинг фолбэком. Формат Alor подтверждён. Задеплоено 2026-07-27.
+- [ ] Хвосты: WS-push алертов (мало смысла — монитор 12с); e-mail/Telegram-push (отложено).
 
 **Заметки по реализации:**
 - [x] SM/DM per-level: чистая `reprice_at_price(ctx, price)` вынесена из reprice (тёплый ctx → быстро для 10-50 уровней).
