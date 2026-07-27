@@ -138,6 +138,22 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         "CREATE INDEX IF NOT EXISTS ix_alerts_user ON alerts(user_email, status)",
         "CREATE INDEX IF NOT EXISTS ix_alerts_active ON alerts(status, isin)",
     ]),
+    (4, [
+        # Дневные снапшоты спред-метрик (точная история vs candle-оценка).
+        # Пишет spread_snapshotter из тёплых метрик поллера, раз в день.
+        """CREATE TABLE IF NOT EXISTS spread_daily(
+             isin TEXT NOT NULL,
+             date TEXT NOT NULL,
+             kind TEXT NOT NULL,           -- floater|fixed
+             price_pct REAL,
+             dm_bps REAL,                  -- флоатер: disc margin
+             g_spread_bps REAL,            -- фикс: g-спред
+             z_bps REAL,                   -- z-спред/z-model
+             ytm REAL,
+             PRIMARY KEY(isin, date)
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date)",
+    ]),
 ]
 
 _SEED_FUNDS = [

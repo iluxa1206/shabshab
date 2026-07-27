@@ -296,6 +296,30 @@ async def alerts_monitor():
             await asyncio.sleep(30)
 
 
+async def spread_snapshotter():
+    """Дневной снапшот спред-метрик (точная история). Разово при старте (если
+    метрики прогреты) + каждый день ~19:00 МСК (после основной сессии, метрики
+    свежие). Идемпотентно per (isin,date)."""
+    from services.spread_history import write_snapshot
+    from services.market_data import market_cache
+    await asyncio.sleep(120)  # дать поллеру прогреть метрики
+    try:
+        if market_cache.get("universe_metrics") or market_cache.get("fixed_metrics"):
+            await asyncio.to_thread(write_snapshot)
+    except Exception as e:
+        logger.warning(f"spread snapshot (startup) error: {e}")
+    while True:
+        now = datetime.now(_MSK)
+        target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (target - now).total_seconds()))
+        try:
+            await asyncio.to_thread(write_snapshot)
+        except Exception as e:
+            logger.warning(f"spread snapshot error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
@@ -308,6 +332,7 @@ async def lifespan(app: FastAPI):
     alert_mon = asyncio.create_task(alerts_monitor())
     from services.alor_ws import alor_orderbook_ws
     alor_ws = asyncio.create_task(alor_orderbook_ws())
+    spread_snap = asyncio.create_task(spread_snapshotter())
     yield
     warm.cancel()
     task.cancel()
@@ -316,6 +341,7 @@ async def lifespan(app: FastAPI):
     prewarm.cancel()
     alert_mon.cancel()
     alor_ws.cancel()
+    spread_snap.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",

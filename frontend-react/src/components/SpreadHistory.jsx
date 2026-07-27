@@ -42,7 +42,14 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
   let ymin = Math.min(...data.map((p) => p.v)), ymax = Math.max(...data.map((p) => p.v));
   if (ymin === ymax) { ymin -= 1; ymax += 1; }
   const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-  const path = linePath(data, (d) => sx(d.i), (d) => sy(d.v));
+  // точная история (сплошная) vs candle-оценка (пунктир). Оценка — префикс до
+  // первого точного снапшота; последняя est-точка стыкует с exact для непрерывности.
+  const fx = q.data?.exact_from || null;
+  const estPart = data.filter((p) => p.src === "est");
+  const exactPart = data.filter((p) => p.src === "exact");
+  const estJoin = exactPart.length && estPart.length ? [...estPart, exactPart[0]] : estPart;
+  const estPath = estJoin.length > 1 ? linePath(estJoin, (d) => sx(d.i), (d) => sy(d.v)) : null;
+  const exactPath = exactPart.length > 1 ? linePath(exactPart, (d) => sx(d.i), (d) => sy(d.v)) : null;
   const last = data[data.length - 1], first = data[0];
   const chg = last.v - first.v;
 
@@ -64,7 +71,9 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
           <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
             lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
           <XTicks ticks={xticks} y={H - pad.b + 14} textClass="an-axis" />
-          <path d={path} className="sh-line" fill="none" />
+          {estPath && <path d={estPath} className="sh-line sh-est" fill="none" />}
+          {exactPath && <path d={exactPath} className="sh-line" fill="none" />}
+          {!estPath && !exactPath && <path d={linePath(data, (d) => sx(d.i), (d) => sy(d.v))} className="sh-line" fill="none" />}
           {hover ? (
             <g pointerEvents="none">
               <line x1={sx(hover.i)} x2={sx(hover.i)} y1={pad.t} y2={H - pad.b}
@@ -94,7 +103,10 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
           </Tooltip>
         )}
       </div>
-      <div className="sh-note">Оценка: историч. цена × текущая модель (кривая/срок фиксированы).</div>
+      <div className="sh-note">
+        {fx ? <>Сплошная — точная история с {fmt.date(fx)}. Пунктир (до неё) — оценка (историч. цена × текущая модель).</>
+          : <>Оценка: историч. цена × текущая модель. Точная история копится с сегодня.</>}
+      </div>
     </div>
   );
 }

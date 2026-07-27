@@ -44,7 +44,7 @@ async def spread_history(
         raise HTTPException(status_code=404, detail="Bond not found")
 
     memo: dict = {}
-    points = []
+    est = []
     for cndl in candles:
         px = cndl.get("c")
         t = cndl.get("t")
@@ -57,12 +57,24 @@ async def spread_history(
             except Exception:
                 m = {}
             memo[px] = m
-        points.append({
-            "date": t[:10],
-            "price": round(px, 3),
-            "dm_bps": m.get("dm_bps"),
-            "g_spread_bps": m.get("g_spread_bps"),
-            "ytm": m.get("yield_pct"),
+        est.append({
+            "date": t[:10], "price": round(px, 3),
+            "dm_bps": m.get("dm_bps"), "g_spread_bps": m.get("g_spread_bps"),
+            "ytm": m.get("yield_pct"), "src": "est",
         })
 
-    return {"isin": isin, "kind": kind, "calc_date": str(calc_date), "points": points}
+    # Точная история (дневные снапшоты) приоритетна; candle-оценкой добиваем
+    # прошлое ДО первого точного снапшота (иначе график пуст, пока копится).
+    from services.spread_history import read_history
+    exact_rows = read_history(isin, days=days)
+    exact = [{
+        "date": r["date"], "price": r.get("price_pct"),
+        "dm_bps": r.get("dm_bps"), "g_spread_bps": r.get("g_spread_bps"),
+        "ytm": r.get("ytm"), "src": "exact",
+    } for r in exact_rows]
+    first_exact = exact[0]["date"] if exact else None
+    pre = [p for p in est if first_exact is None or p["date"] < first_exact]
+    points = sorted(pre + exact, key=lambda x: x["date"])
+
+    return {"isin": isin, "kind": kind, "calc_date": str(calc_date),
+            "exact_from": first_exact, "points": points}

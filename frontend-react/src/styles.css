@@ -498,6 +498,7 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .sh-chart { position: relative; }
 .sh-chart svg { cursor: crosshair; }
 .sh-line { stroke: var(--accent); stroke-width: 1.5; }
+.sh-est { stroke: var(--mut-2); stroke-width: 1.2; stroke-dasharray: 4 3; }
 .sh-dot { fill: var(--accent); }
 .sh-note { font-size: 10px; color: var(--mut-2); margin-top: 2px; }
 
