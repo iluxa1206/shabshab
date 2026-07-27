@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments, fixed, status
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, funds, instruments, fixed, status, alerts
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -226,6 +226,76 @@ async def daily_prewarm():
             logger.warning(f"daily prewarm error: {e}")
 
 
+ALERT_POLL_INTERVAL = 12   # проверка алертов против стакана, сек
+
+
+def _ob_levels(raw, metrics_fn):
+    """[{price, volume}] Alor → [{price, qty, yield_pct, dm_bps, g_spread_bps}]."""
+    out = []
+    for e in raw:
+        p, q = e.get("price"), e.get("volume")
+        if p is None:
+            continue
+        lv = {"price": p, "qty": q, "yield_pct": None, "dm_bps": None, "g_spread_bps": None}
+        if metrics_fn:
+            try:
+                m = metrics_fn(p)
+                lv.update(yield_pct=m.get("yield_pct"), dm_bps=m.get("dm_bps"),
+                          g_spread_bps=m.get("g_spread_bps"))
+            except Exception:
+                pass
+        out.append(lv)
+    return out
+
+
+async def alerts_monitor():
+    """Фон: активные алерты против Alor-стакана. При выполнении условия (метрика
+    op порог + накопленный объём «на уровне/лучше») переводит active→fired.
+    Батчит по (isin, kind): один снапшот + один reprice-контекст на выпуск."""
+    from services import alerts as alerts_svc
+    from services.orderbook_svc import build_metrics_fn
+    from api.routes.orderbook import fetch_alor_orderbook_snapshot
+    await asyncio.sleep(45)
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                active = alerts_svc.active_all()
+                groups: dict = {}
+                for a in active:
+                    groups.setdefault((a["isin"], a.get("kind") or "floater"), []).append(a)
+                for (isin, kind), grp in groups.items():
+                    try:
+                        snap = await fetch_alor_orderbook_snapshot(isin, 30)
+                        if not snap:
+                            continue
+                        metrics_fn, face = None, None
+                        if any(a["metric"] != "price" for a in grp):
+                            try:
+                                metrics_fn, _cd, face = await build_metrics_fn(isin, kind)
+                            except Exception:
+                                metrics_fn = None
+                        asks_raw = sorted((e for e in snap.get("asks", []) if e.get("price") is not None),
+                                          key=lambda e: e["price"])
+                        bids_raw = sorted((e for e in snap.get("bids", []) if e.get("price") is not None),
+                                          key=lambda e: e["price"], reverse=True)
+                        asks = _ob_levels(asks_raw, metrics_fn)
+                        bids = _ob_levels(bids_raw, metrics_fn)
+                        for a in grp:
+                            levels = asks if a["side"] == "buy" else bids
+                            hit = alerts_svc.evaluate(a, levels, face)
+                            if hit:
+                                alerts_svc.mark_fired(a["id"], hit["price"], hit["volume"])
+                                logger.info("alert fired id=%s %s %s %s%s%s vol=%s",
+                                            a["id"], isin, a["side"], a["metric"],
+                                            a["op"], a["threshold"], hit["volume"])
+                    except Exception as e:
+                        logger.warning(f"alert monitor {isin} error: {e}")
+            await asyncio.sleep(ALERT_POLL_INTERVAL)
+        except Exception as e:
+            logger.warning(f"alerts_monitor loop error: {e}")
+            await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
@@ -235,12 +305,14 @@ async def lifespan(app: FastAPI):
     poller = asyncio.create_task(universe_price_poller())
     nav_snap = asyncio.create_task(fund_nav_snapshotter())
     prewarm = asyncio.create_task(daily_prewarm())
+    alert_mon = asyncio.create_task(alerts_monitor())
     yield
     warm.cancel()
     task.cancel()
     poller.cancel()
     nav_snap.cancel()
     prewarm.cancel()
+    alert_mon.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
@@ -282,6 +354,7 @@ app.include_router(funds.router, prefix="/api/funds", dependencies=_gate)
 app.include_router(instruments.router, prefix="/api/instruments", dependencies=_gate)
 app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
 app.include_router(status.router, prefix="/api/status", dependencies=_gate)
+app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

@@ -114,6 +114,30 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         "ALTER TABLE pos_daily ADD COLUMN accrued REAL",
         "ALTER TABLE nav_daily ADD COLUMN cash_rub REAL",
     ]),
+    (3, [
+        # Алерты по стакану, per-user. Мониторятся фоновым воркером против
+        # Alor-стакана; при выполнении условия status active→fired.
+        """CREATE TABLE IF NOT EXISTS alerts(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_email TEXT NOT NULL,
+             isin TEXT NOT NULL,
+             kind TEXT NOT NULL DEFAULT 'floater', -- floater|fixed (путь reprice)
+             side TEXT NOT NULL,                    -- buy|sell
+             metric TEXT NOT NULL,                  -- price|ytm|dm|gspread
+             op TEXT NOT NULL,                      -- '<=' | '>='
+             threshold REAL NOT NULL,
+             min_volume REAL NOT NULL DEFAULT 0,    -- в volume_unit
+             volume_unit TEXT NOT NULL DEFAULT 'bonds', -- bonds|rub
+             note TEXT,
+             status TEXT NOT NULL DEFAULT 'active', -- active|fired|cancelled
+             created_at TEXT NOT NULL,
+             fired_at TEXT,
+             fired_price REAL,
+             fired_volume REAL
+           )""",
+        "CREATE INDEX IF NOT EXISTS ix_alerts_user ON alerts(user_email, status)",
+        "CREATE INDEX IF NOT EXISTS ix_alerts_active ON alerts(status, isin)",
+    ]),
 ]
 
 _SEED_FUNDS = [
