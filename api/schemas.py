@@ -267,7 +267,7 @@ class KsPathResponse(BaseModel):
 # --- Orderbook Models ---
 class OrderbookLevel(BaseModel):
     price_pct: float
-    quantity: int
+    quantity: Optional[int] = None   # None — синтетический уровень лестницы (нет заявки)
     yield_pct: Optional[float] = None
     sm_bps: Optional[int] = None
     dm_bps: Optional[int] = None

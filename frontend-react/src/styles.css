@@ -368,7 +368,15 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px; }
 .ob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
 .ob-close { font-size: 12px; padding: 2px 8px; }
+.ob-ctl { display: flex; align-items: center; gap: 10px; padding: 0 20px 10px; }
+.ob-ctl .chip-btn { font-size: 10px; padding: 3px 9px; }
+.ob-depth { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.ob-depth-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); }
+.ob-depth select { font: 11px var(--mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line-2); border-radius: 0; padding: 2px 4px; cursor: pointer; }
 .ob-status { padding: 0 20px 10px; font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
+.ob-row.ob-empty .ob-price, .ob-row.ob-empty .ob-qty { opacity: 0.4; }
+.ob-row.ob-empty td { background: transparent; }
 .ob-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .ob-table thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); font-weight: 700; padding: 4px 12px; text-align: right; border-bottom: 1px solid var(--line); }
 .ob-table thead th.left { text-align: left; }
