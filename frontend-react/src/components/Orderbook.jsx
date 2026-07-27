@@ -2,19 +2,26 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { fetchOrderbook } from "../api.js";
+import OrderbookAlerts from "./OrderbookAlerts.jsx";
 
 const DEPTHS = [10, 20, 30, 50];
 
 // Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → DM+YTM,
 // фикс → YTM+G-спред. side: "bid"|"ask" красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
-function Level({ lvl, side, face, isFixed }) {
+function Level({ lvl, side, face, isFixed, onCtrlClick }) {
   const hasQty = lvl.quantity != null;
   const rub = hasQty && face != null && lvl.price_pct != null
     ? lvl.quantity * face * (lvl.price_pct / 100)
     : null;
+  const onClick = (e) => {
+    if ((e.ctrlKey || e.metaKey) && lvl.price_pct != null) {
+      e.preventDefault();
+      onCtrlClick(side === "ask" ? "buy" : "sell", lvl.price_pct);
+    }
+  };
   return (
-    <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")}>
+    <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")} onClick={onClick}>
       <td className="ob-price">{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
@@ -40,6 +47,7 @@ export default function Orderbook({ isin, kind, face, onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
+  const [armPrefill, setArmPrefill] = useState(null); // {side, price} из Ctrl-клика
 
   const q = useQuery({
     queryKey: ["orderbook", isin, depth, full, kind],
@@ -103,19 +111,21 @@ export default function Orderbook({ isin, kind, face, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
               <tr className="ob-spread">
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
             </tbody>
           </table>
         )}
       </div>
 
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
+      <OrderbookAlerts isin={isin} kind={isFixed ? "fixed" : "floater"}
+        prefill={armPrefill} onConsumed={() => setArmPrefill(null)} />
       <div className="ob-note">{isFixed ? "YTM/G-спред" : "DM/YTM"} — расчёт под цену уровня (как калькулятор карточки).</div>
     </div>
   );

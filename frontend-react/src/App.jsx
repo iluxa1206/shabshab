@@ -17,6 +17,7 @@ import IssuerAggregates from "./components/IssuerAggregates.jsx";
 import FixedModule from "./components/FixedModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
+import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard() {
@@ -323,6 +324,7 @@ function Dashboard() {
       <StatusBar count={bonds.length} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
+      <AlertsWatcher />
     </div>
   );
 }

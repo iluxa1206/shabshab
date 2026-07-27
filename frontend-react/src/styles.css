@@ -422,7 +422,41 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-row:hover { background: var(--line); }
 .ob-spread td { text-align: center; font-size: 10px; letter-spacing: 0.08em; color: var(--mut); text-transform: uppercase; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
-.ob-note { margin-top: auto; padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
+.ob-note { padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
+
+/* --- Алерты в стакане --- */
+.ob-alerts { border-top: 1px solid var(--line); padding: 12px 20px; }
+.al-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+.al-title .al-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--mut-2); margin-left: 8px; font-size: 10px; }
+.al-form { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.al-seg { display: inline-flex; border: 1px solid var(--line-2); }
+.al-seg button { font: 10px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 8px; background: transparent; color: var(--mut); border: 0; cursor: pointer; }
+.al-seg button + button { border-left: 1px solid var(--line-2); }
+.al-seg button.on { background: var(--fg); color: var(--bg); }
+.al-form select { font: 11px var(--mono); color: var(--fg); background: var(--bg); border: 1px solid var(--line-2); border-radius: 0; padding: 3px 4px; }
+.al-op { font: 700 12px var(--mono); color: var(--mut); }
+.al-in { width: 62px; font: 11px var(--mono); color: var(--fg); background: var(--bg); border: 1px solid var(--line-2); border-radius: 0; padding: 3px 6px; }
+.al-add { padding: 3px 10px; font-size: 14px; line-height: 1; }
+.al-msg { margin-top: 6px; font-size: 11px; }
+.al-msg.ok { color: var(--up); } .al-msg.err { color: var(--down); }
+.al-list { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; }
+.al-empty { font-size: 11px; color: var(--mut-2); }
+.al-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.al-row.al-fired { color: var(--up); } .al-row.al-cancelled { opacity: 0.45; }
+.al-side { font-weight: 700; text-transform: uppercase; font-size: 9px; letter-spacing: 0.04em; }
+.al-side.al-buy { color: var(--up); } .al-side.al-sell { color: var(--down); }
+.al-cond { flex: 1; font-variant-numeric: tabular-nums; }
+.al-state { color: var(--mut); font-size: 10px; }
+.al-del { background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.al-del:hover { color: var(--down); }
+
+/* --- Тосты алертов (глобально) --- */
+.al-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: 300px; }
+.al-toast { position: relative; background: var(--bg); border: 1px solid var(--up); border-left: 3px solid var(--up); padding: 10px 28px 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.2); animation: al-in .2s ease; }
+.al-toast-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.al-toast-b { font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.al-toast-x { position: absolute; top: 6px; right: 8px; background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; }
+@keyframes al-in { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .val-cards { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); margin-bottom: 28px; }
 .vc { padding: 16px 18px; border-right: 1px solid var(--line); }

@@ -127,6 +127,11 @@ export const repriceBond = (isin, price, signal) =>
 export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater" } = {}, signal) =>
   request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}&kind=${kind}`, { signal });
 
+// --- Алерты по стакану (per-user) ---
+export const fetchAlerts = () => request("/api/alerts").then((d) => d.alerts || []);
+export const createAlert = (body) => request("/api/alerts", { method: "POST", json: body });
+export const deleteAlert = (id) => request(`/api/alerts/${id}`, { method: "DELETE" });
+
 // --- Модуль «Фонды» ---
 export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);
 
