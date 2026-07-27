@@ -46,3 +46,41 @@ def test_point_keyrate_unchanged():
          "купонного периода, плюс 2%")
     r = P(t)
     assert r["mode"] == "point" and r["lag"] == 5 and r["lag_unit"] == "work"
+
+
+def test_glued_predшествующ_no_space():
+    # выгрузка Cbonds часто теряет пробел: «предшествующийдате Di» — жадный \w*
+    # съедал «дате», якорь фиксинга терялся → mode/lag=null (десятки бумаг)
+    t = ("K - значение ключевой ставки на 7-й день, предшествующийдате Di. "
+         "Di - Календарная дата i-го купонного периода, увеличенное на 2%")
+    r = P(t)
+    assert r["mode"] == "average" and r["lag"] == 7
+
+
+def test_point_do_daty_nachala():
+    # «на N рабочий день ДО даты начала» (Cbonds пишет «до», не «предшествующий»)
+    t = ("Cr - ключевая ставка ЦБ, действующая по состоянию на 5 рабочий день "
+         "до даты начала i-го купонного периода, увеличенная на 3%")
+    r = P(t)
+    assert r["mode"] == "point" and r["lag"] == 5 and r["lag_unit"] == "work"
+
+
+def test_point_first_day_of_month():
+    t = ("R - ключевая ставка, действующая по состоянию на 1-й (первый) день "
+         "календарного месяца, на который приходится дата начала Расчетного периода")
+    r = P(t)
+    assert r["mode"] == "point"
+
+
+def test_retro_window_variant_ot_do():
+    # «от (Ti-7 до Ti-37)» — та же ретро-конвенция, что «за период Т-37 - Т-7»
+    t = "RUONIAсрi = (сумм RUONIAt) / 31 от (Ti-7 до t=Ti-37), где Ti - дата начала"
+    r = P(t)
+    assert r["mode"] == "point" and r["lag"] == 22
+
+
+def test_cap_procenta_without_percent_sign():
+    t = ("Cj = R + S, который не может быть более 21,30 (Двадцати одной целой "
+         "и 30/100) процента годовых")
+    r = P(t)
+    assert r["cap_pct"] == 21.3
