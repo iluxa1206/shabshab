@@ -157,14 +157,28 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
             except Exception:
                 r = None
             await asyncio.sleep(delay)
-            if r is None:
-                # промах (404/ошибка) — negative-кэш с коротким TTL, чтобы драйн
-                # прошёл дальше, а не застревал на битых бумагах начала списка.
-                cache[isin] = {"raw": None, "bucket": None, "ts": now, "miss": True}
+
+            raw = r.get("rating_raw") if r else None
+            bucket = rating_to_bucket(raw) if r else "NR"
+
+            # Фолбэк на smart-lab: corpbonds не покрывает свежие/мелкие выпуски
+            # (ВДО 2025) → большинство фиксов были NR. smart-lab отдаёт бакет.
+            if bucket == "NR":
+                try:
+                    from services.enrich_smartlab import fetch_smartlab_rating
+                    sl = await fetch_smartlab_rating(isin, client=client)
+                except Exception:
+                    sl = None
+                await asyncio.sleep(delay)
+                if sl:
+                    raw, bucket = f"smartlab:{sl}", rating_to_bucket(sl)
+
+            if bucket == "NR":
+                # промах обоих источников — negative-кэш с коротким TTL, чтобы
+                # драйн прошёл дальше, а не застревал на битых бумагах.
+                cache[isin] = {"raw": raw, "bucket": None, "ts": now, "miss": True}
                 misses += 1
                 continue
-            raw = r.get("rating_raw")
-            bucket = rating_to_bucket(raw)
             cache[isin] = {"raw": raw, "bucket": bucket, "ts": now}
             n += 1
             # durable-персист: json-кэш (переживает рестарт через _save) — основной
