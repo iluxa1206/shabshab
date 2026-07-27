@@ -375,6 +375,7 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-depth select { font: 11px var(--mono); color: var(--fg); background: var(--bg);
   border: 1px solid var(--line-2); border-radius: 0; padding: 2px 4px; cursor: pointer; }
 .ob-status { padding: 0 20px 10px; font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
+.ob-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .ob-row.ob-empty .ob-price, .ob-row.ob-empty .ob-qty { opacity: 0.4; }
 .ob-row.ob-empty td { background: transparent; }
 .ob-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }

@@ -81,28 +81,30 @@ export default function Orderbook({ isin, face, onClose }) {
           : q.isFetching ? "обновление…" : "live · 3с"}
       </div>
 
-      {!empty && (
-        <table className="ob-table">
-          <thead>
-            <tr>
-              <th className="left">Цена</th>
-              <th>Объём</th>
-              <th>SM</th>
-              <th>DM</th>
-              <th>YTM</th>
-            </tr>
-          </thead>
-          <tbody>
-            {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} />)}
-            <tr className="ob-spread">
-              <td colSpan={5}>
-                спред {spread != null ? fmt.pct(spread) + " %" : "—"}
-              </td>
-            </tr>
-            {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} />)}
-          </tbody>
-        </table>
-      )}
+      <div className="ob-scroll">
+        {!empty && (
+          <table className="ob-table">
+            <thead>
+              <tr>
+                <th className="left">Цена</th>
+                <th>Объём</th>
+                <th>SM</th>
+                <th>DM</th>
+                <th>YTM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} />)}
+              <tr className="ob-spread">
+                <td colSpan={5}>
+                  спред {spread != null ? fmt.pct(spread) + " %" : "—"}
+                </td>
+              </tr>
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} />)}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
       <div className="ob-note">SM/DM/YTM — расчёт под цену уровня (как калькулятор карточки).</div>
