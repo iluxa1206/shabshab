@@ -253,7 +253,7 @@ function Dashboard() {
   }, [setSearchParams]);
 
   const closeDrawer = useCallback(() => {
-    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); n.delete("k"); return n; });
+    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); n.delete("k"); n.delete("ob"); return n; });
     const el = lastTriggerRef.current;
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
@@ -320,7 +320,7 @@ function Dashboard() {
         <Route path="/status" element={<StatusPage />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
-      <Drawer isin={drawerIsin} kind={searchParams.get("k")} onClose={closeDrawer} />
+      <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") === "1"} onClose={closeDrawer} />
       <StatusBar count={bonds.length} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}

@@ -290,7 +290,7 @@ function Content({ d }) {
   );
 }
 
-export default function Drawer({ isin, kind, onClose }) {
+export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const isFixed = kind === "fixed";
   const detailsQ = useQuery({
     queryKey: [isFixed ? "fixed-bond" : "bond", isin],
@@ -304,8 +304,9 @@ export default function Drawer({ isin, kind, onClose }) {
   const closeRef = useRef(null);
 
   // Стакан: вторая панель слева от карточки. Сброс при смене/закрытии бумаги.
+  // autoOrderbook (клик по алерту, ?ob=1) — открываем стакан сразу.
   const [showOb, setShowOb] = useState(false);
-  useEffect(() => { setShowOb(false); }, [isin]);
+  useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
   const face = data?.reference?.face_value ?? null;
 
   // focus + esc + tab-trap

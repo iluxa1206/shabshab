@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchFixed } from "../api.js";
+import { fetchFixed, fetchAlerts } from "../api.js";
 import { fmt, dmColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 import FixedAnalytics from "./FixedAnalytics.jsx";
@@ -107,6 +107,12 @@ export default function FixedModule({ onOpen }) {
     });
   }, [all, clsF, ratingsSel, emittersSel, query, sort]);
 
+  // isin'ы со сработавшим алертом → красная строка
+  const alertsQ = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 8000 });
+  const firedIsins = useMemo(
+    () => new Set((alertsQ.data || []).filter((a) => a.status === "fired").map((a) => a.isin)),
+    [alertsQ.data]);
+
   const k = useMemo(() => {
     const ys = rows.map((b) => b.ytm).filter((v) => v != null);
     const gs = rows.map((b) => b.g_spread_bps).filter((v) => v != null);
@@ -184,6 +190,7 @@ export default function FixedModule({ onOpen }) {
               <tbody>
                 {rows.map((b) => (
                   <tr key={b.isin} tabIndex={0} role="button"
+                    className={firedIsins.has(b.isin) ? "row-alert-fired" : undefined}
                     onClick={(e) => onOpen(b.isin, e.currentTarget, "fixed")}
                     onKeyDown={(e) => { if (e.key === "Enter") onOpen(b.isin, e.currentTarget, "fixed"); }}>
                     {COLS.map((c) => c.cell(b))}

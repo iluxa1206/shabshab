@@ -1,6 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
+import { fetchAlerts } from "../api.js";
 
 const D = () => <span className="dash">—</span>;
 
@@ -88,7 +90,7 @@ export const DEFAULT_COLS = COLS.filter((c) => !c.portfolio).map((c) => c.key); 
 // остальных ~450 строк. Требует стабильных onOpen/onToggleStar (useCallback в App)
 // и стабильного cols (useMemo ниже). Flash — CSS-анимация tr.flash (styles.css)
 // вместо framer-инстанса на строку.
-const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
+const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, alertFired }) {
   const prev = useRef(b.last_price_pct);
   const reduce = useReducedMotion();
   const [flash, setFlash] = useState(false);
@@ -105,7 +107,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }
 
   return (
     <tr
-      className={flash ? "flash" : undefined}
+      className={(alertFired ? "row-alert-fired" : "") + (flash ? " flash" : "")}
       onAnimationEnd={() => setFlash(false)}
       tabIndex={0}
       role="button"
@@ -152,6 +154,11 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
   }, [visibleCols]);
   // O(1) вместо watch.includes на каждую строку
   const watchSet = useMemo(() => new Set(watch), [watch]);
+  // isin'ы со сработавшим алертом → красная строка (общий кэш ['alerts'])
+  const alertsQ = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 8000 });
+  const firedIsins = useMemo(
+    () => new Set((alertsQ.data || []).filter((a) => a.status === "fired").map((a) => a.isin)),
+    [alertsQ.data]);
   const ncols = cols.length + 1; // + star
 
   let body;
@@ -169,7 +176,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
     </td></tr>
   );
   else body = rows.map((b) => (
-    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} />
+    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} alertFired={firedIsins.has(b.isin)} />
   ));
 
   return (
