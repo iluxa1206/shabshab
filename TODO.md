@@ -43,7 +43,7 @@
 - [ ] 5 cashflow-builder'ов — консолидация (частично слито).
 
 ### Безопасность
-- [ ] login rate-limit по proxy-IP (Caddy `X-Forwarded-For`), сейчас обходится.
+- [x] login rate-limit по proxy-IP: был XFF, но брал ЛЕВЫЙ (спуфабельный) адрес → обходился ротацией. ПОЧИНЕНО: правый адрес (Caddy-added, edge). backoff 5→300с→…→1ч cap.
 - [ ] Полный non-root контейнер (сейчас `cap_drop:ALL`+`no-new-privileges`; `data/` root bind-mount → нужен gosu-entrypoint).
 
 ### Данные / инфра
