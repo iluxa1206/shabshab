@@ -153,8 +153,11 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
                   + _nums(r"(?:не\s+менее|не\s+ниже)\s*(?:чем\s+)?" + _NUM))
     cap_pct = min(cap_vals) if cap_vals else None
     floor_pct = max(floor_vals) if floor_vals else None
+    # capped только при извлечённом cap/floor ИЛИ явных «не более/менее» — голые
+    # min(/max( исключены: max(…;0) в RUONIA-индекс-линкерах = пол 0% (не связывает),
+    # спурьёзный capped помечал бы бумагу как ограниченную зря.
     capped = bool(cap_vals or floor_vals
-                  or re.search(r"\bmin\s*\(|\bmax\s*\(|не\s+более|не\s+выше|не\s+менее|не\s+ниже|но\s+не\s+прев", tl))
+                  or re.search(r"не\s+более|не\s+выше|не\s+менее|не\s+ниже|но\s+не\s+прев", tl))
 
     out = best_point or best_avg           # «дате начала» специфичнее — приоритет
     if out is None:
@@ -165,6 +168,17 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         if mp:
             out = {"mode": "point", "lag": int(mp.group(1)),
                    "lag_unit": "work" if mp.group(2) else "cal"}
+    if out is None:
+        # RUONIA-ИНДЕКСНЫЙ ЛИНКЕР: Rj = (IndexEnd_{j-N}/IndexStart_{j-N} − 1)·B/Tj + S,
+        # где Index — компаунд-индекс RUONIA на N-й календарный день до Start/End
+        # периода. Отношение индексов, аннуализированное = реализованная средняя
+        # RUONIA за окно [Start−N, End−N] = сдвинутый период → average, лаг N.
+        # (ВЭБ.РФ ПБО-002Р RUONIA-Индекс, Роснефть 005Р-01.) max(…;0) — пол 0%,
+        # для RUONIA>0 не связывает, игнорируем.
+        mi = re.search(r"индекс\w*\s+ruonia\s+для\s+(\d+)\s*-?\s*г?о?\s+"
+                       r"календарн\w+\s+дн\w+,?\s+предшеств\w*\s+start", tl)
+        if mi:
+            out = {"mode": "average", "lag": int(mi.group(1)), "lag_unit": "cal"}
     if out is None:
         # СРЕДНЕЕ ПО СДВИНУТОМУ ПЕРИОДУ: «среднее … RUONIA за период,
         # начинающийся за N дней до даты начала … заканчивающийся за M дней до

@@ -84,3 +84,14 @@ def test_cap_procenta_without_percent_sign():
          "и 30/100) процента годовых")
     r = P(t)
     assert r["cap_pct"] == 21.3
+
+
+def test_ruonia_index_ratio_floater():
+    # ВЭБ RUONIA-Индекс ФЛОАТЕР (Р-50/57): купон = (IndexEnd/IndexStart−1)·B/T + S,
+    # экономически средняя RUONIA за сдвинутый период → average, лаг 7. max(…;0) —
+    # пол 0% (RUONIA>0, не связывает) → capped НЕ ставим.
+    t = ("Rj = (max(((Index Endj-7/Index Startj-7) - 1) ; 0) * B/Tj * 100%) + S, "
+         "где IndexStart j-7 - значение индекса RUONIA для 7-го календарного дня, "
+         "предшествующего Start j; S = 1.85%")
+    r = P(t)
+    assert r["mode"] == "average" and r["lag"] == 7 and r.get("capped") is None
