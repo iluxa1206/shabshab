@@ -236,3 +236,25 @@ def test_list_catalog_floaters_only(reg):
     reg.upsert({"isin": "RU000A10FE11", "base": "EXOTIC", "maturity_date": "2031-01-01"}, "moex")
     only_fl = {r["isin"] for r in reg.list_catalog(floaters_only=True)}
     assert only_fl == {"RU000A10FM37"}                                        # EXOTIC отсеян
+
+
+def test_coupon_overrides_only_locked(reg):
+    # ручная правка (locked) — попадает в мост
+    reg.set_manual("RU000A10FM37", {"base": "KEYRATE", "margin_bps": 200,
+                                     "floor_pct": 13.0, "coupon_text": "MAX(КС+2%;13%)"}, lock=True)
+    # авто-sync (не locked) — НЕ должен попасть в мост (иначе регрессия прайсинга)
+    reg.upsert({"isin": "RU000A10FP91", "base": "KEYRATE", "margin_bps": 150,
+                "coupon_mode": "average"}, "corpbonds")
+    ov = reg.coupon_overrides_all()
+    assert "RU000A10FM37" in ov
+    assert ov["RU000A10FM37"]["floor_pct"] == 13.0
+    assert ov["RU000A10FM37"]["coupon_text"] == "MAX(КС+2%;13%)"
+    assert "RU000A10FP91" not in ov            # не locked → вне моста
+
+
+def test_manual_cap_floor_survive_sync(reg):
+    reg.set_manual("RU000A10FM37", {"base": "KEYRATE", "cap_pct": 25.0, "floor_pct": 13.0}, lock=True)
+    # sync-апдейт не-manual полей не должен затирать cap/floor (они в _MANUAL_FIELDS)
+    reg.upsert({"isin": "RU000A10FM37", "rating": "AA", "cap_pct": None, "floor_pct": None}, "cbonds")
+    r = reg.get("RU000A10FM37")
+    assert r["cap_pct"] == 25.0 and r["floor_pct"] == 13.0 and r["rating"] == "AA"

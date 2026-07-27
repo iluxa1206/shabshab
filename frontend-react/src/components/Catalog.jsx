@@ -17,6 +17,8 @@ const COLS = [
   ["day_count", "Base"],
   ["face_value", "Номинал"],
   ["coupon_mode", "Режим"],
+  ["cap_pct", "Кэп %"],
+  ["floor_pct", "Флор %"],
   ["rating", "Рейтинг"],
   ["source", "Источник"],
 ];

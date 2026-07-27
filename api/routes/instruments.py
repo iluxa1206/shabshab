@@ -22,9 +22,10 @@ router = APIRouter()
 # Редактируемые вручную поля (те же, что InstrumentParams). ISIN — ключ.
 _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
-              "face_value", "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode")
+              "face_value", "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode",
+              "cap_pct", "floor_pct", "coupon_text")
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag"}
-_XLSX_FLOAT = {"face_value"}
+_XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
@@ -51,6 +52,9 @@ class InstrumentParams(BaseModel):
     coupon_mode: Optional[str] = Field(None, description="point | average")
     short_name: Optional[str] = Field(None, max_length=128)
     var_type: Optional[str] = None
+    cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")
+    floor_pct: Optional[float] = Field(None, ge=0, le=100, description="пол ставки, % год.")
+    coupon_text: Optional[str] = Field(None, max_length=300, description="текст формулы купона")
 
 
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -172,6 +176,37 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
             errors.append(f"строка {rn} ({isin}): {e}")
     return {"updated": updated, "skipped": skipped, "errors": errors[:50],
             "error_count": len(errors)}
+
+
+class FormulaIn(BaseModel):
+    formula: str = Field(..., max_length=300)
+
+
+@router.post("/parse-formula", tags=["Instruments"])
+async def parse_formula(body: FormulaIn, _admin: dict = Depends(require_admin)):
+    """Разбор текста формулы купона → {base, margin_bps, coupon_mode, cap_pct,
+    floor_pct, fixing_lag, fixing_lag_unit}. Для авто-заполнения полей в СПРАВОЧНИКе.
+    Комбинирует парсер corpbonds (база/маржа/режим) + парсер проспекта (лаг/кэп/флор)."""
+    from services.enrich_corpbonds import _parse_formula
+    out = {}
+    f = _parse_formula(body.formula) or {}
+    for k in ("base", "margin_bps", "coupon_mode"):
+        if f.get(k) is not None:
+            out[k] = f[k]
+    out["exotic"] = f.get("exotic")   # inverse|capped|None — предупреждение для UI
+    try:
+        from services.coupon_calib import parse_prospectus_formula
+        ps = parse_prospectus_formula(body.formula) or {}
+        for k in ("cap_pct", "floor_pct", "fixing_lag_unit"):
+            if ps.get(k) is not None:
+                out[k if k != "fixing_lag_unit" else "fixing_lag_unit"] = ps[k]
+        if ps.get("lag") is not None:
+            out["fixing_lag"] = ps["lag"]
+        if out.get("coupon_mode") is None and ps.get("mode"):
+            out["coupon_mode"] = ps["mode"]
+    except Exception:
+        pass
+    return {"parsed": out, "coupon_text": body.formula.strip()}
 
 
 @router.get("/{isin}", tags=["Instruments"])

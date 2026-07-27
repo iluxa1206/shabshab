@@ -75,6 +75,10 @@ export const setInstrumentParams = (isin, params) =>
 export const markInstrumentReviewed = (isin) =>
   request(`/api/instruments/${encodeURIComponent(isin)}/reviewed`, { method: "POST" });
 
+// Разбор текста формулы купона → {parsed:{base,margin_bps,coupon_mode,cap_pct,floor_pct,...}}
+export const parseCouponFormula = (formula) =>
+  request("/api/instruments/parse-formula", { method: "POST", json: { formula } });
+
 // --- Справочник инструментов (admin): все параметры + импорт/экспорт xlsx ---
 const _catalogQuery = (opts = {}) => {
   const q = new URLSearchParams();

@@ -29,7 +29,7 @@ _lock = threading.Lock()
 _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "fixing_lag", "fixing_lag_unit", "coupon_mode",
-                  "short_name", "var_type")
+                  "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instruments(
@@ -54,7 +54,10 @@ CREATE TABLE IF NOT EXISTS instruments(
   active            INTEGER NOT NULL DEFAULT 1,
   manual_locked     INTEGER NOT NULL DEFAULT 0,
   reviewed          INTEGER NOT NULL DEFAULT 0,   -- новая бумага, ждёт ревью параметров
-  margin_check_pp   REAL                          -- бэк-аут маржи vs факт КС/RUONIA (pp); |>1.5| = подозрение
+  margin_check_pp   REAL,                         -- бэк-аут маржи vs факт КС/RUONIA (pp); |>1.5| = подозрение
+  cap_pct           REAL,                         -- потолок ставки купона, % годовых (MIN/«не более»)
+  floor_pct         REAL,                         -- пол ставки купона, % годовых (MAX/«не менее»)
+  coupon_text       TEXT                          -- текст формулы купона (парсится → база/маржа/режим/кэп/флор)
 );
 CREATE INDEX IF NOT EXISTS ix_instruments_active ON instruments(active);
 CREATE TABLE IF NOT EXISTS discovery_seen(
@@ -69,6 +72,9 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN margin_check_pp REAL",
     "ALTER TABLE instruments ADD COLUMN emitter_id INTEGER",   # MOEX EMITTER_ID (группировка)
     "ALTER TABLE instruments ADD COLUMN emitter_name TEXT",    # имя эмитента (display)
+    "ALTER TABLE instruments ADD COLUMN cap_pct REAL",         # потолок ставки купона, %
+    "ALTER TABLE instruments ADD COLUMN floor_pct REAL",       # пол ставки купона, %
+    "ALTER TABLE instruments ADD COLUMN coupon_text TEXT",     # текст формулы купона
 ]
 
 
@@ -104,7 +110,8 @@ def _ensure() -> None:
 # Колонки, которые может нести входная запись (upsert). isin обязателен.
 _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
-         "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating")
+         "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
+         "cap_pct", "floor_pct", "coupon_text")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True) -> str:
@@ -424,8 +431,33 @@ def list_exotic() -> list[dict]:
 _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                  "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
-                 "coupon_mode", "rating", "source", "reviewed", "manual_locked",
-                 "margin_check_pp", "emitter_name", "active")
+                 "coupon_mode", "cap_pct", "floor_pct", "coupon_text", "rating",
+                 "source", "reviewed", "manual_locked", "margin_check_pp",
+                 "emitter_name", "active")
+
+
+# Поля купона, которыми ручной слой реестра ПЕРЕОПРЕДЕЛЯЕТ прайсинг (мост в
+# ref_data.coupon_formula). Только эти + только manual_locked=1 (явная правка).
+_COUPON_OVERRIDE_COLS = ("base", "margin_bps", "fixing_lag", "fixing_lag_unit",
+                         "coupon_mode", "cap_pct", "floor_pct", "coupon_text")
+
+
+def coupon_overrides_all() -> dict:
+    """{isin: {купонные поля}} по бумагам с manual_locked=1 (явные правки СПРАВОЧНИКа).
+    Мост в valuation: ref_data.coupon_formula накладывает это поверх Cbonds/проспекта,
+    чтобы ручная тонкая настройка выпуска влияла на расчёт. Только непустые поля.
+    Только locked — авто-sync значения НЕ вмешиваются в прайсинг (без регрессий)."""
+    _ensure()
+    cols = ",".join(_COUPON_OVERRIDE_COLS)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT isin,{cols} FROM instruments WHERE manual_locked=1").fetchall()
+    out = {}
+    for r in rows:
+        ov = {k: r[k] for k in _COUPON_OVERRIDE_COLS if r[k] is not None}
+        if ov:
+            out[r["isin"]] = ov
+    return out
 
 
 def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[dict]:

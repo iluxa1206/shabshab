@@ -862,3 +862,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cat-row-incomplete { background: color-mix(in srgb, var(--neg) 8%, transparent); }
 .cat-count { padding: 4px 8px; font-size: 11px; }
 .cat-errs { margin: 4px 0 0; padding-left: 18px; font-size: 11px; }
+
+/* Формула купона в форме параметров (СПРАВОЧНИК/AdminPanel) */
+.instr-formula { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 8px; }
+.instr-field-wide { flex: 1; }
+.instr-formula .admin-btn-sm { white-space: nowrap; }

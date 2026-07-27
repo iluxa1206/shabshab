@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
   fetchUnreviewedInstruments,
-  setInstrumentParams, markInstrumentReviewed, fetchInstrument,
+  setInstrumentParams, markInstrumentReviewed, fetchInstrument, parseCouponFormula,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
@@ -82,7 +82,7 @@ function PasswordSection() {
 
 // --- Реестр инструментов: новые бумаги на ревью + ручной ввод параметров ---
 const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
-  "fixing_lag", "face_value"]);
+  "fixing_lag", "face_value", "cap_pct", "floor_pct"]);
 
 function InstrumentsSection() {
   const qc = useQueryClient();
@@ -191,11 +191,16 @@ const _FIELDS = [
   ["base", "База (KEYRATE|RUONIA|FIXED)", "text"],
   ["margin_bps", "Маржа, bps", "number"],
   ["maturity_date", "Погашение (YYYY-MM-DD)", "text"],
+  ["issue_date", "Эмиссия (YYYY-MM-DD)", "text"],
   ["coupon_period_days", "Период купона, дней", "number"],
   ["coupons_per_year", "Купонов в год", "number"],
   ["fixing_lag", "Лаг фиксинга, дней", "number"],
   ["fixing_lag_unit", "Ед. лага (cal|work)", "text"],
   ["coupon_mode", "Режим (point|average)", "text"],
+  ["cap_pct", "Кэп ставки, % год.", "number"],
+  ["floor_pct", "Флор ставки, % год.", "number"],
+  ["day_count", "Day count (ACT/365…)", "text"],
+  ["var_type", "Тип перем. ставки", "text"],
   ["face_value", "Номинал", "number"],
 ];
 
@@ -204,13 +209,43 @@ export function InstrumentForm({ isin, onSaved }) {
   // прифилл через useEffect, мутация сохранения
   const q = useQuery({ queryKey: ["instrument", isin], queryFn: () => fetchInstrument(isin) });
   const [vals, setVals] = useState(null);
+  const [formula, setFormula] = useState("");
+  const [parseNote, setParseNote] = useState("");
   const [err, setErr] = useState("");
 
   useEffect(() => {
     if (q.data && vals === null) {
       setVals(Object.fromEntries(_FIELDS.map(([k]) => [k, q.data[k] ?? ""])));
+      setFormula(q.data.coupon_text ?? "");
     }
   }, [q.data, vals]);
+
+  // Разбор формулы → прифилл полей (не сохраняет — админ проверяет и жмёт Сохранить)
+  const parse = useMutation({
+    mutationFn: () => parseCouponFormula(formula),
+    onMutate: () => { setErr(""); setParseNote(""); },
+    onSuccess: (r) => {
+      const p = r.parsed || {};
+      setVals((prev) => {
+        const nv = { ...prev };
+        for (const k of ["base", "margin_bps", "coupon_mode", "cap_pct", "floor_pct",
+                         "fixing_lag", "fixing_lag_unit"]) {
+          if (p[k] !== undefined && p[k] !== null) nv[k] = p[k];
+        }
+        return nv;
+      });
+      const bits = [];
+      if (p.base) bits.push(p.base);
+      if (p.margin_bps != null) bits.push(`+${p.margin_bps}бп`);
+      if (p.coupon_mode) bits.push(p.coupon_mode);
+      if (p.cap_pct != null) bits.push(`кэп ${p.cap_pct}%`);
+      if (p.floor_pct != null) bits.push(`флор ${p.floor_pct}%`);
+      let note = "Разобрано: " + (bits.join(", ") || "ничего не извлечено");
+      if (p.exotic === "inverse") note += " ⚠ инверсная — линейной моделью не считается";
+      setParseNote(note);
+    },
+    onError: (ex) => setErr(ex.message || "Ошибка разбора"),
+  });
 
   const save = useMutation({
     mutationFn: () => {
@@ -219,6 +254,7 @@ export function InstrumentForm({ isin, onSaved }) {
         if (v === "" || v == null) continue;
         params[k] = _NUM.has(k) ? Number(v) : v;
       }
+      if (formula.trim()) params.coupon_text = formula.trim();
       return setInstrumentParams(isin, params);
     },
     onMutate: () => setErr(""),
@@ -230,6 +266,18 @@ export function InstrumentForm({ isin, onSaved }) {
 
   return (
     <div className="instr-form">
+      <div className="instr-formula">
+        <label className="instr-field instr-field-wide">
+          <span>Формула купона (напр. «ΣКС + 1.5%» или «MAX(КС+2%; 9.5%)»)</span>
+          <input type="text" value={formula} placeholder="вставь формулу — разбор заполнит поля"
+            onChange={(e) => setFormula(e.target.value)} />
+        </label>
+        <button className="btn admin-btn-sm" onClick={() => parse.mutate()}
+          disabled={parse.isPending || !formula.trim()}>
+          {parse.isPending ? "…" : "Разобрать"}
+        </button>
+      </div>
+      {parseNote && <div className="admin-msg admin-ok">{parseNote}</div>}
       <div className="instr-grid">
         {_FIELDS.map(([k, label, type]) => (
           <label key={k} className="instr-field">

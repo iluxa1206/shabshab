@@ -142,10 +142,33 @@ def load_manual() -> Dict[str, dict]:
     return _manual_cache
 
 
+_reg_ov_cache = {"ts": 0.0, "map": None}
+
+
+def _registry_overrides() -> dict:
+    """{isin: {купонные поля}} из реестра (manual_locked=1) — кэш 30с, чтобы не
+    бить SQLite на каждый вызов params() в цикле по юниверсу."""
+    import time
+    now = time.monotonic()
+    if _reg_ov_cache["map"] is not None and now - _reg_ov_cache["ts"] < 30:
+        return _reg_ov_cache["map"]
+    try:
+        from services import instruments_registry as reg
+        m = reg.coupon_overrides_all()
+    except Exception:
+        m = {}
+    _reg_ov_cache["map"] = m
+    _reg_ov_cache["ts"] = now
+    return m
+
+
 def params(isin: str) -> dict:
-    """Слитые параметры выпуска: ручной оверрайд поверх Cbonds-справки."""
+    """Слитые параметры выпуска. Приоритет: РЕЕСТР (ручная правка, manual_locked) >
+    bond_params_manual.json > Cbonds-справка. Реестровый слой — мост тонкой настройки
+    выпуска (формула/кэп/флор/лаг/режим) в прайсинг (см. coupon_formula)."""
     p = dict(load_cbonds().get(isin) or {})
     p.update({k: v for k, v in (load_manual().get(isin) or {}).items() if v is not None})
+    p.update(_registry_overrides().get(isin) or {})
     return p
 
 
