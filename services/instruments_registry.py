@@ -536,11 +536,15 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
             "short_name": cb.get("name") or n.get("name"),
             "base": base,
             "margin_bps": int(margin) if margin is not None else None,
-            "maturity_date": n.get("maturity_date"),   # NRD/MOEX; Cbonds без maturity
+            # maturity/issue/face — bondsearch (Cbonds) теперь их тоже несёт, фолбэк NRD/MOEX
+            "maturity_date": cb.get("maturity_date") or n.get("maturity_date"),
+            "issue_date": cb.get("issue_date"),
+            "face_value": cb.get("face_value"),
             "coupons_per_year": int(freq) if freq else None,
             "coupon_period_days": round(365 / freq) if freq else None,
             "day_count": cb.get("day_count"),
             "var_type": cb.get("var_type"),
+            "coupon_text": cb.get("coupon_text"),   # формула купона (для СПРАВОЧНИКа + проспект-парс)
             "rating": n.get("rating"),
         }
         res = upsert(row, source="cbonds" if cb else "nrd_frozen")

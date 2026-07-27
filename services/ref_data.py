@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import json
 import glob
+import re
 from typing import Dict, Optional
 
 import openpyxl
@@ -27,8 +28,19 @@ _BASE_MAP = {
     "ключевая ставка": "KEYRATE",
     "cbr_rate": "KEYRATE",
     "ruonia": "RUONIA",
+    "ruonia индекс": "RUONIA",
     "1/2_cbr_rate": "KEYRATE",  # половинная — обрабатывать отдельно, помечаем базу
 }
+
+
+def _cell_iso(v) -> Optional[str]:
+    """Ячейка bondsearch (datetime или 'дд.мм.гггг') → ISO YYYY-MM-DD."""
+    if v is None or v == "":
+        return None
+    if hasattr(v, "year") and hasattr(v, "month"):   # datetime/date
+        return f"{v.year:04d}-{v.month:02d}-{v.day:02d}"
+    m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", str(v).strip())
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
 
 # Имена колонок в bondsearch-выгрузке (сопоставление по заголовку, не по индексу)
 _COL = {
@@ -41,6 +53,9 @@ _COL = {
     "var_type": ["Тип переменной ставки купона"],
     "put": ["Оферта (put)"],
     "coupon_text": ["Купон"],   # текст формулы из проспекта: режим фиксинга + лаг
+    "maturity": ["Погашение"],
+    "issue": ["Начало начисления купонов", "Начало обращения"],
+    "face": ["Мин. торг. лот / Номинал", "Номинал"],
 }
 
 _cbonds_cache: Optional[Dict[str, dict]] = None
@@ -123,6 +138,9 @@ def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
             "var_type": row[ix["var_type"]] if ix.get("var_type") is not None else None,
             "coupon_text": (str(row[ix["coupon_text"]]).strip()
                             if ix.get("coupon_text") is not None and row[ix["coupon_text"]] else None),
+            "maturity_date": _cell_iso(row[ix["maturity"]]) if ix.get("maturity") is not None else None,
+            "issue_date": _cell_iso(row[ix["issue"]]) if ix.get("issue") is not None else None,
+            "face_value": _to_float(row[ix["face"]]) if ix.get("face") is not None else None,
         }
     if path is None or path == _latest_cbonds_file():
         _cbonds_cache = out
