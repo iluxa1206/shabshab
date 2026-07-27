@@ -36,11 +36,12 @@ _LOGIN_FAILS_MAX_ENTRIES = 4096  # защита самого dict от разр�
 
 
 def _login_key(request: Request, email: str) -> str:
-    # За Caddy request.client.host = IP прокси (один бакет на всех). Реальный
-    # клиент — в X-Forwarded-For (Caddy доверенный, ставит его сам). Берём
-    # ЛЕВЫЙ адрес (исходный клиент). Фолбэк — прямой peer.
+    # За Caddy (edge, TLS сам) request.client.host = IP прокси (один бакет на всех).
+    # X-Forwarded-For = [<клиентский спуф...>, <реальный IP, добавлен Caddy>]. Caddy
+    # АППЕНДИТ реальный peer СПРАВА, поэтому берём ПРАВЫЙ адрес — клиент не может
+    # им управлять (левые он подделает и ротацией обойдёт rate-limit). Фолбэк — peer.
     xff = request.headers.get("x-forwarded-for", "")
-    ip = (xff.split(",")[0].strip() if xff
+    ip = (xff.split(",")[-1].strip() if xff
           else (request.client.host if request.client else "?"))
     return f"{ip}|{(email or '').strip().lower()}"
 
