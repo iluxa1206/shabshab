@@ -9,6 +9,7 @@ issue/face из MOEX (Cbonds-выгрузка их не содержит). Об�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import date
@@ -70,24 +71,8 @@ async def sync_instruments() -> dict:
                "short_name": mo.get("short_name"), "face_value": mo.get("face")}
         if any(v is not None for k, v in upd.items() if k != "isin"):
             reg.upsert(upd, source="moex", mark_new=False)
-    # новые кандидаты: сперва дешёвый пре-фильтр по листингу (coupon_percent
-    # None/0 = ставка не зафиксирована → вероятный флоатер), лишь потом дорогой
-    # bondization-чек. Отсекает ~фикс-купонные без лишних сетевых вызовов.
-    new_isins = [i for i in listing if i not in known
-                 and listing[i].get("coupon_percent") in (None, 0.0)]
-    for isin in new_isins[:_MAX_DISCOVERY_PER_RUN]:
-        try:
-            if await _is_floater(isin):
-                mo = listing[isin]
-                reg.upsert({"isin": isin, "short_name": mo.get("short_name"),
-                            "maturity_date": mo.get("maturity"), "face_value": mo.get("face")},
-                           source="moex", mark_new=True)
-                discovered += 1
-        except Exception:
-            continue
-    if len(new_isins) > _MAX_DISCOVERY_PER_RUN:
-        logger.info("discovery capped: %d new ISINs, checked %d",
-                    len(new_isins), _MAX_DISCOVERY_PER_RUN)
+    # новые флоатеры: bondization-дискавери с negative-кэшем (см. discover_floaters).
+    discovered = await discover_floaters(listing, reg=reg)
 
     # 3. добор maturity/issue/face/частоты из БОРД-НЕЗАВИСИМОГО справочника MOEX
     #    (fetch_security_master ловит maturity даже вне TQCB — покрытие шире, чем
@@ -172,15 +157,59 @@ def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
             or "SU29" in name_upper)
 
 
-async def _is_floater(isin: str) -> bool:
-    """Флоатер ⇔ у бумаги есть БУДУЩИЙ купон с незафиксированной суммой (value=None):
-    у фикс-купонных все value известны заранее. Сигнал из MOEX bondization."""
+async def discover_floaters(listing: dict | None = None,
+                            cap: int = _MAX_DISCOVERY_PER_RUN,
+                            delay: float = 0.1, reg=None) -> int:
+    """Найти НОВЫЕ флоатеры среди торгуемых на MOEX и завести их в реестр.
+
+    Флоатер ⇔ у бумаги есть БУДУЩИЙ купон с незафиксированной суммой (value=None,
+    сигнал из MOEX bondization); у фикс-купонных все value известны заранее.
+
+    Кандидат = ISIN из листинга, которого нет ни в реестре, ни в negative-кэше
+    discovery_seen (уже проверен). coupon_percent — НЕ отсечка, а лишь ПРИОРИТЕТ
+    порядка: у флоатера текущий период зафиксирован → cp задан, поэтому фильтр по
+    cp None/0 терял ~28% флоатеров (ВЭБ/РЖД/ДОМ.РФ и т.п.). Проверяем ВСЕХ, но
+    вероятных (cp None/0) — первыми. Negative-кэш → каждый ISIN чекается ровно раз,
+    cap не голодает, бэклог листинга сходится за проходы. delay — мягкий rate-limit."""
     from services.market_data import MarketDataService
-    full = await MarketDataService.fetch_bond_schedule_full(isin)
-    coupons = (full or {}).get("coupons") or []
-    if not coupons:
-        return False
-    return any(c.get("value") is None for c in coupons)
+    if reg is None:
+        from services import instruments_registry as reg
+    if listing is None:
+        try:
+            listing = await MarketDataService.fetch_bond_listing()
+        except Exception as e:
+            logger.warning("discovery listing failed: %s", e)
+            return 0
+    if not listing:
+        return 0
+    # приоритет: вероятные флоатеры (cp None/0) вперёд, остальные следом — но в
+    # обоих случаях проверяем bondization'ом (cp не решает исход)
+    cand = sorted(listing.keys(),
+                  key=lambda i: 0 if listing[i].get("coupon_percent") in (None, 0.0) else 1)
+    pending = reg.discovery_pending(cand, cap)
+    discovered = 0
+    for isin in pending:
+        try:
+            full = await MarketDataService.fetch_bond_schedule_full(isin)
+        except Exception:
+            continue  # сетевой сбой — НЕ помечаем seen, повторим в следующий проход
+        coupons = (full or {}).get("coupons") or []
+        if not coupons:
+            # нет графика (структурная нота без bondization / свежий выпуск) —
+            # помечаем NULL: перечекнётся после TTL, но не забивает cap каждый цикл
+            reg.mark_discovery_seen(isin, None)
+            continue
+        is_fl = any(c.get("value") is None for c in coupons)
+        reg.mark_discovery_seen(isin, is_fl)
+        if is_fl:
+            mo = listing[isin]
+            reg.upsert({"isin": isin, "short_name": mo.get("short_name"),
+                        "maturity_date": mo.get("maturity"), "face_value": mo.get("face")},
+                       source="moex", mark_new=True)
+            discovered += 1
+        if delay:
+            await asyncio.sleep(delay)
+    return discovered
 
 
 def _f(x):

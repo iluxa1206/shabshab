@@ -126,6 +126,16 @@ async def universe_price_poller():
                     logger.info(f"emitter backfill: +{_filled}")
             except Exception as e:
                 logger.warning(f"emitter backfill error: {e}")
+            # дискавери новых флоатеров — драйн КАЖДЫЙ цикл (negative-кэш + cap/цикл),
+            # 24/7: бэклог MOEX-листинга сходится за часы, а не «80/день». Без этого
+            # раз/день + cap head перечекивался, хвост не достигался (голодание).
+            try:
+                from services.instruments_sync import discover_floaters
+                _nd = await discover_floaters(cap=60)
+                if _nd:
+                    logger.info(f"discovery: +{_nd} new floaters")
+            except Exception as e:
+                logger.warning(f"discovery drain error: {e}")
             if _in_moex_trading_hours():
                 uni = await instruments_registry.fetch_floater_universe()
                 isins = [u["isin"] for u in uni if u.get("isin")]

@@ -185,3 +185,34 @@ def test_margin_check_and_suspect(reg):
     suspect = {r["isin"] for r in reg.list_suspect()}
     assert suspect == {"RU2"}
     assert reg.count()["suspect"] == 1
+
+
+def test_discovery_pending_excludes_known_and_decided(reg):
+    """Кандидат исключается, если он уже в реестре ИЛИ помечен значимо (флоатер/фикс)."""
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150}, "moex")
+    reg.mark_discovery_seen("RU2", True)    # найден флоатером
+    reg.mark_discovery_seen("RU3", False)   # фикс — значимо, не перечекивать
+    pending = reg.discovery_pending(["RU1", "RU2", "RU3", "RU4"], limit=10)
+    assert pending == ["RU4"]               # только непроверенный
+
+
+def test_discovery_pending_preserves_priority_and_cap(reg):
+    """Порядок candidates сохраняется (приоритет), limit режет."""
+    pending = reg.discovery_pending(["A", "B", "C", "D"], limit=2)
+    assert pending == ["A", "B"]
+
+
+def test_discovery_null_rechecked_after_ttl(reg, monkeypatch):
+    """is_floater=NULL (нет bondization) перечекивается после TTL, decided — никогда."""
+    from datetime import datetime, timedelta, timezone
+    reg.mark_discovery_seen("RU_NULL", None)   # нет данных графика
+    reg.mark_discovery_seen("RU_FIX", False)   # решено
+    # свежий NULL — пропускается (в skip)
+    assert reg.discovery_pending(["RU_NULL", "RU_FIX"], 10) == []
+    # состарим checked_at NULL-записи за пределы TTL → снова кандидат
+    old = (datetime.now(timezone.utc) - timedelta(days=reg._DISCOVERY_NULL_TTL_DAYS + 1)).isoformat()
+    with reg._conn() as c:
+        c.execute("UPDATE discovery_seen SET checked_at=? WHERE isin=?", (old, "RU_NULL"))
+        c.execute("UPDATE discovery_seen SET checked_at=? WHERE isin=?", (old, "RU_FIX"))
+    pending = reg.discovery_pending(["RU_NULL", "RU_FIX"], 10)
+    assert pending == ["RU_NULL"]              # NULL вернулся, decided(False) — нет

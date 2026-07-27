@@ -14,7 +14,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS instruments(
   margin_check_pp   REAL                          -- бэк-аут маржи vs факт КС/RUONIA (pp); |>1.5| = подозрение
 );
 CREATE INDEX IF NOT EXISTS ix_instruments_active ON instruments(active);
+CREATE TABLE IF NOT EXISTS discovery_seen(
+  isin        TEXT PRIMARY KEY,
+  is_floater  INTEGER,           -- 1 = флоатер (добавлен в instruments), 0 = фикс/прочее
+  checked_at  TEXT
+);
 """
 
 # ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
@@ -469,6 +474,52 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
     for isin, p in manual.items():
         set_manual(isin.strip(), p, lock=True)
     return stats
+
+
+# Пере-проверка ISIN без bondization-данных (is_floater IS NULL): свежий выпуск
+# мог не иметь опубликованного графика в момент первой проверки — даём шанс позже.
+_DISCOVERY_NULL_TTL_DAYS = 3
+
+
+def discovery_pending(candidates: list[str], limit: int) -> list[str]:
+    """Из candidates — ISIN, которых нет НИ в реестре инструментов, НИ в negative-
+    кэше discovery_seen со ЗНАЧИМЫМ результатом. Порядок candidates сохраняется
+    (приоритет вероятных флоатеров). Гарантирует прогресс: решённые (флоатер/фикс)
+    не перечекиваются; «нет данных» (is_floater IS NULL) перечекиваются лишь спустя
+    _DISCOVERY_NULL_TTL_DAYS (свежий выпуск мог не иметь bondization при 1-й проверке).
+    Без этого структурные ноты без графика (СберCIB/Румберг) забивали бы cap вечно."""
+    _ensure()
+    if not candidates:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_DISCOVERY_NULL_TTL_DAYS)).isoformat()
+    with _conn() as c:
+        known = {r[0] for r in c.execute("SELECT isin FROM instruments")}
+        # skip: решённые (is_floater IS NOT NULL) + свежие «нет данных» (NULL, checked_at>=cutoff)
+        skip = {r[0] for r in c.execute(
+            "SELECT isin FROM discovery_seen "
+            "WHERE is_floater IS NOT NULL OR checked_at >= ?", (cutoff,))}
+    out: list[str] = []
+    for i in candidates:
+        if i in known or i in skip:
+            continue
+        out.append(i)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
+    """Записать результат bondization-проверки в negative-кэш: True=флоатер (заведён
+    в instruments), False=фикс/прочее (значимо — не перечекивать), None=нет данных
+    графика (перечекнуть после TTL). Дискавери не гоняет решённые каждый прогон."""
+    _ensure()
+    isin = (isin or "").strip()
+    if not isin:
+        return
+    val = None if is_floater is None else (1 if is_floater else 0)
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO discovery_seen(isin, is_floater, checked_at) "
+                  "VALUES(?,?,?)", (isin, val, _now()))
 
 
 def count() -> dict:
