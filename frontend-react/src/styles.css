@@ -495,6 +495,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .sh-range { display: inline-flex; gap: 2px; }
 .sh-rbtn { font: 10px var(--mono); text-transform: uppercase; padding: 2px 7px; background: transparent; color: var(--mut); border: 1px solid var(--line-2); border-radius: 0; cursor: pointer; }
 .sh-rbtn.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.sh-chart { position: relative; }
+.sh-chart svg { cursor: crosshair; }
 .sh-line { stroke: var(--accent); stroke-width: 1.5; }
 .sh-dot { fill: var(--accent); }
 .sh-note { font-size: 10px; color: var(--mut-2); margin-top: 2px; }
