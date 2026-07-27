@@ -162,7 +162,7 @@ def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
 
 async def discover_floaters(listing: dict | None = None,
                             cap: int = _MAX_DISCOVERY_PER_RUN,
-                            delay: float = 0.1, reg=None) -> int:
+                            delay: float = 0.25, reg=None) -> int:
     """Найти НОВЫЕ флоатеры среди торгуемых на MOEX и завести их в реестр.
 
     Флоатер ⇔ у бумаги есть БУДУЩИЙ купон с незафиксированной суммой (value=None,

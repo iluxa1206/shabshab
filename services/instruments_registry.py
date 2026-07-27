@@ -490,7 +490,7 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
 
 # Пере-проверка ISIN без bondization-данных (is_floater IS NULL): свежий выпуск
 # мог не иметь опубликованного графика в момент первой проверки — даём шанс позже.
-_DISCOVERY_NULL_TTL_DAYS = 3
+_DISCOVERY_NULL_TTL_DAYS = 1
 
 
 def discovery_pending(candidates: list[str], limit: int) -> list[str]:
