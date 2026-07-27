@@ -8,6 +8,20 @@ def test_formula_keyrate_average():
     assert r["coupon_mode"] == "average" and r.get("exotic") is None
 
 
+def test_formula_greek_sigma_attached_base():
+    """Регрессия: corpbonds шлёт Σ (U+03A3, БУКВА) приклеенной к базе — «ΣКС».
+    \\bКС\\b не матчил (нет границы слова после буквы) → база=None → бумага ошибочно
+    уходила в EXOTIC. Терялись обычные усреднённые КС-флоатеры (Атомэнергопром/Газпром)."""
+    r = _parse_formula("ΣКС + 1.5%")               # Σ = U+03A3, не ∑ (U+2211)
+    assert r["base"] == "KEYRATE" and r["margin_bps"] == 150
+    assert r["coupon_mode"] == "average" and r.get("exotic") is None
+
+
+def test_formula_sigma_space_base():
+    r = _parse_formula("Σ КС + 1%")
+    assert r["base"] == "KEYRATE" and r["margin_bps"] == 100 and r["coupon_mode"] == "average"
+
+
 def test_formula_keyrate_point():
     r = _parse_formula("КС + 1.5%")
     assert r["base"] == "KEYRATE" and r["margin_bps"] == 150 and r["coupon_mode"] == "point"

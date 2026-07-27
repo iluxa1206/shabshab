@@ -124,8 +124,11 @@ async def sync_instruments() -> dict:
     cb_stats = {}
     try:
         from services.enrich_corpbonds import enrich_registry
+        # incomplete (нет base/margin) + suspect (маржа расходится) + EXOTIC
+        # (перепроверка: детект экзотики раньше ошибался, напр. Σ-приклеенная база)
         targets = ([r["isin"] for r in reg.list_incomplete()]
-                   + [s["isin"] for s in reg.list_suspect()])
+                   + [s["isin"] for s in reg.list_suspect()]
+                   + [e["isin"] for e in reg.list_exotic()])
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)

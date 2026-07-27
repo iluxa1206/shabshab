@@ -408,6 +408,18 @@ def list_incomplete() -> list[dict]:
             if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
 
 
+def list_exotic() -> list[dict]:
+    """Активные бумаги, помеченные base='EXOTIC' (не manual_locked). Для периодической
+    ПЕРЕПРОВЕРКИ corpbonds: детект экзотики раньше ошибался (напр. Σ-приклеенная база
+    «ΣКС» уходила в EXOTIC) — перепарс возвращает ложные экзотики в универс."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, source FROM instruments "
+            "WHERE active=1 AND base='EXOTIC' AND manual_locked=0").fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_unreviewed() -> list[dict]:
     """Новые бумаги, у которых параметры ещё не подтверждены (для admin-ревью)."""
     _ensure()

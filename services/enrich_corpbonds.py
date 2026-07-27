@@ -33,8 +33,16 @@ def _parse_formula(f: str) -> dict:
     up = f.upper().replace("\xa0", " ")
     out: dict = {"formula_text": raw[:120]}
 
+    # режим «среднее»: знак суммы ∑ (U+2211) ИЛИ Σ (U+03A3, греч. сигма — corpbonds
+    # шлёт именно её) ИЛИ «СРЕДН». Считаем ДО снятия символа.
+    avg = ("∑" in up) or ("Σ" in up) or ("СРЕДН" in up)
+    # снять знак суммы/среднего: Σ/∑ — БУКВА, приклеенная к базе («ΣКС») ломает
+    # \bКС\b (нет границы слова между буквой Σ и КС) → база не детектилась → бумага
+    # ошибочно уходила в EXOTIC. Заменяем на пробел, дальше матчим по очищенному.
+    up = re.sub(r"[∑Σ]", " ", up)
+
     # инверсный: «X% − КС» (КС вычитается из числа) — линейной моделью не считаем
-    inverse = bool(re.search(r"[-−–]\s*(∑\s*)?(КС|KC|CBR|RUONIA)", up))
+    inverse = bool(re.search(r"[-−–]\s*(КС|KC|CBR|RUONIA)", up))
     # флор/кап/лесенка через MAX/MIN/не более/не менее
     capped = bool(re.search(r"MAX|MIN|МАКС|МИН|НЕ\s+БОЛЕЕ|НЕ\s+МЕНЕЕ|НЕ\s+ВЫШЕ|НЕ\s+НИЖЕ", up))
 
@@ -44,8 +52,7 @@ def _parse_formula(f: str) -> dict:
     elif re.search(r"\bКС\b|\bKC\b|КЛЮЧЕВ|CBR", up):
         base = "KEYRATE"
 
-    # режим: ∑ (сумма/среднее) → average; иначе point
-    mode = "average" if "∑" in raw or "СРЕДН" in up else "point"
+    mode = "average" if avg else "point"
 
     # маржа: «+ X%» (положительный спред над базой)
     margin_bps = None
