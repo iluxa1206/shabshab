@@ -302,12 +302,15 @@ async def spread_snapshotter():
     свежие). Идемпотентно per (isin,date)."""
     from services.spread_history import write_snapshot
     from services.market_data import market_cache
-    await asyncio.sleep(120)  # дать поллеру прогреть метрики
-    try:
+    # стартовый снапшот: ждём прогрева метрик (ретрай до ~5мин), затем пишем
+    for _ in range(10):
+        await asyncio.sleep(30)
         if market_cache.get("universe_metrics") or market_cache.get("fixed_metrics"):
-            await asyncio.to_thread(write_snapshot)
-    except Exception as e:
-        logger.warning(f"spread snapshot (startup) error: {e}")
+            try:
+                await asyncio.to_thread(write_snapshot)
+            except Exception as e:
+                logger.warning(f"spread snapshot (startup) error: {e}")
+            break
     while True:
         now = datetime.now(_MSK)
         target = now.replace(hour=19, minute=0, second=0, microsecond=0)
