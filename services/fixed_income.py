@@ -304,11 +304,13 @@ async def fetch_fixed_universe() -> List[dict]:
     except Exception as e:
         logger.warning(f"fixed universe error: {e}")
         return _uni_mem["rows"] or []
-    # ОФЗ держим все; корпораты — топ по обороту (кап bounds прогрев поллера)
+    # ОФЗ держим все; линкеры (индекс. номинал) тоже держим все — их мало и они
+    # редкие; корпораты — топ по обороту (кап bounds прогрев поллера).
     ofz = [r for r in rows if r["cls"] == "ofz"]
-    corp = sorted((r for r in rows if r["cls"] == "corp"),
+    linked = [r for r in rows if r["cls"] == "corp" and r.get("linked")]
+    corp = sorted((r for r in rows if r["cls"] == "corp" and not r.get("linked")),
                   key=lambda r: r.get("val_today") or 0.0, reverse=True)[:_CORP_CAP]
-    rows = ofz + corp
+    rows = ofz + linked + corp
     _uni_mem["rows"] = rows
     _uni_mem["ts"] = now
     return rows
