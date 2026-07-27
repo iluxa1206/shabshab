@@ -376,7 +376,7 @@ export default function Drawer({ isin, kind, onClose }) {
               exit={{ x: reduce ? 0 : 24, opacity: 0 }}
               transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
             >
-              <Orderbook isin={isin} face={face} onClose={() => setShowOb(false)} />
+              <Orderbook isin={isin} kind={kind} face={face} onClose={() => setShowOb(false)} />
             </motion.aside>
           )}
         </>

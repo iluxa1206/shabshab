@@ -40,22 +40,17 @@ async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]
 _MAX_LADDER = 60   # потолок синтетических уровней (bounds reprice-компьют)
 
 
-def _level_metrics(ctx, reprice_at_price, price, qty, alor_yield=None):
-    """Один уровень стакана → OrderbookLevel c SM/DM/YTM под цену уровня.
-    DM = disc_margin_bps (настоящая дисконт-маржа); dm_bps в метриках — легаси-
-    алиас sm_bps, поэтому SM и DM совпадали. SM = sm_bps (fallback dm_bps),
-    как в калькуляторе карточки."""
-    sm_bps = dm_bps = None
-    calc_yield = alor_yield
+def _level(metrics_fn, price, qty):
+    """Один уровень стакана → OrderbookLevel под цену уровня. metrics_fn(price)
+    возвращает {yield_pct, dm_bps?, g_spread_bps?} — набор зависит от типа бумаги
+    (флоатер: DM+YTM; фикс: YTM+g-спред). Тёплый контекст внутри metrics_fn."""
+    m = {}
     try:
-        m = reprice_at_price(ctx, price)
-        sm_bps = m.get("sm_bps") if m.get("sm_bps") is not None else m.get("dm_bps")
-        dm_bps = m.get("disc_margin_bps")
-        calc_yield = m.get("yield_xirr_pct")
+        m = metrics_fn(price) or {}
     except Exception:
         pass
-    return OrderbookLevel(price_pct=price, quantity=qty, yield_pct=calc_yield,
-                          sm_bps=sm_bps, dm_bps=dm_bps)
+    return OrderbookLevel(price_pct=price, quantity=qty, yield_pct=m.get("yield_pct"),
+                          dm_bps=m.get("dm_bps"), g_spread_bps=m.get("g_spread_bps"))
 
 
 @router.get("/{isin}", response_model=OrderbookResponse, tags=["Orderbook"])
@@ -63,23 +58,44 @@ async def get_orderbook(
     isin: str = Path(...),
     depth: int = Query(10, ge=1, le=50),
     full: bool = Query(False, description="Все уровни лестницы (не только с заявками)"),
+    kind: str = Query("floater", description="floater | fixed — набор метрик уровня"),
 ):
     # 1. Get Bond Data
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
-    cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
 
-    # 2. Тёплый контекст пересчёта (ref_obj/кривая/calc_date + amorts/offers/
-    # periods/НКД) — один раз на выпуск, далее reprice_at_price по уровням без I/O.
-    # Полные amorts/offers → per-level SM/DM совпадают с калькулятором карточки
-    # (раньше orderbook звал calculate_valuation_metrics без них → расхождение).
-    from services.bond_details import load_reprice_ctx, reprice_at_price
-    try:
-        ctx = await load_reprice_ctx(isin, cache)
-    except NotFoundException:
-        raise HTTPException(status_code=404, detail="Bond not found")
-    calc_date = ctx["calc_date"]
+    # 2. Тёплый контекст пересчёта на выпуск (один раз) → metrics_fn(price) по
+    # уровням без I/O. Флоатер: reprice_at_price → DM (disc_margin) + YTM. Фикс:
+    # compute_fixed_row(price_override) → g-спред + YTM (тот же путь, что карточка).
+    if kind == "fixed":
+        from services import fixed_income as fi
+        from services.market_data import market_cache
+        uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
+        row = next((u for u in uni if u.get("isin") == isin), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Bond not found")
+        secid = row.get("secid") or isin
+        full_sched = await MarketDataService.fetch_bond_schedule_full(secid)
+        _r, _k, cd, rd = await MarketDataService.get_curves()
+        _ek, _eu, g = await MarketDataService.get_zspread_ctx()
+        calc_date = cd or rd or date.today()
+
+        def metrics_fn(price):
+            m = fi.compute_fixed_row(row, full_sched, g, calc_date, price_override=price)
+            return {"g_spread_bps": m.get("g_spread_bps"), "yield_pct": m.get("ytm")}
+    else:
+        cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
+        from services.bond_details import load_reprice_ctx, reprice_at_price
+        try:
+            ctx = await load_reprice_ctx(isin, cache)
+        except NotFoundException:
+            raise HTTPException(status_code=404, detail="Bond not found")
+        calc_date = ctx["calc_date"]
+
+        def metrics_fn(price):
+            m = reprice_at_price(ctx, price)
+            return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct")}
 
     # 3. Fetch Snapshot
     snapshot = await fetch_alor_orderbook_snapshot(isin, depth)
@@ -126,11 +142,11 @@ async def get_orderbook(
         for i in range(nsteps + 1):
             price = round(lo + i * step, 4)
             qty = qty_at.get(price)
-            lvl = _level_metrics(ctx, reprice_at_price, price, qty)
+            lvl = _level(metrics_fn, price, qty)
             (processed_asks if price > mid else processed_bids).append(lvl)
     else:
-        processed_bids = [_level_metrics(ctx, reprice_at_price, p, q) for p, q in raw_bids]
-        processed_asks = [_level_metrics(ctx, reprice_at_price, p, q) for p, q in raw_asks]
+        processed_bids = [_level(metrics_fn, p, q) for p, q in raw_bids]
+        processed_asks = [_level(metrics_fn, p, q) for p, q in raw_asks]
 
     return OrderbookResponse(
         isin=isin,

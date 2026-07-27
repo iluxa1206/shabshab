@@ -121,8 +121,8 @@ export const repriceBond = (isin, price, signal) =>
 
 // Стакан выпуска (Alor snapshot): bids/asks с per-level SM/DM/YTM (тот же расчёт,
 // что калькулятор карточки, батчем по уровням). full=true — все уровни лестницы.
-export const fetchOrderbook = (isin, { depth = 10, full = false } = {}, signal) =>
-  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}`, { signal });
+export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater" } = {}, signal) =>
+  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}&kind=${kind}`, { signal });
 
 // --- Модуль «Фонды» ---
 export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);

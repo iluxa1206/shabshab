@@ -270,7 +270,8 @@ class OrderbookLevel(BaseModel):
     quantity: Optional[int] = None   # None — синтетический уровень лестницы (нет заявки)
     yield_pct: Optional[float] = None
     sm_bps: Optional[int] = None
-    dm_bps: Optional[int] = None
+    dm_bps: Optional[int] = None       # флоатеры: дисконт-маржа
+    g_spread_bps: Optional[int] = None # фиксы: g-спред к КБД
 
 class OrderbookSnapshot(BaseModel):
     bids: List[OrderbookLevel]

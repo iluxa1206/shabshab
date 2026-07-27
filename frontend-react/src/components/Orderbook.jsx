@@ -5,10 +5,10 @@ import { fetchOrderbook } from "../api.js";
 
 const DEPTHS = [10, 20, 30, 50];
 
-// Строка уровня стакана: цена · объём(шт) · SM · DM · YTM.
-// side: "bid" | "ask" — красит цену. face — номинал ₽ для объёма в деньгах (title).
+// Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → DM+YTM,
+// фикс → YTM+G-спред. side: "bid"|"ask" красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
-function Level({ lvl, side, face }) {
+function Level({ lvl, side, face, isFixed }) {
   const hasQty = lvl.quantity != null;
   const rub = hasQty && face != null && lvl.price_pct != null
     ? lvl.quantity * face * (lvl.price_pct / 100)
@@ -19,22 +19,31 @@ function Level({ lvl, side, face }) {
       <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
       </td>
-      <td style={dmColor(lvl.sm_bps)}>{fmt.bps(lvl.sm_bps) ?? "—"}</td>
-      <td style={dmColor(lvl.dm_bps)}>{fmt.bps(lvl.dm_bps) ?? "—"}</td>
-      <td className="ob-ytm">{fmt.pct(lvl.yield_pct) ?? "—"}</td>
+      {isFixed ? (
+        <>
+          <td className="ob-ytm">{fmt.pct(lvl.yield_pct) ?? "—"}</td>
+          <td style={dmColor(lvl.g_spread_bps)}>{fmt.bps(lvl.g_spread_bps) ?? "—"}</td>
+        </>
+      ) : (
+        <>
+          <td style={dmColor(lvl.dm_bps)}>{fmt.bps(lvl.dm_bps) ?? "—"}</td>
+          <td className="ob-ytm">{fmt.pct(lvl.yield_pct) ?? "—"}</td>
+        </>
+      )}
     </tr>
   );
 }
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
 // Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
-export default function Orderbook({ isin, face, onClose }) {
+export default function Orderbook({ isin, kind, face, onClose }) {
+  const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
 
   const q = useQuery({
-    queryKey: ["orderbook", isin, depth, full],
-    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full }, signal),
+    queryKey: ["orderbook", isin, depth, full, kind],
+    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater" }, signal),
     enabled: !!isin,
     refetchInterval: 3000,
     refetchIntervalInBackground: false,
@@ -88,26 +97,26 @@ export default function Orderbook({ isin, face, onClose }) {
               <tr>
                 <th className="left">Цена</th>
                 <th>Объём</th>
-                <th>SM</th>
-                <th>DM</th>
-                <th>YTM</th>
+                {isFixed
+                  ? <><th>YTM</th><th>G-спред</th></>
+                  : <><th>DM</th><th>YTM</th></>}
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} />)}
               <tr className="ob-spread">
-                <td colSpan={5}>
+                <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} />)}
             </tbody>
           </table>
         )}
       </div>
 
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
-      <div className="ob-note">SM/DM/YTM — расчёт под цену уровня (как калькулятор карточки).</div>
+      <div className="ob-note">{isFixed ? "YTM/G-спред" : "DM/YTM"} — расчёт под цену уровня (как калькулятор карточки).</div>
     </div>
   );
 }
