@@ -841,7 +841,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .instr-form { padding: 8px 4px 4px; }
 .instr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; margin-bottom: 8px; }
 .instr-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--mut); }
-.instr-field input { font-size: 12px; padding: 4px 6px; }
+.instr-field input,
+.instr-field select { font-size: 12px; padding: 4px 6px; }
 @media (max-width: 640px) { .instr-grid { grid-template-columns: repeat(2, 1fr); } }
 
 /* --- Справочник инструментов (страница /reference) --- */

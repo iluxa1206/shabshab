@@ -11,9 +11,24 @@ export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); this.name = "UnauthorizedError"; }
 }
 
-// Тело ошибки FastAPI: {detail: "..."}. Достаём человекочитаемое сообщение.
+// Тело ошибки FastAPI. detail бывает строкой ({detail:"..."}) ИЛИ массивом
+// объектов валидации ({detail:[{loc,msg,type},…]}). Массив без разбора →
+// «[object Object]» в UI, поэтому вытягиваем .msg и склеиваем.
 async function errText(r, fallback) {
-  try { const d = await r.json(); if (d && d.detail) return d.detail; } catch { /* ignore */ }
+  try {
+    const d = await r.json();
+    const det = d?.detail;
+    if (typeof det === "string") return det;
+    if (Array.isArray(det)) {
+      const msgs = det.map((e) => {
+        const field = Array.isArray(e?.loc) ? e.loc[e.loc.length - 1] : null;
+        return (field ? `${field}: ` : "") + (e?.msg || JSON.stringify(e));
+      });
+      if (msgs.length) return msgs.join("; ");
+    } else if (det && typeof det === "object") {
+      return det.msg || JSON.stringify(det);
+    }
+  } catch { /* ignore */ }
   return fallback || `Ошибка (${r.status})`;
 }
 

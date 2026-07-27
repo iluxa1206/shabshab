@@ -2,12 +2,10 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
-  fetchUnreviewedInstruments,
-  setInstrumentParams, markInstrumentReviewed, fetchInstrument, parseCouponFormula,
+  setInstrumentParams, fetchInstrument, parseCouponFormula,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
-const UNREVIEWED_KEY = ["admin", "instruments", "unreviewed"];
 
 // Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление
 // юзерами и реестром инструментов.
@@ -23,7 +21,7 @@ export default function AdminPanel({ user, onClose }) {
           <button className="btn" onClick={onClose}>Закрыть</button>
         </div>
         <PasswordSection />
-        {isAdmin && <InstrumentsSection />}
+        {/* Управление бумагами переехало в отдельную страницу «Справочник» */}
         {isAdmin && <UsersSection me={user.email} />}
       </div>
     </div>
@@ -80,126 +78,38 @@ function PasswordSection() {
   );
 }
 
-// --- Реестр инструментов: новые бумаги на ревью + ручной ввод параметров ---
+// --- Ручной ввод параметров бумаги (форма используется на странице «Справочник») ---
 const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
   "fixing_lag", "face_value", "cap_pct", "floor_pct"]);
 
-function InstrumentsSection() {
-  const qc = useQueryClient();
-  const [err, setErr] = useState("");
-  const [editIsin, setEditIsin] = useState(null);
-  const q = useQuery({ queryKey: UNREVIEWED_KEY, queryFn: fetchUnreviewedInstruments });
-  // incomplete (без base/margin/maturity — не прайсуются) в приоритете, затем
-  // просто новые на подтверждение; дедуп по ISIN
-  const incomplete = q.data?.incomplete || [];
-  const suspect = q.data?.suspect || [];
-  const unrev = q.data?.items || [];
-  // suspect (маржа расходится) → инфо-строки с Δ; incomplete → приоритет; затем новые
-  const seen = new Set(incomplete.map((x) => x.isin));
-  const items = [...incomplete, ...unrev.filter((x) => !seen.has(x.isin))];
-  const cnt = q.data?.count;
+// Значения enum-полей (селекты — чтобы не опечататься). day_count/var_type —
+// как в выгрузке cbonds; var_type «…решением эмитента»/«Изменение ставки…»
+// триггерят рез потока по оферте (services/ref_data._RESET_VAR_TYPES).
+const _OPTS = {
+  base: ["KEYRATE", "RUONIA", "FIXED"],
+  fixing_lag_unit: ["cal", "work"],
+  coupon_mode: ["point", "average"],
+  day_count: ["Actual/365 (Actual/365F)", "Actual/Actual (ISDA)", "Actual/360",
+              "Actual/364", "30/360"],
+  var_type: ["Плавающая ставка", "Fix to Float", "Float to fix",
+             "Ставка купона определяется решением эмитента",
+             "Изменение ставки при условии"],
+};
 
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: UNREVIEWED_KEY });
-    qc.invalidateQueries({ queryKey: ["instrument"] });
-  };
-
-  const reviewed = useMutation({
-    mutationFn: (isin) => markInstrumentReviewed(isin),
-    onMutate: () => setErr(""),
-    onSuccess: invalidate,
-    onError: (ex) => setErr(ex.message || "Ошибка"),
-  });
-
-  return (
-    <section className="admin-sec">
-      <h3 className="admin-h">
-        Реестр инструментов
-        {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
-        {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
-        {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
-      </h3>
-      {err && <Msg err={err} />}
-      {suspect.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          <div className="admin-h admin-h-sm">Подозрительная маржа (бэк-аут vs факт КС/RUONIA)</div>
-          <table className="admin-table instr-table"><thead>
-            <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Δ pp</th><th></th></tr>
-          </thead><tbody>
-            {suspect.slice(0, 20).map((s) => (
-              <InstrumentRow key={s.isin} it={s}
-                fifthCol={<span className="admin-warn">Δ{s.margin_check_pp > 0 ? "+" : ""}{s.margin_check_pp}pp</span>}
-                editing={editIsin === s.isin}
-                onEdit={() => setEditIsin(editIsin === s.isin ? null : s.isin)}
-                onSaved={() => { setEditIsin(null); invalidate(); }}
-                onReview={() => reviewed.mutate(s.isin)}
-                busy={reviewed.isPending} />
-            ))}
-          </tbody></table>
-        </div>
-      )}
-      {q.isPending ? (
-        <div className="admin-msg">Загрузка…</div>
-      ) : items.length === 0 ? (
-        <div className="admin-msg admin-ok">Все бумаги проверены</div>
-      ) : (
-        <table className="admin-table instr-table">
-          <thead>
-            <tr><th>ISIN</th><th>Название</th><th>База</th><th>Маржа</th><th>Погашение</th><th></th></tr>
-          </thead>
-          <tbody>
-            {items.slice(0, 50).map((it) => (
-              <InstrumentRow key={it.isin} it={it}
-                editing={editIsin === it.isin}
-                onEdit={() => setEditIsin(editIsin === it.isin ? null : it.isin)}
-                onSaved={() => { setEditIsin(null); invalidate(); }}
-                onReview={() => reviewed.mutate(it.isin)}
-                busy={reviewed.isPending} />
-            ))}
-          </tbody>
-        </table>
-      )}
-      {items.length > 50 && (
-        <div className="muted" style={{ fontSize: 11 }}>показаны первые 50 из {items.length}</div>
-      )}
-    </section>
-  );
-}
-
-function InstrumentRow({ it, editing, onEdit, onSaved, onReview, busy, fifthCol }) {
-  return (
-    <>
-      <tr>
-        <td style={{ fontFamily: "var(--mono, monospace)" }}>{it.isin}</td>
-        <td>{it.short_name || "—"}</td>
-        <td>{it.base || <span className="admin-warn">?</span>}</td>
-        <td>{it.margin_bps ?? <span className="admin-warn">?</span>}</td>
-        <td>{fifthCol !== undefined ? fifthCol : (it.maturity_date || <span className="admin-warn">?</span>)}</td>
-        <td className="admin-actions">
-          <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Параметры"}</button>
-          <button className="btn admin-btn-sm" onClick={onReview} disabled={busy}>Ок</button>
-        </td>
-      </tr>
-      {editing && (
-        <tr><td colSpan={6}><InstrumentForm isin={it.isin} onSaved={onSaved} /></td></tr>
-      )}
-    </>
-  );
-}
-
+// [ключ, подпись, тип input]. Для enum-полей type игнорируется (рисуем select).
 const _FIELDS = [
-  ["base", "База (KEYRATE|RUONIA|FIXED)", "text"],
+  ["base", "База", "text"],
   ["margin_bps", "Маржа, bps", "number"],
   ["maturity_date", "Погашение (YYYY-MM-DD)", "text"],
   ["issue_date", "Эмиссия (YYYY-MM-DD)", "text"],
   ["coupon_period_days", "Период купона, дней", "number"],
   ["coupons_per_year", "Купонов в год", "number"],
   ["fixing_lag", "Лаг фиксинга, дней", "number"],
-  ["fixing_lag_unit", "Ед. лага (cal|work)", "text"],
-  ["coupon_mode", "Режим (point|average)", "text"],
+  ["fixing_lag_unit", "Ед. лага", "text"],
+  ["coupon_mode", "Режим", "text"],
   ["cap_pct", "Кэп ставки, % год.", "number"],
   ["floor_pct", "Флор ставки, % год.", "number"],
-  ["day_count", "Day count (ACT/365…)", "text"],
+  ["day_count", "Day count", "text"],
   ["var_type", "Тип перем. ставки", "text"],
   ["face_value", "Номинал", "number"],
 ];
@@ -279,13 +189,25 @@ export function InstrumentForm({ isin, onSaved }) {
       </div>
       {parseNote && <div className="admin-msg admin-ok">{parseNote}</div>}
       <div className="instr-grid">
-        {_FIELDS.map(([k, label, type]) => (
-          <label key={k} className="instr-field">
-            <span>{label}</span>
-            <input type={type} value={vals[k]}
-              onChange={(e) => setVals((p) => ({ ...p, [k]: e.target.value }))} />
-          </label>
-        ))}
+        {_FIELDS.map(([k, label, type]) => {
+          const onChange = (e) => setVals((p) => ({ ...p, [k]: e.target.value }));
+          const opts = _OPTS[k];
+          return (
+            <label key={k} className="instr-field">
+              <span>{label}</span>
+              {opts ? (
+                <select value={vals[k] ?? ""} onChange={onChange}>
+                  <option value="">—</option>
+                  {/* текущее значение вне справочника — сохраняем как опцию */}
+                  {vals[k] && !opts.includes(vals[k]) && <option value={vals[k]}>{vals[k]}</option>}
+                  {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : (
+                <input type={type} value={vals[k]} onChange={onChange} />
+              )}
+            </label>
+          );
+        })}
       </div>
       {err && <Msg err={err} />}
       <button className="btn admin-btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>

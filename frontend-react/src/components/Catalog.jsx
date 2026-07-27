@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCatalog, catalogExportUrl, importCatalogXlsx } from "../api.js";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
 
 const CATALOG_KEY = ["admin", "catalog"];
@@ -155,6 +155,11 @@ export default function Catalog({ user }) {
 }
 
 function RowWithEdit({ r, editing, onEdit, onSaved }) {
+  const qc = useQueryClient();
+  const review = useMutation({
+    mutationFn: () => markInstrumentReviewed(r.isin),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CATALOG_KEY }),
+  });
   return (
     <>
       <tr className={r.priceable ? "" : "cat-row-incomplete"}>
@@ -170,6 +175,10 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
         {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} /></td>)}
         <td className="admin-actions">
           <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Правка"}</button>
+          {!r.reviewed && (
+            <button className="btn admin-btn-sm" onClick={() => review.mutate()}
+              disabled={review.isPending} title="пометить проверенной">Ок</button>
+          )}
         </td>
       </tr>
       {editing && (
