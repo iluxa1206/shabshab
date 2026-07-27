@@ -420,6 +420,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-qty { color: var(--mut); }
 .ob-ytm { color: var(--fg); }
 .ob-row:hover { background: var(--line); }
+.ob-row.ob-armed { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.ob-row.ob-armed:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.ob-bell { font-size: 9px; margin-right: 4px; vertical-align: 1px; }
 .ob-spread td { text-align: center; font-size: 10px; letter-spacing: 0.08em; color: var(--mut); text-transform: uppercase; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
 .ob-note { padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
