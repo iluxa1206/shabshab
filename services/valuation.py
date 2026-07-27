@@ -8,7 +8,7 @@ from valuation import (
     dirty_price_rub,
     build_cashflows_with_spread,
     xirr_yield_pct,
-    solve_dm_bps,
+    solve_simple_margin_bps,
     solve_discount_margin_bps,
     current_index_pct,
     FlatForwardCurve,
@@ -170,7 +170,7 @@ def calculate_valuation_metrics(
     sm_bps = None
     try:
         if curve and len(cfs) > 0:
-            sm_bps = solve_dm_bps(bond, curve, cfs, calc_date, dirty_rub)
+            sm_bps = solve_simple_margin_bps(bond, curve, cfs, calc_date, dirty_rub)
     except Exception as e:
         logger.warning(f"SM calculation error for {bond.isin}: {e}")
 
@@ -230,7 +230,7 @@ def calculate_valuation_metrics(
             y_off = xirr_yield_pct(dirty_rub, cfs_off, calc_date)
             y_to_offer = round(y_off, 4) if y_off is not None else None
             if curve and len(cfs_off) > 0:
-                sm_to_offer = solve_dm_bps(bond, curve, cfs_off, calc_date, dirty_rub)
+                sm_to_offer = solve_simple_margin_bps(bond, curve, cfs_off, calc_date, dirty_rub)
             L2 = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
                                    amorts=amorts, base=bond.base, hist=hist_pairs)
             if L2 is not None:

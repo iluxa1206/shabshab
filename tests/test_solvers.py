@@ -1,4 +1,4 @@
-"""Golden-тесты солверов: XIRR, SM (solve_dm_bps), discount margin, z-спред.
+"""Golden-тесты солверов: XIRR, SM (solve_simple_margin_bps), discount margin, z-спред.
 Сильнейший инвариант — par-тождество: бумага по номиналу → SM == марже выпуска
 (телескопирование потока с DF кривой). Ломается при любом рассогласовании
 конвенций начисления/дисконта.
@@ -10,7 +10,7 @@ import pytest
 
 from conftest import make_bond, quarterly_periods
 from valuation import (
-    build_cashflows_with_spread, solve_dm_bps, solve_discount_margin_bps,
+    build_cashflows_with_spread, solve_simple_margin_bps, solve_discount_margin_bps,
     current_index_pct, FlatForwardCurve, xirr, xnpv, dirty_price_rub,
 )
 
@@ -44,7 +44,7 @@ def test_par_identity_keyrate_sm_equals_margin(keyrate_curve, calc_date, flat_in
     cfs = build_cashflows_with_spread(bond, keyrate_curve, calc_date, margin,
                                       explicit_periods=periods, index_pct_fn=fn)
     dirty = dirty_price_rub(bond.face_value, 100.0, 0.0)
-    sm = solve_dm_bps(bond, keyrate_curve, cfs, calc_date, dirty)
+    sm = solve_simple_margin_bps(bond, keyrate_curve, cfs, calc_date, dirty)
     assert sm == pytest.approx(margin, abs=2), f"SM={sm} != margin={margin}"
 
 
@@ -57,7 +57,7 @@ def test_par_identity_ruonia_sm_equals_margin(ruonia_curve, calc_date, flat_inde
     cfs = build_cashflows_with_spread(bond, ruonia_curve, calc_date, margin,
                                       explicit_periods=periods, index_pct_fn=fn)
     dirty = dirty_price_rub(bond.face_value, 100.0, 0.0)
-    sm = solve_dm_bps(bond, ruonia_curve, cfs, calc_date, dirty)
+    sm = solve_simple_margin_bps(bond, ruonia_curve, cfs, calc_date, dirty)
     assert sm == pytest.approx(margin, abs=3), f"SM={sm} != margin={margin}"
 
 
@@ -70,7 +70,7 @@ def test_sm_rises_below_par(keyrate_curve, calc_date, flat_index_15):
     cfs = build_cashflows_with_spread(bond, keyrate_curve, calc_date, margin,
                                       explicit_periods=periods, index_pct_fn=fn)
     dirty_below = dirty_price_rub(bond.face_value, 98.0, 0.0)
-    sm = solve_dm_bps(bond, keyrate_curve, cfs, calc_date, dirty_below)
+    sm = solve_simple_margin_bps(bond, keyrate_curve, cfs, calc_date, dirty_below)
     assert sm > margin
 
 
@@ -82,7 +82,7 @@ def test_solve_dm_none_when_unbracketable(keyrate_curve, calc_date, flat_index_1
     fn, _ = flat_index_15
     cfs = build_cashflows_with_spread(bond, keyrate_curve, calc_date, 150,
                                       explicit_periods=periods, index_pct_fn=fn)
-    assert solve_dm_bps(bond, keyrate_curve, cfs, calc_date, -100.0) is None
+    assert solve_simple_margin_bps(bond, keyrate_curve, cfs, calc_date, -100.0) is None
 
 
 def test_discount_margin_par_on_flat_index(calc_date, flat_index_15):
@@ -118,7 +118,7 @@ def test_sanity_guard_nulls_garbage_output(calc_date, flat_index_15, monkeypatch
     _, idx = flat_index_15
     monkeypatch.setattr("services.coupon_calib.index_history", lambda base: idx)
     # солвер вернёт дичь вне [_SANE_BPS]
-    monkeypatch.setattr("services.valuation.solve_dm_bps", lambda *a, **k: -99999)
+    monkeypatch.setattr("services.valuation.solve_simple_margin_bps", lambda *a, **k: -99999)
     monkeypatch.setattr("services.valuation.solve_discount_margin_bps", lambda *a, **k: None)
 
     from forwards import CurveBootstrapper

@@ -740,18 +740,21 @@ def pv_cashflows_with_dm(
     return pv
 
 
-def solve_dm_bps(
-    bond: BondRefData, 
-    curve: DiscountCurve, 
-    cashflows: List[Cashflow], 
-    calc_date: date, 
-    dirty_target_rub: float, 
-    low_bps: int = -50000, 
-    high_bps: int = 50000, 
+def solve_simple_margin_bps(
+    bond: BondRefData,
+    curve: DiscountCurve,
+    cashflows: List[Cashflow],
+    calc_date: date,
+    dirty_target_rub: float,
+    low_bps: int = -50000,
+    high_bps: int = 50000,
     tol_bps: int = 1
 ) -> Optional[int]:
-    """
-    Бисекция для поиска DM (Discount Margin) в bps, которая приравнивает PV к dirty_target_rub.
+    """SIMPLE MARGIN (наш sm_bps): бисекция маржи, приравнивающей PV к dirty.
+    Дисконт по ФОРВАРД-кривой базы в конвенции начисления купона (pv_cashflows_with_dm).
+    НЕ путать с discount margin: настоящий FRN DM — solve_discount_margin_bps
+    (плоский индекс + money-market). Имя solve_dm_bps сохранено как алиас ниже
+    (легаси: раньше это поле звалось dm_bps, потом добавили настоящий DM).
     """
     def f(dm_bps_val: int) -> float:
         try:
@@ -786,6 +789,11 @@ def solve_dm_bps(
             f_low = f_mid
             
     return (low + high) // 2
+
+
+# Легаси-алиас: имя solve_dm_bps исторически считало simple margin (не discount).
+# Оставлен для dev-скриптов; prod (services.valuation) зовёт solve_simple_margin_bps.
+solve_dm_bps = solve_simple_margin_bps
 
 
 def current_index_pct(coupons, calc_date: date, margin_bps: int, face_value: float,
@@ -883,7 +891,7 @@ def solve_discount_margin_bps(
 ) -> Optional[int]:
     """Настоящий FRN discount margin (market-standard, met_float / Fabozzi).
 
-    В отличие от нашего simple-margin-солвера (solve_dm_bps, дисконт по форвард-кривой),
+    В отличие от нашего simple-margin-солвера (solve_simple_margin_bps, дисконт по форвард-кривой),
     здесь индекс держим ПЛОСКИМ на текущем уровне и дисконтируем money-market
     конвенцией: DF_i = Π_{k≤i} 1/(1 + (L + DM)·τ_k), τ ACT/365. Так pull-to-par
     дисконтируется правильно → DM выше simple на дисконте, ниже на премии (как НРД
@@ -1152,7 +1160,7 @@ if __name__ == "__main__":
     dirty_p = dirty_price_rub(1000.0, 100.0, mock_bond.accrued_rub)
     
     # Solver test
-    dm_calculated = solve_dm_bps(mock_bond, mock_curve, cfs, calc_d, dirty_p)
+    dm_calculated = solve_simple_margin_bps(mock_bond, mock_curve, cfs, calc_d, dirty_p)
     print(f"\nSolved DM for Par Price: {dm_calculated} bps (Expected ~150 bps)")
     
     if dm_calculated is not None:
