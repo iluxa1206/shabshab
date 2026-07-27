@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { repriceFixed, UnauthorizedError } from "../api.js";
 import PriceChart from "./PriceChart.jsx";
+import SpreadHistory from "./SpreadHistory.jsx";
 
 const D = "—";
 function Cell({ k, children }) {
@@ -124,6 +125,9 @@ export default function FixedCard({ d }) {
 
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={r.isin} secid={r.secid} board={r.board} />
+
+      <div className="section-title">Динамика G-спреда</div>
+      <SpreadHistory isin={r.isin} kind="fixed" secid={r.secid} board={r.board || "TQOB"} />
 
       <div className="section-title">Поток платежей ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>

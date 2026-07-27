@@ -103,6 +103,13 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
+// Динамика спредов: серия DM(флоатер)/g-спред(фикс) по историч. дневным ценам.
+export const fetchSpreadHistory = (isin, { kind = "floater", secid, board = "TQCB", days = 120 } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/spread?kind=${kind}&days=${days}&board=${board}`;
+  if (secid) u += `&secid=${encodeURIComponent(secid)}`;
+  return request(u);
+};
+
 export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
   let u = `/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`;
   if (board) u += `&board=${board}`;

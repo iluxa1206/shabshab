@@ -6,6 +6,7 @@ import { fetchBondDetails, fetchFixedDetails, fetchFunds, putFundPosition, repri
 import { invalidateFund } from "../queries.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
+import SpreadHistory from "./SpreadHistory.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
 
@@ -255,6 +256,9 @@ function Content({ d }) {
 
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={r.isin} />
+
+      <div className="section-title">Динамика DM</div>
+      <SpreadHistory isin={r.isin} kind="floater" board="TQCB" />
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
