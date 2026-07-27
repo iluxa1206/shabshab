@@ -74,9 +74,14 @@ async def unreviewed(_admin: dict = Depends(require_admin)):
 async def catalog(only_active: bool = True, floaters_only: bool = False,
                   _admin: dict = Depends(require_admin)):
     """Полный справочник бумаг со всеми параметрами (спарсенные + пропуски).
-    Непрайсуемые вперёд. Для страницы «Справочник» (ручная правка/импорт)."""
-    return {"items": reg.list_catalog(only_active=only_active, floaters_only=floaters_only),
-            "count": reg.count()}
+    Непрайсуемые вперёд. Для страницы «Справочник» (ручная правка/импорт).
+    cbonds_id прикрепляем из bondsearch (прямая ссылка на страницу выпуска)."""
+    items = reg.list_catalog(only_active=only_active, floaters_only=floaters_only)
+    from services.ref_data import load_cbonds
+    cb = load_cbonds()
+    for it in items:
+        it["cbonds_id"] = (cb.get(it["isin"]) or {}).get("cbonds_id")
+    return {"items": items, "count": reg.count()}
 
 
 @router.get("/catalog/export", tags=["Instruments"])

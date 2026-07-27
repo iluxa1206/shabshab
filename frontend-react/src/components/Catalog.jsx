@@ -160,6 +160,10 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
       <tr className={r.priceable ? "" : "cat-row-incomplete"}>
         <td className="cat-isin">
           {r.isin}
+          <a className="cat-ext" title="страница выпуска на cbonds"
+            href={r.cbonds_id ? `https://cbonds.ru/bonds/${r.cbonds_id}/`
+                              : `https://corpbonds.ru/bond/${r.isin}`}
+            target="_blank" rel="noopener noreferrer">↗</a>
           {r.manual_locked ? <span className="cat-lock" title="ручной lock — sync не затрёт">🔒</span> : null}
           {!r.reviewed ? <span className="cat-new" title="новая, не подтверждена">•</span> : null}
         </td>

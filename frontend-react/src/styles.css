@@ -867,3 +867,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .instr-formula { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 8px; }
 .instr-field-wide { flex: 1; }
 .instr-formula .admin-btn-sm { white-space: nowrap; }
+
+/* Ссылка-стрелка на страницу выпуска (cbonds) в СПРАВОЧНИКе */
+.cat-ext { margin-left: 5px; text-decoration: none; color: var(--accent); font-weight: 700;
+  opacity: 0.7; }
+.cat-ext:hover { opacity: 1; }

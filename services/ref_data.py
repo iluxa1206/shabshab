@@ -56,6 +56,7 @@ _COL = {
     "maturity": ["Погашение"],
     "issue": ["Начало начисления купонов", "Начало обращения"],
     "face": ["Мин. торг. лот / Номинал", "Номинал"],
+    "cbonds_id": ["Cbonds ID"],   # для прямой ссылки cbonds.ru/bonds/{id}/
 }
 
 _cbonds_cache: Optional[Dict[str, dict]] = None
@@ -141,6 +142,8 @@ def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
             "maturity_date": _cell_iso(row[ix["maturity"]]) if ix.get("maturity") is not None else None,
             "issue_date": _cell_iso(row[ix["issue"]]) if ix.get("issue") is not None else None,
             "face_value": _to_float(row[ix["face"]]) if ix.get("face") is not None else None,
+            "cbonds_id": (int(row[ix["cbonds_id"]]) if ix.get("cbonds_id") is not None
+                          and row[ix["cbonds_id"]] not in (None, "") else None),
         }
     if path is None or path == _latest_cbonds_file():
         _cbonds_cache = out
