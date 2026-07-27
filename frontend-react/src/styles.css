@@ -843,3 +843,22 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .instr-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--mut); }
 .instr-field input { font-size: 12px; padding: 4px 6px; }
 @media (max-width: 640px) { .instr-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* --- Справочник инструментов (страница /reference) --- */
+.cat-mod { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.cat-head { padding: 10px 12px 8px; border-bottom: 1px solid var(--line); }
+.cat-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 14px; font-weight: 700; margin: 0 0 8px; }
+.cat-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cat-tools .chip-btn { text-decoration: none; }
+.cat-table-wrap { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 16px; }
+.cat-table { white-space: nowrap; }
+.cat-table th { position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.cat-isin { font-family: var(--mono, monospace); font-size: 11px; }
+.cat-lock { margin-left: 4px; }
+.cat-new { margin-left: 4px; color: var(--accent); font-weight: 700; }
+.cat-miss { color: var(--mut-2); }
+.cat-req { color: var(--neg); font-weight: 700; }
+.cat-row-incomplete { background: color-mix(in srgb, var(--neg) 8%, transparent); }
+.cat-count { padding: 4px 8px; font-size: 11px; }
+.cat-errs { margin: 4px 0 0; padding-left: 18px; font-size: 11px; }

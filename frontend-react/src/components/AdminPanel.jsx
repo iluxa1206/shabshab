@@ -101,7 +101,6 @@ function InstrumentsSection() {
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: UNREVIEWED_KEY });
-    qc.invalidateQueries({ queryKey: NRD_KEY });
     qc.invalidateQueries({ queryKey: ["instrument"] });
   };
 
@@ -200,7 +199,7 @@ const _FIELDS = [
   ["face_value", "Номинал", "number"],
 ];
 
-function InstrumentForm({ isin, onSaved }) {
+export function InstrumentForm({ isin, onSaved }) {
   // ВСЕ хуки — до любого return (Rules of Hooks): грузим полный инструмент,
   // прифилл через useEffect, мутация сохранения
   const q = useQuery({ queryKey: ["instrument", isin], queryFn: () => fetchInstrument(isin) });

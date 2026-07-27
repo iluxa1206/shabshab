@@ -54,7 +54,11 @@ const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 
 export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSettings }) {
   const type = currentType(useLocation().pathname);
-  const sub = SUBNAV[type] || [];
+  let sub = SUBNAV[type] || [];
+  // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
+  if (type === "floaters" && user?.role === "admin") {
+    sub = [...sub, ["/reference", "Справочник"]];
+  }
   return (
     <header className="menubar">
       <div className="brand-row">

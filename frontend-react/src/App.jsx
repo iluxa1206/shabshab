@@ -5,6 +5,7 @@ import { fetchBonds, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError,
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
+import Catalog from "./components/Catalog.jsx";
 import Topbar from "./components/Topbar.jsx";
 import Kpis from "./components/Kpis.jsx";
 import Toolbar from "./components/Toolbar.jsx";
@@ -313,6 +314,7 @@ function Dashboard() {
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
         <Route path="/issuers" element={<IssuerAggregates bonds={bonds} onPickIssuer={pickIssuer} />} />
+        <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/curves" element={<CurvesModule />} />

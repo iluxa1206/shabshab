@@ -420,6 +420,37 @@ def list_exotic() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# Полный набор колонок бумаги для справочника (все расчётные + служебные).
+_CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
+                 "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
+                 "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
+                 "coupon_mode", "rating", "source", "reviewed", "manual_locked",
+                 "margin_check_pp", "emitter_name", "active")
+
+
+def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[dict]:
+    """Полный справочник бумаг со ВСЕМИ параметрами (спарсенные + пропуски=None).
+    Непрайсуемые (нет base/margin/maturity) идут первыми — их надо дозаполнить.
+    priceable — флаг «хватает параметров для расчёта»."""
+    _ensure()
+    conds = []
+    if only_active:
+        conds.append("active=1")
+    if floaters_only:
+        conds.append("base IN ('KEYRATE','RUONIA')")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    with _conn() as c:
+        rows = c.execute(f"SELECT * FROM instruments{where}").fetchall()
+    out = []
+    for r in rows:
+        d = {k: r[k] for k in _CATALOG_COLS}
+        d["priceable"] = is_priceable(r)
+        out.append(d)
+    # непрайсуемые вперёд, дальше по имени
+    out.sort(key=lambda d: (d["priceable"], (d["short_name"] or d["isin"]).upper()))
+    return out
+
+
 def list_unreviewed() -> list[dict]:
     """Новые бумаги, у которых параметры ещё не подтверждены (для admin-ревью)."""
     _ensure()

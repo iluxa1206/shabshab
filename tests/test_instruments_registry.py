@@ -216,3 +216,23 @@ def test_discovery_null_rechecked_after_ttl(reg, monkeypatch):
         c.execute("UPDATE discovery_seen SET checked_at=? WHERE isin=?", (old, "RU_FIX"))
     pending = reg.discovery_pending(["RU_NULL", "RU_FIX"], 10)
     assert pending == ["RU_NULL"]              # NULL вернулся, decided(False) — нет
+
+
+def test_list_catalog_incomplete_first_and_flags(reg):
+    reg.upsert({"isin": "RU000A10FM37", "short_name": "Каширская", "base": "KEYRATE",
+                "margin_bps": 135, "maturity_date": "2029-07-05"}, "moex")
+    reg.upsert({"isin": "RU000A10FP91", "short_name": "Атом", "base": None,
+                "margin_bps": None, "maturity_date": "2029-01-01"}, "moex")
+    cat = reg.list_catalog()
+    assert len(cat) == 2
+    assert cat[0]["isin"] == "RU000A10FP91" and cat[0]["priceable"] is False  # непрайсуемый вперёд
+    assert cat[1]["priceable"] is True
+    assert "coupon_mode" in cat[0] and "rating" in cat[0]                     # полный набор колонок
+
+
+def test_list_catalog_floaters_only(reg):
+    reg.upsert({"isin": "RU000A10FM37", "base": "KEYRATE", "margin_bps": 135,
+                "maturity_date": "2029-07-05"}, "moex")
+    reg.upsert({"isin": "RU000A10FE11", "base": "EXOTIC", "maturity_date": "2031-01-01"}, "moex")
+    only_fl = {r["isin"] for r in reg.list_catalog(floaters_only=True)}
+    assert only_fl == {"RU000A10FM37"}                                        # EXOTIC отсеян

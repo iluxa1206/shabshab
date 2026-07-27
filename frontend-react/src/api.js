@@ -75,6 +75,32 @@ export const setInstrumentParams = (isin, params) =>
 export const markInstrumentReviewed = (isin) =>
   request(`/api/instruments/${encodeURIComponent(isin)}/reviewed`, { method: "POST" });
 
+// --- Справочник инструментов (admin): все параметры + импорт/экспорт xlsx ---
+const _catalogQuery = (opts = {}) => {
+  const q = new URLSearchParams();
+  if (opts.floatersOnly) q.set("floaters_only", "true");
+  if (opts.onlyActive === false) q.set("only_active", "false");
+  const s = q.toString();
+  return s ? `?${s}` : "";
+};
+
+export const fetchCatalog = (opts = {}) =>
+  request(`/api/instruments/catalog${_catalogQuery(opts)}`);
+
+// Прямой URL выгрузки xlsx (cookie same-origin → работает как обычная ссылка/скачивание).
+export const catalogExportUrl = (opts = {}) =>
+  `${API}/api/instruments/catalog/export${_catalogQuery(opts)}`;
+
+export async function importCatalogXlsx(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${API}/api/instruments/catalog/import`, {
+    method: "POST", credentials: "same-origin", body: fd });
+  if (r.status === 401) throw new UnauthorizedError();
+  if (!r.ok) throw new Error(await errText(r));
+  return r.json();
+}
+
 // --- Мета/кривые/бонды ---
 export const fetchMeta = () => request("/api/meta");
 
