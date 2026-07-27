@@ -1,7 +1,7 @@
 """CRUD алертов по стакану, per-user (identity из cookie-сессии). Мониторинг —
 фоновый воркер api.main.alerts_monitor."""
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Body
 from pydantic import BaseModel
 
 from api.routes.auth import require_user
@@ -36,6 +36,27 @@ async def create_alert(body: AlertCreate, user: dict = Depends(require_user)):
             volume_unit=body.volume_unit, kind=body.kind, note=body.note)
     except alerts.AlertError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return a
+
+
+class AlertPatch(BaseModel):
+    side: Optional[str] = None
+    metric: Optional[str] = None
+    op: Optional[str] = None
+    threshold: Optional[float] = None
+    min_volume: Optional[float] = None
+    volume_unit: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.patch("/{aid}", tags=["Alerts"])
+async def update_alert(body: AlertPatch, aid: int = Path(...), user: dict = Depends(require_user)):
+    try:
+        a = alerts.update(user["email"], aid, **body.model_dump(exclude_none=True))
+    except alerts.AlertError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if a is None:
+        raise HTTPException(status_code=404, detail="Алерт не найден")
     return a
 
 

@@ -130,6 +130,7 @@ export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater
 // --- Алерты по стакану (per-user) ---
 export const fetchAlerts = () => request("/api/alerts").then((d) => d.alerts || []);
 export const createAlert = (body) => request("/api/alerts", { method: "POST", json: body });
+export const updateAlert = (id, patch) => request(`/api/alerts/${id}`, { method: "PATCH", json: patch });
 export const deleteAlert = (id) => request(`/api/alerts/${id}`, { method: "DELETE" });
 
 // --- Модуль «Фонды» ---

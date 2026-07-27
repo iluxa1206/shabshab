@@ -422,6 +422,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-row:hover { background: var(--line); }
 .ob-row.ob-armed { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
 .ob-row.ob-armed:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.ob-row.ob-armed-fired { background: color-mix(in srgb, var(--down) 16%, transparent); box-shadow: inset 3px 0 0 var(--down); }
+.ob-row.ob-armed-fired:hover { background: color-mix(in srgb, var(--down) 24%, transparent); }
 .ob-bell { font-size: 9px; margin-right: 4px; vertical-align: 1px; }
 .ob-spread td { text-align: center; font-size: 10px; letter-spacing: 0.08em; color: var(--mut); text-transform: uppercase; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
@@ -452,6 +454,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .al-state { color: var(--mut); font-size: 10px; }
 .al-del { background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; }
 .al-del:hover { color: var(--down); }
+.al-edit { background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.al-edit:hover { color: var(--accent); }
+.al-row.al-editing { box-shadow: inset 2px 0 0 var(--accent); }
+.al-cancel { background: transparent; border: 1px solid var(--line-2); color: var(--mut); cursor: pointer; padding: 3px 8px; font-size: 12px; }
+.al-editing-hint { margin-top: 6px; font-size: 11px; color: var(--accent); }
 
 /* --- Тосты алертов (глобально) --- */
 .al-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: 300px; }

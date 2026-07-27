@@ -9,14 +9,17 @@ const levelMetric = (lvl, m) =>
   m === "price" ? lvl.price_pct : m === "dm" ? lvl.dm_bps
     : m === "ytm" ? lvl.yield_pct : m === "gspread" ? lvl.g_spread_bps : null;
 
-// активный алерт, покрывающий данный уровень (сторона + метрика op порог)
+// алерт (active|fired), покрывающий уровень (сторона + метрика op порог).
+// fired приоритетнее → красная подсветка сработавшего уровня.
 function alertForLevel(lvl, side, alerts) {
-  return alerts.find((a) => {
+  const match = (a) => {
     if ((a.side === "buy" ? "ask" : "bid") !== side) return false;
     const v = levelMetric(lvl, a.metric);
     if (v == null) return false;
     return a.op === "<=" ? v <= a.threshold : v >= a.threshold;
-  });
+  };
+  return alerts.find((a) => a.status === "fired" && match(a))
+    || alerts.find((a) => a.status === "active" && match(a));
 }
 
 const DEPTHS = [10, 20, 30, 50];
@@ -39,9 +42,10 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
     ? `Алерт: ${alert.side === "buy" ? "покупка" : "продажа"} ${alert.metric} ${alert.op} ${alert.threshold}`
     : undefined;
   return (
-    <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty") + (alert ? " ob-armed" : "")}
+    <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")
+        + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")}
       onClick={onClick} title={armTitle}>
-      <td className="ob-price">{alert && <span className="ob-bell">🔔</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
+      <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? "⚠" : "🔔"}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
       </td>
@@ -76,9 +80,10 @@ export default function Orderbook({ isin, kind, face, onClose }) {
     refetchIntervalInBackground: false,
   });
 
-  // активные алерты по бумаге — для подсветки покрытых уровней (общий кэш с формой)
+  // алерты по бумаге (active+fired) — подсветка покрытых уровней (общий кэш с формой)
   const alertsQ = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 8000 });
-  const activeAlerts = (alertsQ.data || []).filter((a) => a.isin === isin && a.status === "active");
+  const bondAlerts = (alertsQ.data || []).filter(
+    (a) => a.isin === isin && (a.status === "active" || a.status === "fired"));
 
   const d = q.data;
   const ob = d?.orderbook;
@@ -134,13 +139,13 @@ export default function Orderbook({ isin, kind, face, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", activeAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
               <tr className="ob-spread">
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", activeAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
             </tbody>
           </table>
         )}

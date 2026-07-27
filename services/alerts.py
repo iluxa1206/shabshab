@@ -75,6 +75,37 @@ def list_for_user(user_email: str) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def update(user_email: str, aid: int, **fields) -> Optional[dict]:
+    """Правка алерта (side/metric/op/threshold/min_volume/volume_unit/note).
+    Ре-арм: status→active, сброс fired_*. None-поля игнорируются."""
+    a = get(aid)
+    if not a or a["user_email"] != user_email:
+        return None
+    allowed = ("side", "metric", "op", "threshold", "min_volume", "volume_unit", "note")
+    sets = {k: fields[k] for k in allowed if fields.get(k) is not None}
+    if "side" in sets and sets["side"] not in SIDES:
+        raise AlertError("side: buy|sell")
+    if "metric" in sets and sets["metric"] not in METRICS:
+        raise AlertError("metric: price|ytm|dm|gspread")
+    if "op" in sets and sets["op"] not in OPS:
+        raise AlertError("op: <= | >=")
+    if "volume_unit" in sets and sets["volume_unit"] not in UNITS:
+        raise AlertError("volume_unit: bonds|rub")
+    for numk in ("threshold", "min_volume"):
+        if numk in sets:
+            try:
+                sets[numk] = float(sets[numk])
+            except (TypeError, ValueError):
+                raise AlertError(f"{numk} должно быть числом")
+    cols = ", ".join(f"{k}=?" for k in sets)
+    with _lock, _connect() as c:
+        c.execute(
+            f"UPDATE alerts SET {cols}, status='active', fired_at=NULL, "
+            f"fired_price=NULL, fired_volume=NULL WHERE id=? AND user_email=?",
+            (*sets.values(), aid, user_email))
+    return get(aid)
+
+
 def cancel(user_email: str, aid: int) -> bool:
     """Отмена активного алерта (soft: status=cancelled)."""
     with _lock, _connect() as c:
