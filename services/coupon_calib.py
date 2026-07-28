@@ -376,17 +376,26 @@ def _past_rows(coupons: list, margin_pct: float, face: float, calc_date: date,
 
 def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
               calc_date: date, base: str = "KEYRATE", amorts: list = None,
-              idx=None) -> Optional[dict]:
+              idx=None, fixed_mode: Optional[str] = None) -> Optional[dict]:
     """Спека формулы {'mode':'point'|'average','lag':int} по прошлым купонам.
     base='KEYRATE' — факт КС ЦБ; 'RUONIA' — дневной RUONIA (обычно average).
     face — текущий остаток номинала; amorts — график погашений (для отката
     номинала на дату каждого прошлого периода, см. _past_rows).
-    idx — инжектированная история индекса (index_history); None → сам фетчит."""
+    idx — инжектированная история индекса (index_history); None → сам фетчит.
+    fixed_mode — режим уже известен (парсер проспекта дал mode без лага):
+    подбираем ТОЛЬКО лаг при этом режиме. Иначе лаг брался из лучшей пары
+    (mode, lag) калибратора, возможно с ДРУГИМ mode — в прайсинг уходил гибрид
+    «mode парсера + lag чужого фита» (до 0.5пп на купоне). Режимы вне перебора
+    (avg_prev) не фитим — None, потребитель применяет дефолт."""
     rows = _past_rows(coupons, margin_pct, face, calc_date, amorts)
+    modes = ("point", "average") if fixed_mode is None else (
+        (fixed_mode,) if fixed_mode in ("point", "average") else ())
+    if not modes:
+        return None
     # Ключ кэша включает отпечаток данных (число прошлых купонов + дата последнего):
     # раньше кэшировалось по (isin, base) НАВСЕГДА — новые купоны/сменившийся manual
     # не пересчитывали спеку до рестарта процесса.
-    ck = (isin, base, len(rows), rows[-1][1] if rows else None)
+    ck = (isin, base, len(rows), rows[-1][1] if rows else None, fixed_mode)
     if ck in _cache:
         return _cache[ck]
     if idx is None:
@@ -407,6 +416,8 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
             if not n:
                 continue
             for mode, err in (("point", e_pt / n), ("average", e_av / n)):
+                if mode not in modes:
+                    continue
                 if best is None or err < best[0]:
                     best = (err, mode, lag)
         if best and best[0] < _ERR_TOL_PP:

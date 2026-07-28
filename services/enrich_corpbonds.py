@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; floaters-desk/1.0)"}
 _CB_URL = "https://corpbonds.ru/bond/{isin}"
 
+# Версия парсера формулы (_parse_formula + детект экзотики). Инкрементить при
+# КАЖДОМ изменении логики: вердикт «exotic» детерминирован — перечек той же
+# версией бесполезен (и раньше сжигал квоту), а после фикса парсера бумаги с
+# устаревшим вердиктом перечекиваются немедленно (enrich_pending сверяет версию).
+# История: v1 — Σ-приклеенная база уходила в EXOTIC (ложная экзотика).
+PARSER_VERSION = 2
+
 
 def _parse_formula(f: str) -> dict:
     """Формула купона → {base, margin_bps, mode, exotic, inverse, note}."""
@@ -134,15 +141,15 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
             if r is None:
                 stats["not_found"] += 1
                 if apply:
-                    reg.mark_enrich_attempt(isin, "not_found")
+                    reg.mark_enrich_attempt(isin, "not_found", parser_ver=PARSER_VERSION)
                 continue
             stats["fetched"] += 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
             # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели
             if exotic == "inverse" or (r.get("is_floater") and base is None):
                 if apply:
-                    reg.set_exotic(isin)
-                    reg.mark_enrich_attempt(isin, "exotic")
+                    reg.set_exotic(isin, note=r.get("formula_text") or "")
+                    reg.mark_enrich_attempt(isin, "exotic", parser_ver=PARSER_VERSION)
                 stats["exotic"] += 1
                 details.append((isin, "EXOTIC", r.get("formula_text")))
                 continue
@@ -150,7 +157,7 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                 # страница есть, но база/маржа не извлеклись → nodata (перечек по TTL)
                 reg.mark_enrich_attempt(
                     isin, "filled" if base in ("KEYRATE", "RUONIA") and margin is not None
-                    else "nodata")
+                    else "nodata", parser_ver=PARSER_VERSION)
             if base in ("KEYRATE", "RUONIA") and margin is not None:
                 # coupon_mode НЕ пишем: здешний вывод грубый (бинарное avg → point|
                 # average, без лага и без avg_prev), а в реестре он БЬЁТ парсер

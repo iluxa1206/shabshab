@@ -96,3 +96,35 @@ def test_ruonia_index_ratio_floater():
          "предшествующего Start j; S = 1.85%")
     r = P(t)
     assert r["mode"] == "average" and r["lag"] == 7 and r.get("capped") is None
+
+
+def test_calibrate_fixed_mode_constrains_pair():
+    """fixed_mode: лаг подбирается ПРИ заданном режиме, а не из лучшей чужой пары."""
+    from datetime import date, timedelta
+    from services.coupon_calib import calibrate, _cache
+    _cache.clear()
+    # ступенчатый индекс: point(lag=7) и average дают разные ставки
+    idx_dates, idx_rates = [], []
+    d0 = date(2025, 1, 1)
+    for i in range(400):
+        idx_dates.append(d0 + timedelta(days=i))
+        idx_rates.append(15.0 if i < 200 else 20.0)
+    idx = (idx_dates, idx_rates)
+    face = 1000.0
+    coupons = []
+    for k in range(3):
+        s = d0 + timedelta(days=120 + 60 * k)
+        e = s + timedelta(days=60)
+        # факт-купон по point-фиксингу с лагом 7
+        rate = (15.0 if (s - timedelta(days=7) - d0).days < 200 else 20.0) + 2.0
+        coupons.append({"start": s.isoformat(), "end": e.isoformat(),
+                        "value": round(face * rate / 100 * 60 / 365, 2)})
+    calc = d0 + timedelta(days=330)
+    free = calibrate("T1", coupons, 2.0, face, calc, idx=idx)
+    assert free and free["mode"] == "point"
+    fixed = calibrate("T1", coupons, 2.0, face, calc, idx=idx, fixed_mode="average")
+    # при зажатом average лаг фитится в average-пространстве (или спека None,
+    # если фит не проходит порог) — но НЕ пара point-фита
+    assert fixed is None or fixed["mode"] == "average"
+    # режим вне перебора (avg_prev) → None, дефолты потребителя
+    assert calibrate("T1", coupons, 2.0, face, calc, idx=idx, fixed_mode="avg_prev") is None

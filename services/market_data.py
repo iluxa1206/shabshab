@@ -320,6 +320,13 @@ class MarketDataService:
             pass
 
     @classmethod
+    def cached_schedule(cls, isin: str) -> Optional[dict]:
+        """Расписание из day-кэша БЕЗ сети (None, если не прогрето). Для мест,
+        где сеть недопустима (admin-ревью по всему универсу)."""
+        cls._ensure_full_mem()
+        return cls._full_mem.get(isin)
+
+    @classmethod
     def flush_schedule_cache(cls) -> None:
         """Финальный флаш кэша расписаний, если есть несохранённое (конец батча)."""
         if cls._full_dirty:

@@ -60,13 +60,42 @@ class InstrumentParams(BaseModel):
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+def _offers_no_spec() -> list:
+    """Прайсуемые флоатеры с БУДУЩЕЙ офертой и без спеки поведения на ней
+    (var_type пуст, cut_at_offer не задан): поток моделируется до погашения по
+    дефолту «не резать» — возможно неверно, если эмитент пересматривает купон.
+    Ручной механизм уже есть (var_type/cut_at_offer в Справочнике) — здесь только
+    видимость кандидатов. Оферты из day-кэша расписаний, без сети."""
+    from datetime import date as _date
+    from services.market_data import MarketDataService as M
+    from services import ref_data
+    today = _date.today().isoformat()
+    out = []
+    for r in reg.universe_rows(only_priceable=True):
+        full = M.cached_schedule(r["isin"]) or {}
+        future = [o.get("date") for o in full.get("offers", [])
+                  if (o.get("date") or "") > today]
+        if not future:
+            continue
+        p = ref_data.params(r["isin"])
+        if p.get("var_type") or p.get("cut_at_offer") is not None:
+            continue
+        out.append({"isin": r["isin"], "short_name": r["name"],
+                    "offer_date": min(future)})
+    out.sort(key=lambda x: x["offer_date"])
+    return out
+
+
 @router.get("/unreviewed", tags=["Instruments"])
 async def unreviewed(_admin: dict = Depends(require_admin)):
     """Новые на ревью + непрайсуемые (нет base/margin/maturity) + suspect (маржа
-    расходится с фактом КС/RUONIA) + счётчики."""
+    расходится с фактом КС/RUONIA) + экзотика (с формулой — ловить ложные) +
+    оферты без спеки поведения + счётчики."""
     return {"items": reg.list_unreviewed(),
             "incomplete": reg.list_incomplete(),
             "suspect": reg.list_suspect(),
+            "exotic": reg.list_exotic(),
+            "offers_no_spec": _offers_no_spec(),
             "count": reg.count()}
 
 
@@ -81,7 +110,10 @@ async def catalog(only_active: bool = True, floaters_only: bool = False,
     cb = load_cbonds()
     for it in items:
         it["cbonds_id"] = (cb.get(it["isin"]) or {}).get("cbonds_id")
-    return {"items": items, "count": reg.count()}
+    # прайсуемые с будущей офертой без спеки поведения (var_type/cut_at_offer):
+    # горизонт по дефолту «до погашения», админ должен видеть кандидатов
+    return {"items": items, "count": reg.count(),
+            "offers_no_spec": _offers_no_spec()}
 
 
 @router.get("/catalog/export", tags=["Instruments"])

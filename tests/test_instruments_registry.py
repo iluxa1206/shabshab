@@ -324,3 +324,23 @@ def test_upsert_keep_source(reg):
     assert reg.get("RU1")["source"] == "cbonds"                 # рефреш не съел провенанс
     reg.upsert({"isin": "RU1", "base": "RUONIA"}, "moex")
     assert reg.get("RU1")["source"] == "moex"                   # параметры — переписывает
+
+
+def test_enrich_pending_parser_version_invalidates_exotic(reg):
+    reg.mark_enrich_attempt("EXO", "exotic", parser_ver=1)
+    reg.mark_enrich_attempt("NF", "not_found", parser_ver=1)
+    # та же версия: оба свежие → пусто
+    assert reg.enrich_pending(["EXO", "NF"], 5, parser_ver=1) == []
+    # версия выросла: exotic перечекивается сразу, not_found ждёт своего TTL
+    assert reg.enrich_pending(["EXO", "NF"], 5, parser_ver=2) == ["EXO"]
+
+
+def test_set_exotic_saves_formula(reg):
+    reg.upsert({"isin": "RU_X", "base": "KEYRATE"}, "moex")
+    reg.set_exotic("RU_X", note="MAX(25.9% - КС; 0.01%)")
+    r = reg.get("RU_X")
+    assert r["base"] == "EXOTIC" and r["coupon_text"] == "MAX(25.9% - КС; 0.01%)"
+    # пустой note не затирает сохранённую формулу
+    reg.set_exotic("RU_X", note="")
+    assert reg.get("RU_X")["coupon_text"] == "MAX(25.9% - КС; 0.01%)"
+    assert any(e["coupon_text"] for e in reg.list_exotic())

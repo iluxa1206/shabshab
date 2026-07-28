@@ -90,6 +90,13 @@ export default function Catalog({ user }) {
           {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
           {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
           {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
+          {q.data?.offers_no_spec?.length > 0 && (
+            <span className="admin-badge admin-warn"
+              title={"Будущая оферта, поведение купона не задано (var_type) — считаются к погашению:\n"
+                + q.data.offers_no_spec.map((o) => `${o.short_name} · оферта ${o.offer_date}`).join("\n")}>
+              {q.data.offers_no_spec.length} оферта без спеки
+            </span>
+          )}
         </h2>
         <div className="cat-tools">
           <span className="search-wrap">

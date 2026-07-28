@@ -237,8 +237,12 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         try:
             from services.coupon_calib import calibrate
             m = margin_pct if margin_pct is not None else (out["margin_bps"] or 0) / 100.0
+            # режим уже известен (парсер/manual) → фитим только лаг при нём;
+            # иначе лаг приезжал из лучшей пары калибратора с ДРУГИМ mode —
+            # в прайсинг уходил гибрид «mode парсера + lag чужого фита»
             spec = calibrate(isin, coupons, m, face or 1000.0, calc_date,
-                             base=out["base"] or "KEYRATE", amorts=amorts, idx=idx)
+                             base=out["base"] or "KEYRATE", amorts=amorts, idx=idx,
+                             fixed_mode=out["coupon_mode"])
             if spec:
                 if out["fixing_lag"] is None:
                     out["fixing_lag"] = spec["lag"]

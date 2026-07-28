@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS discovery_seen(
 CREATE TABLE IF NOT EXISTS enrich_seen(
   isin          TEXT PRIMARY KEY,
   result        TEXT,            -- not_found | nodata | exotic | filled
-  attempted_at  TEXT
+  attempted_at  TEXT,
+  parser_ver    INTEGER          -- версия парсера corpbonds на момент попытки
 );
 """
 
@@ -80,6 +81,7 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN cap_pct REAL",         # потолок ставки купона, %
     "ALTER TABLE instruments ADD COLUMN floor_pct REAL",       # пол ставки купона, %
     "ALTER TABLE instruments ADD COLUMN coupon_text TEXT",     # текст формулы купона
+    "ALTER TABLE enrich_seen ADD COLUMN parser_ver INTEGER",   # версия парсера corpbonds
 ]
 
 
@@ -368,14 +370,17 @@ def apply_authoritative(isin: str, fields: dict, source: str) -> bool:
 
 def set_exotic(isin: str, note: str = "") -> None:
     """Экзотическая структура (инверсная/CPI/капитализируемая) — линейной моделью
-    КС+маржа не считается корректно → base='EXOTIC' (вне универса), reviewed=1."""
+    КС+маржа не считается корректно → base='EXOTIC' (вне универса), reviewed=1.
+    note (текст формулы corpbonds) кладём в coupon_text: ложная экзотика в
+    admin-ревью видна глазом по формуле, а не только вердиктом."""
     _ensure()
     with _lock, _conn() as c:
         r = c.execute("SELECT manual_locked FROM instruments WHERE isin=?", (isin,)).fetchone()
         if r is None or r["manual_locked"]:
             return
         c.execute("UPDATE instruments SET base='EXOTIC', reviewed=1, margin_check_pp=NULL, "
-                  "updated_at=? WHERE isin=?", (_now(), isin))
+                  "coupon_text=COALESCE(NULLIF(?, ''), coupon_text), "
+                  "updated_at=? WHERE isin=?", (note or "", _now(), isin))
 
 
 def reclassify_fixed(isin: str) -> None:
@@ -431,7 +436,7 @@ def list_exotic() -> list[dict]:
     _ensure()
     with _conn() as c:
         rows = c.execute(
-            "SELECT isin, short_name, source FROM instruments "
+            "SELECT isin, short_name, source, coupon_text FROM instruments "
             "WHERE active=1 AND base='EXOTIC' AND manual_locked=0").fetchall()
     return [dict(r) for r in rows]
 
@@ -629,7 +634,7 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
 _ENRICH_TTL_DAYS = {"not_found": 14, "nodata": 14, "exotic": 30, "filled": 7}
 
 
-def mark_enrich_attempt(isin: str, result: str) -> None:
+def mark_enrich_attempt(isin: str, result: str, parser_ver: int | None = None) -> None:
     """Записать исход corpbonds-попытки в negative-кэш enrich_seen. Без него
     очередь голодала: fromkeys()[:cap] каждый день дёргал одни и те же первые
     60 ISIN (стабильный rowid-порядок), и бумаги, которых нет на corpbonds,
@@ -639,15 +644,18 @@ def mark_enrich_attempt(isin: str, result: str) -> None:
     if not isin:
         return
     with _lock, _conn() as c:
-        c.execute("INSERT OR REPLACE INTO enrich_seen(isin, result, attempted_at) "
-                  "VALUES(?,?,?)", (isin, result, _now()))
+        c.execute("INSERT OR REPLACE INTO enrich_seen(isin, result, attempted_at, parser_ver) "
+                  "VALUES(?,?,?,?)", (isin, result, _now(), parser_ver))
 
 
-def enrich_pending(candidates: list[str], limit: int) -> list[str]:
+def enrich_pending(candidates: list[str], limit: int,
+                   parser_ver: int | None = None) -> list[str]:
     """Из candidates — до limit ISIN на corpbonds-обогащение. Ротация: никогда
     не пробованные — первыми, затем по возрасту прошлой попытки (старейшие
     вперёд); свежие попытки (внутри TTL по исходу) пропускаются. Каждый прогон
-    двигается по хвосту очереди, а не топчет голову."""
+    двигается по хвосту очереди, а не топчет голову.
+    parser_ver: попытка более старой версии парсера считается протухшей сразу —
+    после фикса парсера ложные EXOTIC/nodata перечекиваются, не дожидаясь TTL."""
     _ensure()
     if not candidates:
         return []
@@ -656,6 +664,11 @@ def enrich_pending(candidates: list[str], limit: int) -> list[str]:
         seen = {r["isin"]: r for r in c.execute("SELECT * FROM enrich_seen")}
 
     def _fresh(r) -> bool:
+        # вердикт устаревшего парсера — перечекнуть немедленно; только исходы,
+        # где парсер решал (exotic/nodata): not_found/filled от версии не зависят
+        if (parser_ver is not None and r["result"] in ("exotic", "nodata")
+                and (r["parser_ver"] or 0) < parser_ver):
+            return False
         ttl = _ENRICH_TTL_DAYS.get(r["result"], 14)
         try:
             return (now - datetime.fromisoformat(r["attempted_at"])).days < ttl

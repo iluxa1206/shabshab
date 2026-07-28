@@ -136,12 +136,13 @@ async def sync_instruments() -> dict:
         # Квоты на класс + negative-кэш (enrich_pending): без них общий срез [:cap]
         # голодал — incomplete (355) вытеснял suspect/exotic за край, а стабильный
         # порядок дёргал одни и те же первые 60 каждый день.
+        from services.enrich_corpbonds import PARSER_VERSION
         targets = (reg.enrich_pending([r["isin"] for r in reg.list_incomplete()],
-                                      _CORPBONDS_QUOTA_INCOMPLETE)
+                                      _CORPBONDS_QUOTA_INCOMPLETE, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending([s["isin"] for s in reg.list_suspect()],
-                                        _CORPBONDS_QUOTA_SUSPECT)
+                                        _CORPBONDS_QUOTA_SUSPECT, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending([e["isin"] for e in reg.list_exotic()],
-                                        _CORPBONDS_QUOTA_EXOTIC))
+                                        _CORPBONDS_QUOTA_EXOTIC, parser_ver=PARSER_VERSION))
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
