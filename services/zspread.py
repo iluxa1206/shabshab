@@ -49,7 +49,7 @@ class ExpCurve:
     (короткий конец ≈ текущий фиксинг, заложенный в свопы)."""
     def __init__(self, calc_date: date, quotes, base: str = "RUONIA"):
         from datetime import timedelta
-        from forwards import CurveBootstrapper
+        from core.forwards import CurveBootstrapper
         boot = (CurveBootstrapper.bootstrap_ruonia if base == "RUONIA"
                 else CurveBootstrapper.bootstrap_keyrate)
         self.base = base
@@ -118,7 +118,7 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
 
     Кривая: у ExpCurve берём внутреннюю bootstrap-кривую (та же конвенция
     forward, что в exp.fwd; builder клэмпит анкер к calc_date сам)."""
-    from valuation import build_cashflows_to_maturity
+    from core.valuation import build_cashflows_to_maturity
     triples = []
     for c in coupons or []:
         e = _d(c.get("end"))
@@ -250,7 +250,7 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     (цена в % котируется от него), amorts — график погашения принципала."""
     if ref.base not in ("RUONIA", "KEYRATE") or price_pct is None:
         return None
-    from valuation import face_for_pricing, settle_date, first_offer_date
+    from core.valuation import face_for_pricing, settle_date, first_offer_date
     settle = settle_date(calc_date)
     # Погашение ≤ T+1: весь поток покупателю не достаётся, но residual-ветка
     # project_cfs всё равно добавила бы принципал (условие > calc_date) → z-мусор.

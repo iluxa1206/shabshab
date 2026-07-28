@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import pytest
 
 from conftest import make_bond, quarterly_periods, CALC_DATE, _flat_quotes
-from valuation import build_cashflows_with_spread
+from core.valuation import build_cashflows_with_spread
 from services.zspread import (
     ExpCurve, GCurve, project_cfs, solve_z_bps, solve_z_discrete,
     solve_flat_y, current_period_len, compute_z_bps,

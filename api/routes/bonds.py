@@ -17,7 +17,8 @@ from services.bonds import (
 from services.valuation import calculate_valuation_metrics
 from services.exceptions import NotFoundException
 from services import instruments_registry
-from cashflow import read_isins_from_file
+from services.paths import cache_path as _cache_path
+from core.cashflow import read_isins_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 async def compute_universe_metrics(uni: list, isins: list) -> dict:
     """Прокси в services.universe (конвейер вынесен из route-слоя)."""
     from services.universe import compute_universe_metrics as _cum
-    return await _cum(uni, isins, os.path.join(get_base_dir(), "isins_cache.json"))
+    return await _cum(uni, isins, _cache_path("isins_cache.json"))
 
 
 def _uni_item(u, name, mx, spread_dur):
@@ -115,7 +116,7 @@ async def get_bonds(
 ):
     base_dir = get_base_dir()
     isins_path = os.path.join(base_dir, "isins.txt")
-    cache_path = os.path.join(base_dir, "isins_cache.json")
+    cache_path = _cache_path("isins_cache.json")
 
     try:
         isins = read_isins_from_file(isins_path)
@@ -227,8 +228,7 @@ async def search_bonds(q: str = Query(..., min_length=2)):
 
 @router.get("/filters", response_model=BondFiltersResponse, tags=["Bonds"])
 async def get_bond_filters():
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     
     bases = set()
     for isin, data in cache.items():
@@ -247,7 +247,7 @@ async def get_bond_filters():
 async def get_bond_details(isin: str = Path(...)):
     isin = _require_isin(isin)
     cache = MarketDataService.get_local_bond_cache(
-        os.path.join(get_base_dir(), "isins_cache.json"))
+        _cache_path("isins_cache.json"))
     from services.bond_details import build_bond_details
     return BondDetailsResponse(**await build_bond_details(isin, cache))
 
@@ -274,8 +274,7 @@ async def get_bond_cashflow(isin: str = Path(...)):
     # Re-use logic from get_bond_details internally to stay DRY in a real app
     # Here extending it directly for clarity
     isin = _require_isin(isin)
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     data = cache.get(isin)
     
     if not data:
@@ -316,8 +315,7 @@ async def reprice_bond_valuation(
     произвольную чистую цену. Использует калькулятор карточки И live-рефреш строки
     таблицы по WS-тику. Тёплые кэши → мгновенно."""
     isin = _require_isin(isin)
-    base_dir = get_base_dir()
-    cache = MarketDataService.get_local_bond_cache(os.path.join(base_dir, "isins_cache.json"))
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     from services.bond_details import reprice_bond
     metrics = await reprice_bond(isin, price, cache)
     return RepriceResponse(**metrics)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import List, Optional
 
-from forwards import DiscountCurve, add_months, yf_act365
+from core.forwards import DiscountCurve, add_months, yf_act365
 
 # Configure basic logging for the valuation module
 logger = logging.getLogger(__name__)

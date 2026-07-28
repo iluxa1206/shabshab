@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import pytest
 
 from conftest import make_bond, quarterly_periods
-from valuation import (
+from core.valuation import (
     build_cashflows_with_spread, solve_simple_margin_bps, solve_discount_margin_bps,
     current_index_pct, FlatForwardCurve, xirr, xnpv, dirty_price_rub,
 )
@@ -121,8 +121,8 @@ def test_sanity_guard_nulls_garbage_output(calc_date, flat_index_15, monkeypatch
     monkeypatch.setattr("services.valuation.solve_simple_margin_bps", lambda *a, **k: -99999)
     monkeypatch.setattr("services.valuation.solve_discount_margin_bps", lambda *a, **k: None)
 
-    from forwards import CurveBootstrapper
-    from rates import Quote
+    from core.forwards import CurveBootstrapper
+    from core.rates import Quote
     from conftest import CALC_DATE
     q = [Quote("SYN", t, 15.0, CALC_DATE) for t in ["3M", "1Y", "3Y", "5Y", "10Y"]]
     curve = CurveBootstrapper.bootstrap_keyrate(q, CALC_DATE)

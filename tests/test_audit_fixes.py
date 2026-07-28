@@ -10,7 +10,7 @@ from conftest import make_bond, quarterly_periods, CALC_DATE
 
 
 # ── put/call оферты ──────────────────────────────────────────────────────
-from valuation import offer_kind, first_offer_date, settle_date
+from core.valuation import offer_kind, first_offer_date, settle_date
 
 
 @pytest.mark.parametrize("txt,kind", [
@@ -64,7 +64,7 @@ def test_cap_floor_parse(txt, cap, floor):
 
 
 # ── кэп клэмпит прогнозный купон в pricing ────────────────────────────────
-from valuation import build_cashflows_with_spread
+from core.valuation import build_cashflows_with_spread
 
 
 def test_cap_clamps_future_coupons(keyrate_curve, calc_date, flat_index_15, monkeypatch):
@@ -159,7 +159,7 @@ from services.cashflow import build_cashflow_from_moex
 def test_display_future_matches_pricing(keyrate_curve, calc_date, flat_index_15):
     """Консолидация: БУДУЩИЕ купонные суммы display-таблицы == суммы канонического
     build_cashflows_with_spread (единый источник, карточка не расходится с SM/z)."""
-    from valuation import build_cashflows_with_spread, settle_date
+    from core.valuation import build_cashflows_with_spread, settle_date
     fn, _ = flat_index_15
     bond = make_bond(margin_bps=150)
     periods = quarterly_periods(calc_date, bond.maturity_date)
@@ -199,7 +199,7 @@ def test_amort_residual_closes_to_outstanding(keyrate_curve, calc_date):
 
 
 # ── spread-парс: запятая ──────────────────────────────────────────────────
-from cashflow import parse_base_and_spread
+from core.cashflow import parse_base_and_spread
 
 
 @pytest.mark.parametrize("formula,bps", [
@@ -214,7 +214,7 @@ def test_spread_parse_comma(formula, bps):
 
 
 # ── index rolling yield ───────────────────────────────────────────────────
-from valuation import index_rolling_yield_pct
+from core.valuation import index_rolling_yield_pct
 
 
 def test_index_rolling_yield(keyrate_curve, ruonia_curve, calc_date):

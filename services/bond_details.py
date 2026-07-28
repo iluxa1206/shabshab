@@ -100,7 +100,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # горизонт оферты — от settle (как pricing), не от today; состоявшиеся оферты
     # отфильтрованы (не будущее событие). Показываем и call, и put, но вид (kind)
     # различаем: только put — гарантированный горизонт держателя (см. offer_kind).
-    from valuation import settle_date as _settle, offer_kind
+    from core.valuation import settle_date as _settle, offer_kind
     _off_ref = _settle(calc_date) if calc_date else date.today()
     next_offer = None       # (date, type_str, kind) ближайшей будущей оферты
     try:
@@ -195,7 +195,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             if exp and px:
                 # те же потоки и цена, что в z-модели: face_for_pricing (T+1
                 # ex-амортизация) и offers (обрезка по оферте при пересмотре купона)
-                from valuation import face_for_pricing
+                from core.valuation import face_for_pricing
                 dirty = (face_for_pricing(ref_obj.face_value, sched_full.get("amorts"), calc_date)
                          * px / 100.0 + (accrued_live or ref_obj.accrued_rub or 0.0))
                 zcfs = project_cfs(ref_obj, exp, calc_date, coupons,
@@ -358,7 +358,7 @@ def _reprice_z_carry(ctx: dict, price: float) -> dict:
         # без override carry=None и скачет при reprice. Мирроринг карточки.
         cur_cpn_model = None
         try:
-            from valuation import build_cashflows_with_spread
+            from core.valuation import build_cashflows_with_spread
             _cfs = build_cashflows_with_spread(
                 ref_obj, curve, calc_date, ref_obj.spread_issue_bps or 0,
                 explicit_periods=periods, amorts=amorts, offers=offers)

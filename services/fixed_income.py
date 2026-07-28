@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple, Dict
 
 import httpx
 
-from valuation import xirr, xnpv, settle_date
+from core.valuation import xirr, xnpv, settle_date
 from services.market_data import MarketDataService, _moex_get
 from services.paths import cache_path
 

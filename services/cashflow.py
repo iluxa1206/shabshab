@@ -32,7 +32,7 @@ def build_cashflow_from_moex(
 
     Раньше это был ручной форк ~180 строк, дублировавший проекцию: каждый фикс
     приходилось вносить дважды и копии разъезжались."""
-    from valuation import build_cashflows_with_spread, settle_date
+    from core.valuation import build_cashflows_with_spread, settle_date
     settle = settle_date(calc_date)
 
     # индекс-провайдер для фиксинга начавшегося периода (как в pricing)

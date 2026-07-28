@@ -15,9 +15,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from rates import Quote  # noqa: E402
-from forwards import CurveBootstrapper, DiscountCurve  # noqa: E402
-from valuation import BondRefData  # noqa: E402
+from core.rates import Quote  # noqa: E402
+from core.forwards import CurveBootstrapper, DiscountCurve  # noqa: E402
+from core.valuation import BondRefData  # noqa: E402
 
 
 CALC_DATE = date(2026, 1, 12)  # понедельник, вне праздников MOEX

@@ -8,7 +8,7 @@ import aiohttp
 from api.schemas import OrderbookResponse, OrderbookSnapshot, OrderbookLevel
 from services.market_data import MarketDataService
 from services.exceptions import NotFoundException
-from api.routes.bonds import get_base_dir
+from services.paths import cache_path as _cache_path
 from auth import get_access_token, REFRESH_TOKEN, BASE_API
 import logging
 
@@ -85,7 +85,7 @@ async def get_orderbook(
             m = fi.compute_fixed_row(row, full_sched, g, calc_date, price_override=price)
             return {"g_spread_bps": m.get("g_spread_bps"), "yield_pct": m.get("ytm")}
     else:
-        cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
+        cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
         from services.bond_details import load_reprice_ctx, reprice_at_price
         try:
             ctx = await load_reprice_ctx(isin, cache)

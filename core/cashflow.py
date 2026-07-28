@@ -5,8 +5,8 @@ from bs4 import BeautifulSoup
 from datetime import date, timedelta
 import pandas as pd
 
-from rates import get_rates_curves
-from forwards import CurveBootstrapper
+from core.rates import get_rates_curves
+from core.forwards import CurveBootstrapper
 
 
 def read_isins_from_file(path: str) -> list[str]:
@@ -253,9 +253,10 @@ def print_cashflow(
 
 
 def main():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    isins_path = os.path.join(current_dir, "isins.txt")
-    cache_path = os.path.join(current_dir, "isins_cache.json")
+    from services.paths import cache_path as _cache_path
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    isins_path = os.path.join(_root, "isins.txt")
+    cache_path = _cache_path("isins_cache.json")
 
     ois_quotes, irs_quotes = get_rates_curves(use_cache=True)
     calc_date = date.today()

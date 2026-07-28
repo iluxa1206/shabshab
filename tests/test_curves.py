@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from forwards import (
+from core.forwards import (
     CurveBootstrapper, DiscountCurve, BootstrappedForwardCurve,
     yf_act365, add_months, get_maturity_date,
 )

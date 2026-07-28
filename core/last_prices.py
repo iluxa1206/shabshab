@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 _REST_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _WS_TIMEOUT = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
 
-from rates import get_rates_curves
-from forwards import CurveBootstrapper, add_months
-from valuation import BondRefData, calculate_floater_metrics
+from core.rates import get_rates_curves
+from core.forwards import CurveBootstrapper, add_months
+from core.valuation import BondRefData, calculate_floater_metrics
 
 # Персистентный кэш isin→symbol (маппинг статичен). Режет REST-резолюцию символа
 # на каждый ISIN — критично для периодического опроса всего юниверса (~453 бумаги).
@@ -142,9 +142,8 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
     api_base = f"{BASE_API}/md/v2/Securities/{exchange}"
     headers = {"Authorization": f"Bearer {access_token}"}
     
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    cache_path = os.path.join(current_dir, "isins_cache.json")
-    isins_cache = load_cache(cache_path)
+    from services.paths import cache_path as _cache_path
+    isins_cache = load_cache(_cache_path("isins_cache.json"))
 
     print("Загрузка кривых (RUONIA, KEYRATE)...")
     ois_quotes, irs_quotes = get_rates_curves(use_cache=True)

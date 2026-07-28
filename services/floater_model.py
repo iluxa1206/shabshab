@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from typing import Callable, List, Optional, Tuple
 
 from services import cbr
-from valuation import xirr
+from core.valuation import xirr
 
 
 def actual_ks(d: date) -> Optional[float]:

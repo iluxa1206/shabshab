@@ -6,10 +6,10 @@
 import json
 from datetime import date
 
-from rates import get_rates_curves
-from forwards import CurveBootstrapper
+from core.rates import get_rates_curves
+from core.forwards import CurveBootstrapper
 from services.bonds import create_bond_ref_data
-from valuation import BondRefData, dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
+from core.valuation import BondRefData, dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
 
 CACHE = json.load(open("isins_cache.json"))
 NRD = json.load(open("nrd_cache.json")).get("isins", {})

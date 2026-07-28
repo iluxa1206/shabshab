@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from conftest import make_bond, quarterly_periods, CALC_DATE
-from valuation import (
+from core.valuation import (
     build_cashflows_to_maturity, settle_date, face_for_pricing,
     extend_periods_to_maturity, _is_settlement_day_off,
 )

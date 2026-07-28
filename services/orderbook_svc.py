@@ -34,9 +34,9 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
         return metrics_fn, calc_date, face
 
     # флоатер
-    from api.routes.bonds import get_base_dir
+    from services.paths import cache_path as _cache_path
     from services.bond_details import load_reprice_ctx, reprice_at_price
-    cache = MarketDataService.get_local_bond_cache(os.path.join(get_base_dir(), "isins_cache.json"))
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     ctx = await load_reprice_ctx(isin, cache)
     face = getattr(ctx["ref_obj"], "face_value", None)
 

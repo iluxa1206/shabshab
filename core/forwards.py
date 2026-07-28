@@ -322,7 +322,7 @@ if __name__ == "__main__":
     import os
     import sys
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from rates import get_rates_curves
+    from core.rates import get_rates_curves
 
     ois_quotes, irs_quotes = get_rates_curves(use_cache=True)
     calc_date = ois_quotes[0].date if ois_quotes else date.today()

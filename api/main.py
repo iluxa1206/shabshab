@@ -44,8 +44,8 @@ async def ws_market_data_broadcaster():
 
 # Опрос Alor по всему юниверсу флоатеров (вне watchlist) — редко, чтобы держать
 # колонку PRICE более-менее актуальной без нагрузки WS на 453 бумаги.
-_ISINS_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "isins_cache.json")
+from services.paths import cache_path as _cache_path
+_ISINS_CACHE = _cache_path("isins_cache.json")
 UNIVERSE_POLL_INTERVAL = 600      # 10 минут
 UNIVERSE_POLL_CHUNK = 150         # ISIN за один WS-заход (меньше Alor WS-сессий: ~3 вместо 9)
 _MSK = timezone(timedelta(hours=3))

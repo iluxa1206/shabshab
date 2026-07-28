@@ -9,12 +9,12 @@
 import asyncio, json
 from datetime import date
 
-from rates import get_rates_curves
-from forwards import CurveBootstrapper
+from core.rates import get_rates_curves
+from core.forwards import CurveBootstrapper
 from services.bonds import build_ref_external
 from services.market_data import MarketDataService
 from services.zspread import compute_z_bps, project_cfs, solve_flat_y
-from valuation import dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
+from core.valuation import dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
 
 _UNI = json.load(open("nrd_universe_cache.json"))
 UNI = {u["isin"]: u for u in (_UNI.get("items") or _UNI)}

@@ -9,8 +9,8 @@ from api.schemas import (CurveResponse, ForwardRateResponse, CurveNode, CurveSeg
                          CurvePlotResponse, CurveQuote, CurveSample,
                          KsPathResponse, KsPathPoint)
 from services.market_data import MarketDataService, market_cache
-from forwards import get_maturity_date
-from rates import tenor_to_days
+from core.forwards import get_maturity_date
+from core.rates import tenor_to_days
 
 router = APIRouter()
 

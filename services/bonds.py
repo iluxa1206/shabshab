@@ -1,9 +1,9 @@
 from datetime import date
 from typing import Dict, Any, Optional
 
-from valuation import BondRefData
-from cashflow import parse_base_and_spread
-from forwards import add_months
+from core.valuation import BondRefData
+from core.cashflow import parse_base_and_spread
+from core.forwards import add_months
 
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
@@ -183,7 +183,7 @@ def create_bond_ref_data(data: dict, isin: str) -> BondRefData:
     
     # Exact fallback from CLI for first coupon mapping
     step_months = 12 // (frequency or 4)
-    from forwards import add_months
+    from core.forwards import add_months
     first_coupon = None
     if start_date:
         first_coupon = add_months(start_date, step_months)

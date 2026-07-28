@@ -22,13 +22,13 @@ from dataclasses import replace
 
 import httpx
 
-from rates import get_rates_curves, tenor_to_days
-from forwards import CurveBootstrapper
+from core.rates import get_rates_curves, tenor_to_days
+from core.forwards import CurveBootstrapper
 from services.bonds import build_ref_external
 from services.market_data import MarketDataService
 from services import nrd
 from services.zspread import solve_flat_y
-from valuation import dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
+from core.valuation import dirty_price_rub, build_cashflows_with_spread, solve_dm_bps
 
 UNI = {u["isin"]: u for u in json.load(open("nrd_universe_cache.json")).get("items")}
 N = 40  # бумаг в выборке
@@ -85,7 +85,7 @@ def build_cfs_simple_keyrate(ref, curve, cd, triples, amorts):
     fam = sorted((d, float(a["value"])) for a in (amorts or [])
                  if a.get("value") is not None and (d := _pd(a.get("date"))) and d > cd)
     amortizing = any(ref.maturity_date and d < ref.maturity_date for d, _ in fam)
-    from valuation import Cashflow
+    from core.valuation import Cashflow
     cfs = []
     for s, e, v in triples:
         if not e or e <= cd or (ref.maturity_date and e > ref.maturity_date):

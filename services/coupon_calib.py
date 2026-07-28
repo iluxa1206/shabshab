@@ -236,7 +236,7 @@ def _obs_date(d: date, lag: int, unit: str) -> date:
     if unit != "work" or lag <= 0:
         return d - timedelta(days=lag)
     try:
-        from valuation import _is_settlement_day_off as _off
+        from core.valuation import _is_settlement_day_off as _off
     except Exception:
         def _off(x): return x.weekday() >= 5
     cur, left = d, lag

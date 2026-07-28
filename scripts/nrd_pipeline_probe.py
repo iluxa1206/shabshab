@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 
-from rates import get_rates_curves
+from core.rates import get_rates_curves
 from services.bonds import create_bond_ref_data
 from services.market_data import MarketDataService
 from services.zspread import ExpCurve, GCurve, compute_z_bps, solve_z_bps, TENOR_Y

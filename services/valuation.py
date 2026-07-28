@@ -2,8 +2,8 @@ from datetime import date
 from functools import partial
 from typing import Dict, Any, Optional
 
-from forwards import DiscountCurve
-from valuation import (
+from core.forwards import DiscountCurve
+from core.valuation import (
     BondRefData,
     dirty_price_rub,
     build_cashflows_with_spread,
@@ -71,7 +71,7 @@ def calculate_valuation_metrics(
     # Бумага гасится не позже даты расчётов T+1: покупателю не достаётся ни одного
     # платежа (весь поток ex) — метрики бессмысленны, а стейл prev-цена давала
     # мусорные отрицательные SM (Магнит4P06 за 2 дня до погашения: SM −330).
-    from valuation import settle_date as _sd
+    from core.valuation import settle_date as _sd
     if bond.maturity_date is not None and bond.maturity_date <= _sd(calc_date):
         return {
             "clean_price_pct": price, "dirty_price_rub": None,
@@ -92,7 +92,7 @@ def calculate_valuation_metrics(
 
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
     # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
-    from valuation import face_for_pricing
+    from core.valuation import face_for_pricing
     _pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
     dirty_rub = dirty_price_rub(_pricing_face, price, accrued)
 
@@ -199,7 +199,7 @@ def calculate_valuation_metrics(
     horizon = "maturity"
     offer_date = offer_price_pct = None
     sm_to_offer = dm_to_offer = y_to_offer = None
-    from valuation import first_offer_date as _fod, _offer_price_pct as _opp, settle_date as _sd2
+    from core.valuation import first_offer_date as _fod, _offer_price_pct as _opp, settle_date as _sd2
     _settle = _sd2(calc_date)
     _put = _fod(offers, _settle) if offers else None
 

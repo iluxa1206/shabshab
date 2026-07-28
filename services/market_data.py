@@ -16,11 +16,11 @@ _SNAP_TTL = 120.0  # сек: prev/accrued MOEX кэшируем внутридн
 # prev-close/НРД). 12ч покрывает ночь до утреннего прогрева поллером (~07:00 МСК).
 _PRICE_MAX_AGE = 12 * 3600.0
 
-from rates import get_rates_curves, Quote
-from forwards import CurveBootstrapper, DiscountCurve
+from core.rates import get_rates_curves, Quote
+from core.forwards import CurveBootstrapper, DiscountCurve
 from auth import get_access_token, REFRESH_TOKEN
-from last_prices import get_last_prices_dict
-from cashflow import load_cache, get_local_excel_db
+from core.last_prices import get_last_prices_dict
+from core.cashflow import load_cache, get_local_excel_db
 import logging
 
 logger = logging.getLogger(__name__)
