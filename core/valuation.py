@@ -94,15 +94,29 @@ def generate_coupon_dates(first_coupon_date: date, maturity_date: date, coupons_
     Генерирует сетку дат купонов строго по шагу (без бизнес-сдвигов).
     Обрезает даты строго по maturity_date (включительно).
     Если maturity_date не ложится ровно на сетку, она НЕ добавляется как фиктивный купон.
+
+    first_coupon_date=None (нет ни issue, ни первого купона — бумага вне
+    MOEX-справочника по ISIN, напр. ОФЗ-ПК с SECID SU29xxx) → якорим сетку на
+    maturity и шагаем НАЗАД: погашение всегда совпадает с последним купоном.
+    Раньше тут был TypeError ('<=' None и date) — весь valuation бумаги падал.
     """
+    if maturity_date is None:
+        return []
     step_months = 12 // coupons_per_year
+    if first_coupon_date is None:
+        back = []
+        current = maturity_date
+        for _ in range(12 * coupons_per_year + 1):   # бэкстоп ~12 лет истории
+            back.append(current)
+            current = add_months(current, -step_months)
+        return list(reversed(back))
     dates = []
-    
+
     current = first_coupon_date
     while current <= maturity_date:
         dates.append(current)
         current = add_months(current, step_months)
-        
+
     return dates
 
 
@@ -381,7 +395,12 @@ def build_cashflows_to_maturity(
         else:
             coupon_dates = generate_coupon_dates(bond.first_coupon_date, bond.maturity_date, bond.coupons_per_year)
             step_months = 12 // bond.coupons_per_year
-            start_1 = add_months(bond.first_coupon_date, -step_months)
+            # first_coupon неизвестен → сетка заякорена на maturity (см.
+            # generate_coupon_dates), start_1 — шаг назад от её первой даты
+            anchor = bond.first_coupon_date or (coupon_dates[0] if coupon_dates else None)
+            if anchor is None:
+                raise ValueError(f"no maturity/first_coupon to build schedule for {bond.isin}")
+            start_1 = add_months(anchor, -step_months)
             if bond.issue_date and start_1 < bond.issue_date:
                 start_1 = bond.issue_date
 
