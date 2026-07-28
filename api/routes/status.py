@@ -54,7 +54,7 @@ async def get_status():
     M._ensure_full_mem()
     sched_n = len(M._full_mem)
     prices = market_cache.get("last_prices", {})
-    fresh = M.cached_prices()
+    fresh = M.session_prices()   # «свежие» = цены текущего торгового дня
     um = M.universe_metrics() or {}
     fxm = market_cache.get("fixed_metrics") or {}
 

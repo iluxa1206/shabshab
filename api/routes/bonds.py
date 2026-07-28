@@ -85,7 +85,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
     if not uni:
         return BondListResponse(items=[], total=0, limit=limit, offset=offset)
 
-    cached_prices = MarketDataService.cached_prices()
+    cached_prices = MarketDataService.session_prices()   # цены текущего торгового дня
     uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
     shortnames = await MarketDataService.fetch_moex_shortnames()
     watch = set(extra_list)

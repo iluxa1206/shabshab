@@ -220,6 +220,19 @@ class MarketDataService:
         return {i: p for i, p in market_cache.get("last_prices", {}).items()
                 if ts.get(i, 0.0) >= cutoff}
 
+    @classmethod
+    def session_prices(cls) -> Dict[str, float]:
+        """Цены Alor ТЕКУЩЕГО торгового дня (перекат 09:00 МСК, как _trading_day).
+        Для выбора расчётной цены: приоритет источника должен быть по свежести —
+        cached_prices() с дефолтным max-age 12ч позволял вчерашней вечерней
+        WS-цене утром выигрывать у сегодняшнего board-last и официального prev,
+        причём без флага price_stale (он ставится только при last=None)."""
+        now = datetime.now(_MSK)
+        start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now < start:
+            start -= timedelta(days=1)
+        return cls.cached_prices(max_age_sec=(now - start).total_seconds())
+
     _shortnames: Dict[str, str] = {}
     _shortnames_date: Optional[str] = None
 

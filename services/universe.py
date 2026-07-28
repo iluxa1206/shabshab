@@ -152,7 +152,9 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
     cache = MarketDataService.get_local_bond_cache(cache_path)
     external = [i for i in ids if i not in cache]
 
-    prices = MarketDataService.cached_prices()
+    # только цены текущего торгового дня: вчерашняя WS-цена не должна выигрывать
+    # у сегодняшнего board-last (приоритет по свежести, не по источнику)
+    prices = MarketDataService.session_prices()
     board, curves, zctx, secs = await asyncio.gather(
         MarketDataService.fetch_board_snapshot(),
         MarketDataService.get_curves(),
@@ -209,7 +211,7 @@ async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
     if not ids:
         return {}
     external = [i for i in ids if i not in cache]
-    prices = MarketDataService.cached_prices()
+    prices = MarketDataService.session_prices()   # см. compute_universe_metrics
     snapshot, moex_ref, curves, zctx, fulls = await asyncio.gather(
         MarketDataService.fetch_moex_snapshot(ids),
         MarketDataService.fetch_moex_securities(external) if external else _aempty(),
