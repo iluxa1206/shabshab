@@ -89,7 +89,7 @@ async def get_status():
             {"key": "Цены (last)", **frac(len(prices), total),
              "hint": f"свежих (не стейл): {len(fresh)}"},
             {"key": "Метрики флоатеров", **frac(len(um), fl_n),
-             "hint": "DM/z/carry по юниверсу"},
+             "hint": "DM/z/Y−IDX по юниверсу"},
             {"key": "Метрики фиксов", **frac(len(fxm), fx_n),
              "hint": "YTM/g-спред/дюрация"},
             {"key": "Рейтинги флоатеров", **frac(fl_rated, fl_n), "hint": "реестр (corpbonds)"},

@@ -541,7 +541,10 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
             "issue_date": cb.get("issue_date"),
             "face_value": cb.get("face_value"),
             "coupons_per_year": int(freq) if freq else None,
-            "coupon_period_days": round(365 / freq) if freq else None,
+            # 365/freq — фолбэк; фактический период из графика (discovery) не трогаем
+            "coupon_period_days": (round(365 / freq) if freq
+                                   and not (get(isin) or {}).get("coupon_period_days")
+                                   else None),
             "day_count": cb.get("day_count"),
             "var_type": cb.get("var_type"),
             "coupon_text": cb.get("coupon_text"),   # формула купона (для СПРАВОЧНИКа + проспект-парс)

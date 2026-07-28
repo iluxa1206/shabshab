@@ -63,13 +63,14 @@ def _uni_item(u, name, mx, spread_dur):
         spread_issue_bps=int(spread), maturity_date=u.get("maturity_date"),
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
+        val_today=mx.get("val_today"),
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
         price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
         rating=u.get("rating"),
-        z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur, carry_bps=mx.get("carry"),
+        z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur,
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
         sm_to_offer_bps=mx.get("sm_to_offer"), disc_margin_to_offer_bps=mx.get("dm_to_offer"),
@@ -311,7 +312,7 @@ async def reprice_bond_valuation(
     isin: str = Path(...),
     price: float = Query(..., gt=0, le=1000, description="Чистая цена, % от номинала"),
 ):
-    """Пересчёт цена-зависимых метрик (SM/DM/YTM/dirty/Y-IDX/z_model/carry) под
+    """Пересчёт цена-зависимых метрик (SM/DM/YTM/dirty/Y-IDX/z_model) под
     произвольную чистую цену. Использует калькулятор карточки И live-рефреш строки
     таблицы по WS-тику. Тёплые кэши → мгновенно."""
     isin = _require_isin(isin)

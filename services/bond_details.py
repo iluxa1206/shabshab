@@ -183,7 +183,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             pass
 
     # блок флоатер-риска: spread duration (Macaulay проектных потоков), rate duration
-    # (≈ до рефиксинга), carry vs база, breakeven. Считаем на нашей кривой ожиданий.
+    # (≈ до рефиксинга), текущий купон/база. Считаем на нашей кривой ожиданий.
     floater_block = None
     if ref_obj.base in ("RUONIA", "KEYRATE"):
         try:
@@ -222,9 +222,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 "spread_duration_yrs": round(spread_dur, 3) if spread_dur is not None else None,
                 "rate_duration_yrs": round(refix / 365.0, 3) if refix is not None else None,
                 "days_to_refix": refix, "current_coupon_pct": cb["current_coupon_pct"],
-                "base_rate_pct": cb["base_rate_pct"], "carry_bps": cb["carry_bps"],
-                "breakeven_base_pct": metrics.breakeven_base_pct(
-                    cb["coupon_yield_pct"], cb["base_rate_pct"], ref_obj.spread_issue_bps),
+                "base_rate_pct": cb["base_rate_pct"],
                 "mod_duration": mod_dur, "convexity": convexity, "pvbp": pvbp,
             }
         except Exception as e:
@@ -328,14 +326,14 @@ def reprice_at_price(ctx: dict, price: float) -> dict:
     )
 
 
-def _reprice_z_carry(ctx: dict, price: float) -> dict:
-    """z_model + carry (тоже цена-зависимы) поверх reprice_at_price. Отдельно от
-    core: нужны live-рефрешу строки таблицы по WS-тику, но НЕ уровням стакана."""
+def _reprice_z(ctx: dict, price: float) -> dict:
+    """z_model (тоже цена-зависим) поверх reprice_at_price. Отдельно от core:
+    нужен live-рефрешу строки таблицы по WS-тику, но НЕ уровням стакана."""
     ref_obj = ctx["ref_obj"]
-    curve, calc_date = ctx["curve"], ctx["calc_date"]
+    calc_date = ctx["calc_date"]
     amorts, offers = ctx["amorts"], ctx["offers"]
     accrued_live, exp, g_curve = ctx["accrued_live"], ctx["exp"], ctx["g_curve"]
-    coupons, periods = ctx["coupons"], ctx["periods"]
+    coupons = ctx["coupons"]
     isin = ctx["isin"]
 
     z_model = None
@@ -350,31 +348,7 @@ def _reprice_z_carry(ctx: dict, price: float) -> dict:
                 cpn_dicts, amorts, offers)
         except Exception as e:
             logger.warning(f"reprice z_model error {isin}: {e}")
-    carry = None
-    try:
-        from services import metrics as _metrics
-        # ставка начавшегося периода из модельного cashflow — override текущего
-        # купона (как build_bond_details): для RUONIA-average MOEX не даёт valueprc,
-        # без override carry=None и скачет при reprice. Мирроринг карточки.
-        cur_cpn_model = None
-        try:
-            from core.valuation import build_cashflows_with_spread
-            _cfs = build_cashflows_with_spread(
-                ref_obj, curve, calc_date, ref_obj.spread_issue_bps or 0,
-                explicit_periods=periods, amorts=amorts, offers=offers)
-            for _cf in _cfs:
-                if (_cf.type == "COUPON" and _cf.period_start
-                        and _cf.period_start <= calc_date < _cf.period_end):
-                    cur_cpn_model = _cf.coupon_rate_pct
-                    break
-        except Exception:
-            cur_cpn_model = None
-        cb = _metrics.carry_refix_block(coupons, amorts, ref_obj.face_value, price,
-                                        exp, None, calc_date, current_coupon_override=cur_cpn_model)
-        carry = cb["carry_bps"]
-    except Exception as e:
-        logger.warning(f"reprice carry error {isin}: {e}")
-    return {"z_model_bps": z_model, "carry_bps": carry}
+    return {"z_model_bps": z_model}
 
 
 async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
@@ -382,5 +356,5 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     карточке И live-рефреш строки таблицы по WS-тику). Тёплые кэши → мгновенно."""
     ctx = await load_reprice_ctx(isin, cache)
     out = dict(reprice_at_price(ctx, price))
-    out.update(_reprice_z_carry(ctx, price))
+    out.update(_reprice_z(ctx, price))
     return out

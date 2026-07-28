@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
 import { fmt } from "../format.js";
 import {
-  extent, logScale, linearScale, timeScale, linTicks, yearTicks,
+  extent, sqrtScale, linearScale, timeScale, linTicks, yearTicks,
   linePath, stepPath, GridY, XTicks, useNearestHover, Tooltip,
   Legend, LegendLine, LegendDot,
 } from "../charts/index.js";
@@ -74,8 +74,8 @@ function CurveView() {
           <Chart data={data} />
           <Legend>
             <LegendDot color="var(--fg)" label="par-котировки СПФИ" />
-            <LegendLine color="var(--up)" label="spot (ср. ставка на срок)" />
-            <LegendLine color="var(--down)" dash="4 3" label="forward (мгновенный ~30д)" />
+            <LegendLine color="var(--up)" label="implied avg (ср. ставка на срок)" />
+            <LegendLine color="var(--down)" dash="4 3" label="forward (между тенорами: 3m3m, 1Y1Y, …)" />
           </Legend>
           <QuoteTable data={data} />
         </>
@@ -84,9 +84,19 @@ function CurveView() {
   );
 }
 
+// nearest-quote по дням (для подписи par в тултипе рядом с курсором).
+function nearestQuote(quotes, days) {
+  let best = null, bd = Infinity;
+  for (const q of quotes) {
+    const d = Math.abs(q.days - days);
+    if (d < bd) { bd = d; best = q; }
+  }
+  return best;
+}
+
 function Chart({ data }) {
   const { quotes, samples } = data;
-  const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
+  const W = 900, H = 380, L = 46, R = 64, T = 16, B = 40;
 
   const geom = useMemo(() => {
     const maxDays = Math.max(...samples.map((s) => s.days), ...quotes.map((q) => q.days), 1);
@@ -94,40 +104,61 @@ function Chart({ data }) {
       ...samples.map((s) => s.spot_pct), ...samples.map((s) => s.forward_pct),
       ...quotes.map((q) => q.value_pct),
     ], 0.12, 0.3);
-    const X = logScale([7, maxDays], [L, W - R]); // x лог по дням (короткий конец не слипается)
+    // sqrt по дням: длинный конец не сплющивается (1Y ≈ 28%, а не 63% как у лога)
+    const X = sqrtScale([7, maxDays], [L, W - R]);
     const Y = linearScale([ymin, ymax], [H - B, T]);
     return { X, Y, ymin, ymax };
   }, [samples, quotes]);
 
   const { X, Y, ymin, ymax } = geom;
-  // nearest-point hover по тенорам-котировкам (единый механизм, см. charts/hover)
-  const { hover, handlers } = useNearestHover({ viewW: W, points: quotes, px: (q) => X(q.days) });
+  // hover по плотной сетке сэмплов — тянет обе линии (spot/forward) сразу;
+  // par подтягиваем от ближайшей котировки (charts/hover — nearest-point).
+  const { hover, handlers } = useNearestHover({ viewW: W, points: samples, px: (s) => X(s.days) });
+  const hq = hover ? nearestQuote(quotes, hover.days) : null;
+  const last = samples[samples.length - 1];
 
   return (
     <div style={{ position: "relative" }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
         <GridY ticks={linTicks(ymin, ymax, 4)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(2)} />
         <XTicks ticks={quotes.map((q) => ({ x: X(q.days), label: q.tenor }))} y={H - B + 14} />
-        {/* forward (пунктир) */}
-        <path d={linePath(samples, (s) => X(s.days), (s) => Y(s.forward_pct))} fill="none" stroke="var(--down)"
+        {/* forward — ступень по сегментам между тенорами (пунктир) */}
+        <path d={stepPath(samples, (s) => X(s.days), (s) => Y(s.forward_pct))} fill="none" stroke="var(--down)"
           strokeWidth="1.5" strokeDasharray="4 3" opacity="0.85" />
-        {/* spot (сплошная) */}
+        {/* spot / implied avg (сплошная) */}
         <path d={linePath(samples, (s) => X(s.days), (s) => Y(s.spot_pct))} fill="none" stroke="var(--up)" strokeWidth="2" />
+        {/* подписи концов линий */}
+        {last && (
+          <>
+            <text x={X(last.days) + 5} y={Y(last.spot_pct) + 3} fontSize="10" fill="var(--up)" fontWeight="600">avg</text>
+            <text x={X(last.days) + 5} y={Y(last.forward_pct) + 3} fontSize="10" fill="var(--down)" fontWeight="600">fwd</text>
+          </>
+        )}
         {/* котировки (точки) */}
         {quotes.map((q, i) => (
           <circle key={i} cx={X(q.days)} cy={Y(q.value_pct)} r="3.5" fill="var(--fg)" stroke="var(--bg)" strokeWidth="1">
-            <title>{`${q.tenor} · ${q.value_pct.toFixed(4)}% · ${q.days}д`}</title>
+            <title>{`${q.tenor} · par ${q.value_pct.toFixed(4)}%`
+              + (q.implied_avg_pct != null ? ` · avg ${q.implied_avg_pct.toFixed(4)}%` : "")
+              + (q.forward_pct != null ? ` · fwd ${q.forward_pct.toFixed(4)}%` : "")}</title>
           </circle>
         ))}
+        {/* hover: гайд + точки на обеих линиях + на ближайшей котировке */}
         {hover && (
           <g>
             <line x1={X(hover.days)} y1={T} x2={X(hover.days)} y2={H - B} stroke="var(--mut)" strokeDasharray="2 2" />
-            <circle cx={X(hover.days)} cy={Y(hover.value_pct)} r="5" fill="none" stroke="var(--fg)" strokeWidth="1.5" />
+            <circle cx={X(hover.days)} cy={Y(hover.spot_pct)} r="4" fill="var(--up)" stroke="var(--bg)" strokeWidth="1.5" />
+            <circle cx={X(hover.days)} cy={Y(hover.forward_pct)} r="4" fill="var(--down)" stroke="var(--bg)" strokeWidth="1.5" />
+            {hq && (
+              <circle cx={X(hq.days)} cy={Y(hq.value_pct)} r="5" fill="none" stroke="var(--fg)" strokeWidth="1.5" />
+            )}
           </g>
         )}
       </svg>
       {hover && (
-        <Tooltip x={X(hover.days)} viewW={W}>{`${hover.tenor}: ${hover.value_pct.toFixed(4)}% (par)`}</Tooltip>
+        <Tooltip x={X(hover.days)} viewW={W}>
+          {`${(hover.days / 365).toFixed(hover.days < 365 ? 2 : 1)}г · avg ${hover.spot_pct.toFixed(3)}% · fwd ${hover.forward_pct.toFixed(3)}%`
+            + (hq ? ` · par(${hq.tenor}) ${hq.value_pct.toFixed(3)}%` : "")}
+        </Tooltip>
       )}
     </div>
   );
@@ -142,6 +173,8 @@ function QuoteTable({ data }) {
             <th style={{ textAlign: "left", padding: "4px 8px" }}>Тенор</th>
             <th style={{ padding: "4px 8px" }}>Дней</th>
             <th style={{ padding: "4px 8px" }}>Par-котировка, %</th>
+            <th style={{ padding: "4px 8px", color: "var(--up)" }}>Implied avg, %</th>
+            <th style={{ padding: "4px 8px", color: "var(--down)" }}>Forward (тенор→тенор), %</th>
             <th style={{ textAlign: "left", padding: "4px 8px" }}>Инструмент</th>
           </tr>
         </thead>
@@ -151,6 +184,11 @@ function QuoteTable({ data }) {
               <td style={{ padding: "3px 8px", fontFamily: "var(--mono)" }}>{q.tenor}</td>
               <td style={{ padding: "3px 8px", textAlign: "right", color: "var(--mut)" }}>{q.days}</td>
               <td style={{ padding: "3px 8px", textAlign: "right", fontFamily: "var(--mono)" }}>{q.value_pct.toFixed(4)}</td>
+              <td style={{ padding: "3px 8px", textAlign: "right", fontFamily: "var(--mono)", color: "var(--up)" }}>
+                {q.implied_avg_pct != null ? q.implied_avg_pct.toFixed(4) : "—"}</td>
+              <td style={{ padding: "3px 8px", textAlign: "right", fontFamily: "var(--mono)", color: "var(--down)" }}>
+                {q.forward_pct != null ? q.forward_pct.toFixed(4) : "—"}
+                {q.fwd_span && <span style={{ color: "var(--mut)", fontSize: 10, marginLeft: 6 }}>{q.fwd_span}</span>}</td>
               <td style={{ padding: "3px 8px", color: "var(--mut)", fontSize: 11 }}>{q.name}</td>
             </tr>
           ))}

@@ -30,6 +30,20 @@ export function logScale([d0, d1], [r0, r1]) {
   return (v) => r0 + ((l(v) - a) / span) * (r1 - r0);
 }
 
+// sqrt-шкала по x: компромисс лин↔лог для term-structure. Короткий конец
+// не слипается (как лог), но длинный не сплющивается (1Y ≈ 28% домена 10Y,
+// против 63% у лога). Домен ≥ 0. Есть invert — для hover по позиции курсора.
+export function sqrtScale([d0, d1], [r0, r1]) {
+  const s0 = Math.sqrt(Math.max(d0, 0));
+  const span = (Math.sqrt(Math.max(d1, 0)) - s0) || 1;
+  const s = (v) => r0 + ((Math.sqrt(Math.max(v, 0)) - s0) / span) * (r1 - r0);
+  s.invert = (px) => {
+    const t = s0 + ((px - r0) / ((r1 - r0) || 1)) * span;
+    return t * t;
+  };
+  return s;
+}
+
 // шкала времени: принимает Date | ms | ISO-строку.
 export function timeScale([t0, t1], [r0, r1]) {
   const toMs = (x) => (x instanceof Date ? x.getTime() : typeof x === "number" ? x : new Date(x).getTime());

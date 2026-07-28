@@ -17,7 +17,7 @@ const avg = (a) => {
   return s.length ? s.reduce((p, c) => p + c, 0) / s.length : null;
 };
 
-// Агрегаты параметров по эмитентам: справедливые уровни DM/z/carry по эмитенту.
+// Агрегаты параметров по эмитентам: справедливые уровни DM/z/Y−IDX по эмитенту.
 // Группируем по emitter_name; implausible-цены уже занулены на бэке (не искажают).
 export default function IssuerAggregates({ bonds, onPickIssuer }) {
   const [sort, setSort] = useState({ key: "n", dir: "desc" });
@@ -42,7 +42,6 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
         dm: median(arr.map((b) => b.disc_margin_bps)),
         sm: median(arr.map((b) => b.dm_bps)),
         z: median(arr.map((b) => b.z_model_bps)),
-        carry: median(arr.map((b) => b.carry_bps)),
         yoi: median(arr.map((b) => b.yield_over_index_bps)),
         spread: avg(arr.map((b) => b.spread_issue_bps)),
         rating: arr.map((b) => b.rating).find(Boolean) || "—",
@@ -66,7 +65,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
   const COLS = [
     ["name", "ЭМИТЕНТ", "left"], ["rating", "RATING", "left"], ["n", "БУМАГ", "num"],
     ["dm", "MED DM", "num"], ["sm", "MED SM", "num"], ["z", "MED Z", "num"],
-    ["carry", "MED CARRY", "num"], ["yoi", "MED Y−IDX", "num"], ["spread", "AVG SPREAD", "num"],
+    ["yoi", "MED Y−IDX", "num"], ["spread", "AVG SPREAD", "num"],
   ];
   const cell = (r, key) => {
     if (key === "name") return r.name;
@@ -81,7 +80,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
     <div className="issuer-agg">
       <div className="ia-head">
         <h2 className="ia-title">Агрегаты по эмитентам</h2>
-        <span className="ia-hint">медианы DM/z/carry по бумагам эмитента — справедливые уровни. Клик по строке → фильтр в «Флоатеры». Стейл-цены исключены.</span>
+        <span className="ia-hint">медианы DM/z/Y−IDX по бумагам эмитента — справедливые уровни. Клик по строке → фильтр в «Флоатеры». Стейл-цены исключены.</span>
         <div className="ia-filters">
           <span className="ia-flabel">рейтинг:</span>
           {RATINGS.map(([v, l]) => (

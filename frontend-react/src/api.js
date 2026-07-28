@@ -191,47 +191,6 @@ export const createAlert = (body) => request("/api/alerts", { method: "POST", js
 export const updateAlert = (id, patch) => request(`/api/alerts/${id}`, { method: "PATCH", json: patch });
 export const deleteAlert = (id) => request(`/api/alerts/${id}`, { method: "DELETE" });
 
-// --- Модуль «Фонды» ---
-export const fetchFunds = () => request("/api/funds").then((d) => d.funds || []);
-
-export const createFund = ({ code, name, base_ccy }) =>
-  request("/api/funds", { method: "POST", json: { code, name, base_ccy } });
-
-export const patchFund = (code, patch) =>
-  request(`/api/funds/${encodeURIComponent(code)}`, { method: "PATCH", json: patch });
-
-export const deleteFund = (code) =>
-  request(`/api/funds/${encodeURIComponent(code)}`, { method: "DELETE" });
-
-export const fetchFundSummary = (code) => request(`/api/funds/${encodeURIComponent(code)}/summary`);
-
-export const putFundSnapshot = (code, csv, snapDate) =>
-  request(`/api/funds/${encodeURIComponent(code)}/snapshot`, { method: "PUT", json: { csv, snap_date: snapDate || null } });
-
-export const putFundPosition = (code, isin, qty) =>
-  request(`/api/funds/${encodeURIComponent(code)}/position`, { method: "PUT", json: { isin, qty } });
-
-export const fetchFundRepos = (code) =>
-  request(`/api/funds/${encodeURIComponent(code)}/repo`).then((d) => d.repos || []);
-
-export const addFundRepo = (code, repo) =>
-  request(`/api/funds/${encodeURIComponent(code)}/repo`, { method: "POST", json: repo });
-
-export const deleteFundRepo = (code, id) =>
-  request(`/api/funds/${encodeURIComponent(code)}/repo/${id}`, { method: "DELETE" });
-
-export const fetchFundCashflow = (code, months = 12) =>
-  request(`/api/funds/${encodeURIComponent(code)}/cashflow?months=${months}`);
-
-export const fetchFundScenarios = (code) =>
-  request(`/api/funds/${encodeURIComponent(code)}/scenarios`);
-
-export const fetchFundsCalendar = (days = 90) =>
-  request(`/api/funds/_meta/calendar?days=${days}`);
-
-export const fetchBenchmarks = (days = 180) =>
-  request(`/api/funds/_meta/benchmarks?days=${days}`);
-
 // WebSocket live-цен. onPrice(isin, price). Возвращает {resubscribe, close}.
 // resubscribe шлёт diff: subscribe на новые ISIN, unsubscribe на убранные (без дублей).
 // Reconnect — экспоненциальный backoff 1с → 30с, сброс при успешном коннекте.

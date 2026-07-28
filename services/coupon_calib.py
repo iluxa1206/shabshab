@@ -124,9 +124,14 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         lag, unit = got
         if lag > 30:                        # мусорный матч (номер купона и т.п.)
             continue
-        if _POINT_ANCHOR.search(fwd):
+        # Якорь фиксинга — тот, что БЛИЖЕ к «предшествующ»: в хвосте обычно идёт
+        # определение ДРУГИХ дат («Di+1 - дата, следующая за датой начала i-го
+        # купонного периода»), и дальний point-якорь перебивал верный avg («дате D»).
+        # Банк Синара С01: point давал 0.91пп ошибки против 0.015пп у average.
+        m_pt, m_av = _POINT_ANCHOR.search(fwd), _AVG_ANCHOR.search(fwd)
+        if m_pt and (m_av is None or m_pt.start() < m_av.start()):
             best_point = best_point or {"mode": "point", "lag": lag, "lag_unit": unit}
-        elif _AVG_ANCHOR.search(fwd) or _AVG_GLOBAL.search(tl):
+        elif m_av or _AVG_GLOBAL.search(tl):
             best_avg = best_avg or {"mode": "average", "lag": lag, "lag_unit": unit}
     # кэп/флор купона: MIN(КС+m; X%) / «не более X%» → потолок ставки;
     # MAX(…; Y%) / «не менее Y%» → пол ставки. Достаём ЧИСЛО (%, годовых) для
@@ -189,6 +194,15 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         # шли сюда с лагом 0 — «за N дней до» не ловилось петлёй «предшествующ».)
         mw = re.search(r"начинающ\w*ся\s+за\s+(\d+)\s+(рабоч\w*\s+)?"
                        r"(?:календарн\w*\s+)?дн\w+\s+до\s+дат\w+\s+начал", tl)
+        # ...но если окно закрывается по ПРЕДЫДУЩЕМУ периоду («заканчивающийся за N
+        # дней до даты окончания ПРЕДЫДУЩЕГО купонного периода»), то окно =
+        # [prev_start−N, prev_end−N] = [start−period−N, start−N) — это avg_prev, а
+        # НЕ окно текущего периода. Разница боевая: на этих 4 бумагах (РЖД 001P-26R/
+        # 27R/28R, РСХБ БO-03-002P) average врал mean 0.5пп / max 3.2пп против
+        # mean 0.03пп / max 0.22пп у avg_prev (аудит по bondsearch 27.07.2026).
+        mw_prev = re.search(r"заканчивающ\w*ся\s+за\s+\d+\s+(?:рабоч\w*\s+)?"
+                            r"(?:календарн\w*\s+)?дн\w+\s+до\s+дат\w+\s+окончани\w*\s+"
+                            r"предыдущ\w*\s+купонн\w*\s+период", tl)
         # СРЕДНЕЕ ПО ФИКСИР. ОКНУ [T−a; T−b] назад от даты начала. Пишут по-разному:
         # «за период Т-37 дня - Т-7 дня», «от (Ti-7 до Ti-37)», «от Ti-7 до t=Ti-37».
         # Точного окна модель не хранит; гладкий overnight-RUONIA ⇒ среднее ≈
@@ -196,11 +210,32 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         mf = re.search(r"[тt]i?\s*[-–]\s*(\d+)\s*(?:кал\w*\s*)?(?:дн\w*\s*)?"
                        r"(?:до|[-–—])\s*(?:t\s*=\s*)?[тt]i?\s*[-–]\s*(\d+)", tl)
         if mw:
-            out = {"mode": "average", "lag": int(mw.group(1)),
+            out = {"mode": "avg_prev" if mw_prev else "average",
+                   "lag": int(mw.group(1)),
                    "lag_unit": "work" if mw.group(2) else "cal"}
         elif mf:
+            # окно [T−a, T−b] назад от старта → среднее по предыдущему периоду со
+            # сдвигом. lag = БЛИЖНИЙ офсет (min): для «Т-37..Т-7» lag=7, окно длиной
+            # period заканчивается за 7д до старта. Точнее прежней аппроксимации
+            # точечным фиксингом в середине окна (лаг (a+b)/2): на движениях ставки
+            # midpoint-point врал до 0.5пп vs 0.03пп у точного окна (аудит Русагро).
             a, b = int(mf.group(1)), int(mf.group(2))
-            out = {"mode": "point", "lag": round((a + b) / 2), "lag_unit": "cal"}
+            out = {"mode": "avg_prev", "lag": min(a, b), "lag_unit": "cal"}
+        # СРЕДНЕЕ ЗА ОКНО ПЕРЕД ДАТОЙ ОПРЕДЕЛЕНИЯ СТАВКИ: «среднеарифметическое
+        # значение КС в течение N дней (включительно), ПРЕДШЕСТВУЮЩИХ Дате
+        # определения новой ставки купона» — окно [start−N, start) перед стартом,
+        # т.е. avg_prev с лагом 0 (у этих бумаг N ≈ длине периода: Альфа-Банк
+        # Т2-CR, месячный купон, N=30). Раньше падало в average (окно ТЕКУЩЕГО
+        # периода) — 0.31пп ошибки против 0.023пп у avg_prev.
+        # Пишут двояко: «среднеарифметическое значение КС» (Т2-CR-03) либо через
+        # частное «Rsd/SD, Rsd — СУММА ВСЕХ ЗНАЧЕНИЙ …, SD — количество дней»
+        # (Т2-CR-04/05/06). «в\s*течение» — в выгрузке Cbonds пробел часто теряется
+        # («втечение»), как и в других местах текста.
+        elif re.search(r"(?:средн\w*(?:\s*арифметическ\w*)?\s*значени\w*|"
+                       r"сумма\s*всех\s*значени\w*)"
+                       r"[^.;]{0,220}?в\s*течение\s+\d+\s*(?:\([^)]*\)\s*)?дн\w+"
+                       r"[^.;]{0,60}?предшествующ\w*\s*дат\w+\s*определени", tl):
+            out = {"mode": "avg_prev", "lag": 0, "lag_unit": "cal"}
         # без лага: «действующая на дату начала купонного периода»
         elif re.search(r"действующ\w*(\s+по\s+состоянию)?\s+на\s+дату\s+начала", tl):
             out = {"mode": "point", "lag": 0, "lag_unit": "cal"}
@@ -459,6 +494,23 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
     if spec.get("mode") == "point":
         fix = _obs_date(start, lag, unit)
         return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
+    if spec.get("mode") == "avg_prev":
+        # среднее индекса по ПРЕДЫДУЩЕМУ периоду со сдвигом lag назад от старта:
+        # окно [start − period − lag, start − lag), period = длина текущего периода.
+        # Ставка ПОЛНОСТЬЮ известна на старте (окно целиком в прошлом при start ≤
+        # calc+lag) — точная реконструкция конвенции «RUONIAср за T-(period+lag)..T-lag»
+        # (Русагро, ОФЗ-ПК Минфина, РСХБ). Без аппроксимации точечным фиксингом.
+        period = (end - start).days
+        w_hi = _obs_date(start, lag, unit)
+        w_lo = w_hi - timedelta(days=period)
+        tot, n, cur = 0.0, 0, w_lo
+        while cur < w_hi:
+            k = _rate_at(idx, cur) if _realized(idx, cur, calc_date) else fwd_pct(cur)
+            if k is not None:
+                tot += k
+                n += 1
+            cur += timedelta(days=1)
+        return (tot / n) if n else 0.0
     tot, n, cur = 0.0, 0, start
     while cur < end:
         obs = _obs_date(cur, lag, unit)

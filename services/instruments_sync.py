@@ -96,7 +96,11 @@ async def sync_instruments() -> dict:
                    "issue_date": mo.get("issue"), "face_value": _f(mo.get("face"))}
             if freq:
                 upd["coupons_per_year"] = int(freq)
-                upd["coupon_period_days"] = round(365 / freq)
+                # 365/freq — только фолбэк: не затираем период, уже посчитанный из
+                # фактического графика (discovery). upsert-COALESCE спасает от None,
+                # но НЕ от перезаписи известного значения новым числом.
+                if not (reg.get(isin) or {}).get("coupon_period_days"):
+                    upd["coupon_period_days"] = round(365 / freq)
             # база ОФЗ-ПК (Минфин, плавающий по RUONIA) по имени
             name = (mo.get("name") or "").upper()
             if _looks_ofz_pk(name, isin):
@@ -206,9 +210,18 @@ async def discover_floaters(listing: dict | None = None,
         reg.mark_discovery_seen(isin, is_fl)
         if is_fl:
             mo = listing[isin]
-            reg.upsert({"isin": isin, "short_name": mo.get("short_name"),
-                        "maturity_date": mo.get("maturity"), "face_value": mo.get("face")},
-                       source="moex", mark_new=True)
+            # купонный период — из ФАКТИЧЕСКОГО графика (два последних купона /
+            # размещение+первый), а не round(365/freq). Точнее для генерации
+            # форвард-графика без bondization и для display в Справочнике.
+            from core.cashflow import coupon_period_from_coupons
+            cpd = coupon_period_from_coupons(coupons, issue_date=mo.get("issue"),
+                                             today=date.today())
+            row = {"isin": isin, "short_name": mo.get("short_name"),
+                   "maturity_date": mo.get("maturity"), "face_value": mo.get("face")}
+            if cpd and cpd > 0:
+                row["coupon_period_days"] = cpd
+                row["coupons_per_year"] = max(1, round(365 / cpd))
+            reg.upsert(row, source="moex", mark_new=True)
             discovered += 1
         if delay:
             await asyncio.sleep(delay)

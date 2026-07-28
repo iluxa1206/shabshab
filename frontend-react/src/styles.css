@@ -470,12 +470,22 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 
 /* --- Плашка алертов в StatusBar + попап --- */
 .al-chip { position: relative; cursor: default; }
-.al-chip.fired { color: var(--down); font-weight: 700; animation: al-blink 1.1s steps(2, start) infinite; }
+.al-chip-lbl { display: inline-flex; align-items: center; }
+/* мигает только сам ярлык-счётчик; попап — отдельный слой, не мигает */
+.al-chip-lbl.fired { color: var(--down); font-weight: 700; animation: al-blink 1.1s steps(2, start) infinite; }
+/* при наведении (open) мигание глушим — читаемо */
+.al-chip.open .al-chip-lbl.fired { animation: none; }
 .al-chip-fired { color: var(--down); }
 @keyframes al-blink { 50% { opacity: 0.45; } }
-.al-pop { position: absolute; bottom: 100%; right: 0; margin-bottom: 6px; z-index: 210;
-  min-width: 320px; max-height: 320px; overflow-y: auto; background: var(--bg);
+/* невидимый мост от ярлыка до попапа — курсор не теряет ховер, нет мигания */
+.al-pop { position: absolute; bottom: 100%; left: 0; z-index: 210;
+  min-width: 460px; max-height: 340px; overflow-y: auto; background: var(--bg);
   border: 1px solid var(--fg); box-shadow: 0 -4px 16px rgba(0,0,0,.2); padding: 6px 0; }
+.al-pop::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 8px; }
+.al-pop-name { font: 11px var(--mono); font-weight: 700; min-width: 92px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.al-pop-m { font: 10px var(--mono); font-variant-numeric: tabular-nums; text-align: right;
+  min-width: 42px; color: var(--fg); }
 .al-pop-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); padding: 4px 12px 6px; }
 .al-pop-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 4px 12px; cursor: pointer; border-top: 1px solid var(--line); }
 .al-pop-row:hover { background: var(--line); }

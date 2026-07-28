@@ -61,7 +61,10 @@ class BondMarketData(BaseModel):
 # --- 5.3 BondValuation ---
 class BondValuation(BaseModel):
     clean_price_pct: float
-    dirty_price_rub: float
+    # Optional: guard'ы calculate_valuation_metrics (MATURED / NO_MATURITY /
+    # UNKNOWN_BASE) возвращают dirty=None. Пока поле было обязательным, такие
+    # бумаги роняли /reprice в 500 на сериализации ответа. Фронт null-safe.
+    dirty_price_rub: Optional[float] = None
     dm_bps: Optional[int]                       # = sm_bps (backward-compat)
     sm_bps: Optional[int] = None               # наш simple margin ≈ НРД simple_margin
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
@@ -86,11 +89,10 @@ class BondValuation(BaseModel):
     yield_to_offer_pct: Optional[float] = None       # XIRR к оферте
 
 
-# Ответ /reprice: BondValuation + цена-зависимые z_model/carry (для live-рефреша
+# Ответ /reprice: BondValuation + цена-зависимый z_model (для live-рефреша
 # всей строки таблицы по WS-тику, не только карточки-калькулятора)
 class RepriceResponse(BondValuation):
     z_model_bps: Optional[int] = None
-    carry_bps: Optional[int] = None
 
 # --- 5.4 CashflowItem ---
 class CashflowItem(BaseModel):
@@ -112,8 +114,6 @@ class FloaterRisk(BaseModel):
     days_to_refix: Optional[int] = None            # дней до следующей переустановки ставки
     current_coupon_pct: Optional[float] = None     # зафикс. ставка текущего купона, %
     base_rate_pct: Optional[float] = None          # текущий уровень базы (КС/RUONIA), %
-    carry_bps: Optional[int] = None                # купон-доходность − база, bps
-    breakeven_base_pct: Optional[float] = None     # уровень базы, где carry-эдж исчезает, %
     mod_duration: Optional[float] = None
     convexity: Optional[float] = None
     pvbp: Optional[float] = None
@@ -163,6 +163,7 @@ class BondListItem(BaseModel):
     last_price_pct: Optional[float]
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
+    val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
     delta_to_prev_close: Optional[float] = None # placeholder
     yield_xirr_pct: Optional[float] = None     # YTM бумаги (XIRR на проекции купонов по форварду), %
     index_yield_pct: Optional[float] = None    # YTM роллирования базы (КС/RUONIA) на тот же срок, %
@@ -173,9 +174,8 @@ class BondListItem(BaseModel):
     price_stale: bool = False                   # показана prev-close (нет live/сделки сегодня), не текущая
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ
     rating: Optional[str] = None
-    # флоатер-метрики (кросс-секция — по всему юниверсу; carry/refix — только watch)
+    # флоатер-метрики (кросс-секция — по всему юниверсу; refix — только watch)
     spread_dur_yrs: Optional[float] = None     # ≈ срок до погашения (лет) = spread duration
-    carry_bps: Optional[int] = None            # текущий купон-доходность − база, bps (watch)
     days_to_refix: Optional[int] = None        # дни до следующего рефиксинга (watch)
     current_coupon_pct: Optional[float] = None # зафикс. ставка текущего купона, % (watch)
     # оферта: подсказка, что показать первым. preferred_horizon="offer" → бумага
@@ -230,6 +230,9 @@ class CurveQuote(BaseModel):
     days: int            # срок до даты погашения тенора от start
     value_pct: float     # исходная par-котировка СПФИ (mid)
     name: str
+    implied_avg_pct: Optional[float] = None  # ср. ставка индекса на срок (spot из DF)
+    forward_pct: Optional[float] = None      # форвард на окне [пред.тенор, тенор]
+    fwd_span: Optional[str] = None           # подпись окна форварда, напр. "1W→2W"
 
 class CurveSample(BaseModel):
     days: int            # смещение от calc_date

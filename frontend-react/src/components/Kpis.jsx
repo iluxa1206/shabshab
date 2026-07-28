@@ -17,9 +17,6 @@ const quantile = (arr, q) => {
   return s[b + 1] !== undefined ? s[b] + rest * (s[b + 1] - s[b]) : s[b];
 };
 
-// carry: положительный = несём над базой = pos (зелёный)
-const carryCls = (v) => (v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "");
-
 export default function Kpis({ bonds }) {
   const k = useMemo(() => {
     // DM (discount margin, Fabozzi) — наш расчёт
@@ -31,9 +28,6 @@ export default function Kpis({ bonds }) {
     // разброс DM: межквартиль p25–p75, bps (ширина возможностей рынка)
     const dmP25 = dms.length ? Math.round(quantile(dms, 0.25)) : null;
     const dmP75 = dms.length ? Math.round(quantile(dms, 0.75)) : null;
-    // средний carry vs база по показанным бумагам, bps
-    const carries = bonds.map((x) => x.carry_bps).filter((v) => v != null);
-    const avgCarry = carries.length ? Math.round(carries.reduce((s, v) => s + v, 0) / carries.length) : null;
     // breadth: тон рынка за день по CHG (delta_to_prev_close, % от номинала)
     const deltas = bonds.map((x) => x.delta_to_prev_close).filter((v) => v != null);
     const up = deltas.filter((v) => v > 0).length;
@@ -41,7 +35,7 @@ export default function Kpis({ bonds }) {
     const medChg = deltas.length ? median(deltas) : null;
     return {
       count: bonds.length, avgDm, medDm, ru, kr,
-      dmP25, dmP75, hasDm: dms.length > 0, avgCarry, nCarry: carries.length,
+      dmP25, dmP75, hasDm: dms.length > 0,
       up, down, medChg, nChg: deltas.length,
     };
   }, [bonds]);
@@ -70,7 +64,6 @@ export default function Kpis({ bonds }) {
       {cell("MEDIAN DM", k.medDm, { unit: "BPS" })}
       {cell("AVG DM", k.avgDm, { unit: "BPS" })}
       {cell("DM РАЗБРОС", k.hasDm ? `${k.dmP25}–${k.dmP75}` : null, { unit: "P25–P75 BPS" })}
-      {cell("AVG CARRY", k.avgCarry == null ? null : sgn(k.avgCarry), { unit: "BPS", cls: carryCls(k.avgCarry), sub: k.nCarry ? `${k.nCarry} бумаг` : undefined })}
     </section>
   );
 }

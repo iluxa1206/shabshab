@@ -24,13 +24,14 @@ def test_shifted_period_working_days():
     assert r["mode"] == "average" and r["lag"] == 5 and r["lag_unit"] == "work"
 
 
-def test_fixed_lookback_window_to_midpoint_point():
-    # «за период Т-37 дня - Т-7 дня» — фикс. окно назад от старта; гладкий RUONIA
-    # ⇒ ≈ точечный фиксинг в середине окна, лаг (37+7)/2 = 22.
+def test_fixed_lookback_window_to_avg_prev():
+    # «за период Т-37 дня - Т-7 дня» — фикс. окно назад от старта → avg_prev
+    # (среднее по окну, лаг = ближний край). Раньше аппроксимировали
+    # midpoint-point — врал до 0.5пп (Русагро/РЖД).
     t = ("Ci = RUONIAсрi + S, где RUONIAсрi - среднее значение ставки RUONIA "
          "за период Т-37 дня - Т-7 дня; S = 1.8%.")
     r = P(t)
-    assert r["mode"] == "point" and r["lag"] == 22
+    assert r["mode"] == "avg_prev" and r["lag"] == 7 and r["lag_unit"] == "cal"
 
 
 def test_daily_reset_unchanged():
@@ -76,7 +77,7 @@ def test_retro_window_variant_ot_do():
     # «от (Ti-7 до Ti-37)» — та же ретро-конвенция, что «за период Т-37 - Т-7»
     t = "RUONIAсрi = (сумм RUONIAt) / 31 от (Ti-7 до t=Ti-37), где Ti - дата начала"
     r = P(t)
-    assert r["mode"] == "point" and r["lag"] == 22
+    assert r["mode"] == "avg_prev" and r["lag"] == 7 and r["lag_unit"] == "cal"
 
 
 def test_cap_procenta_without_percent_sign():

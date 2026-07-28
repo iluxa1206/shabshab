@@ -50,6 +50,21 @@ def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
     except Exception:
         pass
 
+    # Реестр напрямую: params() несёт реестровый слой ТОЛЬКО для manual_locked
+    # строк (coupon_overrides_all), а у обычной бумаги флага нет — и база уходила
+    # в "UNKNOWN" даже когда реестр её знает. Карточка/reprice бумаги вне
+    # isins_cache падали в UNKNOWN_BASE без метрик (ЕАБР П3-07).
+    if base in (None, "UNKNOWN") or spread == 0:
+        try:
+            from services import instruments_registry as _reg
+            row = _reg.get(isin) or {}
+            if base in (None, "UNKNOWN") and row.get("base") in ("RUONIA", "KEYRATE"):
+                base = row["base"]
+            if spread == 0 and row.get("margin_bps") is not None:
+                spread = int(row["margin_bps"])
+        except Exception:
+            pass
+
     issue = _to_date(mo.get("issue"))
     maturity = _to_date(mo.get("maturity"))
     cpy = round(365 / cp) if cp else 4
@@ -180,7 +195,27 @@ def create_bond_ref_data(data: dict, isin: str) -> BondRefData:
     formula = data.get("FORMULA", "")
     base_rate_str = data.get("BASE_RATE")
     base, spread_bps = parse_base_and_spread(formula, base_rate_str)
-    
+
+    # Кэш MOEX (isins_cache) часто не несёт разбираемой FORMULA/BASE_RATE — тогда
+    # база уходила в "UNKNOWN", хотя РЕЕСТР её знает (Cbonds/ручной слой). Итог:
+    # карточка/reprice роняли 500 «Unknown base rate type», а таблица молча
+    # выбрасывала бумагу из расчёта (ЕАБР П3-07, ГазКап3P21, МТС 2Р-16 и др.).
+    # Реестр здесь — авторитет того же уровня, что и для универса.
+    # ref_data.params() тут НЕ подходит: реестровый слой в нём — только строки с
+    # manual_locked=1 (coupon_overrides_all), а у обычной бумаги флага нет.
+    # Читаем строку реестра напрямую — тот же источник, что у универса.
+    if not base or base == "UNKNOWN":
+        try:
+            from services import instruments_registry as _reg
+            row = _reg.get(isin) or {}
+            reg_base = row.get("base")
+            if reg_base in ("RUONIA", "KEYRATE"):
+                base = reg_base
+                if not spread_bps and row.get("margin_bps") is not None:
+                    spread_bps = int(row["margin_bps"])
+        except Exception:
+            pass
+
     # Exact fallback from CLI for first coupon mapping
     step_months = 12 // (frequency or 4)
     from core.forwards import add_months

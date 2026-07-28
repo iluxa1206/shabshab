@@ -1,12 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { fmt, dmColor } from "../format.js";
+import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
 
 const D = () => <span className="dash">—</span>;
 
-// WS тикнул цену, но производные метрики (DM/SM/z/carry/dirty/CHG/Y-IDX) ещё
+// WS тикнул цену, но производные метрики (DM/SM/z/dirty/CHG/Y-IDX) ещё
 // от прошлого расчёта бэка → dim-класс, чтобы трейдер не читал их как актуальные.
 const ms = (b) => (b._mstale ? " mstale" : "");
 
@@ -36,23 +36,20 @@ export const COLS = [
       );
     } },
   { key: "base_rate_type", label: "BASE",
-    cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}>{b.base_rate_type}</span></td> },
+    cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}
+      title={b.base_rate_type}>{baseLabel(b.base_rate_type)}</span></td> },
   { key: "rating", label: "RATING",
     cell: (b) => <td className="rating-cell" key="rating">{b.rating || <D />}</td> },
   { key: "formula", label: "FORMULA", align: "left",
-    cell: (b) => <td className="left bond-formula" key="formula">{b.formula || "—"}</td> },
+    cell: (b) => <td className="left bond-formula" key="formula" title={b.formula || undefined}>
+      {shortFormula(b.formula) || "—"}</td> },
   { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num",
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT",
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   { key: "maturity_date", label: "MATURITY",
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
-  // ── портфель ──
-  { key: "qty", label: "ПОЗИЦИЯ", sub: "ШТ", align: "num", portfolio: true, sep: true,
-    cell: (b) => <td className="num col-sep" key="qty">{b.qty == null ? <D /> : fmt.num(b.qty, 0)}</td> },
-  { key: "pos_value", label: "СТОИМОСТЬ", sub: "RUB", align: "num", portfolio: true,
-    cell: (b) => <td className="num" key="pos_value">{b.pos_value == null ? <D /> : fmt.num(b.pos_value, 0)}</td> },
-  // ── НАША МОДЕЛЬ (цена → CHG → dirty → SM → DM → Z → carry → Y−IDX) ──
+  // ── НАША МОДЕЛЬ (цена → CHG → dirty → SM → DM → Z → Y−IDX) ──
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
     cell: (b) => <td className={"num col-sep" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
@@ -71,8 +68,6 @@ export const COLS = [
     cell: (b) => <td className={"num" + ms(b)} key="disc_margin_bps"><Chip value={b.disc_margin_bps} /></td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num",
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
-  { key: "carry_bps", label: "CARRY", sub: "vs БАЗА", align: "num",
-    cell: (b) => <td className={"num" + ms(b)} style={b.carry_bps != null ? dmColor(b.carry_bps) : undefined} key="carry_bps">{b.carry_bps == null ? <D /> : fmt.bps(b.carry_bps)}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
     cell: (b) => <td className={"num" + ms(b)} style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num",
@@ -82,8 +77,8 @@ export const COLS = [
 ];
 
 // метаданные для меню видимости (без cell-функций)
-export const COL_META = COLS.map(({ key, label, sub, portfolio }) => ({ key, label, sub, portfolio }));
-export const DEFAULT_COLS = COLS.filter((c) => !c.portfolio).map((c) => c.key); // портфельные скрыты по умолчанию
+export const COL_META = COLS.map(({ key, label, sub }) => ({ key, label, sub }));
+export const DEFAULT_COLS = COLS.map((c) => c.key);
 
 // memo: WS-тик цены пересобирает массив rows, но ссылки НЕИЗМЕНИВШИХСЯ бумаг
 // стабильны (App точечно клонирует только тикнувшую) — memo снимает ре-рендер

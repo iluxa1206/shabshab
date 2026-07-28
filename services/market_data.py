@@ -603,7 +603,7 @@ class MarketDataService:
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities.json",
                     params={"iss.only": "securities,marketdata",
                             "securities.columns": "SECID,ISIN,PREVPRICE,ACCRUEDINT,PREVDATE",
-                            "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE"},
+                            "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY"},
                     timeout=15)
             if resp is not None and resp.status_code == 200:
                 data = resp.json()
@@ -615,6 +615,7 @@ class MarketDataService:
                 mcols, mrows = md.get("columns", []), md.get("data", [])
                 mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
                 last_by_secid: Dict[str, float] = {}
+                vol_by_secid: Dict[str, float] = {}
                 for mr in mrows:
                     secid = mg(mr, "SECID")
                     if not secid:
@@ -626,6 +627,9 @@ class MarketDataService:
                         px = mg(mr, "WAPRICE")
                     if px is not None:
                         last_by_secid[secid] = float(px)
+                    vt = mg(mr, "VALTODAY")   # оборот сегодня, ₽
+                    if vt is not None:
+                        vol_by_secid[secid] = float(vt)
                 for row in rows:
                     isin = g(row, "ISIN")
                     if not isin:
@@ -636,6 +640,7 @@ class MarketDataService:
                         "accrued": float(acc) if acc is not None else None,
                         "prev_date": g(row, "PREVDATE"),
                         "last": last_by_secid.get(g(row, "SECID")),
+                        "vol": vol_by_secid.get(g(row, "SECID")),
                     }
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")

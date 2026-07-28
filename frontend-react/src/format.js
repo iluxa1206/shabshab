@@ -15,6 +15,16 @@ export const fmt = {
 export const DASH = "—";
 export const orDash = (s) => (s == null || s === "" ? DASH : s);
 
+// Короткие ярлыки базы для плотных мест (таблица, карточка): RU / КС.
+// Полные названия остаются только в поясняющих текстах и модуле кривых.
+export const baseLabel = (b) => (b === "RUONIA" ? "RU" : b === "KEYRATE" ? "КС" : b || DASH);
+
+// То же для готовой строки формулы с бэка («Ключевая ставка + 1,5%» → «КС + 1,5%»).
+// Сокращаем только на выводе: бэковый текст парсится (parse_base_and_spread ищет
+// «RUONIA»/«Ключевая ставка») — трогать его нельзя.
+export const shortFormula = (f) =>
+  f == null ? f : f.replace(/Ключевая ставка/gi, "КС").replace(/RUONIA/g, "RU");
+
 // Семантика для сканируемости: DM выше/положительный = дёшево (up), ниже = дорого (down).
 export function dmColor(dm) {
   if (dm == null) return { color: "var(--mut-2)" };

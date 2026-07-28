@@ -144,8 +144,12 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                 details.append((isin, "EXOTIC", r.get("formula_text")))
                 continue
             if base in ("KEYRATE", "RUONIA") and margin is not None:
+                # coupon_mode НЕ пишем: здешний вывод грубый (бинарное avg → point|
+                # average, без лага и без avg_prev), а в реестре он БЬЁТ парсер
+                # проспекта (ref_data.coupon_formula читает БД раньше парсера).
+                # Парсер валидирован на юниверсе — 0 расхождений режима на 419
+                # бумагах, median |err| 0.012пп; оставляем режим за ним.
                 fields = {"base": base, "margin_bps": margin,
-                          "coupon_mode": r.get("coupon_mode"),
                           "maturity_date": r.get("maturity_date"),
                           "face_value": r.get("face_value")}
                 if apply:

@@ -80,6 +80,19 @@ def calculate_valuation_metrics(
             "pricing_status": "MATURED", "warnings": ["Погашение ≤ T+1 — потоки покупателю не достаются"],
         }
 
+    # База не распознана (кэш без FORMULA и реестр молчит) — построить поток
+    # нечем. Раньше это долетало до build_cashflows_to_maturity и вылезало
+    # ValueError'ом «Unknown base rate type» → 500 на /reprice (флуд в логах от
+    # live-рефреша строки таблицы по WS-тику). Деградируем как MATURED/NO_MATURITY.
+    if bond.base not in ("RUONIA", "KEYRATE"):
+        return {
+            "clean_price_pct": price, "dirty_price_rub": None,
+            "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
+            "yield_xirr_pct": None, "index_yield_pct": None, "yield_over_index_bps": None,
+            "pricing_status": "UNKNOWN_BASE",
+            "warnings": [f"База ставки не определена ({bond.base}) — метрики флоатера не считаются"],
+        }
+
     # Перпы/суборды без даты погашения: поток не терминируется — флоатер-метрики
     # (SM/DM к погашению) не определены, выходим без крэша.
     if bond.maturity_date is None:
@@ -103,7 +116,7 @@ def calculate_valuation_metrics(
     # распарсилась / нет в Cbonds): SM/DM тогда занижены на всю маржу, молча.
     # Помечаем (не зануляем — иногда 0 реален для дисконт-маржа бумаг).
     if not bond.spread_issue_bps:
-        warnings.append("маржа выпуска не определена (0) — SM/DM/carry занижены на величину "
+        warnings.append("маржа выпуска не определена (0) — SM/DM занижены на величину "
                         "маржи; формула купона не распарсилась или бумаги нет в справочнике")
 
     index_pct_fn, hist_pairs = _index_provider(bond.base, warnings, calc_date)

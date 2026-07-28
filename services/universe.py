@@ -15,6 +15,7 @@ from services.bonds import (
 from services.valuation import calculate_valuation_metrics
 from services.zspread import compute_z_bps
 from services import metrics
+from services import instruments_registry
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +112,15 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
         except Exception as e:
             logger.warning(f"z_model error {isin}: {e}")
 
-    carry = refix = cur_cpn = None
+    refix = cur_cpn = None
     try:
         cpns = coupons_full or [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
                                 for (s, e, v) in periods]
         cb = metrics.carry_refix_block(cpns, amorts, ref.face_value, price_calc,
                                        exp, u.get("current_yield_pct"), calc_date)
-        carry, refix, cur_cpn = cb["carry_bps"], cb["days_to_refix"], cb["current_coupon_pct"]
+        refix, cur_cpn = cb["days_to_refix"], cb["current_coupon_pct"]
     except Exception as e:
-        logger.warning(f"carry block error {isin}: {e}")
+        logger.warning(f"refix block error {isin}: {e}")
 
     # тонкая цена: PREVDATE (дата последней цены MOEX) старше 4 дней → бумага не
     # торговалась, цена несвежая, DM/z с ненадёжной цены. Возраст PREVDATE, а не
@@ -132,7 +133,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             price_thin = False
     return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
-            "next_coupon": next_cpn, "z_model": z_model, "carry": carry,
+            "next_coupon": next_cpn, "z_model": z_model,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
             "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}
@@ -176,6 +177,27 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
+        out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
+
+    # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
+    # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках
+    # (fulls, day-кэш), без доп. сети. Пишем только при расхождении; manual-locked
+    # строки upsert не трогает (coupon_period_days ∈ _MANUAL_FIELDS).
+    try:
+        from core.cashflow import coupon_period_from_coupons
+        for isin in ids:
+            cps = (full_by.get(isin) or {}).get("coupons") or []
+            cpd = coupon_period_from_coupons(
+                cps, issue_date=uni_by[isin].get("issue_date"), today=calc_date)
+            if not cpd or cpd <= 0:
+                continue
+            cur = instruments_registry.get(isin) or {}
+            if cpd != cur.get("coupon_period_days"):
+                instruments_registry.upsert(
+                    {"isin": isin, "coupon_period_days": cpd},
+                    source="moex", mark_new=False)
+    except Exception as e:
+        logger.warning(f"coupon_period backfill error: {e}")
     return out
 
 

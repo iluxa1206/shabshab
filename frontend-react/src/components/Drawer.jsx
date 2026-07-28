@@ -1,66 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { fmt, dmColor } from "../format.js";
-import { fetchBondDetails, fetchFixedDetails, fetchFunds, putFundPosition, repriceBond, UnauthorizedError, cbondsUrl } from "../api.js";
-import { invalidateFund } from "../queries.js";
+import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
+import { fetchBondDetails, fetchFixedDetails, repriceBond, UnauthorizedError, cbondsUrl } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
-
-// Добавление бумаги в фонд прямо из карточки: select фонда + qty → PUT position.
-// Список фондов — из общего кэша ['funds'] (делится с модулем «Фонды»).
-function AddToFund({ isin }) {
-  const qc = useQueryClient();
-  const { data: funds } = useQuery({ queryKey: ["funds"], queryFn: fetchFunds });
-  const [code, setCode] = useState("");
-  const [qty, setQty] = useState("");
-  const [msg, setMsg] = useState(null); // {ok, text}
-
-  useEffect(() => {
-    if (!code && funds?.length) setCode(funds[0].code);
-  }, [funds, code]);
-
-  useEffect(() => { setMsg(null); setQty(""); }, [isin]);
-
-  const putMut = useMutation({
-    mutationFn: ({ fund, n }) => putFundPosition(fund, isin, n),
-    onSuccess: (_d, { fund, n }) => {
-      setMsg({ ok: true, text: `${fmt.num(n, 0)} шт → ${fund}` });
-      setQty("");
-      invalidateFund(qc, fund);
-    },
-    onError: (e) => { if (!(e instanceof UnauthorizedError)) setMsg({ ok: false, text: e.message }); },
-  });
-  const busy = putMut.isPending;
-
-  if (!funds || !funds.length) return null;
-
-  const submit = (e) => {
-    e.preventDefault();
-    const n = parseFloat(String(qty).replace(/\s/g, "").replace(",", "."));
-    if (!Number.isFinite(n) || n <= 0) { setMsg({ ok: false, text: "Количество?" }); return; }
-    setMsg(null);
-    putMut.mutate({ fund: code, n });
-  };
-
-  return (
-    <>
-      <div className="section-title">В фонд</div>
-      <form className="add-fund-row" onSubmit={submit}>
-        <select value={code} onChange={(e) => setCode(e.target.value)}>
-          {funds.map((f) => <option key={f.code} value={f.code}>{f.code}</option>)}
-        </select>
-        <input placeholder="Кол-во, шт" value={qty} onChange={(e) => setQty(e.target.value)} />
-        <button className="btn" type="submit" disabled={busy || !qty.trim()}>Добавить</button>
-        {msg && <span className={"admin-msg " + (msg.ok ? "admin-ok" : "admin-err")}>{msg.text}</span>}
-      </form>
-      <div className="fnote">Заменяет qty позиции в фонде (не суммирует).</div>
-    </>
-  );
-}
 
 function RefCell({ k, children }) {
   return (
@@ -72,11 +19,10 @@ function RefCell({ k, children }) {
 }
 
 // специфика флоатера: rate duration мала (до рефиксинга), spread duration = весь
-// кредитный риск до погашения; carry — платит ли бумага больше стоимости базы
+// кредитный риск до погашения
 function FloaterSection({ f, base }) {
   if (!f) return null;
-  const cc = f.carry_bps == null ? { color: "var(--mut-2)" } : dmColor(f.carry_bps);
-  const baseLbl = base === "RUONIA" ? "RUONIA" : "КС";
+  const baseLbl = baseLabel(base);
   return (
     <>
       <div className="section-title">Флоатер-риск</div>
@@ -91,24 +37,17 @@ function FloaterSection({ f, base }) {
           <div className="vc-val">{fmt.num(f.rate_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
           <div className="vc-sub">до рефиксинга {f.days_to_refix != null ? f.days_to_refix + " дн" : "—"}</div>
         </div>
-        <div className="vc">
-          <div className="vc-label">Carry vs {baseLbl}</div>
-          <div className="vc-val" style={{ color: cc.color }}>{fmt.bps(f.carry_bps) ?? "—"}<span className="vc-u"> bps</span></div>
-          <div className="vc-sub">купон-дох − база</div>
-        </div>
       </div>
       <div className="ref-grid">
         <RefCell k="Текущий купон">{f.current_coupon_pct != null ? fmt.pct(f.current_coupon_pct) + " %" : null}</RefCell>
         <RefCell k={`Уровень ${baseLbl}`}>{f.base_rate_pct != null ? fmt.pct(f.base_rate_pct) + " %" : null}</RefCell>
-        <RefCell k="Breakeven базы">{f.breakeven_base_pct != null ? fmt.pct(f.breakeven_base_pct) + " %" : null}</RefCell>
         <RefCell k="Mod dur (spread)">{fmt.num(f.mod_duration)}</RefCell>
         <RefCell k="Convexity">{fmt.num(f.convexity, 4)}</RefCell>
         <RefCell k="PVBP ₽/bp (spread)">{fmt.num(f.pvbp, 4)}</RefCell>
       </div>
       <div className="fnote">
-        Если {baseLbl} опустится ниже <b>{f.breakeven_base_pct != null ? fmt.pct(f.breakeven_base_pct) + "%" : "—"}</b>,
-        купон станет меньше текущей купонной доходности. Rate duration мала — цена устойчива
-        к параллельному сдвигу ставки; основной риск — spread duration ({fmt.num(f.spread_duration_yrs, 2) ?? "—"} лет) на изменение кредитного спреда.
+        Rate duration мала — цена устойчива к параллельному сдвигу ставки; основной риск —
+        spread duration ({fmt.num(f.spread_duration_yrs, 2) ?? "—"} лет) на изменение кредитного спреда.
       </div>
     </>
   );
@@ -239,8 +178,8 @@ function Content({ d }) {
       <div className="ref-grid">
         <RefCell k="Эмитент / имя">{r.short_name}</RefCell>
         <RefCell k="ISIN">{r.isin}</RefCell>
-        <RefCell k="База">{r.base_rate_type}</RefCell>
-        <RefCell k="Формула купона">{r.formula}</RefCell>
+        <RefCell k="База">{baseLabel(r.base_rate_type)}</RefCell>
+        <RefCell k="Формула купона">{shortFormula(r.formula)}</RefCell>
         <RefCell k="Спред выпуска">{r.spread_bps != null ? "+" + r.spread_bps + " bps" : null}</RefCell>
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>
         <RefCell k="Размещение">{fmt.date(r.start_date)}</RefCell>
@@ -251,8 +190,6 @@ function Content({ d }) {
         <RefCell k="НКД">{fmt.num(r.accrued_interest) + " ₽"}</RefCell>
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
-
-      <AddToFund isin={r.isin} />
 
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={r.isin} />

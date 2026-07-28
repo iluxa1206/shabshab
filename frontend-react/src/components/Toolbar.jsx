@@ -1,4 +1,3 @@
-import { useRef } from "react";
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import IssuerFilter from "./IssuerFilter.jsx";
 
@@ -15,20 +14,8 @@ export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
   issuers, emittersSel, toggleEmitter, clearEmitters,
   query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
-  onImportCsv, posCount, onClearPositions,
   visibleCols, onToggleCol, onResetCols,
 }) {
-  const fileRef = useRef(null);
-
-  const onFile = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => onImportCsv(String(reader.result || ""));
-    reader.readAsText(f);
-    e.target.value = ""; // сброс — чтобы повторный выбор того же файла сработал
-  };
-
   return (
     <section className="toolbar">
       <span className="search-wrap">
@@ -82,18 +69,8 @@ export default function Toolbar({
         </button>
       </div>
 
-      {/* группа: портфель — импорт CSV + столбцы */}
+      {/* группа: столбцы */}
       <div className="fgroup">
-        <input ref={fileRef} type="file" accept=".csv,text/csv,text/plain" hidden onChange={onFile} />
-        <button className="chip-btn" onClick={() => fileRef.current?.click()}
-          title="Импорт CSV: строки вида ISIN,количество">
-          ⭱ ИМПОРТ CSV
-        </button>
-        {posCount > 0 && (
-          <button className="chip-btn" onClick={onClearPositions} title="Очистить позиции портфеля">
-            портфель {posCount} ×
-          </button>
-        )}
         <ColumnsMenu visibleCols={visibleCols} onToggle={onToggleCol} onReset={onResetCols} />
       </div>
 

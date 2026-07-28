@@ -19,7 +19,6 @@ import FixedModule from "./components/FixedModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
-import { parsePortfolioCsv } from "./portfolio.js";
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -46,11 +45,7 @@ function Dashboard() {
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch") || "[]"); } catch { return []; }
   });
-  // портфельные позиции {isin: qty} из CSV-импорта
-  const [positions, setPositions] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("positions") || "{}"); } catch { return {}; }
-  });
-  // видимые столбцы таблицы (persist); дефолт — без портфельных
+  // видимые столбцы таблицы (persist)
   const [visibleCols, setVisibleCols] = useState(() => {
     try {
       const s = JSON.parse(localStorage.getItem("cols") || "null");
@@ -61,7 +56,6 @@ function Dashboard() {
 
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
-  useEffect(() => { localStorage.setItem("positions", JSON.stringify(positions)); }, [positions]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
 
   // стабильная ссылка (не inline-стрелка) — иначе memo(BondRow) бесполезен
@@ -71,18 +65,6 @@ function Dashboard() {
   const toggleCol = useCallback((key) => setVisibleCols((cs) =>
     cs.includes(key) ? cs.filter((k) => k !== key) : [...cs, key]), []);
   const resetCols = useCallback(() => setVisibleCols(DEFAULT_COLS), []);
-
-  // Импорт CSV: добавляем ISIN в watchlist, сохраняем позиции, включаем портфельные колонки.
-  const importCsv = useCallback((text) => {
-    const { positions: pos, isins, errors } = parsePortfolioCsv(text);
-    if (!isins.length) { alert("В файле не найдено строк ISIN,количество" + (errors.length ? "\n" + errors.join("\n") : "")); return; }
-    setPositions((prev) => ({ ...prev, ...pos }));
-    setWatch((w) => [...w, ...isins.filter((x) => !w.includes(x))]);
-    setVisibleCols((cs) => [...new Set([...cs, "qty", "pos_value"])]);
-    if (errors.length) alert(`Импортировано ${isins.length}. Пропущено:\n${errors.join("\n")}`);
-  }, []);
-
-  const clearPositions = useCallback(() => setPositions({}), []);
 
   const bondsRef = useRef(bonds);
   bondsRef.current = bonds;
@@ -126,7 +108,7 @@ function Dashboard() {
   }, [watch, loadBonds]);
 
   // debounced live-пересчёт производных строки под новую цену (WS тикает только
-  // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model/carry под введённой ценой.
+  // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model под введённой ценой.
   const repriceTimers = useRef({});
   const scheduleReprice = useCallback((isin, price) => {
     const t = repriceTimers.current;
@@ -145,7 +127,6 @@ function Dashboard() {
               dm_bps: r.dm_bps ?? b.dm_bps,
               disc_margin_bps: r.disc_margin_bps ?? b.disc_margin_bps,
               z_model_bps: r.z_model_bps ?? b.z_model_bps,
-              carry_bps: r.carry_bps ?? b.carry_bps,   // не стираем при транзиентном None
               yield_over_index_bps: r.yield_over_index_bps ?? b.yield_over_index_bps,
               yield_xirr_pct: r.yield_xirr_pct ?? b.yield_xirr_pct,
               index_yield_pct: r.index_yield_pct ?? b.index_yield_pct,
@@ -173,7 +154,7 @@ function Dashboard() {
               const prevClose = b.last_price_pct - delta;
               delta = Math.round((price - prevClose) * 10000) / 10000;
             }
-            // DM/SM/z/carry/dirty/Y-IDX — от прошлого расчёта → dim до reprice
+            // DM/SM/z/dirty/Y-IDX — от прошлого расчёта → dim до reprice
             return { ...b, last_price_pct: price, delta_to_prev_close: delta, _mstale: true };
           })
         );
@@ -195,13 +176,7 @@ function Dashboard() {
     const ratingMatch = (r) => ratingsSel.some((k) =>
       k === "NR" ? !r : k === "BELOW" ? (r && ORDER.indexOf(r) > ORDER.indexOf("BBB")) : k === r
     );
-    // портфельные поля: qty из позиций, стоимость = qty × dirty price (RUB)
-    let rows = bonds.map((b) => {
-      const qty = positions[b.isin];
-      if (qty == null) return b;
-      const pos_value = b.dirty_price_rub != null ? qty * b.dirty_price_rub : null;
-      return { ...b, qty, pos_value };
-    });
+    let rows = bonds.slice();
     if (onlyWatch) rows = rows.filter((b) => watch.includes(b.isin));
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
     if (ratingsSel.length) rows = rows.filter((b) => ratingMatch(b.rating));
@@ -223,7 +198,7 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, query, sort, watch, positions]);
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, query, sort, watch]);
 
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
@@ -279,8 +254,6 @@ function Dashboard() {
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
         showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
-        onImportCsv={importCsv}
-        posCount={Object.keys(positions).length} onClearPositions={clearPositions}
         visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
       />
       {showAnalytics && <AnalyticsPanel rows={filtered} />}
@@ -323,7 +296,7 @@ function Dashboard() {
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") === "1"} onClose={closeDrawer} />
-      <StatusBar count={bonds.length} live={live} sources={meta.source_status}
+      <StatusBar count={bonds.length} bonds={bonds} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
       <AlertsWatcher />

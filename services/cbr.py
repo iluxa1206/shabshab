@@ -37,7 +37,10 @@ _RUONIA_URL = "https://cbr.ru/hd_base/ruonia/"
 # отдаёт полную дневную историю обычной таблицей [дата, ставка, ...]. Закрывает
 # разрыв между статическим RC_F и live-текущей БЕЗ ручного обновления RC_F.
 _RUONIA_DYN_URL = "https://www.cbr.ru/hd_base/ruonia/dynamics/"
-_RUONIA_DYN_DAYS = 220   # окно live-истории (перекрывает типичный лаг RC_F с запасом)
+_RUONIA_DYN_DAYS = 220   # МИНИМАЛЬНОЕ окно live-истории; фактическое окно адаптивно
+                         # растягивается до конца сида (см. _dyn_window_days)
+_RUONIA_DYN_CAP = 900    # верхняя граница окна (~2.5 года): если сид старше — это
+                         # сигнал регенерировать ruonia_seed.json, а не тянуть бесконечно
 
 
 def _num(s: str) -> Optional[float]:
@@ -173,6 +176,39 @@ _mem = {"date": None, "ks": None, "ruonia": None}
 _refresh_lock = threading.Lock()
 
 
+def _dyn_window_days(seed: List[Tuple[date, float]]) -> int:
+    """Сколько дней истории RUONIA тянуть из /dynamics/: минимум _RUONIA_DYN_DAYS,
+    но не меньше, чем нужно чтобы ПЕРЕКРЫТЬ конец сида (+30д запаса на праздники/лаг).
+    Кап _RUONIA_DYN_CAP: если сид старше капа — дыру всё равно не закрыть онлайн,
+    _warn_on_gap отметит её как сигнал регенерировать сид."""
+    if not seed:
+        return _RUONIA_DYN_CAP
+    need = (date.today() - seed[-1][0]).days + 30
+    return max(_RUONIA_DYN_DAYS, min(need, _RUONIA_DYN_CAP))
+
+
+def _warn_on_gap(ruonia: List[Tuple[date, float]]) -> None:
+    """Лог, если в истории RUONIA остался разрыв >7 дней вне новогодних каникул
+    (последние 400 дней). Такой разрыв → carry-forward стейл-ставки в окна фиксинга
+    → врут купоны/DM флоатеров (аудит Росагрл1Р5). Молчать нельзя."""
+    if len(ruonia) < 2:
+        return
+    horizon = date.today() - _dt.timedelta(days=400)
+    prev = None
+    for d, _ in ruonia:
+        if d < horizon:
+            prev = d
+            continue
+        if prev is not None:
+            gap = (d - prev).days
+            # новогодние каникулы (конец дек → ~9 янв) — легитимный разрыв
+            ny = prev.month == 12 and prev.day >= 25 and d.month == 1
+            if gap > 7 and not ny:
+                logger.warning("RUONIA history gap %s→%s (%dd) — окно фиксинга "
+                               "сядет на стейл-ставку; проверь сид/dynamics", prev, d, gap)
+        prev = d
+
+
 def _refresh() -> None:
     """Наполняет память: КС (live→cache), RUONIA (seed + live current).
 
@@ -190,6 +226,7 @@ def _refresh_locked(today: str) -> None:
     if _mem["date"] == today and _mem["ks"] is not None:   # re-check под локом
         return
     cache = _load_cache()
+    seed = _load_seed()
     ks: List[Tuple[date, float]] = []
     ruonia_live: List[Tuple[date, float]] = []
     try:
@@ -197,8 +234,11 @@ def _refresh_locked(today: str) -> None:
     except Exception as e:
         logger.warning(f"WARNING: CBR KeyRate fetch failed ({e}) — фолбэк на кэш")
     try:
-        # /dynamics/ — полное окно (закрывает разрыв RC_F↔сегодня живьём)
-        ruonia_live = _fetch_ruonia_dynamics()
+        # /dynamics/ — окно тянем адаптивно ДО КОНЦА СИДА (+буфер), а не фикс. 220д:
+        # RC_F-мост мог устареть/отсутствовать, тогда 220д оставляли многомесячную
+        # дыру seed_end↔live, и _rate_at тянул стейл-ставку вперёд (аудит Росагрл1Р5:
+        # окно фиксинга садилось на замороженное значение → купоны/DM врали).
+        ruonia_live = _fetch_ruonia_dynamics(_dyn_window_days(seed))
     except Exception as e:
         logger.warning(f"WARNING: CBR RUONIA dynamics fetch failed ({e}) — фолбэк на /ruonia/")
         try:
@@ -218,12 +258,13 @@ def _refresh_locked(today: str) -> None:
 
     # RUONIA = сид (2010→) + выгрузка ЦБ RC_F (2024→, авторитетно) + live current,
     # мёрж по дате с возрастающим приоритетом (live > RC > сид) — разрыв закрыт
-    merged = {d: v for d, v in _load_seed()}
+    merged = {d: v for d, v in seed}
     for d, v in _load_rc_ruonia():
         merged[d] = v
     for d, v in ruonia_live:
         merged[d] = v
     ruonia = sorted(merged.items())
+    _warn_on_gap(ruonia)
 
     _mem.update({"date": today, "ks": ks, "ruonia": ruonia})
 

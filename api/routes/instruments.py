@@ -49,7 +49,7 @@ class InstrumentParams(BaseModel):
     face_value: Optional[float] = Field(None, gt=0)
     fixing_lag: Optional[int] = Field(None, ge=0, le=30)
     fixing_lag_unit: Optional[str] = Field(None, description="cal | work")
-    coupon_mode: Optional[str] = Field(None, description="point | average")
+    coupon_mode: Optional[str] = Field(None, description="point | average | avg_prev")
     short_name: Optional[str] = Field(None, max_length=128)
     var_type: Optional[str] = None
     cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")
@@ -160,8 +160,8 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
         if params.get("base") and params["base"] not in ("KEYRATE", "RUONIA", "FIXED"):
             errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED")
             continue
-        if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average"):
-            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ point|average")
+        if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev"):
+            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ point|average|avg_prev")
             continue
         if params.get("fixing_lag_unit") and params["fixing_lag_unit"] not in ("cal", "work"):
             errors.append(f"строка {rn} ({isin}): fixing_lag_unit ∈ cal|work")
