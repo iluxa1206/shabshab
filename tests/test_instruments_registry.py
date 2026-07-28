@@ -278,3 +278,30 @@ def test_non_fixed_isins_skips_inactive(reg):
     reg.upsert({"isin": "RU_DEAD", "base": "KEYRATE", "maturity_date": "2020-01-01"}, "moex")
     reg.retire_matured("2026-01-01")
     assert "RU_DEAD" not in reg.non_fixed_isins()
+
+
+def test_enrich_pending_rotation_and_ttl(reg):
+    # никогда не пробованные — первыми, в исходном порядке
+    assert reg.enrich_pending(["A", "B", "C"], 2) == ["A", "B"]
+    # свежая попытка (внутри TTL) — пропускается, хвост очереди достигается
+    reg.mark_enrich_attempt("A", "not_found")
+    assert reg.enrich_pending(["A", "B", "C"], 2) == ["B", "C"]
+    # протухшая попытка — возвращается в очередь ПОСЛЕ никогда не пробованных
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+    with sqlite3.connect(str(reg.DB_PATH)) as c:
+        c.execute("UPDATE enrich_seen SET attempted_at=? WHERE isin='A'", (old,))
+    assert reg.enrich_pending(["A", "B", "C"], 3) == ["B", "C", "A"]
+
+
+def test_enrich_pending_ttl_per_result(reg):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    reg.mark_enrich_attempt("EXO", "exotic")       # TTL 30 дн
+    reg.mark_enrich_attempt("NF", "not_found")     # TTL 14 дн
+    d20 = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+    with sqlite3.connect(str(reg.DB_PATH)) as c:
+        c.execute("UPDATE enrich_seen SET attempted_at=?", (d20,))
+    # 20 дней: not_found уже перечекивается, exotic ещё нет
+    assert reg.enrich_pending(["EXO", "NF"], 5) == ["NF"]

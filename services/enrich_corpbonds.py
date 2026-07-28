@@ -133,6 +133,8 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
             await asyncio.sleep(delay)
             if r is None:
                 stats["not_found"] += 1
+                if apply:
+                    reg.mark_enrich_attempt(isin, "not_found")
                 continue
             stats["fetched"] += 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
@@ -140,9 +142,15 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
             if exotic == "inverse" or (r.get("is_floater") and base is None):
                 if apply:
                     reg.set_exotic(isin)
+                    reg.mark_enrich_attempt(isin, "exotic")
                 stats["exotic"] += 1
                 details.append((isin, "EXOTIC", r.get("formula_text")))
                 continue
+            if apply:
+                # страница есть, но база/маржа не извлеклись → nodata (перечек по TTL)
+                reg.mark_enrich_attempt(
+                    isin, "filled" if base in ("KEYRATE", "RUONIA") and margin is not None
+                    else "nodata")
             if base in ("KEYRATE", "RUONIA") and margin is not None:
                 # coupon_mode НЕ пишем: здешний вывод грубый (бинарное avg → point|
                 # average, без лага и без avg_prev), а в реестре он БЬЁТ парсер

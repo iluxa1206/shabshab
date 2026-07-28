@@ -69,7 +69,7 @@ export default function StatusPage() {
                 ].map(([label, q]) => (
                   <tr key={label}>
                     <td>{label}</td>
-                    <td><b>{fmt.num(q.n, 0)}</b>{q.oldest_days != null && <span className="st-data-hint"> · голове {q.oldest_days} дн</span>}</td>
+                    <td><b>{fmt.num(q.n, 0)}</b>{q.never_tried != null && <span className="st-data-hint"> · не пробовано {q.never_tried}</span>}{q.oldest_days != null && <span className="st-data-hint"> · голове {q.oldest_days} дн</span>}</td>
                   </tr>
                 ))}
               </tbody>

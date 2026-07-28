@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS discovery_seen(
   is_floater  INTEGER,           -- 1 = флоатер (добавлен в instruments), 0 = фикс/прочее
   checked_at  TEXT
 );
+CREATE TABLE IF NOT EXISTS enrich_seen(
+  isin          TEXT PRIMARY KEY,
+  result        TEXT,            -- not_found | nodata | exotic | filled
+  attempted_at  TEXT
+);
 """
 
 # ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
@@ -604,6 +609,52 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
                   "VALUES(?,?,?)", (isin, val, _now()))
 
 
+# TTL перепопытки corpbonds-обогащения по исходу прошлой попытки (дни).
+# not_found/nodata — corpbonds доливает свежие выпуски со временем, перечекиваем;
+# exotic — вердикт парсера детерминирован, перечек редкий (до версионирования
+# парсера); filled — бумага уходит из очередей сама, короткий guard от зацикла.
+_ENRICH_TTL_DAYS = {"not_found": 14, "nodata": 14, "exotic": 30, "filled": 7}
+
+
+def mark_enrich_attempt(isin: str, result: str) -> None:
+    """Записать исход corpbonds-попытки в negative-кэш enrich_seen. Без него
+    очередь голодала: fromkeys()[:cap] каждый день дёргал одни и те же первые
+    60 ISIN (стабильный rowid-порядок), и бумаги, которых нет на corpbonds,
+    вечно блокировали хвост (355 incomplete при cap 60 = хвост недостижим)."""
+    _ensure()
+    isin = (isin or "").strip()
+    if not isin:
+        return
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO enrich_seen(isin, result, attempted_at) "
+                  "VALUES(?,?,?)", (isin, result, _now()))
+
+
+def enrich_pending(candidates: list[str], limit: int) -> list[str]:
+    """Из candidates — до limit ISIN на corpbonds-обогащение. Ротация: никогда
+    не пробованные — первыми, затем по возрасту прошлой попытки (старейшие
+    вперёд); свежие попытки (внутри TTL по исходу) пропускаются. Каждый прогон
+    двигается по хвосту очереди, а не топчет голову."""
+    _ensure()
+    if not candidates:
+        return []
+    now = datetime.now(timezone.utc)
+    with _conn() as c:
+        seen = {r["isin"]: r for r in c.execute("SELECT * FROM enrich_seen")}
+
+    def _fresh(r) -> bool:
+        ttl = _ENRICH_TTL_DAYS.get(r["result"], 14)
+        try:
+            return (now - datetime.fromisoformat(r["attempted_at"])).days < ttl
+        except (ValueError, TypeError):
+            return False
+
+    never = [i for i in candidates if i not in seen]
+    retry = sorted((i for i in candidates if i in seen and not _fresh(seen[i])),
+                   key=lambda i: seen[i]["attempted_at"])
+    return (never + retry)[:limit]
+
+
 def non_fixed_isins() -> set[str]:
     """ISIN, которые НЕЛЬЗЯ считать фикс-бумагами (исключение для вкладки ФИКСЫ):
     все активные записи реестра, кроме подтверждённых base='FIXED' — base NULL
@@ -639,8 +690,9 @@ def queue_stats() -> dict:
 
     with _conn() as c:
         rows = c.execute(
-            "SELECT base, margin_bps, maturity_date, updated_at, reviewed, "
+            "SELECT isin, base, margin_bps, maturity_date, updated_at, reviewed, "
             "margin_check_pp, manual_locked FROM instruments WHERE active=1").fetchall()
+        enrich_seen = {r["isin"] for r in c.execute("SELECT isin FROM enrich_seen")}
     incomplete = [r for r in rows
                   if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
     suspect = [r for r in rows if r["margin_check_pp"] is not None
@@ -653,7 +705,10 @@ def queue_stats() -> dict:
         return max(ages) if ages else None
 
     return {
-        "incomplete": {"n": len(incomplete), "oldest_days": _oldest(incomplete)},
+        # never_tried: сколько из очереди ещё ни разу не ходило в corpbonds —
+        # честный индикатор сходимости (updated_at бампается листинг-рефрешем)
+        "incomplete": {"n": len(incomplete), "oldest_days": _oldest(incomplete),
+                       "never_tried": sum(1 for r in incomplete if r["isin"] not in enrich_seen)},
         "suspect": {"n": len(suspect), "oldest_days": _oldest(suspect)},
         "exotic": {"n": len(exotic), "oldest_days": _oldest(exotic)},
         "unreviewed": {"n": len(unreviewed), "oldest_days": _oldest(unreviewed)},

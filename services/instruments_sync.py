@@ -129,10 +129,16 @@ async def sync_instruments() -> dict:
     try:
         from services.enrich_corpbonds import enrich_registry
         # incomplete (нет base/margin) + suspect (маржа расходится) + EXOTIC
-        # (перепроверка: детект экзотики раньше ошибался, напр. Σ-приклеенная база)
-        targets = ([r["isin"] for r in reg.list_incomplete()]
-                   + [s["isin"] for s in reg.list_suspect()]
-                   + [e["isin"] for e in reg.list_exotic()])
+        # (перепроверка: детект экзотики раньше ошибался, напр. Σ-приклеенная база).
+        # Квоты на класс + negative-кэш (enrich_pending): без них общий срез [:cap]
+        # голодал — incomplete (355) вытеснял suspect/exotic за край, а стабильный
+        # порядок дёргал одни и те же первые 60 каждый день.
+        targets = (reg.enrich_pending([r["isin"] for r in reg.list_incomplete()],
+                                      _CORPBONDS_QUOTA_INCOMPLETE)
+                   + reg.enrich_pending([s["isin"] for s in reg.list_suspect()],
+                                        _CORPBONDS_QUOTA_SUSPECT)
+                   + reg.enrich_pending([e["isin"] for e in reg.list_exotic()],
+                                        _CORPBONDS_QUOTA_EXOTIC))
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
@@ -154,6 +160,11 @@ async def sync_instruments() -> dict:
 
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
 _MAX_CORPBONDS_PER_RUN = 60   # запросов к corpbonds.ru за прогон (внешний сайт)
+# квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
+# большой incomplete не вытеснял suspect/exotic за срез
+_CORPBONDS_QUOTA_INCOMPLETE = 40
+_CORPBONDS_QUOTA_SUSPECT = 10
+_CORPBONDS_QUOTA_EXOTIC = 10
 
 
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
