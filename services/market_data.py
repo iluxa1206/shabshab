@@ -298,13 +298,32 @@ class MarketDataService:
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             cls._full_mem = {}
 
+    _full_last_flush = 0.0
+    _full_dirty = False
+
     @classmethod
-    def _save_full_disk(cls) -> None:
+    def _save_full_disk(cls, force: bool = False) -> None:
+        """Дебаунс-флаш дневного кэша расписаний. Раньше писали ВЕСЬ файл (7+ МБ)
+        после каждой бумаги: прогрев ~500 бумаг = O(n²), ~1.5-2 ГБ записи в день.
+        Теперь помечаем dirty и пишем не чаще раза в 60с; force — финальный флаш
+        в конце батча (прогрев юниверса/дискавери), чтобы хвост не потерялся."""
+        cls._full_dirty = True
+        now = time.time()
+        if not force and now - cls._full_last_flush < 60:
+            return
         try:
             atomic_write_json(SCHEDULE_FULL_CACHE_FILE,
                               {"date": cls._full_mem_date, "version": 2, "items": cls._full_mem})
+            cls._full_last_flush = now
+            cls._full_dirty = False
         except OSError:
             pass
+
+    @classmethod
+    def flush_schedule_cache(cls) -> None:
+        """Финальный флаш кэша расписаний, если есть несохранённое (конец батча)."""
+        if cls._full_dirty:
+            cls._save_full_disk(force=True)
 
     @classmethod
     async def fetch_bond_schedule_full(cls, isin: str) -> dict:

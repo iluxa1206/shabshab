@@ -119,10 +119,14 @@ _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "cap_pct", "floor_pct", "coupon_text")
 
 
-def upsert(row: dict, source: str, mark_new: bool = True) -> str:
+def upsert(row: dict, source: str, mark_new: bool = True,
+           keep_source: bool = False) -> str:
     """Вставить/обновить одну бумагу. Возвращает 'new' | 'updated' | 'skipped_locked'.
     У записи с manual_locked=1 обновляются только НЕ-manual поля (rating и т.п.).
-    None-значения во входе НЕ затирают уже известные (COALESCE-семантика)."""
+    None-значения во входе НЕ затирают уже известные (COALESCE-семантика).
+    keep_source=True — служебный рефреш (maturity/name/бэкфилл): не переписывать
+    source, он отвечает «кто дал расчётные параметры» (провенанс для разбора
+    неверной маржи), а не «кто трогал строку последним»."""
     _ensure()
     isin = (row.get("isin") or "").strip()
     if not isin:
@@ -151,8 +155,8 @@ def upsert(row: dict, source: str, mark_new: bool = True) -> str:
             return "skipped_locked"
         sets.append("updated_at=?")
         vals.append(now)
-        # source обновляем только если не ручная запись
-        if not locked:
+        # source обновляем только если не ручная запись и не служебный рефреш
+        if not locked and not keep_source:
             sets.append("source=?")
             vals.append(source)
         vals.append(isin)
@@ -566,25 +570,34 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
 # Пере-проверка ISIN без bondization-данных (is_floater IS NULL): свежий выпуск
 # мог не иметь опубликованного графика в момент первой проверки — даём шанс позже.
 _DISCOVERY_NULL_TTL_DAYS = 1
+# Вердикт «фикс» (is_floater=0) тоже перечекиваем, но редко: у свежего выпуска
+# на момент 1-й проверки MOEX мог ещё не опубликовать будущие незафиксированные
+# периоды → флоатер навсегда застревал как «фикс» (тихий отказ: бумаги просто
+# нет в дашборде). 3446 кандидатов / 90 дн — копеечная перепроверка.
+_DISCOVERY_FIXED_TTL_DAYS = 90
 
 
 def discovery_pending(candidates: list[str], limit: int) -> list[str]:
     """Из candidates — ISIN, которых нет НИ в реестре инструментов, НИ в negative-
-    кэше discovery_seen со ЗНАЧИМЫМ результатом. Порядок candidates сохраняется
-    (приоритет вероятных флоатеров). Гарантирует прогресс: решённые (флоатер/фикс)
-    не перечекиваются; «нет данных» (is_floater IS NULL) перечекиваются лишь спустя
-    _DISCOVERY_NULL_TTL_DAYS (свежий выпуск мог не иметь bondization при 1-й проверке).
-    Без этого структурные ноты без графика (СберCIB/Румберг) забивали бы cap вечно."""
+    кэше discovery_seen со СВЕЖИМ результатом. Порядок candidates сохраняется
+    (приоритет вероятных флоатеров). Гарантирует прогресс: «флоатер» (=1, уже в
+    instruments) не перечекивается; «фикс» (=0) перечекивается спустя
+    _DISCOVERY_FIXED_TTL_DAYS (у свежего выпуска мог не быть незафикс. периодов);
+    «нет данных» (NULL) — спустя _DISCOVERY_NULL_TTL_DAYS (bondization появляется).
+    Без negative-кэша структурные ноты без графика забивали бы cap вечно."""
     _ensure()
     if not candidates:
         return []
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_DISCOVERY_NULL_TTL_DAYS)).isoformat()
+    now = datetime.now(timezone.utc)
+    cutoff_null = (now - timedelta(days=_DISCOVERY_NULL_TTL_DAYS)).isoformat()
+    cutoff_fixed = (now - timedelta(days=_DISCOVERY_FIXED_TTL_DAYS)).isoformat()
     with _conn() as c:
         known = {r[0] for r in c.execute("SELECT isin FROM instruments")}
-        # skip: решённые (is_floater IS NOT NULL) + свежие «нет данных» (NULL, checked_at>=cutoff)
         skip = {r[0] for r in c.execute(
-            "SELECT isin FROM discovery_seen "
-            "WHERE is_floater IS NOT NULL OR checked_at >= ?", (cutoff,))}
+            "SELECT isin FROM discovery_seen WHERE is_floater=1 "
+            "OR (is_floater=0 AND checked_at >= ?) "
+            "OR (is_floater IS NULL AND checked_at >= ?)",
+            (cutoff_fixed, cutoff_null))}
     out: list[str] = []
     for i in candidates:
         if i in known or i in skip:

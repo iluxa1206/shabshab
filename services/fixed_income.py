@@ -369,6 +369,7 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
     fulls = await asyncio.gather(
         *(MarketDataService.fetch_bond_schedule_full(u.get("secid") or u["isin"]) for u in universe),
         return_exceptions=True)
+    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
     out: Dict[str, dict] = {}
     for u, full in zip(universe, fulls):
         if isinstance(full, Exception):

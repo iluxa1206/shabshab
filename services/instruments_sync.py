@@ -71,7 +71,9 @@ async def sync_instruments() -> dict:
         upd = {"isin": isin, "maturity_date": mo.get("maturity"),
                "short_name": mo.get("short_name"), "face_value": mo.get("face")}
         if any(v is not None for k, v in upd.items() if k != "isin"):
-            reg.upsert(upd, source="moex", mark_new=False)
+            # keep_source: дневной рефреш maturity/name НЕ провенанс параметров —
+            # иначе все cbonds-строки за день «становились» moex
+            reg.upsert(upd, source="moex", mark_new=False, keep_source=True)
     # новые флоатеры: bondization-дискавери с negative-кэшем (см. discover_floaters).
     discovered = await discover_floaters(listing, reg=reg)
 
@@ -239,6 +241,7 @@ async def discover_floaters(listing: dict | None = None,
             discovered += 1
         if delay:
             await asyncio.sleep(delay)
+    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
     return discovered
 
 

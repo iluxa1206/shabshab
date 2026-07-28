@@ -305,3 +305,22 @@ def test_enrich_pending_ttl_per_result(reg):
         c.execute("UPDATE enrich_seen SET attempted_at=?", (d20,))
     # 20 дней: not_found уже перечекивается, exotic ещё нет
     assert reg.enrich_pending(["EXO", "NF"], 5) == ["NF"]
+
+
+def test_discovery_fixed_verdict_expires(reg):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    reg.mark_discovery_seen("RU_FIX0", False)
+    assert reg.discovery_pending(["RU_FIX0"], 5) == []          # свежий вердикт держит
+    d100 = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    with sqlite3.connect(str(reg.DB_PATH)) as c:
+        c.execute("UPDATE discovery_seen SET checked_at=?", (d100,))
+    assert reg.discovery_pending(["RU_FIX0"], 5) == ["RU_FIX0"]  # 90д TTL истёк
+
+
+def test_upsert_keep_source(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 100}, "cbonds")
+    reg.upsert({"isin": "RU1", "maturity_date": "2030-01-01"}, "moex", keep_source=True)
+    assert reg.get("RU1")["source"] == "cbonds"                 # рефреш не съел провенанс
+    reg.upsert({"isin": "RU1", "base": "RUONIA"}, "moex")
+    assert reg.get("RU1")["source"] == "moex"                   # параметры — переписывает

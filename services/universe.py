@@ -166,6 +166,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
     calc_date = cd or rd or date.today()
     # bondization (купоны+амортизации) — из day-кэша, MOEX только на прогреве
     fulls = await asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids))
+    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
     full_by = dict(zip(ids, fulls))
 
     out: dict = {}
@@ -194,10 +195,14 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             if not cpd or cpd <= 0:
                 continue
             cur = instruments_registry.get(isin) or {}
+            # locked-строку upsert всё равно не тронет (coupon_period_days ∈
+            # _MANUAL_FIELDS) — не дёргаем БД вхолостую каждый цикл
+            if cur.get("manual_locked"):
+                continue
             if cpd != cur.get("coupon_period_days"):
                 instruments_registry.upsert(
                     {"isin": isin, "coupon_period_days": cpd},
-                    source="moex", mark_new=False)
+                    source="moex", mark_new=False, keep_source=True)
     except Exception as e:
         logger.warning(f"coupon_period backfill error: {e}")
     return out
