@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import date
 
 from services.paths import cache_path
@@ -169,10 +170,12 @@ _CORPBONDS_QUOTA_EXOTIC = 10
 
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
     """ОФЗ-ПК (Минфин, купон плавает по RUONIA) — по имени/названию выпуска.
-    SU29xxx — тикерный префикс серии ОФЗ-ПК на MOEX."""
+    SU29xxx — тикерный префикс серии ОФЗ-ПК на MOEX. Только имя: клауза по
+    isin[8:10]=='29' была совпадением двух символов случайного кода, ловила
+    чужие бумаги (RU000A1029M4 «Автодор» → base=RUONIA при базе КС)."""
     return ("ОФЗ-ПК" in name_upper or "ОФЗ ПК" in name_upper
-            or "29" == (isin[8:10] if len(isin) > 10 else "")  # редко
-            or "SU29" in name_upper)
+            or "SU29" in name_upper
+            or bool(re.match(r"ОФЗ\s*29\d{3}\b", name_upper)))
 
 
 async def discover_floaters(listing: dict | None = None,
