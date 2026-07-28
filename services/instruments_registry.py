@@ -604,6 +604,24 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
                   "VALUES(?,?,?)", (isin, val, _now()))
 
 
+def non_fixed_isins() -> set[str]:
+    """ISIN, которые НЕЛЬЗЯ считать фикс-бумагами (исключение для вкладки ФИКСЫ):
+    все активные записи реестра, кроме подтверждённых base='FIXED' — base NULL
+    (флоатер без параметров) и EXOTIC (вне линейной модели) — это флоатеры,
+    просто непрайсуемые; плюс discovery_seen.is_floater=1 (подтверждён
+    bondization'ом). Фильтр только по KEYRATE/RUONIA пропускал их в ФИКСЫ, где
+    у флоатера зафиксированный текущий купон cp>0 маскирует его под фикс и
+    поток режется на первом value=None → ложный «YTM к оферте»."""
+    _ensure()
+    with _conn() as c:
+        a = {r[0] for r in c.execute(
+            "SELECT isin FROM instruments WHERE active=1 "
+            "AND (base IS NULL OR base != 'FIXED')")}
+        b = {r[0] for r in c.execute(
+            "SELECT isin FROM discovery_seen WHERE is_floater=1")}
+    return a | b
+
+
 def queue_stats() -> dict:
     """Размеры очередей обработки + возраст головы очереди (для /status).
     Видимость голодания: очередь, которая не сходится, копится и стареет —

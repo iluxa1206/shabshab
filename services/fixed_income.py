@@ -288,7 +288,9 @@ async def fetch_fixed_universe() -> List[dict]:
     if _uni_mem["rows"] is not None and now - _uni_mem["ts"] < _UNI_TTL:
         return _uni_mem["rows"]
     from services import instruments_registry as reg
-    floaters = {r["isin"] for r in reg.universe_rows(only_floaters=True, only_priceable=False)}
+    # не только KEYRATE/RUONIA: base NULL (флоатер без параметров) и EXOTIC тоже
+    # флоатеры — узкий фильтр пропускал их сюда как «фиксы» с ложным YTM
+    floaters = reg.non_fixed_isins()
     today = date.today()
     rows: List[dict] = []
     try:

@@ -258,3 +258,23 @@ def test_manual_cap_floor_survive_sync(reg):
     reg.upsert({"isin": "RU000A10FM37", "rating": "AA", "cap_pct": None, "floor_pct": None}, "cbonds")
     r = reg.get("RU000A10FM37")
     assert r["cap_pct"] == 25.0 and r["floor_pct"] == 13.0 and r["rating"] == "AA"
+
+
+def test_non_fixed_isins_excludes_null_and_exotic(reg):
+    # KEYRATE/RUONIA/NULL/EXOTIC — все флоатеры, нельзя пускать во вкладку ФИКСЫ
+    reg.upsert({"isin": "RU_KS", "base": "KEYRATE"}, "moex")
+    reg.upsert({"isin": "RU_NULL"}, "moex")                    # флоатер без параметров
+    reg.upsert({"isin": "RU_EXO", "base": "EXOTIC"}, "moex")
+    reg.upsert({"isin": "RU_FIX", "base": "FIXED"}, "moex")    # реклассифицирован — фикс
+    # подтверждён bondization'ом, но в instruments ещё не заведён
+    reg.mark_discovery_seen("RU_SEEN", True)
+    reg.mark_discovery_seen("RU_SEEN_FIX", False)
+    s = reg.non_fixed_isins()
+    assert {"RU_KS", "RU_NULL", "RU_EXO", "RU_SEEN"} <= s
+    assert "RU_FIX" not in s and "RU_SEEN_FIX" not in s
+
+
+def test_non_fixed_isins_skips_inactive(reg):
+    reg.upsert({"isin": "RU_DEAD", "base": "KEYRATE", "maturity_date": "2020-01-01"}, "moex")
+    reg.retire_matured("2026-01-01")
+    assert "RU_DEAD" not in reg.non_fixed_isins()
