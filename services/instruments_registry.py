@@ -604,6 +604,45 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
                   "VALUES(?,?,?)", (isin, val, _now()))
 
 
+def queue_stats() -> dict:
+    """Размеры очередей обработки + возраст головы очереди (для /status).
+    Видимость голодания: очередь, которая не сходится, копится и стареет —
+    без этих чисел отказ тихий (бумага просто не появляется в дашборде).
+    oldest_days считаем по updated_at: голова, которую никто не трогает,
+    стареет; при живой ротации возраст головы ~= период полного прохода."""
+    _ensure()
+    now = datetime.now(timezone.utc)
+
+    def _age_days(iso: Optional[str]) -> Optional[int]:
+        try:
+            return (now - datetime.fromisoformat(iso)).days
+        except (ValueError, TypeError):
+            return None
+
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT base, margin_bps, maturity_date, updated_at, reviewed, "
+            "margin_check_pp, manual_locked FROM instruments WHERE active=1").fetchall()
+    incomplete = [r for r in rows
+                  if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
+    suspect = [r for r in rows if r["margin_check_pp"] is not None
+               and abs(r["margin_check_pp"]) > _SUSPECT_PP]
+    exotic = [r for r in rows if r["base"] == "EXOTIC" and not r["manual_locked"]]
+    unreviewed = [r for r in rows if not r["reviewed"]]
+
+    def _oldest(rs):
+        ages = [a for r in rs if (a := _age_days(r["updated_at"])) is not None]
+        return max(ages) if ages else None
+
+    return {
+        "incomplete": {"n": len(incomplete), "oldest_days": _oldest(incomplete)},
+        "suspect": {"n": len(suspect), "oldest_days": _oldest(suspect)},
+        "exotic": {"n": len(exotic), "oldest_days": _oldest(exotic)},
+        "unreviewed": {"n": len(unreviewed), "oldest_days": _oldest(unreviewed)},
+        "manual_locked": sum(1 for r in rows if r["manual_locked"]),
+    }
+
+
 def count() -> dict:
     _ensure()
     with _conn() as c:

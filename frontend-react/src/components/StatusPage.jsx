@@ -56,6 +56,28 @@ export default function StatusPage() {
           </table>
         </div>
 
+        {d.registry_queues && (
+          <div className="st-card">
+            <div className="st-title">Очереди реестра <span className="st-sub">manual-locked {d.registry_queues.manual_locked}</span></div>
+            <table className="st-ts">
+              <tbody>
+                {[
+                  ["Без параметров (incomplete)", d.registry_queues.incomplete],
+                  ["Маржа расходится (suspect)", d.registry_queues.suspect],
+                  ["Экзотика (exotic)", d.registry_queues.exotic],
+                  ["Ждут ревью (unreviewed)", d.registry_queues.unreviewed],
+                ].map(([label, q]) => (
+                  <tr key={label}>
+                    <td>{label}</td>
+                    <td><b>{fmt.num(q.n, 0)}</b>{q.oldest_days != null && <span className="st-data-hint"> · голове {q.oldest_days} дн</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="st-data-hint">Растущие n и возраст головы = обогащение не сходится (голодание очереди).</div>
+          </div>
+        )}
+
         <div className="st-card">
           <div className="st-title">Драйн рейтингов (corpbonds)</div>
           <div className="st-drain">

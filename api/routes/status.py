@@ -96,6 +96,9 @@ async def get_status():
             {"key": "Рейтинги фиксов", **frac(fx_rated, fx_n),
              "hint": "ОФЗ=AAA правилом; corpbonds не покрывает свежие 2025"},
         ],
+        # очереди реестра: несходящаяся очередь копится и стареет — здесь это видно
+        # числом (n растёт, oldest_days растёт = голодание corpbonds-обогащения)
+        "registry_queues": reg.queue_stats(),
         "ratings_drain": {
             "cached": len(rc), "rated": rat_json_ok, "miss": rat_json_miss,
             "hint": "json-кэш corpbonds (rated + negative-кэш промахов)",
