@@ -167,6 +167,12 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                 fields = {"base": base, "margin_bps": margin,
                           "maturity_date": r.get("maturity_date"),
                           "face_value": r.get("face_value")}
+                # текст формулы — ТОЛЬКО если своего нет: у бумаг без Cbonds-текста
+                # спека сидела на дефолте point/lag0 (бэктест: систематика ~1-3пп у
+                # Ситимат/ЕАБР «∑КС»). Богатый проспектный текст (лаги прописью)
+                # короткой корпбондс-формулой не затираем.
+                if r.get("formula_text") and not (reg.get(isin) or {}).get("coupon_text"):
+                    fields["coupon_text"] = r["formula_text"]
                 if apply:
                     reg.apply_authoritative(isin, fields, "corpbonds")
                 stats["filled"] += 1

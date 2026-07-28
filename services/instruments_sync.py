@@ -142,7 +142,9 @@ async def sync_instruments() -> dict:
                    + reg.enrich_pending([s["isin"] for s in reg.list_suspect()],
                                         _CORPBONDS_QUOTA_SUSPECT, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending([e["isin"] for e in reg.list_exotic()],
-                                        _CORPBONDS_QUOTA_EXOTIC, parser_ver=PARSER_VERSION))
+                                        _CORPBONDS_QUOTA_EXOTIC, parser_ver=PARSER_VERSION)
+                   + reg.enrich_pending([n["isin"] for n in reg.list_no_spec()],
+                                        _CORPBONDS_QUOTA_NO_SPEC, parser_ver=PARSER_VERSION))
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
@@ -165,10 +167,11 @@ async def sync_instruments() -> dict:
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
 _MAX_CORPBONDS_PER_RUN = 60   # запросов к corpbonds.ru за прогон (внешний сайт)
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
-# большой incomplete не вытеснял suspect/exotic за срез
-_CORPBONDS_QUOTA_INCOMPLETE = 40
+# большой incomplete не вытеснял остальные за срез
+_CORPBONDS_QUOTA_INCOMPLETE = 30
 _CORPBONDS_QUOTA_SUSPECT = 10
 _CORPBONDS_QUOTA_EXOTIC = 10
+_CORPBONDS_QUOTA_NO_SPEC = 10   # прайсуемые без текста формулы (дефолт-спека)
 
 
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:

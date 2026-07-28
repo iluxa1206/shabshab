@@ -429,6 +429,21 @@ def list_incomplete() -> list[dict]:
             if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
 
 
+def list_no_spec() -> list[dict]:
+    """Прайсуемые флоатеры БЕЗ источника спеки фиксинга: нет coupon_text (парсеру
+    нечего парсить) и нет ручных coupon_mode/fixing_lag. Прайсинг сидит на
+    дефолте point/lag0 — бэктест показал систематику до 1-3пп у таких бумаг.
+    Цель для corpbonds-обогащения (он принесёт formula_text → coupon_text)."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, maturity_date FROM instruments "
+            "WHERE active=1 AND base IN ('KEYRATE','RUONIA') "
+            "AND coupon_text IS NULL AND coupon_mode IS NULL AND fixing_lag IS NULL"
+        ).fetchall()
+    return [dict(r) for r in rows if is_priceable(r)]
+
+
 def list_exotic() -> list[dict]:
     """Активные бумаги, помеченные base='EXOTIC' (не manual_locked). Для периодической
     ПЕРЕПРОВЕРКИ corpbonds: детект экзотики раньше ошибался (напр. Σ-приклеенная база

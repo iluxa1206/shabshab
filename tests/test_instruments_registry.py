@@ -344,3 +344,16 @@ def test_set_exotic_saves_formula(reg):
     reg.set_exotic("RU_X", note="")
     assert reg.get("RU_X")["coupon_text"] == "MAX(25.9% - КС; 0.01%)"
     assert any(e["coupon_text"] for e in reg.list_exotic())
+
+
+def test_list_no_spec(reg):
+    # прайсуемый без текста/спеки → в очереди
+    reg.upsert({"isin": "RU_NOSPEC", "base": "KEYRATE", "margin_bps": 200,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    # прайсуемый с текстом → нет
+    reg.upsert({"isin": "RU_TXT", "base": "KEYRATE", "margin_bps": 200,
+                "maturity_date": "2030-01-01", "coupon_text": "КС + 2%"}, "cbonds")
+    # непрайсуемый (нет маржи) → нет (он в incomplete)
+    reg.upsert({"isin": "RU_INC", "base": "KEYRATE", "maturity_date": "2030-01-01"}, "cbonds")
+    ids = {r["isin"] for r in reg.list_no_spec()}
+    assert ids == {"RU_NOSPEC"}
