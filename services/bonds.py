@@ -67,6 +67,21 @@ def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
 
     issue = _to_date(mo.get("issue"))
     maturity = _to_date(mo.get("maturity"))
+    # maturity/issue/период — фолбэк из реестра: справочник MOEX по ISIN не
+    # резолвит бумаги с отдельным SECID (ОФЗ-ПК: RU000A0JV4P3 → SU29008) → mo
+    # пуст → ref без maturity → TypeError ('<=' None и date) в valuation по
+    # ВСЕМ таким бумагам. Реестр их параметры знает.
+    if maturity is None or issue is None or cp is None:
+        try:
+            from services import instruments_registry as _reg
+            row = _reg.get(isin) or {}
+            maturity = maturity or _to_date(row.get("maturity_date"))
+            issue = issue or _to_date(row.get("issue_date"))
+            cp = cp or row.get("coupon_period_days")
+            if face == 1000.0 and row.get("face_value"):
+                face = float(row["face_value"])
+        except Exception:
+            pass
     cpy = round(365 / cp) if cp else 4
     first_coupon = add_months(issue, 12 // cpy) if (issue and cpy) else None
 
