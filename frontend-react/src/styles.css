@@ -931,3 +931,5 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .daymodal .fnote { margin: 10px 16px; }
 .daymodal .warn-box, .daymodal .loading { margin: 16px; }
 .daymodal-body { overflow-y: auto; padding: 0 16px 16px; }
+.cf-table tr.daygroup td { font-weight: 700; font-size: 11.5px; border-top: 1px solid var(--fg);
+  background: var(--hover); position: sticky; top: 30px; }

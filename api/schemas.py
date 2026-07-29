@@ -151,26 +151,32 @@ class BondAuditResponse(BaseModel):
     formula: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
 
-# Дневная раскладка базовой ставки купонного периода (окно из паспорта)
+# Дневная раскладка базовой ставки — все неистёкшие купоны одним списком
 class CouponDayRow(BaseModel):
     day: date                      # день дохода (average) / день окна (avg_prev) / start
     obs_date: date                 # дата наблюдения индекса (день − lag)
     rate_pct: Optional[float]      # значение индекса, %
     src: str                       # fact | forward
 
-class CouponDaysResponse(BaseModel):
-    isin: str
+class CouponDayGroup(BaseModel):
+    n: Optional[int]               # № купона (как в таблице PV паспорта)
     start: date
     end: date
+    pay_date: Optional[date]
+    mean_pct: Optional[float]          # среднее индекса по дням раскладки
+    projected_pct: Optional[float]     # боевой projected_ks_pct (кросс-чек)
+    coupon_rate_pct: Optional[float]   # среднее + маржа, с кэпом/полом
+    display_rate_pct: Optional[float]  # ставка купона из display-cashflow
+    n_fact: int
+    rows: List[CouponDayRow]
+
+class CouponDaysResponse(BaseModel):
+    isin: str
     calc_date: Optional[date]
     base: str
     spec: Dict[str, Any]
-    rows: List[CouponDayRow]
+    coupons: List[CouponDayGroup]
     n_days: int
-    n_fact: int
-    mean_pct: Optional[float]
-    projected_pct: Optional[float]     # боевой projected_ks_pct (кросс-чек)
-    coupon_rate_pct: Optional[float]   # среднее + маржа, с кэпом/полом
 
 # --- Cashflow & Valuation Endpoints ---
 class CashflowResponse(BaseModel):

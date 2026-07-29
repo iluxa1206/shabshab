@@ -179,12 +179,12 @@ function MarketSection({ m, v }) {
   );
 }
 
-// Окно дневной раскладки фиксинга: ставка индекса на каждый день периода
-// (факт истории ЦБ / форвард-ступень кривой между тенорами).
-function DayRatesModal({ isin, period, onClose }) {
+// Окно дневной раскладки фиксинга: ВСЕ неистёкшие купоны одним прокручиваемым
+// списком — по каждому дню ставка индекса (факт ЦБ / форвард-ступень кривой).
+function DayRatesModal({ isin, onClose }) {
   const q = useQuery({
-    queryKey: ["coupon-days", isin, period.start, period.end],
-    queryFn: () => fetchCouponDays(isin, period.start, period.end),
+    queryKey: ["coupon-days", isin],
+    queryFn: () => fetchCouponDays(isin),
     staleTime: 60_000,
   });
   const d = q.data;
@@ -194,7 +194,7 @@ function DayRatesModal({ isin, period, onClose }) {
     <div className="daymodal-overlay" onClick={onClose}>
       <div className="daymodal" onClick={(e) => e.stopPropagation()}>
         <div className="daymodal-head">
-          <b>Фиксинг по дням · {fmt.date(period.start)} — {fmt.date(period.end)}</b>
+          <b>Фиксинг по дням · все будущие купоны{d ? ` (${d.coupons.length} куп. · ${d.n_days} дн)` : ""}</b>
           <button className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
         </div>
         {q.isError && <div className="warn-box">Ошибка: {q.error?.message}</div>}
@@ -203,11 +203,9 @@ function DayRatesModal({ isin, period, onClose }) {
           <>
             <div className="fnote" style={{ marginTop: 0 }}>
               {modeLbl[d.spec?.mode] || d.spec?.mode} · лаг {d.spec?.lag}{d.spec?.lag_unit === "work" ? " раб." : " кал."} дн ·
-              факт {d.n_fact}/{d.n_days} дн · среднее {fmt.pct(d.mean_pct, 4)}%
-              {d.projected_pct != null && d.projected_pct !== d.mean_pct
-                ? <span className="neg"> · прайсинг {fmt.pct(d.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>
-                : " · сходится с прайсингом"}
-              {d.coupon_rate_pct != null && <> · купон (с маржой) {fmt.pct(d.coupon_rate_pct, 4)}%</>}
+              маржа {d.spec?.margin_bps != null ? "+" + d.spec.margin_bps + " bps" : "—"}
+              {d.spec?.cap_pct != null && <> · кэп {d.spec.cap_pct}%</>}
+              {d.spec?.floor_pct != null && <> · пол {d.spec.floor_pct}%</>}
             </div>
             <div className="daymodal-body">
               <table className="cf-table">
@@ -215,13 +213,26 @@ function DayRatesModal({ isin, period, onClose }) {
                   <tr><th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th><th className="left">Источник</th></tr>
                 </thead>
                 <tbody>
-                  {d.rows.map((r, i) => (
-                    <tr key={i} className={r.src === "forward" ? "" : "past"}>
-                      <td className="left">{fmt.date(r.day)}</td>
-                      <td className="left">{fmt.date(r.obs_date)}</td>
-                      <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
-                      <td className="left">{r.src === "fact" ? "факт ЦБ" : "форвард (ступень)"}</td>
-                    </tr>
+                  {d.coupons.map((g) => (
+                    [
+                      <tr key={"h" + g.n} className="daygroup">
+                        <td className="left" colSpan={4}>
+                          Купон #{g.n} · {fmt.date(g.start)} — {fmt.date(g.end)} · выплата {fmt.date(g.pay_date)} ·
+                          факт {g.n_fact}/{g.rows.length} дн · среднее {fmt.pct(g.mean_pct, 4) ?? "—"}%
+                          {g.coupon_rate_pct != null && <> · купон {fmt.pct(g.coupon_rate_pct, 4)}%</>}
+                          {g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct
+                            && <span className="neg"> · прайсинг {fmt.pct(g.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>}
+                        </td>
+                      </tr>,
+                      ...g.rows.map((r, i) => (
+                        <tr key={g.n + "-" + i} className={r.src === "forward" ? "" : "past"}>
+                          <td className="left">{fmt.date(r.day)}</td>
+                          <td className="left">{fmt.date(r.obs_date)}</td>
+                          <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
+                          <td className="left">{r.src === "fact" ? "факт ЦБ" : "форвард (ступень)"}</td>
+                        </tr>
+                      )),
+                    ]
                   ))}
                 </tbody>
               </table>
@@ -234,12 +245,16 @@ function DayRatesModal({ isin, period, onClose }) {
 }
 
 function WaterfallSection({ w, v, isin }) {
-  const [period, setPeriod] = useState(null);   // {start, end} открытого окна
+  const [showDays, setShowDays] = useState(false);
   const rows = w.rows || [];
   if (!rows.length) return null;
   return (
     <>
-      <div className="section-title">Развёртка PV: дисконтирование на решённом XIRR</div>
+      <div className="section-title">
+        Развёртка PV: дисконтирование на решённом XIRR
+        <button className="btn day-btn" onClick={() => setShowDays(true)}
+          title="Базовая ставка на каждый день всех будущих купонов">ФИКСИНГ ПО ДНЯМ</button>
+      </div>
       <div className="ref-grid">
         <KV k="Dirty (факт)" v={fmt.num(w.dirty_price_rub) + " ₽"} />
         <KV k="Σ PV потоков" v={fmt.num(w.pv_sum_rub) + " ₽"} />
@@ -253,42 +268,33 @@ function WaterfallSection({ w, v, isin }) {
           <thead>
             <tr>
               <th className="left">#</th><th className="left">Выплата</th><th className="left">Тип</th>
-              <th>База %</th><th>Купон %</th><th>Сумма ₽</th><th>t, лет</th><th>DF</th><th>PV ₽</th><th />
+              <th>База %</th><th>Купон %</th><th>Сумма ₽</th><th>t, лет</th><th>DF</th><th>PV ₽</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((c, i) => {
-              const canDays = c.type === "COUPON" && c.period_start && c.period_end && c.pv_rub != null;
-              return (
-                <tr key={i} className={c.type === "REDEMPTION" ? "redemption" : c.pv_rub == null ? "past" : ""}>
-                  <td className="left">{c.number}</td>
-                  <td className="left">{fmt.date(c.payment_date)}</td>
-                  <td className="left">{c.type === "REDEMPTION" ? "погаш." : "купон"}</td>
-                  <td>{fmt.pct(c.base_rate_pct)}</td>
-                  <td>{fmt.pct(c.coupon_rate_pct)}</td>
-                  <td>{fmt.num(c.amount_rub)}</td>
-                  <td>{c.t_yrs != null ? fmt.num(c.t_yrs, 3) : "—"}</td>
-                  <td>{c.df != null ? fmt.num(c.df, 4) : "—"}</td>
-                  <td>{c.pv_rub != null ? fmt.num(c.pv_rub) : "—"}</td>
-                  <td className="left">
-                    {canDays && (
-                      <button className="btn day-btn" title="Базовая ставка на каждый день периода"
-                        onClick={() => setPeriod({ start: c.period_start, end: c.period_end })}>дни</button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
+            {rows.map((c, i) => (
+              <tr key={i} className={c.type === "REDEMPTION" ? "redemption" : c.pv_rub == null ? "past" : ""}>
+                <td className="left">{c.number}</td>
+                <td className="left">{fmt.date(c.payment_date)}</td>
+                <td className="left">{c.type === "REDEMPTION" ? "погаш." : "купон"}</td>
+                <td>{fmt.pct(c.base_rate_pct)}</td>
+                <td>{fmt.pct(c.coupon_rate_pct)}</td>
+                <td>{fmt.num(c.amount_rub)}</td>
+                <td>{c.t_yrs != null ? fmt.num(c.t_yrs, 3) : "—"}</td>
+                <td>{c.df != null ? fmt.num(c.df, 4) : "—"}</td>
+                <td>{c.pv_rub != null ? fmt.num(c.pv_rub) : "—"}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
       <div className="fnote">
         Прошлые выплаты (PV —) в дисконтирование не входят. DF = (1+YTM)^−t. Σ PV
         обязана сойтись с dirty: XIRR решён именно на этих потоках; расхождение =
-        рассинхрон display-cashflow с pricing-потоками. Кнопка «дни» — базовая
-        ставка на каждый день периода (факт / форвард-ступень между тенорами).
+        рассинхрон display-cashflow с pricing-потоками. «Фиксинг по дням» — базовая
+        ставка на каждый день всех будущих купонов (факт / форвард-ступень между тенорами).
       </div>
-      {period && <DayRatesModal isin={isin} period={period} onClose={() => setPeriod(null)} />}
+      {showDays && <DayRatesModal isin={isin} onClose={() => setShowDays(false)} />}
     </>
   );
 }

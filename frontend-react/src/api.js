@@ -158,9 +158,9 @@ export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 export const fetchBondAudit = (isin) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/audit`);
 
-// Дневная раскладка фиксинга купона: ставка индекса на каждый день (факт/форвард).
-export const fetchCouponDays = (isin, start, end) =>
-  request(`/api/bonds/${encodeURIComponent(isin)}/coupon-days?start=${start}&end=${end}`);
+// Дневная раскладка фиксинга: все будущие купоны, ставка индекса на каждый день.
+export const fetchCouponDays = (isin) =>
+  request(`/api/bonds/${encodeURIComponent(isin)}/coupon-days`);
 
 // Динамика спредов: серия DM(флоатер)/g-спред(фикс) по историч. дневным ценам.
 export const fetchSpreadHistory = (isin, { kind = "floater", secid, board = "TQCB", days = 120 } = {}) => {

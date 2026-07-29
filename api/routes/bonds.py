@@ -264,19 +264,13 @@ async def get_bond_audit(isin: str = Path(...)):
 
 
 @router.get("/{isin}/coupon-days", response_model=CouponDaysResponse, tags=["Bonds"])
-async def get_coupon_day_rates(
-    isin: str = Path(...),
-    start: date = Query(..., description="Начало купонного периода"),
-    end: date = Query(..., description="Конец купонного периода"),
-):
-    """Дневная раскладка фиксинга купона: по каждому дню — дата наблюдения,
-    значение индекса, источник (факт ЦБ / форвард-ступень кривой)."""
+async def get_coupon_day_rates(isin: str = Path(...)):
+    """Полная дневная раскладка фиксинга по всем неистёкшим купонам: по каждому
+    дню — дата наблюдения, значение индекса, факт ЦБ / форвард-ступень кривой."""
     isin = _require_isin(isin)
-    if end <= start or (end - start).days > 750:
-        raise HTTPException(status_code=422, detail="кривой период купона")
     cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     from services.bond_audit import coupon_day_rates
-    return CouponDaysResponse(**await coupon_day_rates(isin, start, end, cache))
+    return CouponDaysResponse(**await coupon_day_rates(isin, cache))
 
 
 @router.get("/{isin}/candles", tags=["Bonds"])

@@ -500,21 +500,46 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     }
 
 
-# ── Дневная раскладка базовой ставки купонного периода ──────────────────────
+# ── Дневная раскладка базы: ВСЕ будущие купоны одним списком ────────────────
 
-async def coupon_day_rates(isin: str, start: date, end: date, cache: dict) -> dict:
-    """По каждому дню, участвующему в фиксинге купона [start, end]: дата
-    наблюдения индекса, ставка и источник (факт истории ЦБ / форвард-ступень
-    кривой). Семантика дней 1:1 с coupon_calib.projected_ks_pct:
+def _day_pairs(mode: str, start: date, end: date, lag: int, unit: str):
+    """(день, дата наблюдения индекса) по семантике режима — 1:1 с
+    coupon_calib.projected_ks_pct:
       average     — дни дохода (start, end], obs = день − lag;
       avg_prev    — окно [start−period−lag, start−lag), obs = сам день;
       point       — одна дата obs = start − lag;
-      month_start — одна дата obs = 1-е число месяца старта.
-    Форвард будущих дней — daily_forward (ступень между тенорами кривой).
-    В summary — среднее по строкам И боевое значение projected_ks_pct: их
-    расхождение = рассинхрон этой раскладки с прайсингом (чек consistency)."""
+      month_start — одна дата obs = 1-е число месяца старта."""
+    from services.coupon_calib import _obs_date
+    if mode == "point":
+        return [(start, _obs_date(start, lag, unit))]
+    if mode == "month_start":
+        return [(start, start.replace(day=1))]
+    pairs = []
+    if mode == "avg_prev":
+        period = (end - start).days
+        w_hi = _obs_date(start, lag, unit)
+        cur = w_hi - timedelta(days=period)
+        while cur < w_hi:
+            pairs.append((cur, cur))
+            cur += timedelta(days=1)
+        return pairs
+    cur = start + timedelta(days=1)     # average: дни дохода (start, end]
+    while cur <= end:
+        pairs.append((cur, _obs_date(cur, lag, unit)))
+        cur += timedelta(days=1)
+    return pairs
+
+
+async def coupon_day_rates(isin: str, cache: dict) -> dict:
+    """Полная дневная раскладка фиксинга по ВСЕМ неистёкшим купонам (текущий
+    начавшийся + будущие до погашения/оферты): по каждому дню — дата наблюдения
+    индекса, ставка и источник (факт истории ЦБ / форвард-СТУПЕНЬ кривой между
+    тенорами, daily_forward). Периоды — из канонического display-cashflow
+    (build_cashflow_from_moex: резка к оферте, достройка хвоста), так что
+    список купонов совпадает с таблицей PV паспорта. Для каждого купона —
+    среднее по дням, боевой projected_ks_pct (кросс-чек) и ставка из cashflow."""
     from services.coupon_calib import (index_history, projected_ks_pct,
-                                       _rate_at, _realized, _obs_date)
+                                       _rate_at, _realized)
     from services.ref_data import coupon_formula
 
     data = cache.get(isin)
@@ -527,16 +552,18 @@ async def coupon_day_rates(isin: str, start: date, end: date, cache: dict) -> di
     )
     _ok = lambda x, d: d if isinstance(x, Exception) else x
     ruonia_curve, keyrate_curve, calc_date, rates_date = _ok(res[0], (None, None, None, None))
-    sched_full = _ok(res[1], {"coupons": [], "amorts": []})
+    sched_full = _ok(res[1], {"coupons": [], "amorts": [], "offers": []})
     mo_map = _ok(res[2], {})
 
     if data:
         ref_obj = create_bond_ref_data(data, isin)
+        formula = data.get("FORMULA", "") or external_formula(ref_obj)
     else:
         mo = mo_map.get(isin, {})
         if not mo:
             raise NotFoundException(f"Bond {isin} not found on MOEX", {"isin": isin})
         ref_obj = build_ref_external(isin, mo)
+        formula = external_formula(ref_obj)
 
     base = ref_obj.base
     if base not in ("KEYRATE", "RUONIA"):
@@ -547,6 +574,7 @@ async def coupon_day_rates(isin: str, start: date, end: date, cache: dict) -> di
 
     coupons = sched_full.get("coupons") or []
     amorts = sched_full.get("amorts") or []
+    offers = sched_full.get("offers") or []
     margin_pct = (ref_obj.spread_issue_bps or 0) / 100.0
     idx = index_history(base)
 
@@ -557,10 +585,10 @@ async def coupon_day_rates(isin: str, start: date, end: date, cache: dict) -> di
     lag = spec.get("fixing_lag") if spec.get("fixing_lag") is not None else 0
     unit = spec.get("fixing_lag_unit") or "cal"
     if mode is None:
-        # тот же дефолт, что в бэктесте/прайсинге
         mode = "average" if base == "RUONIA" else "point"
         if base == "RUONIA":
             lag, unit = 0, "cal"
+    cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
 
     def _fwd_step(d: date):
         if curve is None:
@@ -570,66 +598,56 @@ async def coupon_day_rates(isin: str, start: date, end: date, cache: dict) -> di
         except Exception:
             return None
 
-    # (день, дата наблюдения) по семантике режима
-    pairs = []
-    if mode == "point":
-        pairs = [(start, _obs_date(start, lag, unit))]
-    elif mode == "month_start":
-        pairs = [(start, start.replace(day=1))]
-    elif mode == "avg_prev":
-        period = (end - start).days
-        w_hi = _obs_date(start, lag, unit)
-        w_lo = w_hi - timedelta(days=period)
-        cur = w_lo
-        while cur < w_hi:
-            pairs.append((cur, cur))
-            cur += timedelta(days=1)
-    else:  # average: дни дохода (start, end]
-        cur = start + timedelta(days=1)
-        while cur <= end:
-            pairs.append((cur, _obs_date(cur, lag, unit)))
-            cur += timedelta(days=1)
-
-    rows, vals = [], []
-    for day, obs in pairs:
-        fact = _realized(idx, obs, calc_date)
-        rate = _rate_at(idx, obs) if fact else _fwd_step(obs)
-        if rate is not None:
-            vals.append(rate)
-        rows.append({"day": _iso(day), "obs_date": _iso(obs),
-                     "rate_pct": round(rate, 4) if rate is not None else None,
-                     "src": "fact" if fact else "forward"})
-
-    mean_rows = round(sum(vals) / len(vals), 4) if vals else None
-    # боевое значение той же спеки (кросс-чек раскладки с прайсингом)
-    pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
-    try:
-        prod_pct = projected_ks_pct(pspec, start, end, calc_date,
-                                    fwd_pct=lambda d: _fwd_step(d) or 0.0, idx=idx)
-        prod_pct = round(prod_pct, 4)
-    except Exception:
-        prod_pct = None
-
-    cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
-    cpn = None
-    if mean_rows is not None:
-        cpn = mean_rows + margin_pct
-        if cap is not None:
-            cpn = min(cpn, float(cap))
-        if floor is not None:
-            cpn = max(cpn, float(floor))
-        cpn = round(cpn, 4)
+    # канонические периоды: как таблица PV (оферта, хвост, амортизация)
+    cfs, _ = build_cashflow_from_moex(ref_obj, curve, calc_date,
+                                      coupons, amorts, formula, offers=offers)
+    groups = []
+    for c in cfs:
+        if c.get("type") != "COUPON":
+            continue
+        s, e = _parse_d(c.get("period_start")), _parse_d(c.get("period_end"))
+        if not s or not e or e <= calc_date:
+            continue    # истёкшие — их дневная история уже в бэктесте спеки
+        rows, vals = [], []
+        for day, obs in _day_pairs(mode, s, e, lag, unit):
+            fact = _realized(idx, obs, calc_date)
+            rate = _rate_at(idx, obs) if fact else _fwd_step(obs)
+            if rate is not None:
+                vals.append(rate)
+            rows.append({"day": _iso(day), "obs_date": _iso(obs),
+                         "rate_pct": round(rate, 4) if rate is not None else None,
+                         "src": "fact" if fact else "forward"})
+        mean_rows = round(sum(vals) / len(vals), 4) if vals else None
+        pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
+        try:
+            prod = round(projected_ks_pct(pspec, s, e, calc_date,
+                                          fwd_pct=lambda d: _fwd_step(d) or 0.0,
+                                          idx=idx), 4)
+        except Exception:
+            prod = None
+        cpn = None
+        if mean_rows is not None:
+            cpn = mean_rows + margin_pct
+            if cap is not None:
+                cpn = min(cpn, float(cap))
+            if floor is not None:
+                cpn = max(cpn, float(floor))
+            cpn = round(cpn, 4)
+        groups.append({
+            "n": c.get("number"), "start": _iso(s), "end": _iso(e),
+            "pay_date": _iso(c.get("payment_date")),
+            "mean_pct": mean_rows, "projected_pct": prod,
+            "coupon_rate_pct": cpn,
+            "display_rate_pct": c.get("coupon_rate_pct"),  # ставка из таблицы PV
+            "n_fact": sum(1 for r in rows if r["src"] == "fact"),
+            "rows": rows,
+        })
 
     return {
-        "isin": isin, "start": _iso(start), "end": _iso(end),
-        "calc_date": _iso(calc_date), "base": base,
+        "isin": isin, "calc_date": _iso(calc_date), "base": base,
         "spec": {"mode": mode, "lag": lag, "lag_unit": unit,
                  "margin_bps": ref_obj.spread_issue_bps,
                  "cap_pct": cap, "floor_pct": floor},
-        "rows": rows,
-        "n_days": len(rows),
-        "n_fact": sum(1 for r in rows if r["src"] == "fact"),
-        "mean_pct": mean_rows,
-        "projected_pct": prod_pct,       # боевой projected_ks_pct на тех же данных
-        "coupon_rate_pct": cpn,          # среднее + маржа, с кэпом/полом
+        "coupons": groups,
+        "n_days": sum(len(g["rows"]) for g in groups),
     }
