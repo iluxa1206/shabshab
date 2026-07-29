@@ -502,10 +502,31 @@ def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     with _conn() as c:
         rows = c.execute(f"SELECT * FROM instruments{where}").fetchall()
+    try:
+        from services.coupon_calib import parse_prospectus_formula as _ppf
+    except Exception:
+        _ppf = lambda t: None
     out = []
     for r in rows:
         d = {k: r[k] for k in _CATALOG_COLS}
         d["priceable"] = is_priceable(r)
+        # ЭФФЕКТИВНАЯ спека фиксинга (read-only, в xlsx не выгружается):
+        # ручной слой БД > парсер coupon_text > рантайм (калибратор/дефолт).
+        # Пустые coupon_mode/fixing_lag в БД ≠ «спеки нет» — она резолвится
+        # на лету; колонка показывает правду без записи в БД (запись плодит
+        # заморозку, см. scripts/unfreeze_fixing_spec).
+        d["spec_eff"] = None
+        if r["base"] in ("KEYRATE", "RUONIA"):
+            mode, lag, unit, src = r["coupon_mode"], r["fixing_lag"], r["fixing_lag_unit"], "ручной"
+            if mode is None and lag is None:
+                ps = _ppf(r["coupon_text"] or "") or {}
+                mode, lag, unit = ps.get("mode"), ps.get("lag"), ps.get("lag_unit")
+                src = "парсер"
+            if mode is None:
+                d["spec_eff"] = "авто (калибратор/дефолт)"
+            else:
+                lag_s = "" if lag is None else f"·{lag}{'р' if unit == 'work' else ''}"
+                d["spec_eff"] = f"{mode}{lag_s} ({src})"
         out.append(d)
     # непрайсуемые вперёд, дальше по имени
     out.sort(key=lambda d: (d["priceable"], (d["short_name"] or d["isin"]).upper()))

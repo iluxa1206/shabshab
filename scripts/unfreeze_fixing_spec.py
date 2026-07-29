@@ -12,11 +12,20 @@ fixing_lag_unit. Эти поля читаются в ref_data.coupon_formula П�
 эмпирический калибратор. manual_locked НЕ снимает — он же не даёт sync'у
 перезаписать обнулённые поля (upsert пропускает _MANUAL_FIELDS у locked-строк).
 
+БЕЗОПАСНОСТЬ. По умолчанию (APPLY=1) снимаются ТОЛЬКО строки, где значение в БД
+СОВПАДАЕТ с текущим выводом парсера — замороженный снапшот, разморозка ничего не
+меняет в прайсинге сейчас, но открывает будущие фиксы парсера. Строки, где БД ≠
+парсер, могут быть ОСОЗНАННОЙ ручной перебивкой (парсер на бумаге врёт) — их
+скрипт печатает списком и снимает только с APPLY_CHANGED=1 (просмотри список!).
+
 ЗАПУСК (в контейнере): dry-run по умолчанию, APPLY=1 — запись + бэкап рядом с БД.
     docker compose -f docker-compose.prod.yml exec floaters \
         python scripts/unfreeze_fixing_spec.py
     docker compose -f docker-compose.prod.yml exec -e APPLY=1 floaters \
         python scripts/unfreeze_fixing_spec.py
+    # + спорные (БД ≠ парсер):
+    docker compose -f docker-compose.prod.yml exec -e APPLY=1 -e APPLY_CHANGED=1 \
+        floaters python scripts/unfreeze_fixing_spec.py
 """
 from __future__ import annotations
 
@@ -51,28 +60,32 @@ def main() -> int:
            WHERE coupon_mode IS NOT NULL OR fixing_lag IS NOT NULL"""
     ).fetchall()
 
-    clear, keep, changed = [], [], []
+    apply_changed = os.environ.get("APPLY_CHANGED") == "1"
+    match, keep, changed = [], [], []
     for r in rows:
         spec = parse_prospectus_formula(r["coupon_text"] or "") or {}
         mode, lag = spec.get("mode"), spec.get("lag")
         if not mode:
             keep.append(r)
             continue
-        clear.append(r)
         if mode != r["coupon_mode"] or (r["fixing_lag"] is not None and lag != r["fixing_lag"]):
             changed.append((r, mode, lag))
+        else:
+            match.append(r)
+
+    clear = match + ([r for r, _, _ in changed] if apply_changed else [])
 
     print(f"БД: {DB_PATH}")
-    print(f"строк со спекой в БД        : {len(rows)}")
-    print(f"  снимаем (парсер даёт режим): {len(clear)}")
-    print(f"  оставляем (парсер молчит)  : {len(keep)}")
-    print(f"  из снятых реально изменятся: {len(changed)}")
+    print(f"строк со спекой в БД               : {len(rows)}")
+    print(f"  БД == парсер (снимаем, безопасно): {len(match)}")
+    print(f"  БД != парсер (спорные{', СНИМАЕМ' if apply_changed else ', оставляем — APPLY_CHANGED=1 чтобы снять'}): {len(changed)}")
+    print(f"  парсер молчит (оставляем)        : {len(keep)}")
     for r, mode, lag in changed:
-        print(f"    {r['isin']} {str(r['short_name'])[:18]:20} "
-              f"{str(r['coupon_mode']):8}/{r['fixing_lag']} -> {mode}/{lag}")
+        print(f"    СПОРНАЯ {r['isin']} {str(r['short_name'])[:18]:20} "
+              f"БД {str(r['coupon_mode']):8}/{r['fixing_lag']} vs парсер {mode}/{lag}")
     for r in keep:
         print(f"    ОСТАВЛЕНА {r['isin']} {str(r['short_name'])[:18]:20} "
-              f"{r['coupon_mode']}/{r['fixing_lag']}")
+              f"{r['coupon_mode']}/{r['fixing_lag']} (парсер молчит)")
 
     if not apply:
         print("\n[DRY-RUN] записи не было. APPLY=1 — применить.")
