@@ -477,20 +477,38 @@ def build_cashflows_to_maturity(
     # Кэп/флор купона (MIN(КС+m;X%)/«не более», MAX/«не менее») — потолок/пол ставки
     # годовых. Прайсим прогнозные купоны с клэмпом (зафикс. value уже с кэпом фактом).
     cap_pct = floor_pct = None
+    margin_steps = ref_margin_bps = None
     if bond.base in ("RUONIA", "KEYRATE"):
         try:
             from services.ref_data import coupon_formula as _cf
             _sp = _cf(bond.isin)
             cap_pct, floor_pct = _sp.get("cap_pct"), _sp.get("floor_pct")
+            # Маржа-лесенка: надбавка меняется по номерам купонов («S 1-7 = 2.5%,
+            # S8-21 = 4.6%»). Применяем ДЕЛЬТОЙ к spread_issue_bps относительно
+            # скаляра реестра (margin_bps): солверы SM/DM варьируют spread_bps —
+            # абсолютная подмена ломала бы их линейность. Ординал купона осмыслен
+            # только на реальном календаре MOEX (explicit_periods): генерённая
+            # сетка может стартовать не с 1-го купона.
+            if explicit_periods:
+                margin_steps = _sp.get("margin_schedule")
+                ref_margin_bps = _sp.get("margin_bps")
         except Exception:
             cap_pct = floor_pct = None
 
     cfs = []
 
     # 3. generate coupons
-    for start, end, value in periods:
+    for _ordinal0, (start, end, value) in enumerate(periods):
         if end <= settle:
             continue
+        # эффективный спред периода: скаляр выпуска + дельта лесенки маржи
+        # (bps диапазона − скаляр реестра) для купона № _ordinal0+1
+        sp_bps = bond.spread_issue_bps
+        if margin_steps:
+            for _st in margin_steps:
+                if _st["from"] <= _ordinal0 + 1 <= _st["to"]:
+                    sp_bps = bond.spread_issue_bps + _st["bps"] - (ref_margin_bps or 0)
+                    break
         if eff_maturity and end > eff_maturity:
             continue
 
@@ -530,8 +548,10 @@ def build_cashflows_to_maturity(
                     fn = index_pct_fn
                     if fn is None:                     # легаси-фолбэк (CLI-пути)
                         from services.coupon_calib import period_index_pct as fn
-                    fwd_pct = (lambda dt: curve.forward(max(dt, calc_date), end) * 100.0
-                               if max(dt, calc_date) < end else 0.0)
+                    # по-дневная проекция: ступень сегмента кривой (daily_forward),
+                    # НЕ окно до конца периода — то интерполировало ставку между
+                    # тенорами и размазывало скачки (см. forwards.daily_forward)
+                    fwd_pct = lambda dt: curve.daily_forward(dt) * 100.0
                     # face = ТЕКУЩИЙ остаток (не pricing_face): калибратор сам
                     # откатывает номинал назад по amorts, а транш из окна
                     # (calc, settle] в прошлых периодах ещё не был выплачен.
@@ -545,12 +565,12 @@ def build_cashflows_to_maturity(
                             f"фиксинг периода {start}: {type(e).__name__} — купон спроецирован форвардом")
             if idx_pct is not None:
                 # конвенция выпуска: (индекс + маржа) simple ACT/365
-                factor = (idx_pct / 100.0 + bond.spread_issue_bps / 10000.0) * alpha
+                factor = (idx_pct / 100.0 + sp_bps / 10000.0) * alpha
                 base_pct = idx_pct
             else:
                 f_start = start if start > calc_date else calc_date
                 f_rate = curve.forward(f_start, end) if f_start < end else 0.0
-                sp = bond.spread_issue_bps / 10000.0
+                sp = sp_bps / 10000.0
                 if bond.base == "RUONIA":
                     # индекс капитализируется дневно (daily-comp форвард воспроизводит
                     # factor кривой), маржа — simple, как в конвенции выпусков
@@ -585,7 +605,7 @@ def build_cashflows_to_maturity(
             period_start=start, period_end=end,
             coupon_rate_pct=round(cpn_rate, 4) if cpn_rate is not None else None,
             base_rate_pct=round(base_pct, 4) if base_pct is not None else None,
-            spread_bps=bond.spread_issue_bps or 0,
+            spread_bps=sp_bps or 0,
         ))
 
     # 4. Выплата принципала. Единая схема вместо трёх веток: сначала все будущие

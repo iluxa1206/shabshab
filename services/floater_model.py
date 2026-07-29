@@ -35,17 +35,18 @@ def actual_ks(d: date) -> Optional[float]:
 
 
 def make_ks_path(curve, calc_date: date) -> Callable[[date], float]:
-    """Возвращает функцию date→КС(decimal): факт до calc_date, рыночный форвард
-    bootstrap-кривой IRS KEYRATE после — на ~30д окне, в конвенции КС."""
+    """Возвращает функцию date→КС(decimal): факт до calc_date, после — рыночный
+    форвард bootstrap-кривой IRS KEYRATE СТУПЕНЬЮ сегмента (daily_forward):
+    между тенорами ставка флэт, скачок на узле — как реальная КС между
+    заседаниями. Раньше — окно +30д, интерполировавшее ступень."""
     def path(d: date) -> float:
         a = actual_ks(d)
         if d <= calc_date and a is not None:
             return a
         if curve is not None:
             try:
-                end = d + timedelta(days=30)
-                if d >= curve.calc_date and d < end:
-                    return curve.forward(max(d, curve.calc_date), end)
+                if d >= curve.calc_date:
+                    return curve.daily_forward(d)
             except Exception:
                 pass
         return a if a is not None else 0.0

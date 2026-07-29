@@ -86,6 +86,17 @@ class DiscountCurve:
     def year_fraction(self, d1: date, d2: date) -> float:
         return yf_act365(d1, d2)
 
+    def daily_forward(self, d: date) -> float:
+        """Дневная ставка базы на дату d — СТУПЕНЬ между тенорами.
+
+        forward(d, d+1) при log-linear DF константен внутри сегмента между
+        соседними узлами кривой и скачет на узле → кусочно-флэт путь ставки
+        (как реальная КС между заседаниями). Использовать для ПО-ДНЕВНОЙ
+        проекции индекса (спека фиксинга, дневная раскладка купона) вместо
+        окна до конца периода/30д, которое размазывало ступень интерполяцией."""
+        lo = max(d, self.calc_date)
+        return self.forward(lo, lo + timedelta(days=1))
+
     def df(self, d: date) -> float:
         """Интерполяция дисконт-фактора."""
         if d <= self.calc_date:

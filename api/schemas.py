@@ -151,6 +151,27 @@ class BondAuditResponse(BaseModel):
     formula: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
 
+# Дневная раскладка базовой ставки купонного периода (окно из паспорта)
+class CouponDayRow(BaseModel):
+    day: date                      # день дохода (average) / день окна (avg_prev) / start
+    obs_date: date                 # дата наблюдения индекса (день − lag)
+    rate_pct: Optional[float]      # значение индекса, %
+    src: str                       # fact | forward
+
+class CouponDaysResponse(BaseModel):
+    isin: str
+    start: date
+    end: date
+    calc_date: Optional[date]
+    base: str
+    spec: Dict[str, Any]
+    rows: List[CouponDayRow]
+    n_days: int
+    n_fact: int
+    mean_pct: Optional[float]
+    projected_pct: Optional[float]     # боевой projected_ks_pct (кросс-чек)
+    coupon_rate_pct: Optional[float]   # среднее + маржа, с кэпом/полом
+
 # --- Cashflow & Valuation Endpoints ---
 class CashflowResponse(BaseModel):
     isin: str
@@ -253,7 +274,7 @@ class CurveQuote(BaseModel):
     value_pct: float     # исходная par-котировка СПФИ (mid)
     name: str
     implied_avg_pct: Optional[float] = None  # avg по листу (par-based, годовые купоны)
-    forward_pct: Optional[float] = None      # форвард телескопированием avg (лист)
+    forward_pct: Optional[float] = None      # форвард телескопированием avg (чистая база)
     fwd_span: Optional[str] = None           # подпись окна форварда: "3m3m", "1Y1Y"
 
 class CurveSample(BaseModel):

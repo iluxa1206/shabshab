@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Path, HTTPException
 from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
     BondDetailsResponse, CashflowResponse,
-    RepriceResponse, BondAuditResponse,
+    RepriceResponse, BondAuditResponse, CouponDaysResponse,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
@@ -261,6 +261,22 @@ async def get_bond_audit(isin: str = Path(...)):
     cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     from services.bond_audit import build_bond_audit
     return BondAuditResponse(**await build_bond_audit(isin, cache))
+
+
+@router.get("/{isin}/coupon-days", response_model=CouponDaysResponse, tags=["Bonds"])
+async def get_coupon_day_rates(
+    isin: str = Path(...),
+    start: date = Query(..., description="Начало купонного периода"),
+    end: date = Query(..., description="Конец купонного периода"),
+):
+    """Дневная раскладка фиксинга купона: по каждому дню — дата наблюдения,
+    значение индекса, источник (факт ЦБ / форвард-ступень кривой)."""
+    isin = _require_isin(isin)
+    if end <= start or (end - start).days > 750:
+        raise HTTPException(status_code=422, detail="кривой период купона")
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
+    from services.bond_audit import coupon_day_rates
+    return CouponDaysResponse(**await coupon_day_rates(isin, start, end, cache))
 
 
 @router.get("/{isin}/candles", tags=["Bonds"])
