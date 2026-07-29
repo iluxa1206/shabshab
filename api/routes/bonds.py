@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Path, HTTPException
 from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
     BondDetailsResponse, CashflowResponse,
-    RepriceResponse,
+    RepriceResponse, BondAuditResponse,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
@@ -251,6 +251,16 @@ async def get_bond_details(isin: str = Path(...)):
         _cache_path("isins_cache.json"))
     from services.bond_details import build_bond_details
     return BondDetailsResponse(**await build_bond_details(isin, cache))
+
+
+@router.get("/{isin}/audit", response_model=BondAuditResponse, tags=["Bonds"])
+async def get_bond_audit(isin: str = Path(...)):
+    """Паспорт бумаги: все спарсенные/рассчитанные данные с провенансом,
+    по-купонный бэктест спеки фиксинга, waterfall PV, санити-чеки."""
+    isin = _require_isin(isin)
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
+    from services.bond_audit import build_bond_audit
+    return BondAuditResponse(**await build_bond_audit(isin, cache))
 
 
 @router.get("/{isin}/candles", tags=["Bonds"])

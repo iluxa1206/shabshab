@@ -663,6 +663,16 @@ def mark_enrich_attempt(isin: str, result: str, parser_ver: int | None = None) -
                   "VALUES(?,?,?,?)", (isin, result, _now(), parser_ver))
 
 
+def enrich_info(isin: str) -> Optional[dict]:
+    """Последняя corpbonds-попытка обогащения (negative-кэш enrich_seen):
+    {result, attempted_at, parser_ver} | None. Для паспорта бумаги (провенанс)."""
+    _ensure()
+    with _conn() as c:
+        r = c.execute("SELECT result, attempted_at, parser_ver FROM enrich_seen "
+                      "WHERE isin=?", (isin,)).fetchone()
+    return dict(r) if r else None
+
+
 def enrich_pending(candidates: list[str], limit: int,
                    parser_ver: int | None = None) -> list[str]:
     """Из candidates — до limit ISIN на corpbonds-обогащение. Ротация: никогда

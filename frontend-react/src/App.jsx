@@ -19,6 +19,7 @@ import FixedModule from "./components/FixedModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
+import BondAudit from "./components/BondAudit.jsx";
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -293,6 +294,7 @@ function Dashboard() {
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="/status" element={<StatusPage />} />
+        <Route path="/audit/:isin" element={<BondAudit />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") === "1"} onClose={closeDrawer} />

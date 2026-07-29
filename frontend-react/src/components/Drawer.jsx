@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
@@ -233,6 +234,7 @@ function Content({ d }) {
 
 export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const isFixed = kind === "fixed";
+  const navigate = useNavigate();
   const detailsQ = useQuery({
     queryKey: [isFixed ? "fixed-bond" : "bond", isin],
     queryFn: () => (isFixed ? fetchFixedDetails(isin) : fetchBondDetails(isin)),
@@ -304,6 +306,16 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
                   aria-pressed={showOb}
                   title="Стакан выпуска"
                 >СТАКАН</button>
+                {!isFixed && (
+                  <button
+                    className="btn"
+                    // только navigate: путь /audit/... без query → drawerIsin=null →
+                    // штатная exit-анимация. onClose здесь нельзя — его setSearchParams
+                    // батчится ПОСЛЕ navigate и перебивает переход
+                    onClick={() => navigate(`/audit/${isin}`)}
+                    title="Паспорт бумаги: провенанс данных, бэктест спеки фиксинга, развёртка PV"
+                  >ПАСПОРТ</button>
+                )}
               </div>
               <button ref={closeRef} className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
             </div>

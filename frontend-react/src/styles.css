@@ -892,3 +892,27 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .linker-badge b { color: var(--accent); }
+
+/* ── Паспорт бумаги (/audit/:isin): светофор чеков + провенанс ── */
+.audit-page { max-width: 1080px; margin: 0 auto; padding: 20px 24px 60px; }
+.audit-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 14px; border-bottom: 1px solid var(--fg); }
+.audit-head h2 { font-size: 17px; font-weight: 800; letter-spacing: 0.03em; margin: 0; }
+.audit-gen { font-size: 11px; margin-left: auto; }
+.audit-checks { display: flex; flex-direction: column; border: 1px solid var(--line); margin-bottom: 20px; }
+.audit-check { display: grid; grid-template-columns: 52px 300px 1fr; gap: 12px;
+  align-items: baseline; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.audit-check:last-child { border-bottom: none; }
+.ac-badge { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-align: center;
+  padding: 1px 0; border: 1px solid currentColor; }
+.ac-label { font-weight: 600; }
+.ac-detail { color: var(--mut); line-height: 1.4; }
+.audit-check.st-ok .ac-badge { color: var(--up); }
+.audit-check.st-warn .ac-badge { color: var(--accent); }
+.audit-check.st-bad .ac-badge { color: var(--down); }
+.audit-check.st-bad .ac-label { color: var(--down); }
+.audit-check.st-info .ac-badge, .audit-check.st-na .ac-badge { color: var(--mut-2); }
+.audit-pre { font: 11px/1.5 var(--mono); background: var(--hover); border: 1px solid var(--line);
+  padding: 12px 14px; margin: 10px 0 20px; white-space: pre-wrap; word-break: break-word;
+  max-height: 420px; overflow: auto; }
+.audit-text { margin: 6px 0 14px; }

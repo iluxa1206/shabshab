@@ -129,6 +129,28 @@ class BondDetailsResponse(BaseModel):
     sources: Dict[str, Any]
     warnings: List[str] = Field(default_factory=list)
 
+# --- 5.6 Паспорт бумаги (аудит-развёртка для верификации расчётов) ---
+class AuditCheck(BaseModel):
+    id: str
+    label: str
+    status: str                      # ok | warn | bad | info | na
+    detail: Optional[str] = None
+
+class BondAuditResponse(BaseModel):
+    isin: str
+    generated_at: datetime
+    calc_date: Optional[date]
+    checks: List[AuditCheck]
+    registry: Optional[Dict[str, Any]] = None   # строка реестра + enrich_seen
+    spec: Dict[str, Any]                        # слои спеки фиксинга + провенанс
+    backtest: Dict[str, Any]                    # по-купонный обратный пересчёт
+    market: Dict[str, Any]                      # цена/НКД/свежесть индекса
+    valuation: Dict[str, Any]                   # метрики оценки (как карточка)
+    waterfall: Dict[str, Any]                   # по-платёжная развёртка PV
+    schedule: Dict[str, Any]                    # сырой график MOEX (купоны/аморт/оферты)
+    formula: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+
 # --- Cashflow & Valuation Endpoints ---
 class CashflowResponse(BaseModel):
     isin: str
@@ -230,9 +252,9 @@ class CurveQuote(BaseModel):
     days: int            # срок до даты погашения тенора от start
     value_pct: float     # исходная par-котировка СПФИ (mid)
     name: str
-    implied_avg_pct: Optional[float] = None  # ср. ставка индекса на срок (spot из DF)
-    forward_pct: Optional[float] = None      # форвард на окне [пред.тенор, тенор]
-    fwd_span: Optional[str] = None           # подпись окна форварда, напр. "1W→2W"
+    implied_avg_pct: Optional[float] = None  # avg по листу (par-based, годовые купоны)
+    forward_pct: Optional[float] = None      # форвард телескопированием avg (лист)
+    fwd_span: Optional[str] = None           # подпись окна форварда: "3m3m", "1Y1Y"
 
 class CurveSample(BaseModel):
     days: int            # смещение от calc_date

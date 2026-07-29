@@ -154,6 +154,10 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
+// Паспорт бумаги: провенанс всех данных + бэктест спеки + waterfall PV + чеки.
+export const fetchBondAudit = (isin) =>
+  request(`/api/bonds/${encodeURIComponent(isin)}/audit`);
+
 // Динамика спредов: серия DM(флоатер)/g-спред(фикс) по историч. дневным ценам.
 export const fetchSpreadHistory = (isin, { kind = "floater", secid, board = "TQCB", days = 120 } = {}) => {
   let u = `/api/history/${encodeURIComponent(isin)}/spread?kind=${kind}&days=${days}&board=${board}`;
