@@ -91,7 +91,13 @@ async def validate_priceable() -> dict:
             return
         end, start, valueprc, value = lf
         days = (end - start).days or 1
-        face = row.get("face_value") or 1000
+        # номинал ПЕРИОДА купона, не текущий: у амортизируемых бумаг value
+        # платился на больший остаток — деление на текущий face завышало ставку
+        # (БалтЛизП10: 13.71₽ на 1000₽ делили на 900₽ → ложный suspect +1.7пп).
+        # _face_on откатывает face назад по траншам, выплаченным в (start, calc].
+        from services.coupon_calib import _face_on
+        face_cur = row.get("face_value") or 1000
+        face = _face_on(face_cur, (full or {}).get("amorts"), start, calc_date)
         rate = valueprc if valueprc else (value * 365.0 / (days * face) * 100.0)
         hist = ks_hist if base == "KEYRATE" else ruo_hist
         actual = _index_at(hist, start)

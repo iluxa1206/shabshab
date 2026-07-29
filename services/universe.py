@@ -52,6 +52,12 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     # Номинал: сверяем с фактом купона (value/valueprc). Ловит тихий фолбэк на
     # 1000, когда бумаги нет в securities-кэше.
     reconcile_face(ref, coupons_full, calc_date)
+    # остаток из графика амортизаций авторитетнее кэша (стейл-кэш завышал
+    # dirty/SM/DM амортизируемых бумаг — БалтЛизП10 1000 vs 900)
+    from services.bonds import amort_remaining_face
+    _rem = amort_remaining_face(amorts, calc_date)
+    if _rem is not None and abs(_rem - ref.face_value) > 0.5:
+        ref.face_value = _rem
 
     periods = []
     for c in coupons_full:

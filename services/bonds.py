@@ -144,6 +144,27 @@ def reconcile_face(ref: BondRefData, coupons_full, calc_date: date,
     return None
 
 
+def amort_remaining_face(amorts, calc_date: date) -> Optional[float]:
+    """Остаток номинала на calc_date из графика амортизаций MOEX = Σ будущих
+    траншей (вкл. финальное погашение). Авторитетнее кэша securities: isins_cache
+    у амортизируемых бумаг стейлится (БалтЛизП10: кэш 1000₽ при остатке 900₽ →
+    dirty/SM/DM карточки и бэктест паспорта завышали номинал на 11%).
+    None — графика нет (не амортизируется или нет данных), берите прежний face."""
+    if not amorts:
+        return None
+    tot = 0.0
+    for a in amorts:
+        d = a.get("date")
+        if isinstance(d, str):
+            try:
+                d = date.fromisoformat(d)
+            except (ValueError, TypeError):
+                continue
+        if isinstance(d, date) and a.get("value") is not None and d > calc_date:
+            tot += float(a["value"])
+    return tot if tot > 0 else None
+
+
 def external_formula(ref: BondRefData) -> str:
     """Синтетическая формула купона для отображения (нет FORMULA из кэша)."""
     label = _BASE_LABEL.get(ref.base, ref.base)

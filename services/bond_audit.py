@@ -275,7 +275,28 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     coupons = sched_full.get("coupons") or []
     amorts = sched_full.get("amorts") or []
     offers = sched_full.get("offers") or []
-    face = ref_obj.face_value or 1000.0
+
+    # НОМИНАЛ: график амортизаций (Σ будущих траншей, вкл. финальное погашение)
+    # > реестр > кэш. isins_cache у амортизируемых бумаг стейлится (БалтЛизП10:
+    # кэш 1000 при остатке 900) → _face_on откатывал прошлые купоны к 1100 и
+    # бэктест/оценка получали ложную систематику −1.5пп (факт выплат при этом
+    # сходился с проспектом до копейки). reconcile_face не спасает — он ловит
+    # только кратные (×3+) промахи деноминации, не амортизацию.
+    from services.bonds import amort_remaining_face
+    face_cache = ref_obj.face_value
+    face_reg = (reg_row or {}).get("face_value")
+    face_amort = amort_remaining_face(amorts, calc_date)
+    face = face_amort or face_reg or face_cache or 1000.0
+    ref_obj.face_value = face          # оценка/waterfall тоже на честном остатке
+    srcs = {"график MOEX": face_amort, "реестр": face_reg, "кэш": face_cache}
+    used_src = next(k for k, v in srcs.items() if v == face)
+    vals = {v for v in srcs.values() if v}
+    if len(vals) > 1:
+        check("face", "Номинал: график MOEX vs реестр vs кэш", "warn",
+              " · ".join(f"{k} {v:.0f}₽" for k, v in srcs.items() if v is not None)
+              + f"; применён {used_src} — стейл-источники травят карточку/конвейер")
+    else:
+        check("face", "Номинал (остаток)", "ok", f"{face:.0f}₽ · {used_src}")
 
     spec_block = {"effective": {}, "sources": {}, "layers": {}, "coupon_text": None}
     backtest = {"rows": [], "n": 0, "verdict": "NO_DATA"}
@@ -394,19 +415,10 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
               f"MOEX {accrued_moex}₽, кэш {accrued_cache}₽ (Δ {d:.2f}₽); "
               "в расчёт идёт MOEX")
 
-    # ── амортизации vs номинал ──────────────────────────────────────────────
-    if amorts:
-        am_sum = sum(float(a.get("value") or 0) for a in amorts)
-        # график амортизаций MOEX включает финальное погашение → Σ = исходный номинал
-        init_face = None
-        for c in coupons:
-            if c.get("face"):
-                init_face = max(init_face or 0, float(c["face"]))
-        if init_face:
-            gap = abs(am_sum - init_face)
-            st = "ok" if gap < 0.51 else "warn"
-            check("amort_sum", "Σ амортизаций vs исходный номинал", st,
-                  f"Σ {am_sum:.0f}₽ vs номинал {init_face:.0f}₽")
+    # Прежний чек «Σ амортизаций vs max(face) купонов» удалён: MOEX перезаписывает
+    # facevalue ВСЕГО графика текущим остатком (у амортизированных все строки = 900),
+    # сравнение с Σ траншей (= исходный номинал) давало ложный WARN. Его роль
+    # выполняет чек "face" выше (сверка трёх источников номинала).
 
     # ── горизонт: последний купон vs погашение ──────────────────────────────
     if ref_obj.maturity_date and coupons:
@@ -577,6 +589,13 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     offers = sched_full.get("offers") or []
     margin_pct = (ref_obj.spread_issue_bps or 0) / 100.0
     idx = index_history(base)
+
+    # номинал: остаток из графика амортизаций > кэш (стейл-кэш травит калибровку,
+    # см. одноимённый блок в build_bond_audit)
+    from services.bonds import amort_remaining_face
+    _rem = amort_remaining_face(amorts, calc_date)
+    if _rem is not None:
+        ref_obj.face_value = _rem
 
     spec = coupon_formula(isin, coupons=coupons, margin_pct=margin_pct,
                           face=ref_obj.face_value or 1000.0, calc_date=calc_date,
