@@ -43,9 +43,10 @@ const realFetch = window.fetch.bind(window);
 window.fetch = (url, opts) => {
   const u = String(url);
   if (u.includes("/api/history/aggregate/yidx")) {
-    const days = Number(new URL(u, location.origin).searchParams.get("days")) || 91;
-    const by = new URL(u, location.origin).searchParams.get("by");
-    const body = by === "issuer"
+    const req = JSON.parse(opts?.body || "{}");
+    const days = req.days || 91;
+    console.log("yidx mock: isins filter size =", (req.isins || []).length);
+    const body = req.by === "issuer"
       ? mkSeries(["Газпром капитал", "ДОМ.РФ", "Балтийский лизинг БО", "РЫНОК"], days, [150, 90, 620, 210])
       : mkSeries(["AAA", "AA", "BB"], days, [120, 300, 560]);
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));

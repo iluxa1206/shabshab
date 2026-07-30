@@ -252,19 +252,23 @@ const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
 const ICOLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9", "#3fc6c6", "#d4b83f", "#f97cc0"];
 const dmm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 
-function YidxHistory({ groupBy }) {
+function YidxHistory({ groupBy, rows }) {
   const byIss = groupBy === "issuer";
   const [period, setPeriod] = useState(91);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  // стабильный ключ фильтра: rows пересоздаются каждым поллом с тем же составом —
+  // рефетч только при реальной смене набора ISIN
+  const isinsKey = useMemo(() => rows.map((b) => b.isin).sort().join(","), [rows]);
   useEffect(() => {
+    if (!isinsKey) { setData({ dates: [], series: [] }); return; }
     const ac = new AbortController();
     setErr(null);
-    fetchYidxHistory(period, byIss ? "issuer" : "rating", ac.signal)
+    fetchYidxHistory(period, byIss ? "issuer" : "rating", isinsKey.split(","), ac.signal)
       .then(setData)
       .catch((e) => { if (e.name !== "AbortError") setErr(e.message || "ошибка"); });
     return () => ac.abort();
-  }, [period, byIss]);
+  }, [period, byIss, isinsKey]);
 
   const body = useMemo(() => {
     if (err) return <div className="an-empty">не загрузилось: {err}</div>;
@@ -384,10 +388,10 @@ export default function AnalyticsPanel({ rows }) {
       </div>
       <div className="an-card">
         <div className="an-title">Y-IDX ДИНАМИКА
-          <span className="an-hint">{byIss ? "медиана по топ-эмитентам · пунктир = рынок" : "медиана по рейтинг-бакетам"}</span>
+          <span className="an-hint">{byIss ? "медиана по топ-эмитентам · пунктир = рынок · по текущему фильтру" : "медиана по рейтинг-бакетам · по текущему фильтру"}</span>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
-        <YidxHistory groupBy={groupBy} />
+        <YidxHistory groupBy={groupBy} rows={rows} />
       </div>
     </section>
   );

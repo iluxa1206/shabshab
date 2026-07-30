@@ -5,6 +5,7 @@
 менялись) — но для тренда достаточно. Без хранилища, on-demand."""
 import re
 import logging
+from typing import Optional
 from fastapi import APIRouter, Path, Query, HTTPException
 
 from services.market_data import MarketDataService
@@ -95,15 +96,24 @@ _YIDX_BAND = (-1500, 3000)   # тот же бэнд, что у DM в анали�
 _AGG_TOP_ISSUERS = 8         # линий в режиме «эмитент» (медиана рынка — отдельно)
 
 
-@router.get("/aggregate/yidx", tags=["History"])
-async def yidx_aggregate(
-    days: int = Query(91, ge=7, le=400),
-    by: str = Query("rating", description="rating | issuer"),
-):
-    """Динамика медианного Y-IDX по рейтинг-бакетам или топ-эмитентам из точных
-    дневных снапшотов spread_daily (флоатеры). Рейтинг/эмитент — текущие из
-    реестра (историю атрибутов не храним). История копится вперёд с первого
-    снапшота — глубина ограничена exact_from."""
+from pydantic import BaseModel, Field
+
+
+class YidxAggBody(BaseModel):
+    days: int = Field(91, ge=7, le=400)
+    by: str = "rating"
+    # ISIN-ы отфильтрованного набора таблицы (★/база/рейтинг/эмитент/поиск):
+    # агрегируем только по ним — график согласован с остальной аналитикой.
+    # None/пусто — весь юниверс.
+    isins: Optional[list[str]] = None
+
+
+@router.post("/aggregate/yidx", tags=["History"])
+async def yidx_aggregate(body: YidxAggBody):
+    """Динамика медианного Y-IDX по рейтинг-бакетам или топ-эмитентам из дневных
+    строк spread_daily (точные снапшоты + candle-бэкфилл). Рейтинг/эмитент —
+    текущие из реестра (историю атрибутов не храним)."""
+    days, by = body.days, body.by
     if by not in ("rating", "issuer"):
         raise HTTPException(status_code=400, detail="by: rating | issuer")
     from datetime import date as _date, timedelta
@@ -118,7 +128,10 @@ async def yidx_aggregate(
             "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
             "ORDER BY date", (cutoff,)).fetchall()
     lo, hi = _YIDX_BAND
-    rows = [r for r in rows if lo < r["y_idx"] < hi]
+    want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
+        if body.isins else None
+    rows = [r for r in rows if lo < r["y_idx"] < hi
+            and (want is None or r["isin"] in want)]
     if not rows:
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
 
