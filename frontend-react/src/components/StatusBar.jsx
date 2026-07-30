@@ -3,6 +3,8 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchAlerts, deleteAlert } from "../api.js";
 import { fmt } from "../format.js";
+import KpisInline from "./Kpis.jsx";
+import { IconBell, IconAlert } from "./icons.jsx";
 
 const mln = (v) => (v != null ? (v / 1e6).toFixed(1) : null);   // ₽ → млн
 
@@ -73,7 +75,7 @@ function AlertsCell({ bonds = [] }) {
     <span className={"status-cell al-chip" + (open ? " open" : "")}
       onMouseEnter={openNow} onMouseLeave={closeSoon}>
       <span className={"al-chip-lbl" + (hasFired ? " fired" : "")}>
-        🔔 {active.length}{hasFired && <span className="al-chip-fired"> · {fired.length} ⚠</span>}
+        <IconBell /> {active.length}{hasFired && <span className="al-chip-fired"> · {fired.length} <IconAlert /></span>}
       </span>
       {open && (
         <div className="al-pop" onMouseEnter={cancelClose} onMouseLeave={closeSoon}>
@@ -92,7 +94,7 @@ function AlertsCell({ bonds = [] }) {
                 <span className="al-pop-m" title="цена, чистая %">{px != null ? `${px}%` : "—"}</span>
                 <span className="al-pop-m" title="оборот сегодня, млн ₽">{vol != null ? `${vol}` : "—"}</span>
                 <span className="al-pop-m" title="DM, б.п.">{dm != null ? `${dm}` : "—"}</span>
-                <span className="al-pop-st">{a.status === "fired" ? `⚠ ${fmt.pct(a.fired_price)}%` : "ждёт"}</span>
+                <span className="al-pop-st">{a.status === "fired" ? <><IconAlert /> {fmt.pct(a.fired_price)}%</> : "ждёт"}</span>
                 <button className="al-del" title={a.status === "active" ? "Отменить" : "Удалить"}
                   onClick={(e) => { e.stopPropagation(); delMut.mutate(a.id); }}>✕</button>
               </div>
@@ -104,7 +106,7 @@ function AlertsCell({ bonds = [] }) {
   );
 }
 
-export default function StatusBar({ count, bonds = [], live, sources = {}, theme, onSetTheme }) {
+export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sources = {}, theme, onSetTheme }) {
   // ALOR = живой WS-поток; CBONDS — из meta (кривые ставок построены)
   const src = [
     { k: "ALOR", on: live },
@@ -114,8 +116,8 @@ export default function StatusBar({ count, bonds = [], live, sources = {}, theme
   return (
     <footer className="statusbar">
       {onSetTheme && <ThemeSwitch theme={theme} onSetTheme={onSetTheme} />}
-      <span className="status-cell">{live ? "ГОТОВО" : "ПОДКЛЮЧЕНИЕ"}</span>
       {onFloaters && <span className="status-cell">ИНСТРУМЕНТЫ <span className="counter">{String(count).padStart(3, "0")}</span></span>}
+      {onFloaters && <KpisInline bonds={kpiBonds} />}
       <AlertsCell bonds={bonds} />
       <span className="status-cell grow" />
       {src.map((s) => (

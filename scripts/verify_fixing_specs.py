@@ -56,7 +56,7 @@ def resolve_spec_with_source(isin: str, coupons, margin_pct, face, today, amorts
 def backtest_bond(row, full, today) -> dict:
     """Бэктест одной бумаги. Возвращает dict для отчёта."""
     from services.coupon_calib import (_past_rows, _index, _realized,
-                                       projected_ks_pct, _obs_date)
+                                       projected_ks_pct, fixing_probe_date)
     from core.cashflow import coupon_period_from_coupons
 
     isin = row["isin"]
@@ -110,7 +110,29 @@ def backtest_bond(row, full, today) -> dict:
         out.update({"mode": mode, "lag": lag, "lag_unit": unit,
                     "mode_src": "default(fwd~avg)"})
 
+    # маржа-лесенка: надбавка периода по № купона (полный график MOEX, 1-based);
+    # вне диапазонов — скаляр реестра
+    ms = spec.get("margin_schedule")
+    ord_by_start = {}
+    if ms:
+        def _ck(c):
+            v = c.get("start") or ""
+            return v if isinstance(v, str) else v.isoformat()
+        for i, c in enumerate(sorted(coupons, key=_ck)):
+            s0 = c.get("start")
+            if isinstance(s0, str):
+                try:
+                    s0 = date.fromisoformat(s0)
+                except ValueError:
+                    continue
+            ord_by_start[s0] = i + 1
+
     rows_past = _past_rows(cps_bt, margin_pct, face, today, amorts)[-MAX_PAST:]
+    # лесенка задаёт, КАКИЕ купоны плавающие: фикс-ступени вне диапазонов
+    # («1-16 купоны - X% годовых» ТрансФин-М) — не флоатер, из бэктеста вон
+    if ms:
+        flo = {o for st in ms for o in range(st["from"], st["to"] + 1)}
+        rows_past = [r for r in rows_past if ord_by_start.get(r[0]) in flo]
     if not rows_past:
         return out
     idx = _index(base)
@@ -118,19 +140,30 @@ def backtest_bond(row, full, today) -> dict:
         return out
 
     pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
+
+    def _margin_for(s):
+        o = ord_by_start.get(s)
+        if o is not None:
+            for st in ms or []:
+                if st["from"] <= o <= st["to"]:
+                    return st["bps"] / 100.0
+        return margin_pct
+
     errs = []
     for s, e, obs in rows_past:
         # период считаем только если окно фиксинга целиком покрыто историей —
         # fwd-протечка сделала бы «ошибку» из дыры данных
-        probe = _obs_date(s, lag, unit)
+        probe = fixing_probe_date(pspec, s)
         if not _realized(idx, probe, today):
             continue
         pred = projected_ks_pct(pspec, s, e, today, fwd_pct=lambda d: None, idx=idx)
         if pred is None or pred == 0.0 and mode == "point":
             continue
         # кэп/флор применяются к ПОЛНОЙ ставке купона (индекс+маржа): сравниваем
-        # клэмпнутые полные ставки, иначе капнутая бумага даёт ложную ошибку
-        pred_full, obs_full = pred + margin_pct, obs + margin_pct
+        # клэмпнутые полные ставки, иначе капнутая бумага даёт ложную ошибку.
+        # obs + margin_pct = фактическая полная ставка купона (обе на скаляре);
+        # предсказание — с маржой лесенки своего периода.
+        pred_full, obs_full = pred + _margin_for(s), obs + margin_pct
         cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
         if cap is not None:
             pred_full = min(pred_full, float(cap))

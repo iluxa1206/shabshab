@@ -212,7 +212,17 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "capped": p.get("capped"),        # есть ли кэп/флор (bool)
         "cap_pct": p.get("cap_pct"),      # потолок ставки купона, % годовых (MIN/«не более»)
         "floor_pct": p.get("floor_pct"),  # пол ставки купона, % годовых (MAX/«не менее»)
+        "margin_schedule": None,          # лесенка маржи [{'from','to','bps'}] по № купонов
     }
+    # маржа-лесенка из текста формулы: диапазоны купонов со своей надбавкой
+    # («S 1-7 = 2.5%, S8-21 = 4.6%»). Скаляр margin_bps остаётся фолбэком для
+    # купонов вне распарсенных диапазонов.
+    if p.get("coupon_text"):
+        try:
+            from services.coupon_calib import parse_margin_schedule
+            out["margin_schedule"] = parse_margin_schedule(p["coupon_text"])
+        except Exception:
+            pass
     # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
     if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
         try:

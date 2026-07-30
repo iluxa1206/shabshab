@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAlerts } from "../api.js";
 import { fmt } from "../format.js";
@@ -52,16 +53,20 @@ function AlToast({ a, onDismiss }) {
     const t = setTimeout(onDismiss, 14000);
     return () => clearTimeout(t);
   }, [onDismiss]);
+  const reduce = useReducedMotion();
   return (
-    <div className="al-toast" role="alert">
+    <motion.div className="al-toast" role="alert"
+      initial={reduce ? false : { x: 48, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 420, damping: 32 }}>
       <button className="al-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
-      <div className="al-toast-h">🔔 Алерт сработал</div>
+      <div className="al-toast-h"><IconBell /> Алерт сработал</div>
       <div className="al-toast-b">
         <b>{a.side === "buy" ? "Купить" : "Продать"}</b> {a.isin}
         <br />{a.metric} {a.op} {fmt.num(a.threshold, 2)}
         {a.fired_price != null && <> → цена <b>{fmt.pct(a.fired_price)}%</b></>}
         {a.fired_volume != null && <> · объём {fmt.num(a.fired_volume, 0)}</>}
       </div>
-    </div>
+    </motion.div>
   );
 }

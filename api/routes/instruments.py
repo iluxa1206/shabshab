@@ -49,12 +49,12 @@ class InstrumentParams(BaseModel):
     face_value: Optional[float] = Field(None, gt=0)
     fixing_lag: Optional[int] = Field(None, ge=0, le=30)
     fixing_lag_unit: Optional[str] = Field(None, description="cal | work")
-    coupon_mode: Optional[str] = Field(None, description="point | average | avg_prev")
+    coupon_mode: Optional[str] = Field(None, description="point | average | avg_prev | month_start")
     short_name: Optional[str] = Field(None, max_length=128)
     var_type: Optional[str] = None
     cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")
     floor_pct: Optional[float] = Field(None, ge=0, le=100, description="пол ставки, % год.")
-    coupon_text: Optional[str] = Field(None, max_length=300, description="текст формулы купона")
+    coupon_text: Optional[str] = Field(None, description="текст формулы купона")
 
 
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -192,8 +192,8 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
         if params.get("base") and params["base"] not in ("KEYRATE", "RUONIA", "FIXED"):
             errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED")
             continue
-        if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev"):
-            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ point|average|avg_prev")
+        if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev", "month_start"):
+            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ point|average|avg_prev|month_start")
             continue
         if params.get("fixing_lag_unit") and params["fixing_lag_unit"] not in ("cal", "work"):
             errors.append(f"строка {rn} ({isin}): fixing_lag_unit ∈ cal|work")
@@ -216,7 +216,7 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
 
 
 class FormulaIn(BaseModel):
-    formula: str = Field(..., max_length=300)
+    formula: str
 
 
 @router.post("/parse-formula", tags=["Instruments"])
@@ -270,8 +270,8 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
             raise HTTPException(status_code=422, detail=f"{f}: ожидается YYYY-MM-DD")
     if body.fixing_lag_unit is not None and body.fixing_lag_unit not in ("cal", "work"):
         raise HTTPException(status_code=422, detail="fixing_lag_unit ∈ cal|work")
-    if body.coupon_mode is not None and body.coupon_mode not in ("point", "average"):
-        raise HTTPException(status_code=422, detail="coupon_mode ∈ point|average")
+    if body.coupon_mode is not None and body.coupon_mode not in ("point", "average", "avg_prev", "month_start"):
+        raise HTTPException(status_code=422, detail="coupon_mode ∈ point|average|avg_prev|month_start")
     reg.set_manual(isin, params, lock=True)
     return {"ok": True, "instrument": reg.get(isin)}
 

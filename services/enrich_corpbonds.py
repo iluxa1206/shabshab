@@ -29,7 +29,10 @@ _CB_URL = "https://corpbonds.ru/bond/{isin}"
 # версией бесполезен (и раньше сжигал квоту), а после фикса парсера бумаги с
 # устаревшим вердиктом перечекиваются немедленно (enrich_pending сверяет версию).
 # История: v1 — Σ-приклеенная база уходила в EXOTIC (ложная экзотика).
-PARSER_VERSION = 2
+# v3 — ИПЦ-линкеры (индекс потребительских цен) детектятся как exotic=cpi:
+# раньше «ставка рефинансирования» в хвосте формулы давала base=KEYRATE и бумага
+# прайсилась как КС-флоатер (Ситиматик: ошибка до 3пп на купоне).
+PARSER_VERSION = 3
 
 
 def _parse_formula(f: str) -> dict:
@@ -52,6 +55,21 @@ def _parse_formula(f: str) -> dict:
     inverse = bool(re.search(r"[-−–]\s*(КС|KC|CBR|RUONIA)", up))
     # флор/кап/лесенка через MAX/MIN/не более/не менее
     capped = bool(re.search(r"MAX|MIN|МАКС|МИН|НЕ\s+БОЛЕЕ|НЕ\s+МЕНЕЕ|НЕ\s+ВЫШЕ|НЕ\s+НИЖЕ", up))
+
+    # ИПЦ/инфляция-линкер: купон от индекса потребительских цен — не КС/RUONIA-
+    # флоатер. «ставка рефинансирования»/«Ключевая ставка» может стоять в хвосте
+    # как MAX-альтернатива и раньше давала ложный base=KEYRATE (Ситиматик,
+    # КВС об.01 — ошибка до 3пп на купоне).
+    if re.search(r"ИПЦ|ИНДЕКС\s+ПОТРЕБИТЕЛЬСКИХ\s+ЦЕН|ИНФЛЯЦ", up):
+        out.update({"base": None, "margin_bps": None, "coupon_mode": None,
+                    "exotic": "cpi"})
+        return out
+    # GCurve-линкер: купон от точки КБД (G-кривой ОФЗ), не от КС/RUONIA
+    # (РОСНАНО 8: «значение GCurve на 7 лет + 157 б.п.») — вне линейной модели.
+    if re.search(r"GCURVE|G-CURVE|КБД", up):
+        out.update({"base": None, "margin_bps": None, "coupon_mode": None,
+                    "exotic": "gcurve"})
+        return out
 
     base = None
     if "RUONIA" in up:
@@ -146,7 +164,7 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
             stats["fetched"] += 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
             # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели
-            if exotic == "inverse" or (r.get("is_floater") and base is None):
+            if exotic in ("inverse", "cpi") or (r.get("is_floater") and base is None):
                 if apply:
                     reg.set_exotic(isin, note=r.get("formula_text") or "")
                     reg.mark_enrich_attempt(isin, "exotic", parser_ver=PARSER_VERSION)

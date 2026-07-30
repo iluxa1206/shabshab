@@ -148,3 +148,32 @@ def test_convention_mismatch_raises(ruonia_curve, calc_date, flat_index_15):
     with pytest.raises(ValueError, match="rate_convention"):
         build_cashflows_to_maturity(bond, ruonia_curve, calc_date,
                                     explicit_periods=periods, index_pct_fn=fn)
+
+
+def test_margin_schedule_per_period_delta(keyrate_curve, calc_date, flat_index_15, monkeypatch):
+    """Лесенка маржи: будущий купон получает спред своей ступени (дельтой к
+    скаляру margin_bps), купоны вне диапазонов — скаляр spread_issue_bps."""
+    import services.ref_data as rd
+    bond = make_bond(margin_bps=150)
+    periods = quarterly_periods(bond.issue_date, bond.maturity_date)
+    # купоны 1-12 → 150 (совпадает со скаляром), 13+ → 350
+    monkeypatch.setattr(rd, "coupon_formula", lambda isin, *a, **k: {
+        "base": "KEYRATE", "margin_bps": 150, "cap_pct": None, "floor_pct": None,
+        "capped": False, "coupon_mode": None, "fixing_lag": None,
+        "fixing_lag_unit": None,
+        "margin_schedule": [{"from": 1, "to": 12, "bps": 150},
+                            {"from": 13, "to": 999, "bps": 350}],
+    })
+    fn, _ = flat_index_15
+    cfs = build_cashflows_to_maturity(bond, keyrate_curve, calc_date,
+                                      explicit_periods=periods, index_pct_fn=fn)
+    coupons = [cf for cf in cfs if cf.type == "COUPON"]
+    sp = {cf.spread_bps for cf in coupons}
+    assert 150 in sp and 350 in sp, f"обе ступени должны присутствовать: {sp}"
+    # ступени идут по времени: сначала 150, потом 350, без чередования
+    seq = [cf.spread_bps for cf in sorted(coupons, key=lambda c: c.pay_date)]
+    assert seq == sorted(seq)
+    # ставка купона ступени 350 выше ставки ступени 150 ровно на 2пп
+    r150 = max(c.coupon_rate_pct for c in coupons if c.spread_bps == 150)
+    r350 = max(c.coupon_rate_pct for c in coupons if c.spread_bps == 350)
+    assert abs((r350 - r150) - 2.0) < 0.05

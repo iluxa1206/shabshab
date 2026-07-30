@@ -66,11 +66,14 @@ def test_point_do_daty_nachala():
     assert r["mode"] == "point" and r["lag"] == 5 and r["lag_unit"] == "work"
 
 
-def test_point_first_day_of_month():
+def test_month_start_first_day_of_month():
+    # фиксинг на 1-е число месяца старта периода (ИЖА ДОМ.РФ) — точный режим,
+    # а не аппроксимация point lag 0 (давала систематику ~0.33пп)
     t = ("R - ключевая ставка, действующая по состоянию на 1-й (первый) день "
          "календарного месяца, на который приходится дата начала Расчетного периода")
     r = P(t)
-    assert r["mode"] == "point"
+    assert r["mode"] == "month_start"
+    assert r["lag"] == 0
 
 
 def test_retro_window_variant_ot_do():
@@ -128,3 +131,101 @@ def test_calibrate_fixed_mode_constrains_pair():
     assert fixed is None or fixed["mode"] == "average"
     # режим вне перебора (avg_prev) → None, дефолты потребителя
     assert calibrate("T1", coupons, 2.0, face, calc, idx=idx, fixed_mode="avg_prev") is None
+
+
+# ── month_start: проекция фиксинга на 1-е число месяца ──────────────────────
+
+def test_month_start_projection_uses_month_first_day():
+    from datetime import date, timedelta
+    from services.coupon_calib import projected_ks_pct
+    # индекс меняется 10-го числа: 1-е число месяца = 15%, старт периода (20-е) = 20%
+    d0 = date(2025, 6, 1)
+    idx_dates = [d0 + timedelta(days=i) for i in range(60)]
+    idx_rates = [15.0 if (d0 + timedelta(days=i)).day < 10 or
+                 (d0 + timedelta(days=i)).month == 6 else 15.0 for i in range(60)]
+    # проще: июнь весь 15%, с 10 июля 20%
+    idx_rates = []
+    for d in idx_dates:
+        idx_rates.append(20.0 if (d.month, d.day) >= (7, 10) else 15.0)
+    spec = {"mode": "month_start", "lag": 0, "lag_unit": "cal", "base": "KEYRATE"}
+    s, e = date(2025, 7, 20), date(2025, 8, 20)
+    got = projected_ks_pct(spec, s, e, date(2025, 7, 25),
+                           fwd_pct=lambda d: 99.0, idx=(idx_dates, idx_rates))
+    # фиксинг на 1 июля (15%), а не на старт 20 июля (20%)
+    assert got == 15.0
+
+
+def test_fixing_probe_date_month_start():
+    from datetime import date
+    from services.coupon_calib import fixing_probe_date
+    assert fixing_probe_date({"mode": "month_start"}, date(2025, 7, 20)) == date(2025, 7, 1)
+    assert fixing_probe_date({"mode": "point", "lag": 3, "lag_unit": "cal"},
+                             date(2025, 7, 20)) == date(2025, 7, 17)
+
+
+# ── parse_margin_schedule: лесенка маржи по номерам купонов ─────────────────
+
+def test_margin_schedule_s_ranges():
+    from services.coupon_calib import parse_margin_schedule
+    t = ("1-21 купоны: RDI = K + S, гдеК - значение ключевой ставки Банка России "
+         "(в процентах годовых) на 7-й (седьмой) день,предшествующий дате Di. "
+         "S - надбавка, в процентах годовых. S 1-7 = 2.5%, S8-21 = 4.6%")
+    assert parse_margin_schedule(t) == [
+        {"from": 1, "to": 7, "bps": 250}, {"from": 8, "to": 21, "bps": 460}]
+
+
+def test_margin_schedule_coupon_ranges_with_plus():
+    from services.coupon_calib import parse_margin_schedule
+    t = ("1-12 купоны - 9.8% годовых, 13-18 купоны: Ci = R + 2,5%, где Сi - "
+         "процентная ставка; 19-22 купоны:Ci = R + 3,5%")
+    # фикс-ступень 1-12 (без «+») не попадает; плавающие диапазоны — попадают
+    assert parse_margin_schedule(t) == [
+        {"from": 13, "to": 18, "bps": 250}, {"from": 19, "to": 22, "bps": 350}]
+
+
+def test_margin_schedule_zero_margin_significant():
+    from services.coupon_calib import parse_margin_schedule
+    t = "6-8 купоны - Ключевая ставка ЦБ РФ + 0% годовых"
+    assert parse_margin_schedule(t) == [{"from": 6, "to": 8, "bps": 0}]
+
+
+def test_margin_schedule_letter_indexed():
+    from services.coupon_calib import parse_margin_schedule
+    t = ("1 купон- 22% годовых, 2-36 купоны:Ci = MIN(Cr+6,0%; 24%)"
+         "Cy = MIN(Cr+5,0%; 23%)Ck = MIN(Cr+4,0%; 22%), гдеi, y, k - порядковые "
+         "номера купонных периодов, при этом i = 2, 3...12; y = 13, 14...24; "
+         "k = 25, 26...36.")
+    # буквенная привязка бьёт наивный range-матч «2-36 → +6%»
+    assert parse_margin_schedule(t) == [
+        {"from": 2, "to": 12, "bps": 600}, {"from": 13, "to": 24, "bps": 500},
+        {"from": 25, "to": 36, "bps": 400}]
+
+
+def test_margin_schedule_cpi_linker_none():
+    from services.coupon_calib import parse_margin_schedule
+    t = "2-5 купоны - Cj = MAX ((Ij -100%) + 4%; Gj + 1%), где Ij - индекс потребительских цен"
+    assert parse_margin_schedule(t) is None
+
+
+def test_margin_schedule_symbolic_margin_skipped():
+    from services.coupon_calib import parse_margin_schedule
+    # символьная надбавка «+ f» без числа рядом — не диапазон
+    t = "1-119 купоны - Ci = R + f, где: Ci - размер ставки; f - 1.7%."
+    assert parse_margin_schedule(t) is None
+
+
+def test_average_window_income_days_convention():
+    """НКД-конвенция дней дохода: average усредняет obs по дням (s, e], не [s, e).
+    Сверка до копейки с эмитентом (БалтЛизП10): [s, e) сдвигал фиксинги на −1д."""
+    from datetime import date, timedelta
+    from services.coupon_calib import projected_ks_pct
+    d0 = date(2025, 1, 1)
+    idx_dates = [d0 + timedelta(days=i) for i in range(120)]
+    # ступень: до 2025-02-10 = 10%, дальше 20%
+    idx_rates = [10.0 if d < date(2025, 2, 10) else 20.0 for d in idx_dates]
+    spec = {"mode": "average", "lag": 0, "lag_unit": "cal", "base": "KEYRATE"}
+    s, e = date(2025, 2, 9), date(2025, 2, 19)  # 10 дней дохода: 10..19 февраля
+    got = projected_ks_pct(spec, s, e, date(2025, 4, 1),
+                           fwd_pct=lambda d: None, idx=(idx_dates, idx_rates))
+    # дни дохода 10-19 фев — ВСЕ по 20%; конвенция [s, e) включила бы 9 фев (10%)
+    assert got == 20.0

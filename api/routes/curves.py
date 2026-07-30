@@ -129,10 +129,17 @@ async def get_curve_plot(
     type: Literal["ruonia", "keyrate"] = Query(..., description="ruonia | keyrate")
 ):
     """Par-котировки свопов (что запарсилось: IRS KEYRATE / OIS RUONIA) +
-    построенная bootstrap-кривая (spot/forward-сэмплы) для визуализации.
-    spot_pct — средняя ставка на срок (из DF, компаундированная); forward_pct —
-    сегментный форвард между соседними тенорами (конвенция «3m3m»=[3m,6m]),
-    компаунд-annualized из DF-отношения."""
+    implied avg / forward по методике трейдерского листа (Книга1-3.xlsx, IRS):
+    avg считается ИЗ PAR НАПРЯМУЮ (без бутстрапа) с учётом расписания выплат
+    свопа, forward — арифметическое телескопирование уровней avg.
+
+    Расписание выплат: ≤1Y — одна выплата в погашение; >1Y — раз в 365 дней
+    (годовой купон = par, интерес-на-интерес через годы НЕ компаундится).
+    Базис avg: RUONIA — daily-comp (×365), KEYRATE — quarterly nominal (×4):
+      RUONIA  ≤1Y: 365·((1+par·d/365)^(1/d)−1);   >1Y: 365·((1+par)^(1/365)−1)
+      KEYRATE ≤1Y: 4·((1+par·q/4)^(1/q)−1), q=кварталы; >1Y: 4·((1+par)^(1/4)−1)
+    Forward сегмента [d₁,d₂]: (avg₂·d₂ − avg₁·d₁)/(d₂−d₁) — от старта
+    (в листе база окна съезжает из-за протяжки формулы, тут чистая)."""
     ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
     curve = ruonia_curve if type == "ruonia" else keyrate_curve
     quotes = market_cache.get("ois_quotes" if type == "ruonia" else "irs_quotes") or []
@@ -141,22 +148,18 @@ async def get_curve_plot(
 
     start = curve.calc_date  # effective start (calc_date + 1)
 
-    # ── сегментный форвард между соседними тенорами (сетка десков, «1W→2W» = 1w1w).
-    # Компаунд-annualized из DF-отношения: f = 365·((DF(lo)/DF(hi))^(1/Δд) − 1).
-    # НЕ curve.forward(): для KEYRATE она simple ACT/365 и на пролёте >370д
-    # (5Y→7Y=730д) раздувается (см. _equivalent_rate). Компаунд честен на любом окне
-    # и консистентен с implied_avg. Для окна [lo,hi]: узлы кривой = даты теноров.
-    def _seg_fwd_pct(lo: date, hi: date):
-        dd = (hi - lo).days
-        if dd <= 0:
-            return None
-        try:
-            fac = curve.df(lo) / curve.df(hi)
-        except Exception:
-            return None
-        if fac <= 0:
-            return None
-        return round(365.0 * (fac ** (1.0 / dd) - 1.0) * 100.0, 4)
+    def _avg_pct(par_pct: float, dd: int) -> float:
+        """Implied avg из par-котировки (методика листа, см. docstring)."""
+        s = par_pct / 100.0
+        if type == "ruonia":
+            if dd <= 366:  # одна выплата в погашение
+                return 365.0 * ((1.0 + s * dd / 365.0) ** (1.0 / dd) - 1.0) * 100.0
+            return 365.0 * ((1.0 + s) ** (1.0 / 365.0) - 1.0) * 100.0  # годовые купоны
+        # KEYRATE: квартальный базис
+        if dd <= 366:
+            q = max(1, round(dd * 4.0 / 365.0))
+            return 4.0 * ((1.0 + s * q / 4.0) ** (1.0 / q) - 1.0) * 100.0
+        return 4.0 * ((1.0 + s) ** 0.25 - 1.0) * 100.0
 
     # подпись форварда в конвенции листа «{старт}{длина}»: 3m3m = [3m,6m],
     # 9m3m = [9m,1Y], 2m1m = [2m,3m], 1Y1Y = [1Y,2Y]. Длина окна → тенор-строка.
@@ -174,65 +177,52 @@ async def get_curve_plot(
         return f"{round(dd_gap / 365.0)}Y"
 
     q_out = []
-    prev_end, prev_tenor = start, None
+    dds, avgs = [], []  # дни/avg предыдущих теноров (для базы K-формулы листа)
+    prev_tenor = None
     for q in sorted(quotes, key=lambda x: tenor_to_days(x.tenor)):
-        end = get_maturity_date(start, q.tenor)
+        # −1 день: get_maturity_date даёт +1 к add_months (эмпирика бутстрапа под
+        # сетку 502_504); здесь дни чистые как в листе — 1W=7, 3M=92, 1Y=365 (G=H−F).
+        end = get_maturity_date(start, q.tenor) - timedelta(days=1)
         dd = (end - start).days
-        # implied_avg — ср. компаундированная ставка на [start,end] из DF;
-        # forward — на окне [пред.тенор, тенор] (первый тенор: спот [start, T1]).
-        imp = None
-        try:
-            df_e = curve.df(end)
-            if df_e > 0 and dd > 0:
-                imp = round(365.0 * (df_e ** (-1.0 / dd) - 1.0) * 100.0, 4)
-        except Exception:
-            pass
-        fwd = _seg_fwd_pct(prev_end, end)
-        span = "спот" if prev_tenor is None else f"{_nrm(prev_tenor)}{_gap_label((end - prev_end).days)}"
+        if dd <= 0:
+            continue
+        imp = _avg_pct(q.value, dd)
+        # forward = телескопирование от старта: (avgₙ·dₙ − avgₙ₋₁·dₙ₋₁)/Δd;
+        # первый тенор — спот-окно, fwd = avg. Тождество Σfwd·Δd = avg·d.
+        if not dds:
+            fwd = imp
+        else:
+            prev_dd, prev_avg = dds[-1], avgs[-1]
+            fwd = (imp * dd - prev_avg * prev_dd) / (dd - prev_dd)
+        span = "спот" if prev_tenor is None else f"{_nrm(prev_tenor)}{_gap_label(dd - dds[-1])}"
         q_out.append(CurveQuote(tenor=q.tenor, days=dd,
                                 value_pct=round(q.value, 4), name=q.name,
-                                implied_avg_pct=imp, forward_pct=fwd,
+                                implied_avg_pct=round(imp, 4), forward_pct=round(fwd, 4),
                                 fwd_span=span))
-        prev_end, prev_tenor = end, q.tenor
+        dds.append(dd); avgs.append(imp); prev_tenor = q.tenor
 
-    # сэмплируем кривую до самого длинного тенора (плотнее на коротком конце)
+    # сэмплируем до самого длинного тенора (плотнее на коротком конце).
+    # Линии строятся из тех же avg/fwd на тенорах: fwd — ступень по сегменту,
+    # avg(d) внутри сегмента — из телескопирования: (avgᵢ₋₁·dᵢ₋₁ + fwdᵢ·(d−dᵢ₋₁))/d.
     max_days = max((c.days for c in q_out), default=3650)
     grid = sorted(set(
         list(range(7, min(max_days, 370), 14)) +
         list(range(370, max_days + 1, 90)) + [max_days]
     ))
-    # узлы кривой = [start, T1, T2, …] (даты теноров): форвард-ступень берётся
-    # по сегменту [node_lo, node_hi], в который попадает сэмпл → линия читается
-    # как сетка тенорных форвардов, а не рваное 30-дн окно.
-    node_dates = [nd for nd, _ in curve.nodes]
-
-    def _seg_of(d: date):
-        for i in range(1, len(node_dates)):
-            if d <= node_dates[i]:
-                return node_dates[i - 1], node_dates[i]
-        return node_dates[-2], node_dates[-1]
-
     samples = []
-    for dd in grid:
-        d = start + timedelta(days=dd)
-        try:
-            # spot = средняя ставка на срок [start, d] в daily-comp конвенции,
-            # из DF: 365·(DF^(−1/days) − 1). НЕ через curve.forward(start, d):
-            # после перехода KEYRATE-форварда на ПРОСТУЮ ставку (см.
-            # BootstrappedForwardCurve._equivalent_rate) forward(start, d) над
-            # длинным сроком = (1/DF − 1)/τ и экспоненциально разлетается
-            # (10Y ≈ 35% при плоских ~15%). Простая ставка верна только для одного
-            # купонного периода; «ставка на срок» обязана быть компаундированной.
-            df_d = curve.df(d)
-            spot = 365.0 * (df_d ** (-1.0 / dd) - 1.0) * 100.0 if (df_d > 0 and dd > 0) else 0.0
-            lo, hi = _seg_of(d)
-            fwd = _seg_fwd_pct(lo, hi)
-        except Exception:
-            continue
-        if fwd is None:
-            continue
-        samples.append(CurveSample(days=dd, date=d, spot_pct=round(spot, 4),
-                                   forward_pct=fwd))
+    if q_out:
+        for dd in grid:
+            i = next((k for k, c in enumerate(q_out) if dd <= c.days), len(q_out) - 1)
+            c = q_out[i]
+            if i == 0:
+                spot = fwd = c.forward_pct  # спот-окно до первого тенора
+            else:
+                p = q_out[i - 1]
+                fwd = c.forward_pct
+                spot = (p.implied_avg_pct * p.days + fwd * (dd - p.days)) / dd
+            d = start + timedelta(days=dd)
+            samples.append(CurveSample(days=dd, date=d, spot_pct=round(spot, 4),
+                                       forward_pct=round(fwd, 4)))
 
     warnings = []
     if rates_date and (date.today() - rates_date).days > 4:

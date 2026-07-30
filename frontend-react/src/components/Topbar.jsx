@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
 import { fmt } from "../format.js";
 
@@ -85,7 +86,7 @@ export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSe
         <button className="btn" onClick={onRefresh}>Обновить</button>
         {user && (
           <button className="btn" onClick={onOpenSettings} title="Настройки доступа">
-            {user.email}{user.role === "admin" ? " ⚙" : ""}
+            {user.email}{user.role === "admin" && <> <IconGear size={11} /></>}
           </button>
         )}
         {onLogout && <button className="btn" onClick={onLogout}>Выход</button>}

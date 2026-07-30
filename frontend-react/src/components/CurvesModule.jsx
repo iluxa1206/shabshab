@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { IconAlert } from "./icons.jsx";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
@@ -63,11 +64,11 @@ function CurveView() {
 
       {data?.warnings?.length > 0 && (
         <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>
-          ⚠ {data.warnings.join(" · ")}
+          <IconAlert size={12} /> {data.warnings.join(" · ")}
         </div>
       )}
 
-      {status === "loading" && <div className="muted">Загрузка…</div>}
+      {status === "loading" && <div className="skel skel-chart" role="status" aria-label="Загрузка" />}
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
         <>
@@ -174,7 +175,7 @@ function QuoteTable({ data }) {
             <th style={{ padding: "4px 8px" }}>Дней</th>
             <th style={{ padding: "4px 8px" }}>Par-котировка, %</th>
             <th style={{ padding: "4px 8px", color: "var(--up)" }}>Implied avg, %</th>
-            <th style={{ padding: "4px 8px", color: "var(--down)" }}>Forward (тенор→тенор), %</th>
+            <th style={{ padding: "4px 8px", color: "var(--down)" }}>Forward, %</th>
             <th style={{ textAlign: "left", padding: "4px 8px" }}>Инструмент</th>
           </tr>
         </thead>
@@ -228,12 +229,12 @@ function KsPathView() {
         )}
       </div>
 
-      {status === "loading" && <div className="muted">Загрузка…</div>}
+      {status === "loading" && <div className="skel skel-chart" role="status" aria-label="Загрузка" />}
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
         <>
           {data.warnings?.length > 0 && (
-            <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}>⚠ {data.warnings.join(" · ")}</div>
+            <div style={{ color: "var(--neg)", fontSize: 12, marginBottom: 8 }}><IconAlert size={12} /> {data.warnings.join(" · ")}</div>
           )}
           <KsPathChart points={data.points} calcDate={data.calc_date} />
           <Legend>
@@ -354,7 +355,7 @@ function FloaterScenariosView() {
       </div>
 
       {status === "idle" && <div className="muted">Введи ISIN и нажми «Оценить».</div>}
-      {status === "loading" && <div className="muted">Считаю…</div>}
+      {status === "loading" && <div className="skel skel-chart" role="status" aria-label="Считаю" />}
       {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
       {status === "ready" && data && (
         <>

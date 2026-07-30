@@ -239,13 +239,15 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         # без лага: «действующая на дату начала купонного периода»
         elif re.search(r"действующ\w*(\s+по\s+состоянию)?\s+на\s+дату\s+начала", tl):
             out = {"mode": "point", "lag": 0, "lag_unit": "cal"}
-        # POINT на 1-е число месяца периода: «действующая по состоянию на 1-й
-        # (первый) день [календарного] месяца, на который приходится дата начала».
-        # Точной привязки к 1-му числа модель не хранит; КС меняется лишь по
-        # решению ЦБ (≈8/год) ⇒ приближаем точечным фиксингом (лаг 0).
+        # ФИКСИНГ НА 1-Е ЧИСЛО МЕСЯЦА периода: «действующая по состоянию на 1-й
+        # (первый) день [календарного] месяца, на который приходится дата начала»
+        # (ИЖА ДОМ.РФ, ~10 бумаг). Раньше приближалось point lag 0 — фиксинг на
+        # START периода вместо 1-го числа месяца давал систематику ~0.33пп при
+        # движении КС внутри месяца. Теперь точный режим month_start:
+        # obs = 1-е число месяца start (projected_ks_pct).
         elif re.search(r"на\s+1(?:-?й)?\s*(?:\([^)]*\)\s*)?день\s+"
                        r"(?:календарн\w*\s+)?месяца", tl):
-            out = {"mode": "point", "lag": 0, "lag_unit": "cal"}
+            out = {"mode": "month_start", "lag": 0, "lag_unit": "cal"}
         # average-global без «предшествующ»: «КС, действующая на КАЖДЫЙ
         # календарный день купонного периода» → дневной ресет, лаг 0.
         elif _AVG_GLOBAL.search(tl):
@@ -264,6 +266,71 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
         if floor_pct is not None:
             out["floor_pct"] = floor_pct
     return out or None
+
+
+def fixing_probe_date(spec: dict, start: date) -> date:
+    """Дата наблюдения индекса для старта периода по спеке — единая точка для
+    бэктестов (verify_fixing_specs, bond_audit): month_start игнорирует лаг."""
+    if spec.get("mode") == "month_start":
+        return start.replace(day=1)
+    return _obs_date(start, spec.get("lag") or 0, spec.get("lag_unit") or "cal")
+
+
+# Маржа-лесенка: у части выпусков надбавка меняется по номерам купонов
+# («S 1-7 = 2.5%, S8-21 = 4.6%» БинФарм; «13-18 купоны: Ci = R + 2,5%,
+# 19-22: Ci = R + 3,5%» ТрансФин-М). Скалярный margin_bps реестра тогда врёт
+# на всех периодах вне «своего» диапазона (до 2.1пп на купоне).
+# Диапазон вида «S 1-7 = 2.5%» / «S8-21 = 4.6%».
+_MS_S_RE = re.compile(r"s\s*(\d+)\s*[-–—]\s*(\d+)\s*=\s*([\d]+(?:[.,]\d+)?)\s*%")
+# Диапазон вида «17-18 купоны: Ci = R + 3,25%» / «6-8 купоны - КС + 0%».
+# Окно [^%;] не даёт '+' перетечь через чужой процент («MAX((Ij-100%)+4%» ИПЦ-
+# линкеров не матчится); фикс-ступени («1-2 купоны - 12.75%») без '+' — мимо.
+_MS_CPN_RE = re.compile(
+    r"(\d+)\s*(?:[-–—]\s*(\d+))?\s*купон\w*\s*[:\-–—]?\s*"
+    r"[^%;]{0,120}?\+\s*([\d]+(?:[.,]\d+)?)\s*%")
+
+
+def parse_margin_schedule(text: str) -> Optional[list]:
+    """Текст формулы купона → [{'from','to','bps'}] по номерам купонов (1-based)
+    или None. Ловит только диапазоны с ЧИСЛОВОЙ маржой при базе; символьная
+    надбавка («+ S» без числа рядом) остаётся на скалярном margin_bps реестра.
+    bps=0 значим (реальные «КС + 0%» ступени)."""
+    if not text:
+        return None
+    tl = text.replace("\xa0", " ").lower()
+    # ИПЦ/инфляция/GCurve-линкер: купон не от КС/RUONIA — «маржа» в тексте
+    # относится к другой базе, лесенка была бы ложной (Ситиматик, РОСНАНО)
+    if re.search(r"ипц|индекс\w*\s+потребительск\w+\s+цен|инфляц|gcurve|кбд", tl):
+        return None
+    # БУКВЕННО-ИНДЕКСНАЯ лесенка: «Ci = MIN(Cr+6,0%; 24%) Cy = MIN(Cr+5,0%; 23%)
+    # …, при этом i = 2, 3...12; y = 13, 14...24; k = 25, 26...36» (Джой 1P2).
+    # Наивный range-матч брал «2-36 купоны → +6%» — первый '+' на весь диапазон
+    # (2пп ошибки на хвосте). Буквы связывают маржу с диапазоном точно.
+    ldefs = {m.group(1): round(float(m.group(2).replace(",", ".")) * 100)
+             for m in re.finditer(
+                 r"c([a-zа-я])\s*=\s*(?:min\s*\(\s*)?c?r\s*\+\s*"
+                 r"([\d]+(?:[.,]\d+)?)\s*%", tl)}
+    lrngs = {m.group(1): (int(m.group(2)), int(m.group(3)))
+             for m in re.finditer(
+                 r"([a-zа-я])\s*=\s*(\d+),\s*\d+\s*\.{3}\s*(\d+)", tl)}
+    letter_steps = {lrngs[l]: bps for l, bps in ldefs.items() if l in lrngs}
+    if len(letter_steps) >= 2:
+        return [{"from": k[0], "to": k[1], "bps": v}
+                for k, v in sorted(letter_steps.items())]
+    steps = {}
+    for m in _MS_S_RE.finditer(tl):
+        a, b = int(m.group(1)), int(m.group(2))
+        steps[(min(a, b), max(a, b))] = round(float(m.group(3).replace(",", ".")) * 100)
+    for m in _MS_CPN_RE.finditer(tl):
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else a
+        key = (min(a, b), max(a, b))
+        if key not in steps:
+            steps[key] = round(float(m.group(3).replace(",", ".")) * 100)
+    if not steps:
+        return None
+    return [{"from": k[0], "to": k[1], "bps": v}
+            for k, v in sorted(steps.items())]
 
 
 def _obs_date(d: date, lag: int, unit: str) -> date:
@@ -317,8 +384,11 @@ def _rate_at(idx, d: date) -> Optional[float]:
 
 
 def _rate_avg(idx, s: date, e: date, lag: int) -> Optional[float]:
-    tot, n, cur = 0.0, 0, s
-    while cur < e:
+    # дни дохода (s, e] — та же НКД-конвенция, что в average-ветке
+    # projected_ks_pct: калибратор и проекция обязаны мерить одинаково,
+    # иначе фит-лаг компенсирует сдвиг и разъезжается с парсер-лагом
+    tot, n, cur = 0.0, 0, s + timedelta(days=1)
+    while cur <= e:
         k = _rate_at(idx, cur - timedelta(days=lag))
         if k is not None:
             tot += k
@@ -505,6 +575,11 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
     if spec.get("mode") == "point":
         fix = _obs_date(start, lag, unit)
         return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
+    if spec.get("mode") == "month_start":
+        # фиксинг на 1-е число месяца, на который приходится старт периода
+        # (ИЖА ДОМ.РФ): ставка известна с начала месяца, лаг не участвует
+        fix = start.replace(day=1)
+        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
     if spec.get("mode") == "avg_prev":
         # среднее индекса по ПРЕДЫДУЩЕМУ периоду со сдвигом lag назад от старта:
         # окно [start − period − lag, start − lag), period = длина текущего периода.
@@ -522,8 +597,15 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                 n += 1
             cur += timedelta(days=1)
         return (tot / n) if n else 0.0
-    tot, n, cur = 0.0, 0, start
-    while cur < end:
+    # ДНИ ДОХОДА = (start, end]: НКД-конвенция — день старта не начисляется,
+    # день выплаты начисляется («Dji — дата, на которую рассчитывается доход»).
+    # Раньше цикл шёл по [start, end): те же N дней, но все obs-даты сдвинуты
+    # на −1 → эффективный лаг на день больше проспектного. Сверка по копейкам
+    # с эмитентом (БалтЛизП10, 10 купонов): (s, e] совпадает точно, [s, e)
+    # врал на копейку в 7 из 10. Калибратор компенсировал сдвиг фитом lag−1,
+    # но парсер-лаг (авторитетный) перебивал его и тянул ошибку в прайсинг.
+    tot, n, cur = 0.0, 0, start + timedelta(days=1)
+    while cur <= end:
         obs = _obs_date(cur, lag, unit)
         k = _rate_at(idx, obs) if _realized(idx, obs, calc_date) else fwd_pct(obs)
         if k is not None:

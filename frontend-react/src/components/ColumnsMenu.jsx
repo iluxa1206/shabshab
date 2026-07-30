@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { COL_META, DEFAULT_COLS } from "./BondTable.jsx";
+import { IconGear } from "./icons.jsx";
 
 // Дропдаун выбора видимых столбцов. visibleCols — массив key; onToggle(key); onReset().
 export default function ColumnsMenu({ visibleCols, onToggle, onReset }) {
@@ -21,7 +22,7 @@ export default function ColumnsMenu({ visibleCols, onToggle, onReset }) {
     <div className="colmenu" ref={ref}>
       <button className={"chip-btn" + (open ? " on" : "")} onClick={() => setOpen((v) => !v)}
         aria-haspopup="true" aria-expanded={open} title="Показать/скрыть столбцы">
-        ⚙ СТОЛБЦЫ
+        <IconGear size={11} /> СТОЛБЦЫ
       </button>
       {open && (
         <div className="colmenu-pop" role="menu">

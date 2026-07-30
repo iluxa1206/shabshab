@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchCandles } from "../api.js";
 import { fmt } from "../format.js";
@@ -83,25 +83,37 @@ function Chart({ candles, type, tf }) {
 
 // Интерактивный график цены выпуска (MOEX): линия/свечи + таймфреймы.
 // Для ОФЗ передавать secid + board="TQOB" (по ISIN candles не резолвятся).
-export default function PriceChart({ isin, secid, board }) {
+// periodDays (опц.) — внешний период в календарных днях: tf фиксируется 1d,
+// свечи режутся по дате, свой селектор таймфреймов скрыт (синхронизация
+// с другими графиками карточки).
+export default function PriceChart({ isin, secid, board, periodDays }) {
   const [tf, setTf] = useState("1d");
   const [type, setType] = useState("candles");
+  const effTf = periodDays ? "1d" : tf;
   const q = useQuery({
-    queryKey: ["candles", isin, secid, board, tf],
-    queryFn: () => fetchCandles(isin, tf, { secid, board }),
+    queryKey: ["candles", isin, secid, board, effTf],
+    queryFn: () => fetchCandles(isin, effTf, { secid, board }),
     staleTime: 60_000,
   });
-  const candles = q.data?.candles || [];
+  const all = q.data?.candles;
+  const candles = useMemo(() => {
+    const rows = all || [];
+    if (!periodDays) return rows;
+    const from = new Date(Date.now() - periodDays * 864e5).toISOString().slice(0, 10);
+    return rows.filter((c) => c.t.slice(0, 10) >= from);
+  }, [all, periodDays]);
 
   return (
     <div className="pchart">
       <div className="pchart-ctl">
-        <div className="pchart-tabs">
-          {TFS.map(([v, l]) => (
-            <button key={v} type="button" className={"pchart-tab" + (tf === v ? " on" : "")}
-              onClick={() => setTf(v)}>{l}</button>
-          ))}
-        </div>
+        {!periodDays && (
+          <div className="pchart-tabs">
+            {TFS.map(([v, l]) => (
+              <button key={v} type="button" className={"pchart-tab" + (tf === v ? " on" : "")}
+                onClick={() => setTf(v)}>{l}</button>
+            ))}
+          </div>
+        )}
         <div className="pchart-tabs">
           {[["candles", "Свечи"], ["line", "Линия"]].map(([v, l]) => (
             <button key={v} type="button" className={"pchart-tab" + (type === v ? " on" : "")}
@@ -112,7 +124,7 @@ export default function PriceChart({ isin, secid, board }) {
       {q.isPending ? <div className="pchart-empty">загрузка…</div>
         : q.error ? <div className="pchart-empty">ошибка загрузки</div>
         : candles.length < 2 ? <div className="pchart-empty">нет сделок за период</div>
-        : <Chart candles={candles} type={type} tf={tf} />}
+        : <Chart candles={candles} type={type} tf={effTf} />}
     </div>
   );
 }
