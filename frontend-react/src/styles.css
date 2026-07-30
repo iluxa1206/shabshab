@@ -365,10 +365,12 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   .charts-panel { display: none; }
   .charts-inline { display: block; }
 }
-.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--fg); }
-.dh-title { display: flex; align-items: baseline; gap: 12px; }
-.drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
-.drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px; border-bottom: 1px solid var(--fg); }
+/* длинное имя бумаги сжимается c эллипсисом, кнопки не ломаются и не переносятся */
+.dh-title { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+.drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
+.drawer-head .btn { flex-shrink: 0; white-space: nowrap; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 24px; }
 
 /* Стакан — вторая панель слева от карточки (drawer width = 680px) */

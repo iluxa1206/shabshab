@@ -440,7 +440,7 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
                 )}
                 {!isFixed && (
                   <button
-                    className="btn"
+                    className="btn ob-toggle"
                     // только navigate: путь /audit/... без query → drawerIsin=null →
                     // штатная exit-анимация. onClose здесь нельзя — его setSearchParams
                     // батчится ПОСЛЕ navigate и перебивает переход
@@ -449,7 +449,7 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
                   >ПАСПОРТ</button>
                 )}
               </div>
-              <button ref={closeRef} className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
+              <button ref={closeRef} className="btn ob-toggle" onClick={onClose}>ЗАКРЫТЬ</button>
             </div>
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
