@@ -294,15 +294,18 @@ _honest_memo: dict = {}     # (isin, days, board) → (msk_day, result); про�
                             # хвост realized-кривой обновляется раз в день — TTL сутки
 
 
-async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB") -> dict:
+async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB",
+                               price_overrides: Optional[dict] = None) -> dict:
     """Честная динамика спредов: для КАЖДОГО торгового дня — свой calc_date,
     своя as-of кривая, фактические НКД/номинал/close того дня → SM/DM/y-idx.
     В отличие от candle-оценки (историч. цена × сегодняшняя модель) серия не
     зависит от сегодняшних НКД/срока; хвост кривой за «сегодня» — текущий рынок.
-    Расчёт ~15с на 120 дней → мемо на день."""
+    price_overrides {date_iso: price} — для даты считать на этой цене, не на close
+    (бэкфилл легаси-снапшотов на их же цене). Расчёт ~15с на 120 дней → мемо на
+    день (только без overrides)."""
     from datetime import date as _date, timedelta as _td
     key = (isin, days, board)
-    hit = _honest_memo.get(key)
+    hit = None if price_overrides else _honest_memo.get(key)
     if hit and hit[0] == _date.today():
         return hit[1]
     d_till = _date.today() - _td(days=1)
@@ -334,11 +337,12 @@ async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB") 
             accint = r.get("accint")
             if accint is None:
                 accint = _accrued_from_periods(ctx["periods"], d, ref.face_value)
+            px = (price_overrides or {}).get(r["date"], r["close"])
             m = calculate_valuation_metrics(
-                ref, r["close"], curve, d, accrued_override=accint,
+                ref, px, curve, d, accrued_override=accint,
                 periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"])
             points.append({
-                "date": r["date"], "price": r["close"],
+                "date": r["date"], "price": px,
                 "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
                 "ytm": m.get("yield_xirr_pct"),
                 "y_idx_bps": m.get("yield_over_index_bps"),
@@ -347,8 +351,42 @@ async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB") 
         except Exception as e:
             logger.debug(f"honest point {isin}@{r['date']}: {e}")
     result = {"isin": isin, "points": points, "warnings": ctx["ctx_warnings"]}
-    _honest_memo[key] = (_date.today(), result)
+    if not price_overrides:
+        _honest_memo[key] = (_date.today(), result)
     return result
+
+
+_backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфилл уже сделан сегодня
+
+
+async def ensure_honest_backfill(isin: str, days: int, board: str = "TQCB") -> int:
+    """Разово досчитывает честную историю в spread_daily: даты без строки —
+    INSERT (src='honest', цена=close), легаси-снапшоты без y_idx — пересчёт
+    НА ИХ ЦЕНЕ (price_pct) → UPDATE y_idx. Прошлое зафиксировано в базе —
+    дальше читается мгновенно; повторный вызов за день (и на меньший период)
+    no-op. Возвращает число записанных/обновлённых строк."""
+    from datetime import date as _date
+    done = _backfill_done.get((isin, board))
+    if done and done[0] == _date.today() and done[1] >= days:
+        return 0
+
+    from services.spread_history import read_history, upsert_honest
+    existing = {r["date"]: r for r in read_history(isin, days=days + 10)
+                if (r.get("kind") or "floater") == "floater"}
+    overrides = {d: r["price_pct"] for d, r in existing.items()
+                 if r.get("y_idx") is None and r.get("price_pct") is not None}
+    # окно уже покрыто строками с y_idx и дыр-легаси нет → тяжёлый пересчёт не нужен
+    have = sum(1 for r in existing.values() if r.get("y_idx") is not None)
+    if not overrides and have >= days:
+        _backfill_done[(isin, board)] = (_date.today(), days)
+        return 0
+    series = await honest_spread_series(isin, days, board,
+                                        price_overrides=overrides or None)
+    missing_or_null = [p for p in series["points"]
+                       if p["date"] not in existing or p["date"] in overrides]
+    n = upsert_honest(isin, missing_or_null, set(existing)) if missing_or_null else 0
+    _backfill_done[(isin, board)] = (_date.today(), days)
+    return n
 
 
 def reprice_asof(ctx: dict, price: float) -> dict:

@@ -65,18 +65,28 @@ async def spread_history(
             "ytm": m.get("yield_pct"), "src": "est",
         })
 
-    # Точная история (дневные снапшоты) приоритетна; candle-оценкой добиваем
-    # прошлое ДО первого точного снапшота (иначе график пуст, пока копится).
+    # Флоатер: прошлое досчитывается ЧЕСТНЫМ движком (as-of кривая/НКД/номинал
+    # каждого дня) и персистится в spread_daily (src='honest'); вечерние
+    # снапшоты (src='snap') авторитетнее и не перезаписываются. Первый запрос
+    # по бумаге считает ~120 точек (десятки секунд), дальше — мгновенно из базы.
+    if kind == "floater":
+        try:
+            from services.backdate import ensure_honest_backfill
+            await ensure_honest_backfill(isin, days, board)
+        except Exception as e:
+            logger.warning(f"honest backfill {isin}: {e} — серия останется candle-оценкой")
+
     from services.spread_history import read_history
     exact_rows = read_history(isin, days=days)
     exact = [{
         "date": r["date"], "price": r.get("price_pct"),
         "dm_bps": r.get("dm_bps"), "y_idx_bps": r.get("y_idx"),
         "g_spread_bps": r.get("g_spread_bps"),
-        "ytm": r.get("ytm"), "src": "exact",
+        "ytm": r.get("ytm"),
+        "src": "honest" if r.get("src") == "honest" else "exact",
     } for r in exact_rows]
-    # поля, которых снапшот ещё не писал (y_idx появился 2026-07-30), добиваем
-    # candle-оценкой той же даты — иначе Y-IDX-график пуст на старой точной истории
+    # поля, которых в строке нет (напр. y_idx у легаси-снапшота при упавшем
+    # бэкфилле), добиваем candle-оценкой той же даты — график не пустеет
     est_by_date = {p["date"]: p for p in est}
     for p in exact:
         e = est_by_date.get(p["date"])
@@ -84,9 +94,15 @@ async def spread_history(
             for k in ("dm_bps", "y_idx_bps", "g_spread_bps", "ytm", "price"):
                 if p.get(k) is None and e.get(k) is not None:
                     p[k] = e[k]
+    # est — только хвосты вне точного окна: до первой точной даты (бэкфилл не
+    # покрыл/сломался) и после последней (сегодняшний live до вечернего
+    # снапшота, выходные сессии). Est-точки МЕЖДУ точными (выходные свечи)
+    # не подмешиваем — две модели в одной линии и были причиной «расхождения».
     first_exact = exact[0]["date"] if exact else None
+    last_exact = exact[-1]["date"] if exact else None
     pre = [p for p in est if first_exact is None or p["date"] < first_exact]
-    points = sorted(pre + exact, key=lambda x: x["date"])
+    post = [p for p in est if last_exact is not None and p["date"] > last_exact]
+    points = sorted(pre + exact + post, key=lambda x: x["date"])
 
     return {"isin": isin, "kind": kind, "calc_date": str(calc_date),
             "exact_from": first_exact, "points": points}

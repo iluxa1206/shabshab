@@ -30,14 +30,14 @@ def write_snapshot() -> int:
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "floater", m.get("last"), m.get("disc_dm"),
-                     None, m.get("z_model"), m.get("ytm"), m.get("yoi")))
+                     None, m.get("z_model"), m.get("ytm"), m.get("yoi"), "snap"))
 
     fxm = market_cache.get("fixed_metrics") or {}
     for isin, m in fxm.items():
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "fixed", m.get("last"), None,
-                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None))
+                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, "snap"))
 
     # пишем только строки с хоть каким-то спредом (иначе шум пустых)
     rows = [r for r in rows if r[4] is not None or r[5] is not None
@@ -47,7 +47,7 @@ def write_snapshot() -> int:
     with _lock, _connect() as c:
         c.executemany(
             "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-            "g_spread_bps,z_bps,ytm,y_idx) VALUES(?,?,?,?,?,?,?,?,?)", rows)
+            "g_spread_bps,z_bps,ytm,y_idx,src) VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
     logger.info("spread snapshot %s: %d строк", d, len(rows))
     return len(rows)
 
@@ -56,7 +56,34 @@ def read_history(isin: str, days: int = 400) -> List[dict]:
     """Точная история по бумаге, по возрастанию даты."""
     with _connect() as c:
         r = c.execute(
-            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx "
+            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx, src "
             "FROM spread_daily WHERE isin=? ORDER BY date DESC LIMIT ?",
             (isin, days)).fetchall()
     return [dict(x) for x in reversed(r)]
+
+
+def upsert_honest(isin: str, points: list, existing_dates: set) -> int:
+    """Персистит честный бэкфилл: INSERT точек для дат без строки (src='honest');
+    для существующих строк (вечерние снапшоты) НИЧЕГО не перезаписывает, кроме
+    y_idx, если он NULL (легаси-строки до появления колонки — пересчитаны на их
+    же цене, см. backdate.ensure_honest_backfill). Прошлое не меняется —
+    идемпотентно."""
+    ins, upd = [], []
+    for p in points:
+        if p.get("y_idx_bps") is None and p.get("dm_bps") is None:
+            continue
+        if p["date"] in existing_dates:
+            upd.append((p.get("y_idx_bps"), isin, p["date"]))
+        else:
+            ins.append((isin, p["date"], "floater", p.get("price"), p.get("dm_bps"),
+                        None, None, p.get("ytm"), p.get("y_idx_bps"), "honest"))
+    with _lock, _connect() as c:
+        if ins:
+            c.executemany(
+                "INSERT OR IGNORE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
+                "g_spread_bps,z_bps,ytm,y_idx,src) VALUES(?,?,?,?,?,?,?,?,?,?)", ins)
+        if upd:
+            c.executemany(
+                "UPDATE spread_daily SET y_idx=? WHERE isin=? AND date=? AND y_idx IS NULL",
+                upd)
+    return len(ins) + len(upd)

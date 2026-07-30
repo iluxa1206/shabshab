@@ -104,13 +104,42 @@ def calculate_valuation_metrics(
         }
 
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
+
+    # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
+    warnings: list = []
+
+    # EX-COUPON КОНСИСТЕНТНОСТЬ dirty ↔ поток. Купон с pay_date ∈ (calc, settle]
+    # покупателю не достаётся и в cashflow не включается (см. settle_date). Но
+    # когда settle прыгает через праздники (пример: calc 11.06.2026, купон 13.06,
+    # праздники 12–14.06 → settle 15.06), MOEX ACCINT ещё начислен ЗА СТАРЫЙ
+    # период (≈целый купон) — dirty завышался на купон, которого в потоке нет →
+    # яма в YTM/SM/Y-IDX на канунах праздничных купонных стыков (наблюдалось:
+    # −70bps YTM у Росагрл1Р5 на 11.06.2026 при той же цене). Если НКД уже
+    # обнулён биржей (обычный канун купона, accrued < value/2) — не трогаем,
+    # иначе вычитаем купон: НКД становится слегка отрицательным (экономически
+    # корректный ex-coupon период).
+    if accrued is not None and periods:
+        from core.valuation import settle_date as _sd_ex
+        _settle_ex = _sd_ex(calc_date)
+        for _c in periods:
+            try:
+                _e = _c[1] if isinstance(_c, (tuple, list)) else _c.get("end")
+                _v = _c[2] if isinstance(_c, (tuple, list)) else _c.get("value")
+                if isinstance(_e, str):
+                    _e = date.fromisoformat(_e)
+            except Exception:
+                continue
+            if _e and _v and calc_date < _e <= _settle_ex and accrued > float(_v) / 2:
+                accrued = round(accrued - float(_v), 4)
+                warnings.append(
+                    f"ex-coupon: купон {_v}₽ ({_e.isoformat()}) уходит продавцу (settle "
+                    f"{_settle_ex.isoformat()}), НКД скорректирован на его величину")
+                break
+
     # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
     from core.valuation import face_for_pricing
     _pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
     dirty_rub = dirty_price_rub(_pricing_face, price, accrued)
-
-    # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
-    warnings: list = []
 
     # маржа выпуска = 0/None у флоатера почти всегда = пробел данных (формула не
     # распарсилась / нет в Cbonds): SM/DM тогда занижены на всю маржу, молча.

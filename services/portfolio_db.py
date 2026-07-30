@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS spread_daily(
   z_bps REAL,                   -- z-спред/z-model
   ytm REAL,
   y_idx REAL,                   -- флоатер: IRR−индекс, bps — ПЕРВИЧНАЯ метрика
+  src TEXT,                     -- 'snap' вечерний снапшот | 'honest' as-of бэкфилл (NULL=легаси snap)
   PRIMARY KEY(isin, date)
 );
 CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
@@ -63,6 +64,7 @@ CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
 # «duplicate column name» на свежей базе — норма, глотаем
 _MIGRATIONS = [
     "ALTER TABLE spread_daily ADD COLUMN y_idx REAL",
+    "ALTER TABLE spread_daily ADD COLUMN src TEXT",
 ]
 
 
