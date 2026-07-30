@@ -127,6 +127,14 @@ class MarketDataService:
                 ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
                 irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
 
+                # архив котировок по датам (curve_history) — для честного bootstrap
+                # прошлых кривых (backdate mode="market"); best-effort
+                try:
+                    from services.curve_history import save_snapshot
+                    save_snapshot(ois_quotes, irs_quotes)
+                except Exception as e:
+                    logger.warning(f"curve_history snapshot failed: {e}")
+
                 # одна атомарная запись (под локом) — читатель не увидит кривую с чужой датой
                 market_cache.update({
                     "ruonia_curve": ruonia_curve,

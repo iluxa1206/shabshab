@@ -10,7 +10,7 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: {
     proxy: {
-      "/api": { target: "http://127.0.0.1:8000", changeOrigin: true, ws: true },
+      "/api": { target: process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000", changeOrigin: true, ws: true },
     },
   },
 });

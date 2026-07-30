@@ -169,6 +169,17 @@ export const fetchSpreadHistory = (isin, { kind = "floater", secid, board = "TQC
   return request(u);
 };
 
+// Честная динамика спредов (флоатер): каждый день — свой calc_date/кривая/НКД.
+export const fetchSpreadHonest = (isin, { days = 120, board = "TQCB" } = {}) =>
+  request(`/api/history/${encodeURIComponent(isin)}/spread_honest?days=${days}&board=${board}`);
+
+// Калькулятор прошлых периодов: (дата, цена) → метрики как-на-дату.
+export const fetchRepricePast = (isin, { date, price, board = "TQCB" } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/reprice?date=${date}&board=${board}`;
+  if (price != null) u += `&price=${price}`;
+  return request(u);
+};
+
 export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
   let u = `/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`;
   if (board) u += `&board=${board}`;
