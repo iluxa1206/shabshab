@@ -14,7 +14,10 @@ function tlabel(t, tf) {
   return `${D}.${M}.${Y.slice(2)}`;
 }
 
-function Chart({ candles, type, tf }) {
+// syncDate/onHoverDate — синхронизация курсора с другими графиками карточки:
+// свой ховер репортится наружу датой (YYYY-MM-DD), чужая дата рисуется
+// пунктирной вертикалью, когда свой курсор вне графика.
+function Chart({ candles, type, tf, syncDate, onHoverDate }) {
   const W = 480, H = 210, pad = { l: 46, r: 8, t: 8, b: 20 };
   const n = candles.length;
   const bw = (W - pad.l - pad.r) / n;
@@ -26,7 +29,12 @@ function Chart({ candles, type, tf }) {
   const sy = linearScale([ymin - padY, ymax + padY], [H - pad.b, pad.t]);
 
   const pts = candles.map((c, i) => ({ ...c, i }));
-  const { hover, handlers } = useNearestHover({ viewW: W, points: pts, px: (p) => cx(p.i) });
+  const { hover, handlers } = useNearestHover({
+    viewW: W, points: pts, px: (p) => cx(p.i),
+    onHover: (p) => onHoverDate?.(p ? p.t.slice(0, 10) : null),
+  });
+  // чужой курсор (дата с соседнего графика) — только когда свой не активен
+  const syncI = !hover && syncDate ? candles.findIndex((c) => c.t.slice(0, 10) === syncDate) : -1;
 
   const bodyW = Math.max(1, bw * 0.6);
   const step = Math.max(1, Math.floor(n / 4));
@@ -52,6 +60,10 @@ function Chart({ candles, type, tf }) {
             </g>
           );
         })}
+        {syncI >= 0 && (
+          <line x1={cx(syncI)} x2={cx(syncI)} y1={pad.t} y2={H - pad.b} pointerEvents="none"
+            stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
+        )}
         {hover && (
           <g pointerEvents="none">
             <line x1={cx(hover.i)} x2={cx(hover.i)} y1={pad.t} y2={H - pad.b}
@@ -86,7 +98,7 @@ function Chart({ candles, type, tf }) {
 // periodDays (опц.) — внешний период в календарных днях: tf фиксируется 1d,
 // свечи режутся по дате, свой селектор таймфреймов скрыт (синхронизация
 // с другими графиками карточки).
-export default function PriceChart({ isin, secid, board, periodDays }) {
+export default function PriceChart({ isin, secid, board, periodDays, syncDate, onHoverDate }) {
   const [tf, setTf] = useState("1d");
   const [type, setType] = useState("candles");
   const effTf = periodDays ? "1d" : tf;
@@ -124,7 +136,7 @@ export default function PriceChart({ isin, secid, board, periodDays }) {
       {q.isPending ? <div className="pchart-empty">загрузка…</div>
         : q.error ? <div className="pchart-empty">ошибка загрузки</div>
         : candles.length < 2 ? <div className="pchart-empty">нет сделок за период</div>
-        : <Chart candles={candles} type={type} tf={effTf} />}
+        : <Chart candles={candles} type={type} tf={effTf} syncDate={syncDate} onHoverDate={onHoverDate} />}
     </div>
   );
 }

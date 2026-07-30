@@ -2,8 +2,9 @@ import { useState } from "react";
 
 // Единый hover: nearest-point по горизонтали. Работает и для точек, и для линий.
 // px(point) → пиксель-X в координатах viewBox; viewW — ширина viewBox.
+// onHover (опц.) — колбэк наружу (синхронизация курсора между графиками).
 // Возвращает { hover, setHover, handlers } для навешивания на <svg>.
-export function useNearestHover({ viewW, points, px }) {
+export function useNearestHover({ viewW, points, px, onHover }) {
   const [hover, setHover] = useState(null);
   const onMouseMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -14,8 +15,10 @@ export function useNearestHover({ viewW, points, px }) {
       if (d < bd) { bd = d; best = p; }
     }
     setHover(best);
+    onHover?.(best ?? null);
   };
-  return { hover, setHover, handlers: { onMouseMove, onMouseLeave: () => setHover(null) } };
+  const onMouseLeave = () => { setHover(null); onHover?.(null); };
+  return { hover, setHover, handlers: { onMouseMove, onMouseLeave } };
 }
 
 // Инверсная плашка-подсказка (--inv-bg/--inv-fg), позиционируется по X в % от viewBox.

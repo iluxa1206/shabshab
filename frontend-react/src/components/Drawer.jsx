@@ -168,6 +168,8 @@ const CHART_PERIODS = [[30, "1М", 21], [90, "3М", 60], [180, "6М", 120], [365
 // видно, как двигались цена и спред в одинаковом окне. Рендерится в выездной
 // панели слева от карточки (desktop) или инлайн в теле карточки (узкий экран).
 function ChartsBody({ isin, period, setPeriod, tradingDays, onClose }) {
+  // синхронный курсор: дата ховера одного графика — пунктирная вертикаль на другом
+  const [hoverDate, setHoverDate] = useState(null);
   return (
     <div className="charts-body">
       <div className="charts-head">
@@ -181,9 +183,10 @@ function ChartsBody({ isin, period, setPeriod, tradingDays, onClose }) {
         <button className="btn ob-close" onClick={onClose} aria-label="Закрыть графики">✕</button>
       </div>
       <div className="section-title">Цена · MOEX</div>
-      <PriceChart isin={isin} periodDays={period} />
+      <PriceChart isin={isin} periodDays={period} syncDate={hoverDate} onHoverDate={setHoverDate} />
       <div className="section-title">Динамика Y-IDX</div>
-      <SpreadHistory isin={isin} kind="floater" board="TQCB" days={tradingDays} />
+      <SpreadHistory isin={isin} kind="floater" board="TQCB" days={tradingDays}
+        syncDate={hoverDate} onHoverDate={setHoverDate} />
     </div>
   );
 }

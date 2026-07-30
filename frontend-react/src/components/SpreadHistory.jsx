@@ -10,7 +10,8 @@ const RANGES = [[60, "3м"], [120, "6м"], [250, "1г"]];
 // историч. дневным ценам. Оценка (историч. цена × текущая модель), не точный
 // историч. спред. days (опц., торговые дни) — внешний период: свой селектор
 // скрыт (синхронизация с графиком цены в карточке).
-export default function SpreadHistory({ isin, kind, secid, board, days: daysProp }) {
+// syncDate/onHoverDate — синхронизация курсора с графиком цены (см. PriceChart)
+export default function SpreadHistory({ isin, kind, secid, board, days: daysProp, syncDate, onHoverDate }) {
   const [daysState, setDays] = useState(120);
   const days = daysProp ?? daysState;
   const isFixed = kind === "fixed";
@@ -40,7 +41,12 @@ export default function SpreadHistory({ isin, kind, secid, board, days: daysProp
   const W = 460, H = 200, pad = { l: 46, r: 12, t: 12, b: 26 };
   const data = pts.map((p, i) => ({ ...p, i, v: p[key] }));
   const sx = linearScale([0, Math.max(1, data.length - 1)], [pad.l, W - pad.r]);
-  const { hover, handlers } = useNearestHover({ viewW: W, points: data, px: (p) => sx(p.i) });
+  const { hover, handlers } = useNearestHover({
+    viewW: W, points: data, px: (p) => sx(p.i),
+    onHover: (p) => onHoverDate?.(p ? p.date : null),
+  });
+  // чужой курсор (дата с графика цены) — только когда свой не активен
+  const syncP = !hover && syncDate ? data.find((p) => p.date === syncDate) : null;
 
   const ctl = (
     <span className="sh-range">
@@ -95,6 +101,10 @@ export default function SpreadHistory({ isin, kind, secid, board, days: daysProp
           {estPath && <path d={estPath} className="sh-line sh-est" fill="none" />}
           {exactPath && <path d={exactPath} className="sh-line" fill="none" />}
           {!estPath && !exactPath && <path d={linePath(data, (d) => sx(d.i), (d) => sy(d.v))} className="sh-line" fill="none" />}
+          {syncP && (
+            <line x1={sx(syncP.i)} x2={sx(syncP.i)} y1={pad.t} y2={H - pad.b} pointerEvents="none"
+              stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
+          )}
           {hover ? (
             <g pointerEvents="none">
               <line x1={sx(hover.i)} x2={sx(hover.i)} y1={pad.t} y2={H - pad.b}
