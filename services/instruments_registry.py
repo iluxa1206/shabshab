@@ -256,6 +256,38 @@ def set_rating(isin: str, rating: str) -> None:
                   (rating, _now(), isin))
 
 
+def normalize_ofz_pk() -> int:
+    """Нормализация ОФЗ-ПК (серия 29xxx, Минфин): дозаполнить недостающие параметры
+    правилом, не трогая уже известные значения и manual_locked-строки.
+
+    Новые ОФЗ-ПК (29013+) в MOEX-листинге идут без маржи → margin NULL →
+    is_priceable=False → бумаг вообще не было в универсе/аналитике. Факт: купон =
+    среднее RUONIA за период с лагом Т-7, маржа 0. Эмитент (Минфин) и суверенный
+    рейтинг AAA у MOEX/corpbonds для ОФЗ отсутствуют → правило, как в fixed-вкладке.
+    Возвращает число затронутых строк (max по апдейтам)."""
+    _ensure()
+    name_cond = "(short_name LIKE 'ОФЗ 29%' OR short_name LIKE 'ОФЗ-ПК%' OR short_name LIKE 'SU29%')"
+    n = 0
+    with _lock, _conn() as c:
+        now = _now()
+        for sql, args in (
+            (f"UPDATE instruments SET base='RUONIA', updated_at=? WHERE active=1 AND {name_cond} "
+             "AND manual_locked=0 AND (base IS NULL OR base='')", (now,)),
+            (f"UPDATE instruments SET margin_bps=0, updated_at=? WHERE active=1 AND {name_cond} "
+             "AND manual_locked=0 AND margin_bps IS NULL", (now,)),
+            (f"UPDATE instruments SET coupon_mode='average', updated_at=? WHERE active=1 AND {name_cond} "
+             "AND manual_locked=0 AND (coupon_mode IS NULL OR coupon_mode='')", (now,)),
+            (f"UPDATE instruments SET fixing_lag=7, fixing_lag_unit='days', updated_at=? WHERE active=1 AND {name_cond} "
+             "AND manual_locked=0 AND fixing_lag IS NULL", (now,)),
+            (f"UPDATE instruments SET rating='AAA', updated_at=? WHERE active=1 AND {name_cond} "
+             "AND (rating IS NULL OR rating='')", (now,)),
+            (f"UPDATE instruments SET emitter_name='Минфин России', updated_at=? WHERE active=1 AND {name_cond} "
+             "AND (emitter_name IS NULL OR emitter_name='')", (now,)),
+        ):
+            n = max(n, c.execute(sql, args).rowcount)
+    return n
+
+
 def isins_missing_emitter(limit: int = 40) -> list[str]:
     """Активные бумаги без emitter_id — для постепенного бэкфилла в поллере."""
     _ensure()

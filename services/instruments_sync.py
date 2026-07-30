@@ -112,6 +112,14 @@ async def sync_instruments() -> dict:
                 reg.upsert(upd, source="moex", mark_new=False)
                 enriched += 1
 
+    # 3b. правило ОФЗ-ПК: margin=0/avg-RUONIA/Т-7 + Минфин/AAA для серии 29xxx
+    #     (MOEX не отдаёт маржу ОФЗ-ПК → без правила бумаги непрайсуемы и невидимы)
+    try:
+        ofz_fixed = reg.normalize_ofz_pk()
+    except Exception as e:
+        logger.warning("ofz-pk normalize failed: %s", e)
+        ofz_fixed = 0
+
     # 4. ретайр погашенных (A2): active=0 при maturity < сегодня
     retired = reg.retire_matured(date.today().isoformat())
 
@@ -153,6 +161,7 @@ async def sync_instruments() -> dict:
         logger.warning("corpbonds enrich failed: %s", e)
 
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "ofz_pk_normalized": ofz_fixed,
                   "reclassified_fixed": vstats.get("reclassified_fixed", 0),
                   "suspect": vstats.get("suspect", 0),
                   "cb_exotic": cb_stats.get("exotic", 0),
