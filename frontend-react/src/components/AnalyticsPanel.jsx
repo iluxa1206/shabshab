@@ -246,40 +246,6 @@ function IssuerDist({ rows, sel, onPick }) {
   return <BoxRows entries={entries} note={note} label="распределение DM по эмитентам" sel={sel} onPick={onPick} />;
 }
 
-// ── Профиль рефиксинга портфеля (watch): когда бумаги поймают новую ставку ──
-function RefixProfile({ rows }) {
-  const bins = [
-    { lbl: "<7д", lo: 0, hi: 7 }, { lbl: "7–30", lo: 7, hi: 30 },
-    { lbl: "30–90", lo: 30, hi: 90 }, { lbl: "90–180", lo: 90, hi: 180 },
-    { lbl: ">180", lo: 180, hi: 1e9 },
-  ];
-  const vals = rows.map((b) => b.days_to_refix).filter((v) => v != null);
-  if (!vals.length) return <div className="an-empty">добавьте бумаги в watchlist (★) — профиль по вашему портфелю</div>;
-  const counts = bins.map((bin) => vals.filter((v) => v >= bin.lo && v < bin.hi).length);
-  const cmax = Math.max(...counts, 1);
-  const W = 460, H = 150, pad = { l: 30, r: 10, t: 10, b: 24 };
-  const bw = (W - pad.l - pad.r) / bins.length;
-  const sh = linearScale([0, cmax], [0, H - pad.t - pad.b]); // счётчик → высота бара
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="профиль рефиксинга">
-      {bins.map((bin, i) => {
-        const h = sh(counts[i]);
-        const x = pad.l + i * bw + bw * 0.15;
-        return (
-          <g key={bin.lbl}>
-            <rect x={x} y={H - pad.b - h} width={bw * 0.7} height={h} className="an-bar">
-              <title>{`рефиксинг через ${bin.lbl} дн.: ${counts[i]} ${plu(counts[i])}`}</title>
-            </rect>
-            {counts[i] > 0 && <text x={x + bw * 0.35} y={H - pad.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
-          </g>
-        );
-      })}
-      <XTicks ticks={bins.map((bin, i) => ({ x: pad.l + i * bw + bw * 0.5, label: bin.lbl }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-    </svg>
-  );
-}
-
 // ── История медианного Y-IDX по рейтингам/эмитентам (точные дневные снапшоты) ──
 const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
 // палитра линий эмитентов (рейтинг-цвета заняты бакетами); РЫНОК — нейтральный
@@ -422,10 +388,6 @@ export default function AnalyticsPanel({ rows }) {
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         <YidxHistory groupBy={groupBy} />
-      </div>
-      <div className="an-card">
-        <div className="an-title">ПРОФИЛЬ РЕФИКСИНГА <span className="an-hint">дни до новой ставки · бар = число бумаг</span></div>
-        <RefixProfile rows={rows} />
       </div>
     </section>
   );
