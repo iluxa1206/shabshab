@@ -154,6 +154,10 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
+// Динамика медианного Y-IDX по рейтинг-бакетам/топ-эмитентам (вкладка АНАЛИТИКА).
+export const fetchYidxHistory = (days, by, signal) =>
+  request(`/api/history/aggregate/yidx?days=${days}&by=${by}`, { signal });
+
 // Паспорт бумаги: провенанс всех данных + бэктест спеки + waterfall PV + чеки.
 export const fetchBondAudit = (isin) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/audit`);

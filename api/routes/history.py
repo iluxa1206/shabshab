@@ -91,6 +91,83 @@ async def spread_history(
             "exact_from": first_exact, "points": points}
 
 
+_YIDX_BAND = (-1500, 3000)   # тот же бэнд, что у DM в аналитике: мусор стейл/тонких цен
+_AGG_TOP_ISSUERS = 8         # линий в режиме «эмитент» (медиана рынка — отдельно)
+
+
+@router.get("/aggregate/yidx", tags=["History"])
+async def yidx_aggregate(
+    days: int = Query(91, ge=7, le=400),
+    by: str = Query("rating", description="rating | issuer"),
+):
+    """Динамика медианного Y-IDX по рейтинг-бакетам или топ-эмитентам из точных
+    дневных снапшотов spread_daily (флоатеры). Рейтинг/эмитент — текущие из
+    реестра (историю атрибутов не храним). История копится вперёд с первого
+    снапшота — глубина ограничена exact_from."""
+    if by not in ("rating", "issuer"):
+        raise HTTPException(status_code=400, detail="by: rating | issuer")
+    from datetime import date as _date, timedelta
+    from statistics import median as _median
+    from services.portfolio_db import _connect
+    from services import instruments_registry
+
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT isin, date, y_idx FROM spread_daily "
+            "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
+            "ORDER BY date", (cutoff,)).fetchall()
+    lo, hi = _YIDX_BAND
+    rows = [r for r in rows if lo < r["y_idx"] < hi]
+    if not rows:
+        return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
+
+    uni = {u["isin"]: u for u in instruments_registry.universe_rows()}
+    buckets = {"AAA", "AA", "A", "BBB", "BB", "B"}
+
+    def key_of(isin: str):
+        u = uni.get(isin)
+        if u is None:
+            return None
+        if by == "rating":
+            r = u.get("rating")
+            return r if r in buckets else "NR"
+        return u.get("emitter_name") or None
+
+    # {key: {date: [y_idx…]}}
+    acc: dict = {}
+    for r in rows:
+        k = key_of(r["isin"])
+        if k is None:
+            continue
+        acc.setdefault(k, {}).setdefault(r["date"], []).append(r["y_idx"])
+
+    if by == "issuer":
+        # топ-N эмитентов по числу бумаг с данными (стабильные ликвидные линии)
+        def npapers(k):
+            return max(len(v) for v in acc[k].values())
+        keys = sorted(acc, key=lambda k: (-npapers(k), k))[:_AGG_TOP_ISSUERS]
+        # медиана всего рынка — базовая линия сравнения
+        mkt: dict = {}
+        for k in acc:
+            for d, vs in acc[k].items():
+                mkt.setdefault(d, []).extend(vs)
+        acc = {k: acc[k] for k in keys}
+        acc["РЫНОК"] = mkt
+    else:
+        order = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"]
+        acc = {k: acc[k] for k in order if k in acc}
+
+    dates = sorted({d for v in acc.values() for d in v})
+    series = [{
+        "key": k,
+        "points": [{"date": d, "med": round(_median(v[d]), 1), "n": len(v[d])}
+                   for d in dates if d in v],
+    } for k, v in acc.items()]
+    return {"by": by, "days": days, "dates": dates, "series": series,
+            "exact_from": dates[0] if dates else None}
+
+
 @router.get("/{isin}/reprice", tags=["History"])
 async def reprice_past(
     isin: str = Path(...),

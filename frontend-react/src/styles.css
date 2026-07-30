@@ -727,6 +727,20 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-leg-lbl { color: var(--mut-2); }
 .an-leg-item { display: inline-flex; align-items: center; gap: 4px; }
 .an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.an-note { font-size: 9.5px; color: var(--mut-2); margin-top: 4px; font-family: var(--mono); }
+.an-mut2 { color: var(--mut-2); }
+/* клик-фильтр по эмитенту */
+.an-row-pick { cursor: pointer; }
+.an-pt { cursor: pointer !important; }
+.an-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px;
+  font: 10px var(--mono); color: var(--mut); }
+.an-sel-name { color: var(--fg); font-weight: 700; max-width: 160px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.an-sel-chip { border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; color: var(--fg); cursor: help; }
+.an-sel-chip.off { color: var(--mut-2); border-style: dashed; }
+.an-sel-clear { font: 10px var(--mono); text-transform: uppercase; color: var(--mut); background: transparent;
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; cursor: pointer; margin-left: auto; }
+.an-sel-clear:hover { color: var(--fg); }
 /* переключатель агрегации Рейтинг/Эмитент */
 .an-toggle { float: right; display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .an-tgl-btn { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mut);
