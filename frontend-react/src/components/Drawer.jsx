@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
-import { fetchBondDetails, fetchFixedDetails, repriceBond, UnauthorizedError, cbondsUrl } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, repriceBond, fetchRepricePast, UnauthorizedError, cbondsUrl } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
@@ -54,6 +54,91 @@ function FloaterSection({ f, base }) {
   );
 }
 
+// Калькулятор прошлых периодов: дата в прошлом + цена (пусто → close той даты)
+// → SM/DM/y-idx/YTM как-на-дату: НКД/номинал — факт MOEX history, кривая as-of
+// (архив котировок либо гибрид «реализованный факт + текущая кривая»).
+function PastCalc({ isin }) {
+  const [dateInput, setDateInput] = useState("");
+  const [priceInput, setPriceInput] = useState("");
+  const [res, setRes] = useState(null);
+  useEffect(() => { setDateInput(""); setPriceInput(""); setRes(null); }, [isin]);
+
+  const seqRef = useRef(0);
+  const mut = useMutation({
+    mutationFn: ({ date, price }) => fetchRepricePast(isin, { date, price }),
+    onSuccess: (data, { seq }) => { if (seq === seqRef.current) setRes({ ok: true, data }); },
+    onError: (e, { seq }) => {
+      if (seq === seqRef.current && !(e instanceof UnauthorizedError))
+        setRes({ ok: false, err: e?.message || "ошибка расчёта" });
+    },
+  });
+  const mutate = mut.mutate;
+
+  useEffect(() => {
+    setRes(null);
+    if (!dateInput) return;
+    const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+    if (dateInput >= today) return;
+    const raw = priceInput.trim().replace(",", ".");
+    const price = raw ? parseFloat(raw) : null;
+    if (raw && (!Number.isFinite(price) || price <= 0 || price > 1000)) return;
+    const t = setTimeout(() => mutate({ date: dateInput, price, seq: ++seqRef.current }), 400);
+    return () => clearTimeout(t);
+  }, [dateInput, priceInput, mutate]);
+
+  const m = res?.ok ? res.data.metrics : null;
+  return (
+    <div className="past-calc">
+      <div className="price-calc">
+        <label className="pc-label" htmlFor="pc-past-date">Калькулятор прошлых периодов</label>
+        <input
+          id="pc-past-date" className="pc-input pc-date" type="date"
+          max={new Date(Date.now() - 21 * 3600 * 1000).toISOString().slice(0, 10)}
+          value={dateInput} onChange={(e) => setDateInput(e.target.value)}
+        />
+        <div className="pc-input-wrap">
+          <input
+            className="pc-input" inputMode="decimal"
+            placeholder={res?.ok && res.data.close != null ? fmt.pct(res.data.close) : "close даты"}
+            value={priceInput} onChange={(e) => setPriceInput(e.target.value)}
+          />
+          <span className="pc-unit">%</span>
+        </div>
+        <span className="pc-status">
+          {mut.isPending ? "пересчёт…"
+            : res?.ok ? `на ${fmt.date(res.data.trade_date)} · НКД ${fmt.num(res.data.accint)} ₽ · кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
+            : res && !res.ok ? res.err
+            : "дата в прошлом → метрики как-на-дату"}
+        </span>
+      </div>
+      {m && (
+        <div className="val-cards val-cards-calc">
+          <div className="vc">
+            <div className="vc-label">Y-IDX</div>
+            <div className="vc-val" style={{ color: dmColor(m.yield_over_index_bps).color }}>{fmt.bps(m.yield_over_index_bps) ?? "—"}<span className="vc-u"> bps</span></div>
+            <div className="vc-sub">на дату · цена {fmt.pct(res.data.price)}%</div>
+          </div>
+          <div className="vc">
+            <div className="vc-label">YTM (XIRR)</div>
+            <div className="vc-val">{fmt.pct(m.yield_xirr_pct) ?? "—"}<span className="vc-u"> %</span></div>
+            <div className="vc-sub">индекс {fmt.pct(m.index_yield_pct) ?? "—"}%</div>
+          </div>
+          <div className="vc">
+            <div className="vc-label">DM (дисконтная)</div>
+            <div className="vc-val" style={{ color: dmColor(m.disc_margin_bps).color }}>{fmt.bps(m.disc_margin_bps) ?? "—"}<span className="vc-u"> bps</span></div>
+            <div className="vc-sub">вспом.</div>
+          </div>
+          <div className="vc">
+            <div className="vc-label">SM (простая)</div>
+            <div className="vc-val" style={{ color: dmColor(m.sm_bps).color }}>{fmt.bps(m.sm_bps) ?? "—"}<span className="vc-u"> bps</span></div>
+            <div className="vc-sub">вспом.</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // staleness: возраст каждого источника данных
 function StaleChips({ m }) {
   // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
@@ -75,7 +160,35 @@ function StaleChips({ m }) {
   );
 }
 
-function Content({ d }) {
+// Общий период графиков карточки: [календарные дни, подпись, торговые дни
+// для истории спреда (~250 торговых в году)]
+const CHART_PERIODS = [[30, "1М", 21], [90, "3М", 60], [180, "6М", 120], [365, "1Г", 250]];
+
+// Графики карточки: цена (сверху) + динамика Y-IDX (снизу) на ОДНОМ периоде —
+// видно, как двигались цена и спред в одинаковом окне. Рендерится в выездной
+// панели слева от карточки (desktop) или инлайн в теле карточки (узкий экран).
+function ChartsBody({ isin, period, setPeriod, tradingDays, onClose }) {
+  return (
+    <div className="charts-body">
+      <div className="charts-head">
+        <span className="charts-title">Графики</span>
+        <span className="sh-range" role="group" aria-label="Период графиков">
+          {CHART_PERIODS.map(([cd, l]) => (
+            <button key={cd} className={"sh-rbtn" + (period === cd ? " on" : "")}
+              onClick={() => setPeriod(cd)}>{l}</button>
+          ))}
+        </span>
+        <button className="btn ob-close" onClick={onClose} aria-label="Закрыть графики">✕</button>
+      </div>
+      <div className="section-title">Цена · MOEX</div>
+      <PriceChart isin={isin} periodDays={period} />
+      <div className="section-title">Динамика Y-IDX</div>
+      <SpreadHistory isin={isin} kind="floater" board="TQCB" days={tradingDays} />
+    </div>
+  );
+}
+
+function Content({ d, charts }) {
   const r = d.reference, m = d.market;
   const baseVal = d.valuation;
 
@@ -111,7 +224,7 @@ function Content({ d }) {
 
   const isRepriced = repriced != null;
   const v = repriced || baseVal;
-  const dc = dmColor(v.disc_margin_bps);
+  const dc = dmColor(v.yield_over_index_bps);
   const warnings = [...(baseVal.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
   // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
@@ -152,14 +265,14 @@ function Content({ d }) {
       </div>
       <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
         <div className="vc">
-          <div className="vc-label">DM (дисконтная)</div>
-          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">дисконт-маржа · основная</div>
+          <div className="vc-label">Y-IDX</div>
+          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.yield_over_index_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">IRR − индекс · основная</div>
         </div>
         <div className="vc">
-          <div className="vc-label">SM (простая)</div>
-          <div className="vc-val" style={{ color: dmColor(v.sm_bps ?? v.dm_bps).color }}>{fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">простая маржа · вспом.</div>
+          <div className="vc-label">YTM (XIRR)</div>
+          <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
+          <div className="vc-sub">индекс {fmt.pct(v.index_yield_pct) ?? "—"}%</div>
         </div>
         <div className="vc">
           <div className="vc-label">Грязная цена</div>
@@ -167,13 +280,15 @@ function Content({ d }) {
           <div className="vc-sub">clean {fmt.pct(v.clean_price_pct) ?? "—"}% + НКД</div>
         </div>
         <div className="vc">
-          <div className="vc-label">YTM (XIRR)</div>
-          <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
-          <div className="vc-sub">индекс {fmt.pct(v.index_yield_pct) ?? "—"}% · спред {fmt.bps(v.yield_over_index_bps) ?? "—"}</div>
+          <div className="vc-label">DM / SM</div>
+          <div className="vc-val" style={{ color: dmColor(v.disc_margin_bps).color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
+          <div className="vc-sub">вспом. · SM {fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"} bps</div>
         </div>
       </div>
 
       {warnings.length > 0 && <div className="warn-box">{warnings.join(" · ")}</div>}
+
+      <PastCalc isin={r.isin} />
 
       <div className="section-title">Референс</div>
       <div className="ref-grid">
@@ -192,11 +307,8 @@ function Content({ d }) {
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
 
-      <div className="section-title">Цена · MOEX</div>
-      <PriceChart isin={r.isin} />
-
-      <div className="section-title">Динамика DM</div>
-      <SpreadHistory isin={r.isin} kind="floater" board="TQCB" />
+      {/* узкий экран: панель графиков не помещается — графики инлайн */}
+      {charts && <div className="charts-inline">{charts}</div>}
 
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
@@ -251,6 +363,18 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const [showOb, setShowOb] = useState(false);
   useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
   const face = data?.reference?.face_value ?? null;
+
+  // Панель графиков (флоатеры): цена + DM на общем периоде, слева от карточки.
+  // Открывается кнопкой ГРАФИКИ (аналог СТАКАНА). Один элемент рендерится и в
+  // панели (desktop), и инлайн (узкий экран) — видимость переключает CSS.
+  const [showCharts, setShowCharts] = useState(false);
+  useEffect(() => { setShowCharts(false); }, [isin]);
+  const [period, setPeriod] = useState(90);
+  const tradingDays = CHART_PERIODS.find(([cd]) => cd === period)?.[2] ?? 60;
+  const charts = !isFixed && data && showCharts
+    ? <ChartsBody isin={isin} period={period} setPeriod={setPeriod} tradingDays={tradingDays}
+        onClose={() => setShowCharts(false)} />
+    : null;
 
   // focus + esc + tab-trap
   useEffect(() => {
@@ -308,6 +432,14 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
                 >СТАКАН</button>
                 {!isFixed && (
                   <button
+                    className={"btn ob-toggle" + (showCharts ? " on" : "")}
+                    onClick={() => setShowCharts((v) => !v)}
+                    aria-pressed={showCharts}
+                    title="Цена и динамика DM на общем периоде"
+                  >ГРАФИКИ</button>
+                )}
+                {!isFixed && (
+                  <button
                     className="btn"
                     // только navigate: путь /audit/... без query → drawerIsin=null →
                     // штатная exit-анимация. onClose здесь нельзя — его setSearchParams
@@ -323,12 +455,24 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">ЗАГРУЗКА</div>
                 : isFixed ? <FixedCard d={data} />
-                : <Content d={data} />}
+                : <Content d={data} charts={charts} />}
             </div>
           </motion.aside>
+          {charts && (
+            <motion.aside
+              className="charts-panel"
+              key="charts-panel"
+              initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: reduce ? 0 : 24, opacity: 0 }}
+              transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              {charts}
+            </motion.aside>
+          )}
           {showOb && (
             <motion.aside
-              className="ob-panel"
+              className={"ob-panel" + (charts ? " ob-shifted" : "")}
               key="ob-panel"
               initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
               animate={{ x: 0, opacity: 1 }}

@@ -50,7 +50,8 @@ def _level(metrics_fn, price, qty):
     except Exception:
         pass
     return OrderbookLevel(price_pct=price, quantity=qty, yield_pct=m.get("yield_pct"),
-                          dm_bps=m.get("dm_bps"), g_spread_bps=m.get("g_spread_bps"))
+                          dm_bps=m.get("dm_bps"), y_idx_bps=m.get("y_idx_bps"),
+                          g_spread_bps=m.get("g_spread_bps"))
 
 
 @router.get("/{isin}", response_model=OrderbookResponse, tags=["Orderbook"])
@@ -95,7 +96,8 @@ async def get_orderbook(
 
         def metrics_fn(price):
             m = reprice_at_price(ctx, price)
-            return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct")}
+            return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct"),
+                    "y_idx_bps": m.get("yield_over_index_bps")}
 
     # 3. Fetch Snapshot
     snapshot = await fetch_alor_orderbook_snapshot(isin, depth)

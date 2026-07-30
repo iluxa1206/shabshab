@@ -10,7 +10,7 @@ from services.portfolio_db import _connect, _lock
 
 logger = logging.getLogger(__name__)
 
-METRICS = {"price", "ytm", "dm", "gspread"}
+METRICS = {"price", "ytm", "dm", "yidx", "gspread"}
 SIDES = {"buy", "sell"}
 OPS = {"<=", ">="}
 UNITS = {"bonds", "rub"}
@@ -37,7 +37,7 @@ def create(user_email: str, *, isin: str, side: str, metric: str, op: str,
     if side not in SIDES:
         raise AlertError("side: buy|sell")
     if metric not in METRICS:
-        raise AlertError("metric: price|ytm|dm|gspread")
+        raise AlertError("metric: price|ytm|dm|yidx|gspread")
     if op not in OPS:
         raise AlertError("op: <= | >=")
     if volume_unit not in UNITS:
@@ -86,7 +86,7 @@ def update(user_email: str, aid: int, **fields) -> Optional[dict]:
     if "side" in sets and sets["side"] not in SIDES:
         raise AlertError("side: buy|sell")
     if "metric" in sets and sets["metric"] not in METRICS:
-        raise AlertError("metric: price|ytm|dm|gspread")
+        raise AlertError("metric: price|ytm|dm|yidx|gspread")
     if "op" in sets and sets["op"] not in OPS:
         raise AlertError("op: <= | >=")
     if "volume_unit" in sets and sets["volume_unit"] not in UNITS:
@@ -147,6 +147,8 @@ def _metric_val(level: dict, metric: str) -> Optional[float]:
         return level.get("yield_pct")
     if metric == "dm":
         return level.get("dm_bps")
+    if metric == "yidx":
+        return level.get("y_idx_bps")
     if metric == "gspread":
         return level.get("g_spread_bps")
     return None

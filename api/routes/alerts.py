@@ -13,7 +13,7 @@ router = APIRouter()
 class AlertCreate(BaseModel):
     isin: str
     side: str            # buy | sell
-    metric: str          # price | ytm | dm | gspread
+    metric: str          # price | ytm | dm | yidx | gspread
     op: str              # '<=' | '>='
     threshold: float
     min_volume: float = 0.0

@@ -238,7 +238,7 @@ def _ob_levels(raw, metrics_fn):
             try:
                 m = metrics_fn(p)
                 lv.update(yield_pct=m.get("yield_pct"), dm_bps=m.get("dm_bps"),
-                          g_spread_bps=m.get("g_spread_bps"))
+                          y_idx_bps=m.get("y_idx_bps"), g_spread_bps=m.get("g_spread_bps"))
             except Exception:
                 pass
         out.append(lv)

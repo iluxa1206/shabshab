@@ -1,26 +1,40 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchSpreadHistory } from "../api.js";
+import { fetchSpreadHistory, fetchSpreadHonest } from "../api.js";
 import { fmt } from "../format.js";
 import { linearScale, linTicks, linePath, GridY, XTicks, useNearestHover, Tooltip } from "../charts/index.js";
 
 const RANGES = [[60, "3м"], [120, "6м"], [250, "1г"]];
 
-// Динамика спреда: DM (флоатер) / g-спред (фикс) по историч. дневным ценам.
-// Оценка (историч. цена × текущая модель), не точный историч. спред.
-export default function SpreadHistory({ isin, kind, secid, board }) {
-  const [days, setDays] = useState(120);
+// Динамика спреда: Y-IDX (флоатер, первичная метрика) / g-спред (фикс) по
+// историч. дневным ценам. Оценка (историч. цена × текущая модель), не точный
+// историч. спред. days (опц., торговые дни) — внешний период: свой селектор
+// скрыт (синхронизация с графиком цены в карточке).
+export default function SpreadHistory({ isin, kind, secid, board, days: daysProp }) {
+  const [daysState, setDays] = useState(120);
+  const days = daysProp ?? daysState;
   const isFixed = kind === "fixed";
-  const key = isFixed ? "g_spread_bps" : "dm_bps";
-  const label = isFixed ? "G-спред" : "DM";
+  // honest (флоатер): каждый день пересчитан своим calc_date/кривой/НКД (бэк
+  // ~15с на холодном кэше — держим отдельной query, дефолт выключен)
+  const [honest, setHonest] = useState(false);
+  const key = isFixed ? "g_spread_bps" : "y_idx_bps";
+  const label = isFixed ? "G-спред" : "Y-IDX";
 
   const q = useQuery({
     queryKey: ["spread-hist", isin, kind, days],
     queryFn: () => fetchSpreadHistory(isin, { kind, secid, board, days }),
     staleTime: 300000,
   });
+  const qh = useQuery({
+    queryKey: ["spread-honest", isin, days],
+    queryFn: () => fetchSpreadHonest(isin, { days, board }),
+    staleTime: 3600000,
+    enabled: !isFixed && honest,
+  });
 
-  const pts = (q.data?.points || []).filter((p) => p[key] != null);
+  const useHonest = !isFixed && honest;
+  const rawPts = useHonest ? (qh.data?.points || []) : (q.data?.points || []);
+  const pts = rawPts.filter((p) => p[key] != null);
 
   // ВСЕ хуки до early-return (правила хуков). data/sx считаем безопасно даже пустыми.
   const W = 460, H = 200, pad = { l: 46, r: 12, t: 12, b: 26 };
@@ -30,13 +44,20 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
 
   const ctl = (
     <span className="sh-range">
-      {RANGES.map(([d, l]) => (
+      {daysProp == null && RANGES.map(([d, l]) => (
         <button key={d} className={"sh-rbtn" + (days === d ? " on" : "")} onClick={() => setDays(d)}>{l}</button>
       ))}
+      {!isFixed && (
+        <button className={"sh-rbtn" + (honest ? " on" : "")} onClick={() => setHonest(!honest)}
+          title="Каждый день пересчитан своим calc_date, as-of кривой и фактическими НКД/номиналом">
+          честно
+        </button>
+      )}
     </span>
   );
 
-  if (q.isPending) return <div className="sh-box">{ctl}<div className="an-empty">загрузка…</div></div>;
+  if (useHonest && qh.isPending) return <div className="sh-box">{ctl}<div className="an-empty">честный пересчёт истории… (~15с первый раз)</div></div>;
+  if (!useHonest && q.isPending) return <div className="sh-box">{ctl}<div className="an-empty">загрузка…</div></div>;
   if (data.length < 2) return <div className="sh-box">{ctl}<div className="an-empty">мало истории для графика</div></div>;
 
   let ymin = Math.min(...data.map((p) => p.v)), ymax = Math.max(...data.map((p) => p.v));
@@ -104,7 +125,8 @@ export default function SpreadHistory({ isin, kind, secid, board }) {
         )}
       </div>
       <div className="sh-note">
-        {fx ? <>Сплошная — точная история с {fmt.date(fx)}. Пунктир (до неё) — оценка (историч. цена × текущая модель).</>
+        {useHonest ? <>Честный расчёт: каждый день — свой calc_date, as-of кривая (архив котировок / факт+текущая), фактические НКД и номинал MOEX.</>
+          : fx ? <>Сплошная — точная история с {fmt.date(fx)}. Пунктир (до неё) — оценка (историч. цена × текущая модель).</>
           : <>Оценка: историч. цена × текущая модель. Точная история копится с сегодня.</>}
       </div>
     </div>

@@ -74,7 +74,8 @@ def _levels(sub: _Sub, raw) -> list:
             sub.memo[p] = m or {}
             m = sub.memo[p]
         out.append({"price_pct": p, "quantity": q, "yield_pct": m.get("yield_pct"),
-                    "dm_bps": m.get("dm_bps"), "g_spread_bps": m.get("g_spread_bps")})
+                    "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
+                    "g_spread_bps": m.get("g_spread_bps")})
     return out
 
 

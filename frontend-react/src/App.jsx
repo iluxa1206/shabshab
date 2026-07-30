@@ -7,7 +7,6 @@ import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
 import Catalog from "./components/Catalog.jsx";
 import Topbar from "./components/Topbar.jsx";
-import Kpis from "./components/Kpis.jsx";
 import Toolbar from "./components/Toolbar.jsx";
 import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
@@ -36,7 +35,7 @@ function Dashboard() {
   const [emittersSel, setEmittersSel] = useState([]); // имена эмитентов (мульти)
   const [query, setQuery] = useState("");
   const [showAnalytics, setShowAnalytics] = useState(false);
-  const [sort, setSort] = useState({ key: "disc_margin_bps", dir: "asc" });
+  const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
 
   // drawer бумаги — в URL (?isin=): deep-link + back закрывает
   const [searchParams, setSearchParams] = useSearchParams();
@@ -244,7 +243,6 @@ function Dashboard() {
 
   const floatersView = (
     <>
-      <Kpis bonds={filtered} />
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
@@ -298,7 +296,7 @@ function Dashboard() {
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") === "1"} onClose={closeDrawer} />
-      <StatusBar count={bonds.length} bonds={bonds} live={live} sources={meta.source_status}
+      <StatusBar count={bonds.length} bonds={bonds} kpiBonds={filtered} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
       <AlertsWatcher />

@@ -3,10 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { fetchOrderbook, fetchAlerts, connectOrderbookWs } from "../api.js";
 import OrderbookAlerts from "./OrderbookAlerts.jsx";
+import { IconBell, IconAlert } from "./icons.jsx";
 
 // значение метрики алерта на уровне стакана
 const levelMetric = (lvl, m) =>
   m === "price" ? lvl.price_pct : m === "dm" ? lvl.dm_bps
+    : m === "yidx" ? lvl.y_idx_bps
     : m === "ytm" ? lvl.yield_pct : m === "gspread" ? lvl.g_spread_bps : null;
 
 // алерт (active|fired), покрывающий уровень (сторона + метрика op порог).
@@ -24,8 +26,8 @@ function alertForLevel(lvl, side, alerts) {
 
 const DEPTHS = [10, 20, 30, 50];
 
-// Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → DM+YTM,
-// фикс → YTM+G-спред. side: "bid"|"ask" красит цену. face — объём в ₽ (title).
+// Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → Y-IDX
+// (первичная) + YTM, фикс → YTM+G-спред. side красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
 function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
   const hasQty = lvl.quantity != null;
@@ -45,7 +47,7 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
     <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")
         + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")}
       onClick={onClick} title={armTitle}>
-      <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? "⚠" : "🔔"}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
+      <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? <IconAlert size={11} /> : <IconBell size={11} />}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
       </td>
@@ -56,7 +58,9 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
         </>
       ) : (
         <>
-          <td style={dmColor(lvl.dm_bps)}>{fmt.bps(lvl.dm_bps) ?? "—"}</td>
+          <td style={dmColor(lvl.y_idx_bps)} title={lvl.dm_bps != null ? `DM ${fmt.bps(lvl.dm_bps)} bps` : undefined}>
+            {fmt.bps(lvl.y_idx_bps) ?? "—"}
+          </td>
           <td className="ob-ytm">{fmt.pct(lvl.yield_pct) ?? "—"}</td>
         </>
       )}
@@ -142,6 +146,11 @@ export default function Orderbook({ isin, kind, face, onClose }) {
       </div>
 
       <div className="ob-scroll">
+        {q.isLoading && !wsLive && empty && (
+          <div style={{ padding: "4px 20px" }} role="status" aria-label="Загрузка стакана">
+            {Array.from({ length: 10 }, (_, i) => <div key={i} className="skel skel-line" />)}
+          </div>
+        )}
         {!empty && (
           <table className="ob-table">
             <thead>
@@ -150,7 +159,7 @@ export default function Orderbook({ isin, kind, face, onClose }) {
                 <th>Объём</th>
                 {isFixed
                   ? <><th>YTM</th><th>G-спред</th></>
-                  : <><th>DM</th><th>YTM</th></>}
+                  : <><th title="IRR − доходность роллирования индекса; DM в подсказке уровня">Y-IDX</th><th>YTM</th></>}
               </tr>
             </thead>
             <tbody>
@@ -169,7 +178,7 @@ export default function Orderbook({ isin, kind, face, onClose }) {
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
       <OrderbookAlerts isin={isin} kind={isFixed ? "fixed" : "floater"}
         prefill={armPrefill} onConsumed={() => setArmPrefill(null)} />
-      <div className="ob-note">{isFixed ? "YTM/G-спред" : "DM/YTM"} — расчёт под цену уровня (как калькулятор карточки).</div>
+      <div className="ob-note">{isFixed ? "YTM/G-спред" : "Y-IDX/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
     </div>
   );
 }

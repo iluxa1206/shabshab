@@ -49,7 +49,7 @@ export const COLS = [
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   { key: "maturity_date", label: "MATURITY",
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
-  // ── НАША МОДЕЛЬ (цена → CHG → dirty → SM → DM → Z → Y−IDX) ──
+  // ── НАША МОДЕЛЬ (цена → CHG → dirty → Y−IDX (первичная) → SM → DM → Z) ──
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
     cell: (b) => <td className={"num col-sep" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
@@ -62,14 +62,14 @@ export const COLS = [
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num",
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
+  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
+    cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num",
-    cell: (b) => <td className={"num" + ms(b)} key="sm_bps"><Chip value={b.dm_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num",
-    cell: (b) => <td className={"num" + ms(b)} key="disc_margin_bps"><Chip value={b.disc_margin_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.disc_margin_bps)} key="disc_margin_bps">{fmt.bps(b.disc_margin_bps) ?? <D />}</td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num",
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
-  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
-    cell: (b) => <td className={"num" + ms(b)} style={b.yield_over_index_bps != null ? dmColor(b.yield_over_index_bps) : undefined} key="yield_over_index_bps">{b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td> },
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num",
     cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
   { key: "index_yield_pct", label: "YTM", sub: "БАЗА %", align: "num",

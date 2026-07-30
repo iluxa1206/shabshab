@@ -49,14 +49,21 @@ CREATE TABLE IF NOT EXISTS spread_daily(
   date TEXT NOT NULL,
   kind TEXT NOT NULL,           -- floater|fixed
   price_pct REAL,
-  dm_bps REAL,                  -- флоатер: disc margin
+  dm_bps REAL,                  -- флоатер: disc margin (вспом.)
   g_spread_bps REAL,            -- фикс: g-спред
   z_bps REAL,                   -- z-спред/z-model
   ytm REAL,
+  y_idx REAL,                   -- флоатер: IRR−индекс, bps — ПЕРВИЧНАЯ метрика
   PRIMARY KEY(isin, date)
 );
 CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
 """
+
+# аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;
+# «duplicate column name» на свежей базе — норма, глотаем
+_MIGRATIONS = [
+    "ALTER TABLE spread_daily ADD COLUMN y_idx REAL",
+]
 
 
 def _connect() -> sqlite3.Connection:
@@ -69,9 +76,14 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Создаёт схему alerts/spread_daily (идемпотентно)."""
+    """Создаёт схему alerts/spread_daily (идемпотентно) + аддитивные миграции."""
     with _lock, _connect() as conn:
         conn.executescript(_SCHEMA)
+        for mig in _MIGRATIONS:
+            try:
+                conn.execute(mig)
+            except sqlite3.OperationalError:
+                pass    # колонка уже есть
 
 
 def _rows(cur) -> list[dict]:

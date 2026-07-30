@@ -30,23 +30,24 @@ def write_snapshot() -> int:
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "floater", m.get("last"), m.get("disc_dm"),
-                     None, m.get("z_model"), m.get("ytm")))
+                     None, m.get("z_model"), m.get("ytm"), m.get("yoi")))
 
     fxm = market_cache.get("fixed_metrics") or {}
     for isin, m in fxm.items():
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "fixed", m.get("last"), None,
-                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm")))
+                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None))
 
     # пишем только строки с хоть каким-то спредом (иначе шум пустых)
-    rows = [r for r in rows if r[4] is not None or r[5] is not None or r[6] is not None]
+    rows = [r for r in rows if r[4] is not None or r[5] is not None
+            or r[6] is not None or r[8] is not None]
     if not rows:
         return 0
     with _lock, _connect() as c:
         c.executemany(
             "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-            "g_spread_bps,z_bps,ytm) VALUES(?,?,?,?,?,?,?,?)", rows)
+            "g_spread_bps,z_bps,ytm,y_idx) VALUES(?,?,?,?,?,?,?,?,?)", rows)
     logger.info("spread snapshot %s: %d строк", d, len(rows))
     return len(rows)
 
@@ -55,7 +56,7 @@ def read_history(isin: str, days: int = 400) -> List[dict]:
     """Точная история по бумаге, по возрастанию даты."""
     with _connect() as c:
         r = c.execute(
-            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm "
+            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx "
             "FROM spread_daily WHERE isin=? ORDER BY date DESC LIMIT ?",
             (isin, days)).fetchall()
     return [dict(x) for x in reversed(r)]

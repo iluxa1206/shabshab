@@ -1,6 +1,6 @@
 """Общий слой стакана: построение per-level metrics_fn(price) под тип бумаги
-(флоатер: DM+YTM; фикс: YTM+g-спред). Переиспользуют роут /api/orderbook и
-фоновый монитор алертов — один источник расчёта."""
+(флоатер: Y-IDX+DM+YTM, Y-IDX — первичная метрика; фикс: YTM+g-спред).
+Переиспользуют роут /api/orderbook и фоновый монитор алертов — один источник расчёта."""
 import os
 import logging
 from datetime import date
@@ -42,5 +42,6 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
 
     def metrics_fn(price):
         m = reprice_at_price(ctx, price)
-        return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct")}
+        return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct"),
+                "y_idx_bps": m.get("yield_over_index_bps")}
     return metrics_fn, ctx["calc_date"], face
