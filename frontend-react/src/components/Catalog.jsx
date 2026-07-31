@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, resetInstrumentManual, cbondsUrl } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
@@ -55,6 +56,18 @@ export default function Catalog({ user }) {
   const [importMsg, setImportMsg] = useState(null);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef(null);
+  const [sp] = useSearchParams();
+
+  // deep-link из Паспорта: /reference?isin=… — сразу фильтр по бумаге
+  // и раскрытая форма правки (не искать её руками в 600 строках)
+  useEffect(() => {
+    const i = (sp.get("isin") || "").trim().toUpperCase();
+    if (i) {
+      setQuery(i);
+      setEditIsin(i);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const q = useQuery({
     queryKey: [...CATALOG_KEY, floatersOnly],
@@ -203,6 +216,8 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
         </td>
         {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} /></td>)}
         <td className="admin-actions">
+          <Link className="btn admin-btn-sm" to={`/audit/${r.isin}`}
+            title="Паспорт бумаги: провенанс, бэктест спеки, фиксинг по дням">Паспорт</Link>
           <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Правка"}</button>
           {(r.manual_locked || r.coupon_mode || r.fixing_lag != null || r.avg_window_days != null) && (
             <button className="btn admin-btn-sm" onClick={onReset} disabled={reset.isPending}

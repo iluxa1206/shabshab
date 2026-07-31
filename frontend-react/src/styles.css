@@ -971,6 +971,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .audit-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding-bottom: 14px; border-bottom: 1px solid var(--fg); }
 .audit-head h2 { font-size: 17px; font-weight: 800; letter-spacing: 0.03em; margin: 0; }
+.audit-edit { margin: 10px 0 18px; padding: 10px 12px; border: 1px solid var(--border, #333);
+  border-radius: 8px; }
+.audit-head .btn.on { outline: 1px solid var(--accent, #6aa9ff); }
 .audit-gen { font-size: 11px; margin-left: auto; }
 .audit-checks { display: flex; flex-direction: column; border: 1px solid var(--line); margin-bottom: 20px; }
 .audit-check { display: grid; grid-template-columns: 52px 300px 1fr; gap: 12px;

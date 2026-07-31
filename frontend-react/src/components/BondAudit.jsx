@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { fetchBondAudit, fetchCouponDays } from "../api.js";
 import { fmt, baseLabel } from "../format.js";
+import { InstrumentForm } from "./AdminPanel.jsx";
 
 // Паспорт бумаги: страница верификации расчётов. Каждая цифра карточки —
 // откуда взялась (источник + давность), как посчиталась (спека по слоям,
@@ -335,6 +336,8 @@ function ScheduleSection({ s }) {
 export default function BondAudit() {
   const { isin } = useParams();
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
   const q = useQuery({
     queryKey: ["bond-audit", isin],
     queryFn: () => fetchBondAudit(isin),
@@ -343,6 +346,16 @@ export default function BondAudit() {
   });
   const d = q.data;
   const regName = d?.registry?.short_name;
+
+  // правка сохранена → пересобрать паспорт (бэктест/чеки/раскладку) сразу,
+  // не гоняя пользователя в Справочник и обратно
+  const onSaved = () => {
+    setEditing(false);
+    qc.invalidateQueries({ queryKey: ["bond-audit", isin] });
+    qc.invalidateQueries({ queryKey: ["coupon-days", isin] });
+    qc.invalidateQueries({ queryKey: ["admin", "catalog"] });
+    q.refetch();
+  };
 
   return (
     <div className="audit-page">
@@ -354,7 +367,20 @@ export default function BondAudit() {
         <button className="btn" onClick={() => q.refetch()} disabled={q.isFetching}>
           {q.isFetching ? "СБОР…" : "ПЕРЕСОБРАТЬ"}
         </button>
+        <button className={"btn" + (editing ? " on" : "")} onClick={() => setEditing((v) => !v)}
+          title="Править параметры бумаги прямо здесь — паспорт пересоберётся после сохранения">
+          {editing ? "× ЗАКРЫТЬ ПРАВКУ" : "ПРАВКА ПАРАМЕТРОВ"}
+        </button>
+        <Link className="btn" to={`/reference?isin=${isin}`}
+          title="Открыть бумагу в Справочнике (вся таблица параметров)">СПРАВОЧНИК ↗</Link>
       </div>
+
+      {editing && (
+        <div className="audit-edit">
+          <div className="section-title">Правка параметров (реестр — источник истины; сохранение пересоберёт паспорт)</div>
+          <InstrumentForm isin={isin} onSaved={onSaved} />
+        </div>
+      )}
 
       {q.isError && <div className="warn-box">Ошибка: {q.error?.message}</div>}
       {!d && !q.isError && <div className="loading">СБОР ДАННЫХ (сеть MOEX — до ~10с)</div>}
