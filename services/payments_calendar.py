@@ -108,7 +108,9 @@ async def build_payments_calendar() -> dict:
 
     ruonia_curve, keyrate_curve, cd, rd = await MarketDataService.get_curves()
     calc_date = cd or rd or date.today()
-    key = calc_date.isoformat()
+    # data_version в ключе: правка Справочника (маржа/спека/даты) пересобирает
+    # календарь сразу, а не после смены торговой даты
+    key = f"{calc_date.isoformat()}:{instruments_registry.data_version()}"
     if _cache["key"] == key:
         return {"calc_date": _cache["calc_date"], "events": _cache["events"]}
 

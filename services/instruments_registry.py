@@ -214,8 +214,20 @@ _CALC_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                 "coupon_period_days", "coupons_per_year", "face_value")
 
 
+# Версия данных реестра: инкремент при каждой правке (set_manual/reset/br-импорт).
+# Дневные кэши производных (календарь выплат и т.п.) включают её в ключ —
+# правка Справочника инвалидирует их немедленно, без ожидания смены даты.
+_data_version = 0
+
+
+def data_version() -> int:
+    return _data_version
+
+
 def invalidate_params_cache() -> None:
     """Сброс кэша calc_params_map (после ручной правки/импорта справочника)."""
+    global _data_version
+    _data_version += 1
     _calc_params_cache["map"] = None
     _calc_params_cache["ts"] = 0.0
     # реестровый слой ref_data.params() кэшируется отдельно — сбрасываем и его,
