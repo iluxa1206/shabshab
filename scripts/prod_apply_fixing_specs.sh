@@ -47,6 +47,9 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   exit 0
 fi
 
+echo '>>> миграция point → average+окно1 (идемпотентна)'
+RUN "$DC exec -T floaters python scripts/migrate_point_specs.py --apply"
+
 echo '>>> unfreeze (APPLY=1, только строки БД==парсер)'
 RUN "$DC exec -T -e APPLY=1 floaters python scripts/unfreeze_fixing_spec.py"
 

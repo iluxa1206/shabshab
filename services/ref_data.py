@@ -263,6 +263,8 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                 out["fixing_lag_unit"] = br.get("fixing_lag_unit", "cal")
             if out["coupon_mode"] is None and br.get("coupon_mode"):
                 out["coupon_mode"] = br["coupon_mode"]
+                if out["avg_window_days"] is None and br.get("avg_window_days") is not None:
+                    out["avg_window_days"] = br["avg_window_days"]
     # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
     if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
         try:
@@ -302,6 +304,14 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
             pass
     if out["fixing_lag"] is not None and out["fixing_lag_unit"] is None:
         out["fixing_lag_unit"] = "cal"
+    # НОРМАЛИЗАЦИЯ: point убран из модели — это average с окном 1 день.
+    # Легаси-значения (старые ручные строки, парсер, калибратор) приводятся
+    # здесь, в единственной точке резолва: потребители видят только
+    # average/avg_prev/month_start + avg_window_days.
+    if out["coupon_mode"] == "point":
+        out["coupon_mode"] = "average"
+        if out["avg_window_days"] is None:
+            out["avg_window_days"] = 1
     return out
 
 

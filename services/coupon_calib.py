@@ -273,7 +273,11 @@ def fixing_probe_date(spec: dict, start: date) -> date:
     бэктестов (verify_fixing_specs, bond_audit): month_start игнорирует лаг."""
     if spec.get("mode") == "month_start":
         return start.replace(day=1)
-    return _obs_date(start, spec.get("lag") or 0, spec.get("lag_unit") or "cal")
+    d = _obs_date(start, spec.get("lag") or 0, spec.get("lag_unit") or "cal")
+    w = spec.get("avg_window_days")
+    if w and int(w) > 1:
+        d -= timedelta(days=1)      # окно [obs−W, obs): последнее наблюдение
+    return d
 
 
 # Маржа-лесенка: у части выпусков надбавка меняется по номерам купонов

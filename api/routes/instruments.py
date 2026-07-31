@@ -59,7 +59,8 @@ class InstrumentParams(BaseModel):
     # лагом (полугодовой купон → лаг ~182-190, см. bondresearch)
     fixing_lag: Optional[int] = Field(None, ge=0, le=400)
     fixing_lag_unit: Optional[str] = Field(None, description="cal | work")
-    coupon_mode: Optional[str] = Field(None, description="point | average | avg_prev | month_start")
+    coupon_mode: Optional[str] = Field(
+        None, description="average | avg_prev | month_start (легаси point принимается и конвертится в average+окно 1)")
     avg_window_days: Optional[int] = Field(
         None, ge=1, le=400,
         description="окно усреднения базы, дней: 1=точечный фиксинг, пусто=длина купонного периода")
@@ -206,8 +207,12 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
             errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED")
             continue
         if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev", "month_start"):
-            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ point|average|avg_prev|month_start")
+            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ average|avg_prev|month_start (point = average + окно 1)")
             continue
+        # легаси point из старых шаблонов → единая параметризация
+        if params.get("coupon_mode") == "point":
+            params["coupon_mode"] = "average"
+            params.setdefault("avg_window_days", 1)
         if params.get("fixing_lag_unit") and params["fixing_lag_unit"] not in ("cal", "work"):
             errors.append(f"строка {rn} ({isin}): fixing_lag_unit ∈ cal|work")
             continue
@@ -256,6 +261,10 @@ async def parse_formula(body: FormulaIn, _admin: dict = Depends(require_admin)):
             out["coupon_mode"] = ps["mode"]
     except Exception:
         pass
+    # point убран из модели: точечный фиксинг = average с окном 1 день
+    if out.get("coupon_mode") == "point":
+        out["coupon_mode"] = "average"
+        out.setdefault("avg_window_days", 1)
     return {"parsed": out, "coupon_text": body.formula.strip()}
 
 
@@ -276,6 +285,10 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
     params = {k: v for k, v in body.model_dump().items() if v is not None}
     if not params:
         raise HTTPException(status_code=422, detail="Нет полей для сохранения")
+    # легаси-вход point (старые шаблоны/скрипты) → единая параметризация
+    if params.get("coupon_mode") == "point":
+        params["coupon_mode"] = "average"
+        params.setdefault("avg_window_days", 1)
     if body.base is not None and body.base not in ("KEYRATE", "RUONIA", "FIXED"):
         raise HTTPException(status_code=422, detail="base ∈ KEYRATE|RUONIA|FIXED")
     for f in ("maturity_date", "issue_date"):

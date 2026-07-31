@@ -25,8 +25,12 @@ URL = "https://www.bondresearch.ru/boards/pig_floaters_mk.json"
 # индексы позиционного массива
 I_ISIN, I_LAG, I_BENCH, I_METHOD = 1, 33, 35, 36
 
-# метод расчёта → наш coupon_mode. NB: «Cреднее» на сайте с ЛАТИНСКОЙ C.
-_METHOD_MAP = {"среднее": "average", "отсечка": "point"}
+# метод расчёта → единая параметризация (point убран из модели: «Отсечка» =
+# average с окном 1 день). NB: «Cреднее» на сайте с ЛАТИНСКОЙ C.
+_METHOD_MAP = {
+    "среднее": {"coupon_mode": "average"},                          # окно = период
+    "отсечка": {"coupon_mode": "average", "avg_window_days": 1},    # точечный фиксинг
+}
 _OUR_BENCH = {"КС", "RUONIA"}
 
 # Sanity-порог: сайт иногда может отдать пустой/куцый JSON — не затирать
@@ -48,10 +52,10 @@ def parse_rows(rows: list) -> dict:
             continue
         if not isin or bench not in _OUR_BENCH:
             continue
-        mode = _METHOD_MAP.get(method)
-        if mode is None:
+        m = _METHOD_MAP.get(method)
+        if m is None:
             continue
-        out[isin] = {"fixing_lag": lag, "coupon_mode": mode}
+        out[isin] = {"fixing_lag": lag, **m}
     return out
 
 

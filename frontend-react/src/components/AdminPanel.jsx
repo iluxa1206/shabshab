@@ -88,7 +88,8 @@ const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
 const _OPTS = {
   base: ["KEYRATE", "RUONIA", "FIXED"],
   fixing_lag_unit: ["cal", "work"],
-  coupon_mode: ["point", "average", "avg_prev", "month_start"],
+  // point убран: точечный фиксинг = average + «Окно усреднения» = 1
+  coupon_mode: ["average", "avg_prev", "month_start"],
   day_count: ["Actual/365 (Actual/365F)", "Actual/Actual (ISDA)", "Actual/360",
               "Actual/364", "30/360"],
   var_type: ["Плавающая ставка", "Fix to Float", "Float to fix",

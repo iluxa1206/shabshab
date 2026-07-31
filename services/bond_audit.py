@@ -134,11 +134,12 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
     mode = spec.get("coupon_mode")
     lag = spec.get("fixing_lag") if spec.get("fixing_lag") is not None else 0
     unit = spec.get("fixing_lag_unit") or "cal"
+    avg_w = spec.get("avg_window_days")
     if mode is None:
         if base == "RUONIA":
             mode, lag, unit = "average", 0, "cal"   # прод: форвард-проекция ≈ avg lag0
         else:
-            mode = "point"
+            mode, avg_w = "average", 1              # дефолт: точечный фиксинг (окно 1)
 
     # fix-to-float прелюдия: ведущие блоки одинаковых зафиксированных ставок —
     # не флоатер-режим, в бэктест не входят
@@ -159,7 +160,8 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
     if not idx or not idx[0]:
         return out
 
-    pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
+    pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
+             "avg_window_days": avg_w}
     cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
     errs = []
     for s, e, obs in rows_past:
@@ -514,14 +516,23 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
 
 # ── Дневная раскладка базы: ВСЕ будущие купоны одним списком ────────────────
 
-def _day_pairs(mode: str, start: date, end: date, lag: int, unit: str):
+def _day_pairs(mode: str, start: date, end: date, lag: int, unit: str,
+               avg_window: int = None):
     """(день, дата наблюдения индекса) по семантике режима — 1:1 с
     coupon_calib.projected_ks_pct:
+      avg_window  — явное окно [obs(start)−W, obs(start)); W=1 = бывший point;
       average     — дни дохода (start, end], obs = день − lag;
       avg_prev    — окно [start−period−lag, start−lag), obs = сам день;
-      point       — одна дата obs = start − lag;
+      point       — легаси, одна дата obs = start − lag;
       month_start — одна дата obs = 1-е число месяца старта."""
     from services.coupon_calib import _obs_date
+    if avg_window:
+        w_hi = _obs_date(start, lag, unit)
+        if int(avg_window) <= 1:
+            return [(start, w_hi)]
+        cur = w_hi - timedelta(days=int(avg_window))
+        return [(d, d) for d in
+                (cur + timedelta(days=k) for k in range(int(avg_window)))]
     if mode == "point":
         return [(start, _obs_date(start, lag, unit))]
     if mode == "month_start":
@@ -603,10 +614,12 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     mode = spec.get("coupon_mode")
     lag = spec.get("fixing_lag") if spec.get("fixing_lag") is not None else 0
     unit = spec.get("fixing_lag_unit") or "cal"
+    avg_w = spec.get("avg_window_days")
     if mode is None:
-        mode = "average" if base == "RUONIA" else "point"
         if base == "RUONIA":
-            lag, unit = 0, "cal"
+            mode, lag, unit = "average", 0, "cal"
+        else:
+            mode, avg_w = "average", 1      # дефолт: точечный фиксинг (окно 1)
     cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
 
     def _fwd_step(d: date):
@@ -637,7 +650,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
         if not s or not e or e <= calc_date:
             continue    # истёкшие — их дневная история уже в бэктесте спеки
         rows, vals = [], []
-        for day, obs in _day_pairs(mode, s, e, lag, unit):
+        for day, obs in _day_pairs(mode, s, e, lag, unit, avg_window=avg_w):
             fact = _realized(idx, obs, calc_date)
             rate = _rate_at(idx, obs) if fact else _fwd_step(obs)
             if rate is not None:
@@ -653,7 +666,8 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
                          "close_pct": (h or {}).get("price_pct"),
                          "y_idx_bps": (h or {}).get("y_idx")})
         mean_rows = round(sum(vals) / len(vals), 4) if vals else None
-        pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
+        pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
+                 "avg_window_days": avg_w}
         try:
             prod = round(projected_ks_pct(pspec, s, e, calc_date,
                                           fwd_pct=lambda d: _fwd_step(d) or 0.0,
@@ -681,6 +695,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     return {
         "isin": isin, "calc_date": _iso(calc_date), "base": base,
         "spec": {"mode": mode, "lag": lag, "lag_unit": unit,
+                 "avg_window_days": avg_w,
                  "margin_bps": ref_obj.spread_issue_bps,
                  "cap_pct": cap, "floor_pct": floor},
         "coupons": groups,

@@ -39,15 +39,18 @@ def main() -> int:
     diffs, same = [], 0
     for isin, s in sorted(hit.items()):
         cur = coupon_formula(isin)
-        if cur.get("fixing_lag") == s["fixing_lag"] and cur.get("coupon_mode") == s["coupon_mode"]:
+        if (cur.get("fixing_lag") == s["fixing_lag"]
+                and cur.get("coupon_mode") == s.get("coupon_mode")
+                and (cur.get("avg_window_days") or None) == (s.get("avg_window_days") or None)):
             same += 1
             continue
-        diffs.append((isin, cur.get("fixing_lag"), cur.get("coupon_mode"),
-                      s["fixing_lag"], s["coupon_mode"]))
+        diffs.append((isin, cur.get("fixing_lag"), cur.get("coupon_mode"), cur.get("avg_window_days"),
+                      s["fixing_lag"], s.get("coupon_mode"), s.get("avg_window_days")))
 
     print(f"совпадает с текущей спекой: {same}, расходится: {len(diffs)}")
-    for isin, cl, cm, nl, nm in diffs:
-        print(f"  {isin}: lag {cl} → {nl}, mode {cm} → {nm}")
+    for isin, cl, cm, cw, nl, nm, nw in diffs:
+        w = lambda x: f"·окно{x}" if x else ""
+        print(f"  {isin}: {cm}{w(cw)}·lag{cl} → {nm}{w(nw)}·lag{nl}")
 
     if not args.apply:
         print("\ndry-run: ничего не записано. Запись: --apply")

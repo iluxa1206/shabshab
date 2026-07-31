@@ -90,8 +90,10 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN br_fixing_lag INTEGER",
     "ALTER TABLE instruments ADD COLUMN br_coupon_mode TEXT",      # average | point
     # Окно усреднения базовой ставки, дней: NULL = длина купонного периода
-    # (average), 1 = точечный фиксинг (point). Единая параметризация фиксинга.
+    # (average), 1 = точечный фиксинг (бывший point). Единая параметризация.
     "ALTER TABLE instruments ADD COLUMN avg_window_days INTEGER",
+    # окно bondresearch-слоя: «Отсечка» = average·окно 1 (point убран из модели)
+    "ALTER TABLE instruments ADD COLUMN br_avg_window_days INTEGER",
 ]
 
 
@@ -605,8 +607,8 @@ def set_br_spec(isin: str, fixing_lag, coupon_mode) -> None:
 
 
 def set_br_specs_bulk(specs: Dict[str, dict]) -> int:
-    """Батч-запись br-спек {isin: {fixing_lag, coupon_mode}} одним соединением
-    (дневной синк пишет ~450 строк). Возвращает число обновлённых строк."""
+    """Батч-запись br-спек {isin: {fixing_lag, coupon_mode, avg_window_days}}
+    одним соединением (дневной синк пишет ~450 строк). Возвращает число строк."""
     if not specs:
         return 0
     _ensure()
@@ -615,8 +617,10 @@ def set_br_specs_bulk(specs: Dict[str, dict]) -> int:
     with _lock, _conn() as c:
         for isin, s in specs.items():
             cur = c.execute(
-                "UPDATE instruments SET br_fixing_lag=?, br_coupon_mode=?, updated_at=? WHERE isin=?",
-                (s.get("fixing_lag"), s.get("coupon_mode"), now, isin))
+                "UPDATE instruments SET br_fixing_lag=?, br_coupon_mode=?, "
+                "br_avg_window_days=?, updated_at=? WHERE isin=?",
+                (s.get("fixing_lag"), s.get("coupon_mode"),
+                 s.get("avg_window_days"), now, isin))
             n += cur.rowcount
     invalidate_params_cache()
     return n
@@ -628,7 +632,7 @@ def br_specs_all() -> dict:
     _ensure()
     with _conn() as c:
         rows = c.execute(
-            "SELECT isin, br_fixing_lag, br_coupon_mode FROM instruments "
+            "SELECT isin, br_fixing_lag, br_coupon_mode, br_avg_window_days FROM instruments "
             "WHERE br_fixing_lag IS NOT NULL OR br_coupon_mode IS NOT NULL").fetchall()
     out = {}
     for r in rows:
@@ -638,6 +642,8 @@ def br_specs_all() -> dict:
             d["fixing_lag_unit"] = "cal"       # bondresearch публикует календарные дни
         if r["br_coupon_mode"]:
             d["coupon_mode"] = r["br_coupon_mode"]
+        if r["br_avg_window_days"] is not None:
+            d["avg_window_days"] = r["br_avg_window_days"]
         if d:
             out[r["isin"]] = d
     return out
@@ -699,8 +705,14 @@ def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[
             if mode is None:
                 d["spec_eff"] = "авто (калибратор/дефолт)"
             else:
+                # point убран из модели: показываем как average·окно1
+                w = r["avg_window_days"] if src == "ручной" else (
+                    r["br_avg_window_days"] if src == "bondresearch" else None)
+                if mode == "point":
+                    mode, w = "average", 1
                 lag_s = "" if lag is None else f"·{lag}{'р' if unit == 'work' else ''}"
-                d["spec_eff"] = f"{mode}{lag_s} ({src})"
+                w_s = f"·окно{w}" if w else ""
+                d["spec_eff"] = f"{mode}{lag_s}{w_s} ({src})"
         out.append(d)
     # непрайсуемые вперёд, дальше по имени
     out.sort(key=lambda d: (d["priceable"], (d["short_name"] or d["isin"]).upper()))

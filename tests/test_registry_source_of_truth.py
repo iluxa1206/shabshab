@@ -87,10 +87,11 @@ def test_br_layer_beats_parser_but_not_manual(reg, monkeypatch):
     spec = ref_data.coupon_formula(isin)
     assert spec["coupon_mode"] == "average" and spec["fixing_lag"] == 7  # BR > парсер
 
-    # ручная правка сильнее BR
+    # ручная правка сильнее BR; легаси point нормализуется в average·окно1
     reg.set_manual(isin, {"coupon_mode": "point", "fixing_lag": 2})
     spec = ref_data.coupon_formula(isin)
-    assert spec["coupon_mode"] == "point" and spec["fixing_lag"] == 2
+    assert spec["coupon_mode"] == "average" and spec["fixing_lag"] == 2
+    assert spec["avg_window_days"] == 1
     importlib.reload(ref_data)
 
 

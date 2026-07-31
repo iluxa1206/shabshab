@@ -49,8 +49,10 @@ function SpecSection({ spec, backtest, base }) {
   const [showText, setShowText] = useState(false);
   const eff = spec.effective || {};
   const L = spec.layers || {};
-  const modeLbl = (m) => m === "point" ? "point (фиксинг на дату)"
-    : m === "average" ? "average (среднее по периоду)"
+  const w = eff.avg_window_days;
+  const modeLbl = (m) => m === "point" ? "average · окно 1 (точечный фиксинг)"
+    : m === "average" ? (w === 1 ? "average · окно 1 день (точечный фиксинг)"
+      : w ? `average · окно ${w} дн` : "average (среднее по периоду)")
     : m === "avg_prev" ? "avg_prev (среднее пред. периода)" : m;
   const specStr = (s) => s == null ? "—"
     : `${s.mode ?? s.coupon_mode ?? "?"} · lag ${s.lag ?? s.fixing_lag ?? "?"}${(s.lag_unit ?? s.fixing_lag_unit) === "work" ? " раб." : ""}`
