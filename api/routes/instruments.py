@@ -23,8 +23,9 @@ router = APIRouter()
 _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
               "face_value", "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode",
-              "cap_pct", "floor_pct", "coupon_text")
-_XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag"}
+              "avg_window_days", "cap_pct", "floor_pct", "coupon_text")
+_XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
+             "avg_window_days"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
@@ -47,9 +48,14 @@ class InstrumentParams(BaseModel):
     coupons_per_year: Optional[int] = Field(None, ge=1, le=365)
     day_count: Optional[str] = None
     face_value: Optional[float] = Field(None, gt=0)
-    fixing_lag: Optional[int] = Field(None, ge=0, le=30)
+    # лаг до 400: конвенции вида «среднее предыдущего периода» кодируются большим
+    # лагом (полугодовой купон → лаг ~182-190, см. bondresearch)
+    fixing_lag: Optional[int] = Field(None, ge=0, le=400)
     fixing_lag_unit: Optional[str] = Field(None, description="cal | work")
     coupon_mode: Optional[str] = Field(None, description="point | average | avg_prev | month_start")
+    avg_window_days: Optional[int] = Field(
+        None, ge=1, le=400,
+        description="окно усреднения базы, дней: 1=точечный фиксинг, пусто=длина купонного периода")
     short_name: Optional[str] = Field(None, max_length=128)
     var_type: Optional[str] = None
     cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")

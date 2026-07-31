@@ -80,7 +80,7 @@ function PasswordSection() {
 
 // --- Ручной ввод параметров бумаги (форма используется на странице «Справочник») ---
 const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
-  "fixing_lag", "face_value", "cap_pct", "floor_pct"]);
+  "fixing_lag", "avg_window_days", "face_value", "cap_pct", "floor_pct"]);
 
 // Значения enum-полей (селекты — чтобы не опечататься). day_count/var_type —
 // как в выгрузке cbonds; var_type «…решением эмитента»/«Изменение ставки…»
@@ -88,7 +88,7 @@ const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
 const _OPTS = {
   base: ["KEYRATE", "RUONIA", "FIXED"],
   fixing_lag_unit: ["cal", "work"],
-  coupon_mode: ["point", "average"],
+  coupon_mode: ["point", "average", "avg_prev", "month_start"],
   day_count: ["Actual/365 (Actual/365F)", "Actual/Actual (ISDA)", "Actual/360",
               "Actual/364", "30/360"],
   var_type: ["Плавающая ставка", "Fix to Float", "Float to fix",
@@ -107,6 +107,8 @@ const _FIELDS = [
   ["fixing_lag", "Лаг фиксинга, дней", "number"],
   ["fixing_lag_unit", "Ед. лага", "text"],
   ["coupon_mode", "Режим", "text"],
+  ["avg_window_days", "Окно усреднения, дней (1=точечный; пусто=период)", "number"],
+  ["short_name", "Название", "text"],
   ["cap_pct", "Кэп ставки, % год.", "number"],
   ["floor_pct", "Флор ставки, % год.", "number"],
   ["day_count", "Day count", "text"],

@@ -166,6 +166,35 @@ def load_manual() -> Dict[str, dict]:
 _reg_ov_cache = {"ts": 0.0, "map": None}
 
 
+_br_cache = {"ts": 0.0, "map": None}
+
+
+def invalidate_registry_cache() -> None:
+    """Сброс кэшей реестровых слоёв — зовётся из instruments_registry при
+    ручной правке/импорте, чтобы спека фиксинга применялась сразу, а не через TTL."""
+    _reg_ov_cache["map"] = None
+    _reg_ov_cache["ts"] = 0.0
+    _br_cache["map"] = None
+    _br_cache["ts"] = 0.0
+
+
+def _br_specs() -> dict:
+    """{isin: {fixing_lag, fixing_lag_unit, coupon_mode}} слоя bondresearch.ru —
+    кэш 30с (тот же паттерн, что _registry_overrides)."""
+    import time
+    now = time.monotonic()
+    if _br_cache["map"] is not None and now - _br_cache["ts"] < 30:
+        return _br_cache["map"]
+    try:
+        from services import instruments_registry as reg
+        m = reg.br_specs_all()
+    except Exception:
+        m = {}
+    _br_cache["map"] = m
+    _br_cache["ts"] = now
+    return m
+
+
 def _registry_overrides() -> dict:
     """{isin: {купонные поля}} из реестра (manual_locked=1) — кэш 30с, чтобы не
     бить SQLite на каждый вызов params() в цикле по юниверсу."""
@@ -209,6 +238,7 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "fixing_lag": p.get("fixing_lag"),
         "fixing_lag_unit": p.get("fixing_lag_unit"),
         "coupon_mode": p.get("coupon_mode"),
+        "avg_window_days": p.get("avg_window_days"),  # окно усреднения, дней (1=point, NULL=период)
         "capped": p.get("capped"),        # есть ли кэп/флор (bool)
         "cap_pct": p.get("cap_pct"),      # потолок ставки купона, % годовых (MIN/«не более»)
         "floor_pct": p.get("floor_pct"),  # пол ставки купона, % годовых (MAX/«не менее»)
@@ -223,6 +253,16 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
             out["margin_schedule"] = parse_margin_schedule(p["coupon_text"])
         except Exception:
             pass
+    # 0) слой bondresearch.ru (импорт scripts/import_bondresearch_specs.py):
+    #    наблюдаемые рынком лаг/метод. Выше парсера, ниже ручной правки.
+    if out["fixing_lag"] is None or out["coupon_mode"] is None:
+        br = _br_specs().get(isin)
+        if br:
+            if out["fixing_lag"] is None and br.get("fixing_lag") is not None:
+                out["fixing_lag"] = br["fixing_lag"]
+                out["fixing_lag_unit"] = br.get("fixing_lag_unit", "cal")
+            if out["coupon_mode"] is None and br.get("coupon_mode"):
+                out["coupon_mode"] = br["coupon_mode"]
     # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
     if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
         try:

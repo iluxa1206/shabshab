@@ -17,9 +17,16 @@ const COLS = [
   ["day_count", "Base"],
   ["face_value", "Номинал"],
   ["coupon_mode", "Режим (БД)"],
+  ["fixing_lag", "Лаг (БД)"],
+  ["fixing_lag_unit", "Ед. лага"],
+  ["avg_window_days", "Окно, дн"],
+  ["br_coupon_mode", "Режим (BR)"],
+  ["br_fixing_lag", "Лаг (BR)"],
   ["spec_eff", "Спека (эфф.)"],
   ["cap_pct", "Кэп %"],
   ["floor_pct", "Флор %"],
+  ["var_type", "Тип ставки"],
+  ["coupon_text", "Формула"],
   ["rating", "Рейтинг"],
   ["source", "Источник"],
 ];
@@ -30,6 +37,10 @@ const REQUIRED = new Set(["base", "margin_bps", "maturity_date"]);
 function Cell({ col, val }) {
   if (val === null || val === undefined || val === "") {
     return <span className={REQUIRED.has(col) ? "cat-miss cat-req" : "cat-miss"}>—</span>;
+  }
+  // длинные тексты (формула купона, тип ставки) — обрезка с полным текстом в title
+  if ((col === "coupon_text" || col === "var_type") && String(val).length > 30) {
+    return <span title={String(val)}>{String(val).slice(0, 30)}…</span>;
   }
   return <>{val}</>;
 }

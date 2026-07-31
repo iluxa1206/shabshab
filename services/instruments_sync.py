@@ -160,7 +160,18 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("corpbonds enrich failed: %s", e)
 
+    # 7. слой bondresearch.ru: наблюдаемые рынком лаг/метод фиксинга (br_* колонки,
+    #    приоритет спеки manual > bondresearch > парсер > калибратор). Сбой сайта
+    #    не валит синк; куцый ответ не затирает слой (sanity внутри apply_specs).
+    br_stats = {}
+    try:
+        from services import bondresearch
+        br_stats = bondresearch.apply_specs(await bondresearch.fetch_specs())
+    except Exception as e:
+        logger.warning("bondresearch specs sync failed: %s", e)
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "br_specs": br_stats.get("written", 0),
                   "ofz_pk_normalized": ofz_fixed,
                   "reclassified_fixed": vstats.get("reclassified_fixed", 0),
                   "suspect": vstats.get("suspect", 0),

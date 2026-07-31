@@ -16,6 +16,41 @@ def _to_date(s):
         return None
 
 
+def apply_registry_params(ref: BondRefData) -> BondRefData:
+    """Реестр инструментов — ЕДИНСТВЕННЫЙ источник истины расчётных параметров.
+    isins_cache/MOEX-справочник лишь заполняют пробелы: непустое значение реестра
+    побеждает. Иначе правка Справочника не доезжала до расчёта — маржа/период/
+    даты продолжали жить в стейлом MOEX-дампе (FORMULA/COUPONPERIOD), а реестр
+    спрашивали только при base=UNKNOWN."""
+    try:
+        from services import instruments_registry as _reg
+        row = _reg.calc_params_map().get(ref.isin)
+    except Exception:
+        row = None
+    if not row:
+        return ref
+    if row.get("base") in ("RUONIA", "KEYRATE"):
+        ref.base = row["base"]
+    if row.get("margin_bps") is not None:
+        ref.spread_issue_bps = int(row["margin_bps"])
+    d = _to_date(row.get("maturity_date"))
+    if d:
+        ref.maturity_date = d
+    d = _to_date(row.get("issue_date"))
+    if d:
+        ref.issue_date = d
+    if row.get("coupon_period_days"):
+        ref.coupon_period_days = int(row["coupon_period_days"])
+    if row.get("coupons_per_year"):
+        ref.coupons_per_year = int(row["coupons_per_year"])
+    if row.get("face_value"):
+        ref.face_value = float(row["face_value"])
+    # first_coupon_date производён от issue+шага — пересчёт от финальных значений
+    if ref.issue_date and ref.coupons_per_year and 1 <= ref.coupons_per_year <= 12:
+        ref.first_coupon_date = add_months(ref.issue_date, 12 // ref.coupons_per_year)
+    return ref
+
+
 def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
                        spread_bps: Optional[int] = None) -> BondRefData:
     """Строит BondRefData для ПРОИЗВОЛЬНОЙ бумаги (нет в isins_cache).
@@ -50,46 +85,20 @@ def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
     except Exception:
         pass
 
-    # Реестр напрямую: params() несёт реестровый слой ТОЛЬКО для manual_locked
-    # строк (coupon_overrides_all), а у обычной бумаги флага нет — и база уходила
-    # в "UNKNOWN" даже когда реестр её знает. Карточка/reprice бумаги вне
-    # isins_cache падали в UNKNOWN_BASE без метрик (ЕАБР П3-07).
-    if base in (None, "UNKNOWN") or spread == 0:
-        try:
-            from services import instruments_registry as _reg
-            row = _reg.get(isin) or {}
-            if base in (None, "UNKNOWN") and row.get("base") in ("RUONIA", "KEYRATE"):
-                base = row["base"]
-            if spread == 0 and row.get("margin_bps") is not None:
-                spread = int(row["margin_bps"])
-        except Exception:
-            pass
-
     issue = _to_date(mo.get("issue"))
     maturity = _to_date(mo.get("maturity"))
-    # maturity/issue/период — фолбэк из реестра: справочник MOEX по ISIN не
-    # резолвит бумаги с отдельным SECID (ОФЗ-ПК: RU000A0JV4P3 → SU29008) → mo
-    # пуст → ref без maturity → TypeError ('<=' None и date) в valuation по
-    # ВСЕМ таким бумагам. Реестр их параметры знает.
-    if maturity is None or issue is None or cp is None:
-        try:
-            from services import instruments_registry as _reg
-            row = _reg.get(isin) or {}
-            maturity = maturity or _to_date(row.get("maturity_date"))
-            issue = issue or _to_date(row.get("issue_date"))
-            cp = cp or row.get("coupon_period_days")
-            if face == 1000.0 and row.get("face_value"):
-                face = float(row["face_value"])
-        except Exception:
-            pass
     cpy = round(365 / cp) if cp else 4
     first_coupon = add_months(issue, 12 // cpy) if (issue and cpy) else None
 
-    return BondRefData(
+    # Реестр — источник истины: непустые поля реестра побеждают MOEX/Cbonds.
+    # Закрывает и старые дыры: base=UNKNOWN у бумаг вне isins_cache (ЕАБР П3-07)
+    # и пустой mo у бумаг с отдельным SECID (ОФЗ-ПК RU000A0JV4P3 → SU29008),
+    # где без maturity рвался valuation.
+    return apply_registry_params(BondRefData(
         isin=isin, base=base, spread_issue_bps=spread, face_value=face,
         accrued_rub=accrued, maturity_date=maturity, first_coupon_date=first_coupon,
         coupons_per_year=cpy, issue_date=issue, coupon_period_days=cp,
-    )
+    ))
 
 
 def implied_current_face(coupons_full, calc_date: date) -> Optional[float]:
@@ -232,25 +241,7 @@ def create_bond_ref_data(data: dict, isin: str) -> BondRefData:
     base_rate_str = data.get("BASE_RATE")
     base, spread_bps = parse_base_and_spread(formula, base_rate_str)
 
-    # Кэш MOEX (isins_cache) часто не несёт разбираемой FORMULA/BASE_RATE — тогда
-    # база уходила в "UNKNOWN", хотя РЕЕСТР её знает (Cbonds/ручной слой). Итог:
-    # карточка/reprice роняли 500 «Unknown base rate type», а таблица молча
-    # выбрасывала бумагу из расчёта (ЕАБР П3-07, ГазКап3P21, МТС 2Р-16 и др.).
-    # Реестр здесь — авторитет того же уровня, что и для универса.
-    # ref_data.params() тут НЕ подходит: реестровый слой в нём — только строки с
-    # manual_locked=1 (coupon_overrides_all), а у обычной бумаги флага нет.
-    # Читаем строку реестра напрямую — тот же источник, что у универса.
-    if not base or base == "UNKNOWN":
-        try:
-            from services import instruments_registry as _reg
-            row = _reg.get(isin) or {}
-            reg_base = row.get("base")
-            if reg_base in ("RUONIA", "KEYRATE"):
-                base = reg_base
-                if not spread_bps and row.get("margin_bps") is not None:
-                    spread_bps = int(row["margin_bps"])
-        except Exception:
-            pass
+    # База/маржа из реестра приходят ниже через apply_registry_params (батч).
 
     # Exact fallback from CLI for first coupon mapping
     step_months = 12 // (frequency or 4)
@@ -259,18 +250,20 @@ def create_bond_ref_data(data: dict, isin: str) -> BondRefData:
     if start_date:
         first_coupon = add_months(start_date, step_months)
 
-    return BondRefData(
+    # Реестр — источник истины: правки Справочника (маржа/период/даты/номинал)
+    # обязаны побеждать значения из isins_cache (MOEX-дамп, парс FORMULA).
+    return apply_registry_params(BondRefData(
         isin=isin,
         base=base or "UNKNOWN",
         spread_issue_bps=spread_bps,
         face_value=fv,
         accrued_rub=accrued,
         maturity_date=end_date,
-        first_coupon_date=first_coupon, 
+        first_coupon_date=first_coupon,
         coupons_per_year=frequency or 4,
         issue_date=start_date,
         coupon_period_days=coupon_period_days
-    )
+    ))
 
 def extract_bond_reference_dict(isin: str, data: dict, ref_obj: BondRefData) -> Dict[str, Any]:
     next_coupon_date = None

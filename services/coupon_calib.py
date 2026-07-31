@@ -518,9 +518,10 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
         from services.ref_data import coupon_formula
         s = coupon_formula(isin, coupons, face=face, calc_date=calc_date, amorts=amorts,
                            idx=idx)
-        if s.get("coupon_mode") is not None:
-            spec = {"mode": s["coupon_mode"], "lag": s.get("fixing_lag") or 0,
-                    "lag_unit": s.get("fixing_lag_unit") or "cal", "base": base}
+        if s.get("coupon_mode") is not None or s.get("avg_window_days"):
+            spec = {"mode": s.get("coupon_mode"), "lag": s.get("fixing_lag") or 0,
+                    "lag_unit": s.get("fixing_lag_unit") or "cal", "base": base,
+                    "avg_window_days": s.get("avg_window_days")}
     except Exception:
         spec = None
     if spec is not None:
@@ -572,6 +573,22 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
         idx = _index(spec.get("base", "KEYRATE"))
     lag = spec.get("lag", 0)
     unit = spec.get("lag_unit", "cal")
+    # Единая параметризация: явное окно усреднения W дней, зафиксированное на
+    # старте периода — окно [obs(start) − W, obs(start)). W=1 ≡ point,
+    # W=длина периода ≡ avg_prev. Явное W из Справочника сильнее mode.
+    w = spec.get("avg_window_days")
+    if w:
+        w_hi = _obs_date(start, lag, unit)
+        if w <= 1:
+            return (_rate_at(idx, w_hi) if _realized(idx, w_hi, calc_date) else fwd_pct(w_hi)) or 0.0
+        tot, n, cur = 0.0, 0, w_hi - timedelta(days=int(w))
+        while cur < w_hi:
+            k = _rate_at(idx, cur) if _realized(idx, cur, calc_date) else fwd_pct(cur)
+            if k is not None:
+                tot += k
+                n += 1
+            cur += timedelta(days=1)
+        return (tot / n) if n else 0.0
     if spec.get("mode") == "point":
         fix = _obs_date(start, lag, unit)
         return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0

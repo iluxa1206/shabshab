@@ -29,7 +29,8 @@ _lock = threading.Lock()
 _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "fixing_lag", "fixing_lag_unit", "coupon_mode",
-                  "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text")
+                  "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text",
+                  "avg_window_days")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instruments(
@@ -82,6 +83,15 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN floor_pct REAL",       # пол ставки купона, %
     "ALTER TABLE instruments ADD COLUMN coupon_text TEXT",     # текст формулы купона
     "ALTER TABLE enrich_seen ADD COLUMN parser_ver INTEGER",   # версия парсера corpbonds
+    # Слой bondresearch.ru (index_floaters): наблюдаемые рынком лаг/метод фиксинга.
+    # Отдельные колонки (не fixing_lag/coupon_mode) — провенанс: приоритет спеки
+    # manual > bondresearch > парсер проспекта > калибратор (ref_data.coupon_formula),
+    # и импорт не превращает строку в manual_locked (никакого freeze-trap).
+    "ALTER TABLE instruments ADD COLUMN br_fixing_lag INTEGER",
+    "ALTER TABLE instruments ADD COLUMN br_coupon_mode TEXT",      # average | point
+    # Окно усреднения базовой ставки, дней: NULL = длина купонного периода
+    # (average), 1 = точечный фиксинг (point). Единая параметризация фиксинга.
+    "ALTER TABLE instruments ADD COLUMN avg_window_days INTEGER",
 ]
 
 
@@ -118,7 +128,7 @@ def _ensure() -> None:
 _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
          "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
-         "cap_pct", "floor_pct", "coupon_text")
+         "cap_pct", "floor_pct", "coupon_text", "avg_window_days")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True,
@@ -192,6 +202,50 @@ def set_manual(isin: str, params: dict, lock: bool = True) -> None:
                 vals.append(1)
             vals.append(isin)
             c.execute(f"UPDATE instruments SET {','.join(sets)} WHERE isin=?", vals)
+    # правка должна попасть в расчёт немедленно, не через TTL
+    invalidate_params_cache()
+
+
+# Кэш calc_params_map: юниверс-циклы зовут её на каждую бумагу (700+), а
+# _conn() на вызов — это PRAGMA+open. TTL короткий, ручная правка сбрасывает
+# кэш немедленно (см. set_manual) — правка справочника видна расчёту сразу.
+_calc_params_cache = {"ts": 0.0, "map": None}
+_CALC_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
+                "coupon_period_days", "coupons_per_year", "face_value")
+
+
+def invalidate_params_cache() -> None:
+    """Сброс кэша calc_params_map (после ручной правки/импорта справочника)."""
+    _calc_params_cache["map"] = None
+    _calc_params_cache["ts"] = 0.0
+    # реестровый слой ref_data.params() кэшируется отдельно — сбрасываем и его,
+    # иначе спека фиксинга (coupon_mode/lag/cap/floor) живёт стейлой до 30с
+    try:
+        from services import ref_data
+        ref_data.invalidate_registry_cache()
+    except Exception:
+        pass
+
+
+def calc_params_map() -> Dict[str, dict]:
+    """{isin: {расчётные поля}} ВСЕХ активных бумаг одним запросом (только
+    не-NULL значения). Реестр — источник истины параметров для BondRefData:
+    isins_cache/MOEX лишь заполняют пробелы (см. services.bonds)."""
+    import time
+    now = time.monotonic()
+    if _calc_params_cache["map"] is not None and now - _calc_params_cache["ts"] < 15:
+        return _calc_params_cache["map"]
+    _ensure()
+    out: Dict[str, dict] = {}
+    with _conn() as c:
+        cols = ",".join(("isin",) + _CALC_FIELDS)
+        for r in c.execute(f"SELECT {cols} FROM instruments WHERE active=1"):
+            d = {k: r[k] for k in _CALC_FIELDS if r[k] is not None}
+            if d:
+                out[r["isin"]] = d
+    _calc_params_cache["map"] = out
+    _calc_params_cache["ts"] = now
+    return out
 
 
 def mark_reviewed(isin: str) -> None:
@@ -492,7 +546,8 @@ def list_exotic() -> list[dict]:
 _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                  "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
-                 "coupon_mode", "cap_pct", "floor_pct", "coupon_text", "rating",
+                 "coupon_mode", "avg_window_days", "br_fixing_lag", "br_coupon_mode",
+                 "cap_pct", "floor_pct", "coupon_text", "rating",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
                  "emitter_name", "active")
 
@@ -500,7 +555,54 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
 # Поля купона, которыми ручной слой реестра ПЕРЕОПРЕДЕЛЯЕТ прайсинг (мост в
 # ref_data.coupon_formula). Только эти + только manual_locked=1 (явная правка).
 _COUPON_OVERRIDE_COLS = ("base", "margin_bps", "fixing_lag", "fixing_lag_unit",
-                         "coupon_mode", "cap_pct", "floor_pct", "coupon_text")
+                         "coupon_mode", "cap_pct", "floor_pct", "coupon_text",
+                         "avg_window_days")
+
+
+def set_br_spec(isin: str, fixing_lag, coupon_mode) -> None:
+    """Записать спеку фиксинга слоя bondresearch.ru (br_* колонки). Не трогает
+    manual_locked и основные поля — провенанс отдельный, freeze-trap исключён."""
+    set_br_specs_bulk({(isin or "").strip(): {"fixing_lag": fixing_lag,
+                                              "coupon_mode": coupon_mode}})
+
+
+def set_br_specs_bulk(specs: Dict[str, dict]) -> int:
+    """Батч-запись br-спек {isin: {fixing_lag, coupon_mode}} одним соединением
+    (дневной синк пишет ~450 строк). Возвращает число обновлённых строк."""
+    if not specs:
+        return 0
+    _ensure()
+    now = _now()
+    n = 0
+    with _lock, _conn() as c:
+        for isin, s in specs.items():
+            cur = c.execute(
+                "UPDATE instruments SET br_fixing_lag=?, br_coupon_mode=?, updated_at=? WHERE isin=?",
+                (s.get("fixing_lag"), s.get("coupon_mode"), now, isin))
+            n += cur.rowcount
+    invalidate_params_cache()
+    return n
+
+
+def br_specs_all() -> dict:
+    """{isin: {fixing_lag, fixing_lag_unit, coupon_mode}} слой bondresearch.ru.
+    Приоритет в ref_data.coupon_formula: manual > bondresearch > парсер > калибратор."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, br_fixing_lag, br_coupon_mode FROM instruments "
+            "WHERE br_fixing_lag IS NOT NULL OR br_coupon_mode IS NOT NULL").fetchall()
+    out = {}
+    for r in rows:
+        d = {}
+        if r["br_fixing_lag"] is not None:
+            d["fixing_lag"] = r["br_fixing_lag"]
+            d["fixing_lag_unit"] = "cal"       # bondresearch публикует календарные дни
+        if r["br_coupon_mode"]:
+            d["coupon_mode"] = r["br_coupon_mode"]
+        if d:
+            out[r["isin"]] = d
+    return out
 
 
 def coupon_overrides_all() -> dict:
@@ -550,6 +652,8 @@ def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[
         d["spec_eff"] = None
         if r["base"] in ("KEYRATE", "RUONIA"):
             mode, lag, unit, src = r["coupon_mode"], r["fixing_lag"], r["fixing_lag_unit"], "ручной"
+            if mode is None and lag is None and (r["br_coupon_mode"] or r["br_fixing_lag"] is not None):
+                mode, lag, unit, src = r["br_coupon_mode"], r["br_fixing_lag"], "cal", "bondresearch"
             if mode is None and lag is None:
                 ps = _ppf(r["coupon_text"] or "") or {}
                 mode, lag, unit = ps.get("mode"), ps.get("lag"), ps.get("lag_unit")
