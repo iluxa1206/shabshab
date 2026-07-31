@@ -31,6 +31,12 @@ PY"
   exit 0
 fi
 
+if [[ "${1:-}" == "--verify-conv" ]]; then
+  echo '>>> verify: сходимость карточка vs фиксинг по дням'
+  RUN "$DC exec -T floaters python scripts/prod_verify_coupon_convergence.py"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--dry-run" ]]; then
   echo '>>> [dry-run] unfreeze'
   RUN "$DC exec -T floaters python scripts/unfreeze_fixing_spec.py"
