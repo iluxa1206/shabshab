@@ -163,11 +163,16 @@ def test_future_period_with_realized_window(reg):
                             idx=(dates, rates))
     assert got2 == 99.0
 
-    # RUONIA: будущий период с НЕреализованным окном → None (конвенция
-    # daily-comp остаётся за ядром)
+    # RUONIA: та же единая методика — спека применяется и к будущим периодам
+    # (окно с лагом, факт+форвард-ступени); None только у бумаг без спеки
     isin3 = "RU000TEST0008"
     reg.set_manual(isin3, {"base": "RUONIA", "margin_bps": 120,
                            "coupon_mode": "average", "fixing_lag": 7})
     got3 = period_index_pct(isin3, "RUONIA", [], 1000.0, start, end, calc, fwd,
                             idx=(dates, rates))
-    assert got3 is None
+    assert got3 is not None and got3 > 90.0     # окно в будущем → форвард (99)
+
+    # бумага БЕЗ спеки: будущий период → None (фолбэк ядра — daily-comp кривой)
+    got4 = period_index_pct("RU000NOSPEC000", "RUONIA", [], 1000.0, start, end,
+                            calc, fwd, idx=(dates, rates))
+    assert got4 is None

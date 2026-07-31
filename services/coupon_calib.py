@@ -551,24 +551,16 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
     except Exception:
         spec = None
     if start > calc_date:
+        # БУДУЩИЕ периоды (обе базы): спека выпуска — окно наблюдения со
+        # сдвигом lag, факт ЦБ где есть, форвард-ступень кривой где нет.
+        # ЕДИНАЯ методика с паспортом «Фиксинг по дням» (решение 2026-07-31):
+        # одна цифра купона во всех вкладках. Ранее будущие RUONIA шли
+        # daily-comp фактором кривой без лага (par-тождество SM) — конвенция
+        # оставлена ТОЛЬКО как фолбэк для бумаг без спеки (return None ниже).
         if spec is None:
             return None
         if idx is None:
             idx = _index(base)
-        if base == "KEYRATE":
-            # KEYRATE (simple-конвенция): спека применяется ко ВСЕМ будущим
-            # периодам — окно наблюдения со сдвигом lag берёт факт где есть и
-            # форвард-ступень где нет. Раньше будущие форвардились БЕЗ лага:
-            # на крутой кривой расхождение с конвенцией выпуска 0.2-0.4пп
-            # (РЖД 1Р-46R average·37), и «Фиксинг по дням» расходился с картой.
-            return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
-        # RUONIA: будущие купоны остаются daily-comp фактором кривой (par-
-        # тождество и сверка НРД, см. границу конвенций в build_cashflows_to_
-        # maturity) — спекой берём только ПОЛНОСТЬЮ реализованное окно
-        # (купон де-факто зафиксирован).
-        last_obs = _last_obs_date(spec, start, end)
-        if last_obs is None or not _realized(idx, last_obs, calc_date):
-            return None
         return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
     if spec is not None:
         return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
