@@ -74,16 +74,28 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
             })
         return out
 
-    # фолбэк (экзотика ИПЦ/GCurve и пр.): только факт MOEX, без проекции
+    # фолбэк (экзотика ИПЦ/GCurve и пр.): только факт MOEX, без проекции.
+    # degraded=True — событие построено МИМО канонического билдера (без лесенки
+    # маржи/кэпа/прогноза) и может расходиться с карточкой; фронт может пометить.
     for c in coupons:
         end = _d(c.get("end"))
         if not end or end <= settle or c.get("value") is None:
             continue
+        vp = c.get("valueprc")
+        face = ref.face_value or 0
+        days = None
+        s = _d(c.get("start"))
+        if s and (end - s).days:
+            days = (end - s).days
+        # ставка: valueprc, иначе восстановление из суммы (как в карточке)
+        rate = (float(vp) if vp is not None
+                else (float(c["value"]) / face * 365.0 / days * 100.0
+                      if face and days else None))
         out.append({
             **base, "date": end, "type": "COUPON",
             "amount_rub": round(float(c["value"]), 2),
-            "rate_pct": (float(c["valueprc"]) if c.get("valueprc") is not None else None),
-            "projected": False,
+            "rate_pct": round(rate, 4) if rate is not None else None,
+            "projected": False, "degraded": True,
         })
     rem = ref.face_value
     for a in amorts:

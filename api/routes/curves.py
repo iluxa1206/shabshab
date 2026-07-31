@@ -59,17 +59,25 @@ async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-фло�
     dirty_pct = price + (accrued or 0.0) / ref.face_value * 100.0
     mat = ref.maturity_date
 
+    # спека фиксинга выпуска (manual > bondresearch > парсер > калибратор) —
+    # та же, что в прайсинге; раньше хардкод lag=7/окно-от-end расходился с ним
+    from services.ref_data import coupon_formula
+    try:
+        spec = coupon_formula(isin, coupons=full.get("coupons") or [],
+                              face=ref.face_value or 1000.0, calc_date=cd)
+    except Exception:
+        spec = None
+
     path = make_ks_path(keyrate_curve, cd)
-    cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, lag_days=7)
+    cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, spec=spec)
     y_mkt = floater_xirr_pct(cfs_mkt, dirty_pct, cd)
 
-    # bond-vs-index: по каждому будущему периоду — ставка индекса (среднее пути КС
-    # по окну рефиксинга) и ставка купона бумаги (= индекс + спред). Зазор = carry.
-    from services.floater_model import _avg_over_window
+    # bond-vs-index: по каждому будущему периоду — ставка индекса (по спеке
+    # фиксинга) и ставка купона бумаги (= индекс + спред). Зазор = carry.
+    from services.floater_model import period_base_avg
     rate_series = []
     for s, e in periods:
-        days = (e - s).days or 1
-        base = _avg_over_window(path, e, 7, days)
+        base = period_base_avg(path, s, e, spec)
         rate_series.append({
             "date": e.isoformat(),
             "base_pct": round(base * 100.0, 4),

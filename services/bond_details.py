@@ -148,11 +148,12 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
 
     # Cashflow по реальному расписанию MOEX: прошлые купоны = факт, будущие = прогноз
     formula = (data.get("FORMULA", "") if data else "") or external_formula(ref_obj)
+    cf_warnings: list = []
     try:
         cfs, _ = build_cashflow_from_moex(
             ref_obj, curve, calc_date,
             sched_full.get("coupons", []), sched_full.get("amorts", []), formula,
-            offers=sched_full.get("offers"),
+            offers=sched_full.get("offers"), warnings_out=cf_warnings,
         )
     except Exception as e:
         logger.warning(f"Cashflow error for {isin}: {e}")
@@ -234,7 +235,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         except Exception as e:
             logger.warning(f"Floater risk error for {isin}: {e}")
 
-    warnings = []
+    warnings = list(cf_warnings)   # деградация cashflow-таблицы (фолбэк на факты)
     if next_offer and next_offer[2] == "put":
         warnings.append(
             f"Пут-оферта {next_offer[0].isoformat()}: первостепенны метрики к оферте "

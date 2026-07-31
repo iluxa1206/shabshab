@@ -131,3 +131,43 @@ def test_reset_manual(reg):
     assert row["avg_window_days"] is None and row["manual_locked"] == 0
     assert row["margin_bps"] == 150 and row["base"] == "KEYRATE"
     assert reg.reset_manual("RU000NOSUCH00") is None
+
+
+def test_future_period_with_realized_window(reg):
+    """Будущий период (start > calc), но окно фиксинга уже реализовано
+    (avg_window + большой лаг) → купон из ФАКТА истории, не форвард."""
+    from services.coupon_calib import period_index_pct
+    from datetime import date, timedelta
+
+    isin = "RU000TEST0006"
+    reg.set_manual(isin, {"base": "KEYRATE", "margin_bps": 120,
+                          "coupon_mode": "average", "fixing_lag": 37,
+                          "avg_window_days": 30})
+    calc = date(2026, 7, 15)
+    start, end = date(2026, 8, 1), date(2026, 9, 1)   # будущий период
+    # окно [start-37-30, start-37) = [25.05, 24.06) — полностью в прошлом
+    dates = [date(2026, 4, 1) + timedelta(days=i) for i in range(106)]
+    rates = [12.0] * len(dates)
+    fwd = lambda d: 99.0     # если позовётся — тест упадёт (99 ≠ 12)
+
+    got = period_index_pct(isin, "KEYRATE", [], 1000.0, start, end, calc, fwd,
+                           idx=(dates, rates))
+    assert got == 12.0
+
+    # KEYRATE point·2, окно не реализовано → спека всё равно применяется:
+    # obs = start−2 в будущем → форвард-ступень (99)
+    isin2 = "RU000TEST0007"
+    reg.set_manual(isin2, {"base": "KEYRATE", "margin_bps": 120,
+                           "coupon_mode": "point", "fixing_lag": 2})
+    got2 = period_index_pct(isin2, "KEYRATE", [], 1000.0, start, end, calc, fwd,
+                            idx=(dates, rates))
+    assert got2 == 99.0
+
+    # RUONIA: будущий период с НЕреализованным окном → None (конвенция
+    # daily-comp остаётся за ядром)
+    isin3 = "RU000TEST0008"
+    reg.set_manual(isin3, {"base": "RUONIA", "margin_bps": 120,
+                           "coupon_mode": "average", "fixing_lag": 7})
+    got3 = period_index_pct(isin3, "RUONIA", [], 1000.0, start, end, calc, fwd,
+                            idx=(dates, rates))
+    assert got3 is None

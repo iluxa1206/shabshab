@@ -542,8 +542,12 @@ def build_cashflows_to_maturity(
             # конвенции нельзя, не сломав одно из двух: либо расходимся с проспектом
             # на текущем купоне, либо теряем par-тождество и сверку с НРД. Разрыв на
             # стыке ≈ единицы bps SM при КС ~14-16%.
+            # Провайдер зовётся и для БУДУЩИХ периодов: period_index_pct сам
+            # решает — вернёт индекс, только если окно фиксинга спеки уже
+            # полностью реализовано (большой лаг/avg_prev/окно/month_start —
+            # купон де-факто известен), иначе None → форвард кривой ниже.
             idx_pct = None
-            if start <= calc_date and bond.base in ("RUONIA", "KEYRATE"):
+            if bond.base in ("RUONIA", "KEYRATE"):
                 try:
                     fn = index_pct_fn
                     if fn is None:                     # легаси-фолбэк (CLI-пути)

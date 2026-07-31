@@ -496,6 +496,27 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
     return spec
 
 
+def _last_obs_date(spec: dict, start: date, end: date) -> Optional[date]:
+    """Последняя дата наблюдения индекса по спеке. Если она ≤ calc_date (и история
+    её покрывает) — окно фиксинга периода полностью реализовано, купон известен
+    фактом даже для ещё не начавшегося периода."""
+    lag = spec.get("lag", 0)
+    unit = spec.get("lag_unit", "cal")
+    w = spec.get("avg_window_days")
+    mode = spec.get("mode")
+    if w:                                   # окно [obs(start)−w, obs(start))
+        return _obs_date(start, lag, unit) - timedelta(days=1)
+    if mode == "point":
+        return _obs_date(start, lag, unit)
+    if mode == "month_start":
+        return start.replace(day=1)
+    if mode == "avg_prev":                  # окно [obs(start)−period, obs(start))
+        return _obs_date(start, lag, unit) - timedelta(days=1)
+    if mode == "average":                   # окно скользит по дням дохода до end−lag
+        return _obs_date(end, lag, unit)
+    return None
+
+
 def period_index_pct(isin: str, base: str, coupons: list, face: float,
                      start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float],
@@ -509,10 +530,15 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
     передавать одно и то же, иначе спека калибруется по разным данным.
     None → спеки нет и фолбэк неприменим (RUONIA без спеки) — звать форвард-проекцию.
 
+    БУДУЩИЙ период (start > calc): индекс отдаём только если окно наблюдения
+    спеки УЖЕ полностью реализовано (большой лаг / avg_prev / окно /
+    month_start) — купон де-факто зафиксирован конвенцией выпуска, и форвард
+    кривой по нему систематически врёт (РЖД 1Р-46R: average·37 — окно
+    следующего купона это прошлый месяц). Иначе None — прайсинг проецирует
+    форвардом (конвенция par-тождества и сверки с НРД не трогается).
+
     Единая точка для pricing (valuation, zspread) и display (services.cashflow):
     один и тот же купон во всех пайплайнах."""
-    if start > calc_date:
-        return None
     spec = None
     try:
         from services.ref_data import coupon_formula
@@ -524,6 +550,26 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
                     "avg_window_days": s.get("avg_window_days")}
     except Exception:
         spec = None
+    if start > calc_date:
+        if spec is None:
+            return None
+        if idx is None:
+            idx = _index(base)
+        if base == "KEYRATE":
+            # KEYRATE (simple-конвенция): спека применяется ко ВСЕМ будущим
+            # периодам — окно наблюдения со сдвигом lag берёт факт где есть и
+            # форвард-ступень где нет. Раньше будущие форвардились БЕЗ лага:
+            # на крутой кривой расхождение с конвенцией выпуска 0.2-0.4пп
+            # (РЖД 1Р-46R average·37), и «Фиксинг по дням» расходился с картой.
+            return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
+        # RUONIA: будущие купоны остаются daily-comp фактором кривой (par-
+        # тождество и сверка НРД, см. границу конвенций в build_cashflows_to_
+        # maturity) — спекой берём только ПОЛНОСТЬЮ реализованное окно
+        # (купон де-факто зафиксирован).
+        last_obs = _last_obs_date(spec, start, end)
+        if last_obs is None or not _realized(idx, last_obs, calc_date):
+            return None
+        return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
     if spec is not None:
         return projected_ks_pct(spec, start, end, calc_date, fwd_pct, idx=idx)
     if base == "KEYRATE":

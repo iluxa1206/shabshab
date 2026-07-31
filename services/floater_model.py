@@ -53,16 +53,38 @@ def make_ks_path(curve, calc_date: date) -> Callable[[date], float]:
     return path
 
 
-def _avg_over_window(path: Callable[[date], float], end: date,
-                     lag_days: int, interval_days: int) -> float:
-    """Среднее пути базы по окну рефиксинга [end−lag−interval, end−lag]."""
-    w_end = end - timedelta(days=lag_days)
-    w_start = w_end - timedelta(days=interval_days)
+def _avg_days(path: Callable[[date], float], w_start: date, w_end: date) -> float:
+    """Среднее пути базы по дням окна [w_start, w_end)."""
     days = (w_end - w_start).days or 1
     total = 0.0
     for k in range(days):
         total += path(w_start + timedelta(days=k))
     return total / days
+
+
+def period_base_avg(path: Callable[[date], float], start: date, end: date,
+                    spec: Optional[dict] = None) -> float:
+    """База периода (decimal) ПО СПЕКЕ ФИКСИНГА выпуска (ref_data.coupon_formula:
+    coupon_mode/fixing_lag/avg_window_days). Раньше метод хардкодил лаг 7 и окно
+    «период с якорем на end» для всех бумаг — расходился с прайсингом на
+    point/avg_prev/больших лагах. None-спека → дефолт: среднее периода без лага."""
+    spec = spec or {}
+    lag = int(spec.get("fixing_lag") or 0)
+    mode = spec.get("coupon_mode")
+    w = spec.get("avg_window_days")
+    period = (end - start).days or 1
+    if w:                                     # окно [start−lag−w, start−lag)
+        hi = start - timedelta(days=lag)
+        return path(hi - timedelta(days=1)) if int(w) <= 1 else _avg_days(path, hi - timedelta(days=int(w)), hi)
+    if mode == "point":
+        return path(start - timedelta(days=lag))
+    if mode == "month_start":
+        return path(start.replace(day=1))
+    if mode == "avg_prev":                    # окно [start−lag−period, start−lag)
+        hi = start - timedelta(days=lag)
+        return _avg_days(path, hi - timedelta(days=period), hi)
+    # average / дефолт: дни дохода (start, end] со сдвигом lag
+    return _avg_days(path, start + timedelta(days=1 - lag), end + timedelta(days=1 - lag))
 
 
 def project_floater(
@@ -71,20 +93,18 @@ def project_floater(
     maturity: date,
     path: Callable[[date], float],
     calc_date: date,
-    lag_days: int = 7,
-    interval_days: Optional[int] = None,      # None → длина купонного периода
+    spec: Optional[dict] = None,              # спека фиксинга (ref_data.coupon_formula)
 ) -> List[Tuple[date, float]]:
     """Потоки флоатера (дата, сумма % от номинала) по методу файла.
 
-    Купон = (avg_base_по_окну + spread)·days/365·100; +100 в дату погашения.
+    Купон = (base_по_спеке_фиксинга + spread)·days/365·100; +100 в погашение.
     Только будущие купоны (end > calc_date)."""
     cfs: List[Tuple[date, float]] = []
     for start, end in coupon_dates:
         if end <= calc_date:
             continue
         days = (end - start).days or 1
-        iv = interval_days if interval_days is not None else days
-        base = _avg_over_window(path, end, lag_days, iv)
+        base = period_base_avg(path, start, end, spec)
         coupon = (base + spread_pct) * days / 365.0 * 100.0
         if end >= maturity:
             coupon += 100.0
