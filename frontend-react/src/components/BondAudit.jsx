@@ -206,17 +206,21 @@ function DayRatesModal({ isin, onClose }) {
               маржа {d.spec?.margin_bps != null ? "+" + d.spec.margin_bps + " bps" : "—"}
               {d.spec?.cap_pct != null && <> · кэп {d.spec.cap_pct}%</>}
               {d.spec?.floor_pct != null && <> · пол {d.spec.floor_pct}%</>}
+              {" · Close/Y-IDX — из spread_daily (та же серия, что график «Динамика DM»): сверка с историческим калькулятором спредов"}
             </div>
             <div className="daymodal-body">
               <table className="cf-table">
                 <thead>
-                  <tr><th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th><th className="left">Источник</th></tr>
+                  <tr>
+                    <th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th>
+                    <th className="left">Источник</th><th>Close %</th><th>Y-IDX</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {d.coupons.map((g) => (
                     [
                       <tr key={"h" + g.n} className="daygroup">
-                        <td className="left" colSpan={4}>
+                        <td className="left" colSpan={6}>
                           Купон #{g.n} · {fmt.date(g.start)} — {fmt.date(g.end)} · выплата {fmt.date(g.pay_date)} ·
                           факт {g.n_fact}/{g.rows.length} дн · среднее {fmt.pct(g.mean_pct, 4) ?? "—"}%
                           {g.coupon_rate_pct != null && <> · купон {fmt.pct(g.coupon_rate_pct, 4)}%</>}
@@ -230,6 +234,8 @@ function DayRatesModal({ isin, onClose }) {
                           <td className="left">{fmt.date(r.obs_date)}</td>
                           <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
                           <td className="left">{r.src === "fact" ? "факт ЦБ" : "форвард (ступень)"}</td>
+                          <td>{r.close_pct != null ? fmt.pct(r.close_pct) : "—"}</td>
+                          <td>{r.y_idx_bps != null ? fmt.bps(r.y_idx_bps) : "—"}</td>
                         </tr>
                       )),
                     ]
@@ -247,7 +253,19 @@ function DayRatesModal({ isin, onClose }) {
 function WaterfallSection({ w, v, isin }) {
   const [showDays, setShowDays] = useState(false);
   const rows = w.rows || [];
-  if (!rows.length) return null;
+  // дневная раскладка фиксинга НЕ зависит от цены — кнопка доступна и когда
+  // PV-развёртки нет (нет цены/кривой: выходной, тонкая бумага)
+  if (!rows.length) return (
+    <>
+      <div className="section-title">
+        Развёртка PV
+        <button className="btn day-btn" onClick={() => setShowDays(true)}
+          title="Базовая ставка на каждый день всех будущих купонов">ФИКСИНГ ПО ДНЯМ</button>
+      </div>
+      <div className="fnote">Нет цены/кривой — PV-развёртка недоступна; дневная раскладка фиксинга работает.</div>
+      {showDays && <DayRatesModal isin={isin} onClose={() => setShowDays(false)} />}
+    </>
+  );
   return (
     <>
       <div className="section-title">

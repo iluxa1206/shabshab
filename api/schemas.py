@@ -157,6 +157,8 @@ class CouponDayRow(BaseModel):
     obs_date: date                 # дата наблюдения индекса (день − lag)
     rate_pct: Optional[float]      # значение индекса, %
     src: str                       # fact | forward
+    close_pct: Optional[float] = None   # цена закрытия дня (spread_daily)
+    y_idx_bps: Optional[float] = None   # Y-IDX as-of дня по этой цене (spread_daily)
 
 class CouponDayGroup(BaseModel):
     n: Optional[int]               # № купона (как в таблице PV паспорта)

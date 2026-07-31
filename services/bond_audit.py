@@ -617,6 +617,15 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
         except Exception:
             return None
 
+    # история цены/Y-IDX для прошлых дней (spread_daily: вечерние снапшоты +
+    # честный бэкфилл) — join по дате в строки раскладки
+    hist_by_date = {}
+    try:
+        from services.spread_history import read_history
+        hist_by_date = {r["date"]: r for r in read_history(isin, days=400)}
+    except Exception as e:
+        logger.warning(f"coupon-days history {isin}: {e}")
+
     # канонические периоды: как таблица PV (оферта, хвост, амортизация)
     cfs, _ = build_cashflow_from_moex(ref_obj, curve, calc_date,
                                       coupons, amorts, formula, offers=offers)
@@ -633,9 +642,16 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
             rate = _rate_at(idx, obs) if fact else _fwd_step(obs)
             if rate is not None:
                 vals.append(rate)
+            # цена закрытия + Y-IDX as-of дня — ТЕ ЖЕ строки spread_daily
+            # (honest/snap), что рисует график «Динамика DM»: сверка дневной
+            # раскладки с калькулятором исторических спредов. Тяжёлый бэкфилл
+            # отсюда не запускаем — только уже посчитанные точки.
+            h = hist_by_date.get(_iso(day))
             rows.append({"day": _iso(day), "obs_date": _iso(obs),
                          "rate_pct": round(rate, 4) if rate is not None else None,
-                         "src": "fact" if fact else "forward"})
+                         "src": "fact" if fact else "forward",
+                         "close_pct": (h or {}).get("price_pct"),
+                         "y_idx_bps": (h or {}).get("y_idx")})
         mean_rows = round(sum(vals) / len(vals), 4) if vals else None
         pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
         try:
