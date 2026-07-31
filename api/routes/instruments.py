@@ -19,11 +19,18 @@ from services import instruments_registry as reg
 router = APIRouter()
 
 # Колонки справочника-шаблона xlsx (round-trip: экспорт → правка → импорт).
-# Редактируемые вручную поля (те же, что InstrumentParams). ISIN — ключ.
+# Порядок = колонки страницы СПРАВОЧНИК (фронт Catalog.jsx COLS), ISIN — ключ.
+# Read-only колонки (br_*/spec_eff/rating/source) выгружаются для контекста,
+# импорт их игнорирует (_XLSX_EDITABLE).
 _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
-              "face_value", "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode",
-              "avg_window_days", "cap_pct", "floor_pct", "coupon_text")
+              "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
+              "avg_window_days", "br_coupon_mode", "br_fixing_lag", "spec_eff",
+              "cap_pct", "floor_pct", "var_type", "coupon_text", "rating", "source")
+_XLSX_EDITABLE = ("short_name", "base", "margin_bps", "maturity_date",
+                  "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
+                  "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
+                  "avg_window_days", "cap_pct", "floor_pct", "var_type", "coupon_text")
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
              "avg_window_days"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
@@ -185,8 +192,8 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
             continue
         params = {}
         try:
-            for field in _XLSX_COLS:
-                if field == "isin" or field not in idx or idx[field] >= len(row):
+            for field in _XLSX_EDITABLE:
+                if field not in idx or idx[field] >= len(row):
                     continue
                 v = _coerce(field, row[idx[field]])
                 if v is not None:
