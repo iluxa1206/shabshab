@@ -132,17 +132,20 @@ def fixed_metrics_from_schedule(
     if dirty <= 0:
         return out
 
-    flows = [(calc_date, -dirty)] + cfs
+    # якорь = ДАТА ПОСТАВКИ (T+1 раб; пятница → понедельник): dirty платится
+    # на settle, YTM/дюрация считаются от неё — та же конвенция, что у флоатеров
+    settle = settle_date(calc_date)
+    flows = [(settle, -dirty)] + cfs
     y = xirr(flows)
     if y is None:
         return out
     out["ytm_pct"] = round(y * 100.0, 2)
 
-    # численная дюрация/выпуклость: PV при y±10бп. Якорим поток к calc_date
+    # численная дюрация/выпуклость: PV при y±10бп. Якорим поток к settle
     # (xnpv дисконтирует к дате ПЕРВОГО элемента) — иначе PV считается на дату
     # первого купона и pv0≠dirty, что искажает знаменатель выпуклости.
     dy = 0.001
-    anchored = [(calc_date, 0.0)] + cfs
+    anchored = [(settle, 0.0)] + cfs
     try:
         pv_dn = xnpv(y - dy, anchored)
         pv_up = xnpv(y + dy, anchored)

@@ -133,14 +133,17 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
 
 
 def solve_z_bps(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Optional[int]:
-    """z-спред (bps) над КБД: PV = Σ CF·exp(-(r_g(τ)+z)·τ) = dirty."""
+    """z-спред (bps) над КБД: PV = Σ CF·exp(-(r_g(τ)+z)·τ) = dirty.
+    τ — от ДАТЫ ПОСТАВКИ (T+1 раб), как и во всех метриках."""
     if not cfs or not g.ok():
         return None
+    from core.valuation import settle_date
+    anchor = settle_date(calc_date)
 
     def pv(z):
         tot = 0.0
         for pay, amt in cfs:
-            tau = (pay - calc_date).days / 365.0
+            tau = (pay - anchor).days / 365.0
             if tau <= 0:
                 continue
             tot += amt * math.exp(-(g.r(tau) + z) * tau)
@@ -173,11 +176,13 @@ def solve_z_discrete(g: GCurve, cfs, calc_date: date, dirty_target: float) -> Op
     Сверка RUONIA vs НРД z: median +15bp, mad 10 (n=25)."""
     if not cfs or not g.ok():
         return None
+    from core.valuation import settle_date
+    anchor = settle_date(calc_date)   # τ от даты поставки (T+1 раб)
 
     def pv(z: float) -> float:
         tot = 0.0
         for pay, amt in cfs:
-            tau = (pay - calc_date).days / 365.0
+            tau = (pay - anchor).days / 365.0
             if tau <= 0:
                 continue
             base = 1.0 + g.r(tau) + z
@@ -208,10 +213,12 @@ def solve_flat_y(cfs, calc_date: date, dirty_target: float) -> Optional[float]:
     """Плоская непрерывная доходность y: Σ CF·exp(−y·τ) = dirty."""
     if not cfs:
         return None
+    from core.valuation import settle_date
+    anchor = settle_date(calc_date)   # τ от даты поставки (T+1 раб)
 
     def pv(y):
-        return sum(a * math.exp(-y * (p - calc_date).days / 365.0)
-                   for p, a in cfs if (p - calc_date).days > 0)
+        return sum(a * math.exp(-y * (p - anchor).days / 365.0)
+                   for p, a in cfs if (p - anchor).days > 0)
 
     lo, hi = -0.5, 5.0
     if (pv(lo) - dirty_target) * (pv(hi) - dirty_target) > 0:

@@ -717,8 +717,11 @@ def xirr(cashflows: List[tuple[date, float]], low: float = -0.9999, high: float 
 
 
 def xirr_yield_pct(dirty_price_rub: float, cashflows: List[Cashflow], calc_date: date) -> Optional[float]:
-    dated_amounts = [(calc_date, -dirty_price_rub)]
-    dated_amounts.extend((cf.pay_date, cf.amount_rub) for cf in cashflows if cf.pay_date > calc_date)
+    # ЯКОРЬ = ДАТА ПОСТАВКИ (T+1 раб; пятница → понедельник): деньги за бумагу
+    # реально уходят на settle, доходность считается от неё, не от calc_date
+    settle = settle_date(calc_date)
+    dated_amounts = [(settle, -dirty_price_rub)]
+    dated_amounts.extend((cf.pay_date, cf.amount_rub) for cf in cashflows if cf.pay_date > settle)
     rate = xirr(dated_amounts)
     if rate is None:
         return None
@@ -745,12 +748,14 @@ def pv_cashflows_with_dm(
     _check_curve_convention(bond.base, curve)
     dm = dm_bps / 10000.0
 
-    # Уникальные даты платежей > calc_date
-    pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > calc_date}
+    # Якорь дисконта = дата поставки (T+1 раб): PV сравнивается с dirty,
+    # который платится на settle, — дисконтируем платежи к settle
+    settle = settle_date(calc_date)
+    pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > settle}
     grid = sorted(list(pay_dates_set))
 
     df_dm = 1.0
-    prev = calc_date
+    prev = settle
     pv = 0.0
 
     for d in grid:
@@ -944,18 +949,20 @@ def solve_discount_margin_bps(
     из публичных данных несводимо; направление и величина воспроизведены.
     """
     L = index_flat_pct / 100.0
-    grid = sorted({cf.pay_date for cf in cashflows if cf.pay_date > calc_date})
+    # якорь = дата поставки (T+1 раб), как у SM/XIRR
+    settle = settle_date(calc_date)
+    grid = sorted({cf.pay_date for cf in cashflows if cf.pay_date > settle})
     if not grid:
         return None
     amt_on = {}
     for cf in cashflows:
-        if cf.pay_date > calc_date:
+        if cf.pay_date > settle:
             amt_on[cf.pay_date] = amt_on.get(cf.pay_date, 0.0) + cf.amount_rub
 
     def pv(dm: float) -> float:
         r = L + dm
         df = 1.0
-        prev = calc_date
+        prev = settle
         tot = 0.0
         for d in grid:
             tau = (d - prev).days / 365.0
@@ -1016,11 +1023,12 @@ def implied_yield_pct(
     """
     _check_curve_convention(bond.base, curve)
     dm = dm_bps / 10000.0
-    pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > calc_date}
+    settle = settle_date(calc_date)     # якорь = дата поставки, как у солверов
+    pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > settle}
     grid = sorted(list(pay_dates_set))
-    
+
     df_dm = 1.0
-    prev = calc_date
+    prev = settle
     df_dm_at_maturity = 1.0
     
     found_maturity = False
@@ -1046,7 +1054,7 @@ def implied_yield_pct(
     if not found_maturity or df_dm_at_maturity <= 0.0 or df_dm_at_maturity >= 1.0:
         return None   # maturity не в сетке платежей → None, не вводящий в заблуждение 0.0
 
-    tau_days = (bond.maturity_date - calc_date).days
+    tau_days = (bond.maturity_date - settle).days
     if tau_days <= 0:
         return None
 
@@ -1080,17 +1088,20 @@ def index_rolling_yield_pct(
     аннуализация, что у xirr бумаги ((1+y)^t), поэтому разность доходностей
     (bps) корректна. Возвращает % годовых или None.
     """
-    D = (maturity - calc_date).days
+    # горизонт от даты поставки (T+1 раб) — тот же якорь, что у XIRR бумаги,
+    # иначе разность «бумага − индекс» несёт паразитный сдвиг на выходных
+    start = settle_date(calc_date)
+    D = (maturity - start).days
     if D <= 0:
         return None
     tau_years = D / 365.0
 
     if base == "RUONIA":
-        f = curve.forward(calc_date, maturity)
+        f = curve.forward(start, maturity)
         growth = (1.0 + f / 365.0) ** D
     elif base == "KEYRATE":
         growth = 1.0
-        prev = calc_date
+        prev = start
         while prev < maturity:
             nxt = min(prev + timedelta(days=91), maturity)  # ≈ квартал
             days = (nxt - prev).days
