@@ -996,6 +996,12 @@ class FlatForwardCurve(DiscountCurve):
     def forward(self, t1: date, t2: date) -> float:
         return self._r
 
+    def daily_forward(self, d: date) -> float:
+        # плоский уровень: провайдер спеки (period_index_pct) зовёт
+        # daily_forward по дням окна — без метода каждый будущий период
+        # падал AttributeError и уходил на forward() с варнинг-спамом
+        return self._r
+
 
 def implied_yield_pct(
     bond: BondRefData, 
