@@ -211,6 +211,118 @@ class BootstrappedForwardCurve(DiscountCurve):
         return self._equivalent_rate(factor, (t2 - t1).days)
 
 
+class SheetForwardCurve(DiscountCurve):
+    """Кривая «из вкладки КРИВЫЕ» — методика трейдерского листа (Книга1-3.xlsx, IRS),
+    подтверждена юзером 2026-07-29 как источник будущих ставок для купонов.
+
+    НЕ бутстрап. Из par-котировок напрямую:
+      1) implied avg тенора с учётом расписания выплат свопа
+         (≤1Y — одна выплата в погашение; >1Y — купон раз в год = par):
+           RUONIA  ≤1Y: 365·((1+par·d/365)^(1/d)−1);  >1Y: 365·((1+par)^(1/365)−1)
+           KEYRATE ≤1Y: 4·((1+par·q/4)^(1/q)−1), q=кварталы; >1Y: 4·((1+par)^(1/4)−1)
+      2) форвард-уровень сегмента [dₙ₋₁,dₙ] — арифметическое телескопирование:
+           lvl = (avgₙ·dₙ − avgₙ₋₁·dₙ₋₁)/Δd   (первый сегмент: lvl = avg₁)
+    Уровень — в базисе индекса (RUONIA дневной, KEYRATE квартальный номинал ≈ КС).
+    Путь ставки кусочно-плоский по сегментам, за последним тенором — флэт.
+
+    Дни теноров ЧИСТЫЕ: get_maturity_date − 1 (1W=7, 3M=92, 1Y=365) — ровно как
+    в /api/curves/plot, чтобы «Фиксинг по дням»/прайсинг сходились с вкладкой.
+
+    forward(t1,t2) — эквивалент окна в конвенции индекса (контракт как у
+    BootstrappedForwardCurve): RUONIA — daily-comp average пути; KEYRATE —
+    взвешенное по дням среднее уровней (simple). df() — производный от пути
+    (дневная капитализация; KEYRATE-уровень конвертируется в дневной эквивалент),
+    сам по себе в прайсинге не используется (потребители зовут forward/daily_forward).
+    Отрицательный телескопированный уровень клэмпится в 0 (лог, как в бутстрапе)."""
+
+    def __init__(self, calc_date: date, quotes: List, base_type: str):
+        start = calc_date + timedelta(days=1)
+        from core.rates import tenor_to_days
+
+        def _avg(par: float, dd: int) -> float:
+            if base_type == "RUONIA":
+                if dd <= 366:
+                    return 365.0 * ((1.0 + par * dd / 365.0) ** (1.0 / dd) - 1.0)
+                return 365.0 * ((1.0 + par) ** (1.0 / 365.0) - 1.0)
+            if dd <= 366:
+                q = max(1, round(dd * 4.0 / 365.0))
+                return 4.0 * ((1.0 + par * q / 4.0) ** (1.0 / q) - 1.0)
+            return 4.0 * ((1.0 + par) ** 0.25 - 1.0)
+
+        segs: List[Tuple[int, float]] = []  # (день конца сегмента от start, уровень)
+        prev_dd, prev_avg = 0, None
+        for q in sorted(quotes, key=lambda x: tenor_to_days(x.tenor)):
+            end = get_maturity_date(start, q.tenor) - timedelta(days=1)
+            dd = (end - start).days
+            if dd <= 0 or dd <= prev_dd:
+                continue
+            a = _avg(q.value / 100.0, dd)
+            lvl = a if prev_avg is None else (a * dd - prev_avg * prev_dd) / (dd - prev_dd)
+            if lvl < 0.0:
+                logger.warning("%s sheet-curve: отрицательный форвард сегмента до %dд — клэмп в 0", base_type, dd)
+                lvl = 0.0
+            segs.append((dd, lvl))
+            prev_dd, prev_avg = dd, a
+        if not segs:
+            raise ValueError(f"No quotes for {base_type} sheet curve")
+
+        self.base_type = base_type
+        self.rate_convention = "daily_comp" if base_type == "RUONIA" else "simple"
+        self.segments = segs
+
+        # nodes (интерфейс DiscountCurve): DF из дневного пути на концах сегментов
+        def _daily(lvl: float) -> float:
+            if base_type == "RUONIA":
+                return lvl
+            return 365.0 * ((1.0 + lvl / 4.0) ** (4.0 / 365.0) - 1.0)
+        nodes, ln, prev_dd = [], 0.0, 0
+        for dd, lvl in segs:
+            ln += (dd - prev_dd) * math.log1p(_daily(lvl) / 365.0)
+            nodes.append((start + timedelta(days=dd), math.exp(-ln)))
+            prev_dd = dd
+        super().__init__(start, nodes)
+
+    def _iter(self, lo: int, hi: int):
+        """(уровень, дней) по кускам пути на дневном окне [lo, hi)."""
+        pos = lo
+        for dd, lvl in self.segments:
+            if pos >= hi:
+                return
+            if dd <= pos:
+                continue
+            take = min(dd, hi) - pos
+            yield lvl, take
+            pos += take
+        if pos < hi:  # флэт-экстраполяция последним уровнем
+            yield self.segments[-1][1], hi - pos
+
+    def df(self, d: date) -> float:
+        dd = (d - self.calc_date).days
+        if dd <= 0:
+            return 1.0
+        if self.base_type == "RUONIA":
+            ln = sum(n * math.log1p(l / 365.0) for l, n in self._iter(0, dd))
+        else:
+            ln = sum(n * math.log1p((365.0 * ((1.0 + l / 4.0) ** (4.0 / 365.0) - 1.0)) / 365.0)
+                     for l, n in self._iter(0, dd))
+        return math.exp(-ln)
+
+    def forward(self, t1: date, t2: date) -> float:
+        if t1 >= t2:
+            raise ValueError("t2 must be strictly > t1")
+        lo = max((t1 - self.calc_date).days, 0)
+        hi = (t2 - self.calc_date).days
+        if hi <= lo:
+            return 0.0
+        n = hi - lo
+        if self.base_type == "KEYRATE":
+            # simple ACT/365: средний уровень КС по окну (взвешенно по дням)
+            return sum(l * k for l, k in self._iter(lo, hi)) / n
+        # RUONIA daily-comp: (Π(1+lvl/365))^(1/n) по дням окна
+        ln = sum(k * math.log1p(l / 365.0) for l, k in self._iter(lo, hi))
+        return 365.0 * (math.exp(ln / n) - 1.0)
+
+
 class CurveBootstrapper:
     @staticmethod
     def _fixed_leg_schedule(start: date, end: date, months: int) -> List[date]:

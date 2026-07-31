@@ -49,13 +49,12 @@ class ExpCurve:
     (короткий конец ≈ текущий фиксинг, заложенный в свопы)."""
     def __init__(self, calc_date: date, quotes, base: str = "RUONIA"):
         from datetime import timedelta
-        from core.forwards import CurveBootstrapper
-        boot = (CurveBootstrapper.bootstrap_ruonia if base == "RUONIA"
-                else CurveBootstrapper.bootstrap_keyrate)
+        from core.forwards import SheetForwardCurve
         self.base = base
         self.calc_date = calc_date
         self._td = timedelta
-        self._curve = boot(quotes, calc_date)
+        # sheet-методика (вкладка КРИВЫЕ) — тот же источник, что прайсинг купонов
+        self._curve = SheetForwardCurve(calc_date, quotes, base)
         self.rate_convention = self._curve.rate_convention
 
     def t(self, d: date) -> float:

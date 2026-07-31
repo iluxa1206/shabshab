@@ -16,7 +16,7 @@ _REST_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _WS_TIMEOUT = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
 
 from core.rates import get_rates_curves
-from core.forwards import CurveBootstrapper, add_months
+from core.forwards import SheetForwardCurve, add_months
 from core.valuation import BondRefData, calculate_floater_metrics
 
 # Персистентный кэш isin→symbol (маппинг статичен). Режет REST-резолюцию символа
@@ -151,8 +151,8 @@ async def fetch_last_prices(access_token: str, exchange: str, isins: List[str]):
     if ois_quotes:
         calc_date = ois_quotes[0].date
         
-    ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
-    irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
+    ruonia_curve = SheetForwardCurve(calc_date, ois_quotes, "RUONIA")
+    irs_curve = SheetForwardCurve(calc_date, irs_quotes, "KEYRATE")
 
     # 1. Сначала получим тикеры (symbol) и короткие имена для каждого ISIN
     isin_to_symbol = {}

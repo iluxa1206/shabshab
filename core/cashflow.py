@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from core.rates import get_rates_curves
-from core.forwards import CurveBootstrapper
+from core.forwards import SheetForwardCurve
 
 
 def read_isins_from_file(path: str) -> list[str]:
@@ -305,8 +305,8 @@ def main():
     if ois_quotes:
         calc_date = ois_quotes[0].date
 
-    ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
-    irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
+    ruonia_curve = SheetForwardCurve(calc_date, ois_quotes, "RUONIA")
+    irs_curve = SheetForwardCurve(calc_date, irs_quotes, "KEYRATE")
 
     isins = read_isins_from_file(isins_path)
     print(f"Загружено {len(isins)} ISIN из файла {isins_path}:\n")

@@ -91,9 +91,9 @@ def curve_asof(base: str, calc_date: date, today_curve: DiscountCurve,
         quotes = None
     if quotes:
         try:
-            boot = (CurveBootstrapper.bootstrap_ruonia if base == "RUONIA"
-                    else CurveBootstrapper.bootstrap_keyrate)
-            return boot(quotes, calc_date), "market"
+            from core.forwards import SheetForwardCurve
+            # sheet-методика — консистентно с живым прайсингом (иначе скачок в динамике)
+            return SheetForwardCurve(calc_date, quotes, base), "market"
         except Exception as e:
             logger.warning(f"as-of bootstrap {base}@{calc_date} failed: {e} — фолбэк на гибрид")
     return build_hybrid_curve(base, calc_date, hist_pairs, today_curve), "realized"

@@ -17,7 +17,7 @@ _SNAP_TTL = 120.0  # сек: prev/accrued MOEX кэшируем внутридн
 _PRICE_MAX_AGE = 12 * 3600.0
 
 from core.rates import get_rates_curves, Quote
-from core.forwards import CurveBootstrapper, DiscountCurve
+from core.forwards import CurveBootstrapper, DiscountCurve, SheetForwardCurve
 from auth import get_access_token, REFRESH_TOKEN
 from core.last_prices import get_last_prices_dict
 from core.cashflow import load_cache, get_local_excel_db
@@ -124,8 +124,10 @@ class MarketDataService:
                 calc_date = date.today()
                 rates_date = ois_quotes[0].date if ois_quotes else None
 
-                ruonia_curve = CurveBootstrapper.bootstrap_ruonia(ois_quotes, calc_date)
-                irs_curve = CurveBootstrapper.bootstrap_keyrate(irs_quotes, calc_date)
+                # SheetForwardCurve: будущие ставки купонов = вкладка КРИВЫЕ
+                # (методика листа, юзер 2026-07-29), не бутстрап
+                ruonia_curve = SheetForwardCurve(calc_date, ois_quotes, "RUONIA")
+                irs_curve = SheetForwardCurve(calc_date, irs_quotes, "KEYRATE")
 
                 # архив котировок по датам (curve_history) — для честного bootstrap
                 # прошлых кривых (backdate mode="market"); best-effort
