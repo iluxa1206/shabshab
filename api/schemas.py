@@ -197,6 +197,7 @@ class PaymentEvent(BaseModel):
     base: str                      # KEYRATE | RUONIA | прочее
     type: str                      # COUPON | REDEMPTION
     amount_rub: float              # на одну бумагу
+    total_rub: Optional[float] = None   # всего по выпуску (× ISSUESIZE); None если объём неизвестен
     rate_pct: Optional[float] = None
     projected: bool = False        # купон не зафиксирован — проекция форвардом
 

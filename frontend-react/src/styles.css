@@ -1062,3 +1062,4 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .pay-date-head .pay-sum { flex-direction: row; gap: 6px; margin: 0 0 0 auto; align-items: baseline; }
 .pay-date { font-weight: 700; font-size: 12px; }
 .pay-wday { color: var(--mut); font-size: 10px; text-transform: uppercase; }
+.pay-vol { color: var(--mut); white-space: nowrap; font-variant-numeric: tabular-nums; }

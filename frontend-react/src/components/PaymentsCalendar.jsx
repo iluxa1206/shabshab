@@ -16,6 +16,15 @@ const iso = (d) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 const rub = (v) => fmt.num(v, 2) + " ₽";
+// объём по выпуску: компактно (тыс/млн/млрд ₽)
+const vol = (v) => {
+  if (v == null) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e9) return fmt.num(v / 1e9, 2) + " млрд ₽";
+  if (a >= 1e6) return fmt.num(v / 1e6, 1) + " млн ₽";
+  if (a >= 1e3) return fmt.num(v / 1e3, 0) + " тыс ₽";
+  return fmt.num(v, 0) + " ₽";
+};
 
 function TypeBadge({ type }) {
   const cpn = type === "COUPON";
@@ -36,6 +45,7 @@ function DayRows({ events, compact }) {
               {e.rate_pct != null ? (e.projected ? "~" : "") + fmt.pct(e.rate_pct) + "%" : "—"}
             </td>
             <td className="num pay-amt">{rub(e.amount_rub)}</td>
+            <td className="num pay-vol">{vol(e.total_rub)}</td>
           </tr>
         ))}
       </tbody>
@@ -46,12 +56,13 @@ function DayRows({ events, compact }) {
 function DaySummary({ events }) {
   const cpn = events.filter((e) => e.type === "COUPON");
   const red = events.filter((e) => e.type === "REDEMPTION");
-  const sum = events.reduce((s, e) => s + e.amount_rub, 0);
+  // Σ дня — объём держателям всего (по выпускам с известным ISSUESIZE)
+  const total = events.reduce((s, e) => s + (e.total_rub || 0), 0);
   return (
     <div className="pay-sum">
       {cpn.length > 0 && <span className="pay-chip pay-cpn">купоны {cpn.length}</span>}
       {red.length > 0 && <span className="pay-chip pay-red">погаш. {red.length}</span>}
-      <span className="pay-total">Σ {rub(sum)}</span>
+      {total > 0 && <span className="pay-total">Σ {vol(total)}</span>}
     </div>
   );
 }
@@ -191,7 +202,7 @@ export default function PaymentsCalendar() {
       <div className="ia-head">
         <h2 className="ia-title">Календарь выплат</h2>
         <span className="ia-hint">
-          купоны и погашения в ₽ на одну бумагу; «~» — купон не зафиксирован, проекция форвардом
+          купоны и погашения: ₽ на бумагу и объём держателям всего по выпуску (× штук в обращении); «~» — купон не зафиксирован, проекция форвардом; Σ дня — суммарный объём
           {data && <> · расчёт {fmt.date(String(data.calc_date))} · окно до {fmt.date(String(data.date_to))}</>}
         </span>
         <div className="ia-filters">

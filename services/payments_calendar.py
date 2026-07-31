@@ -120,9 +120,10 @@ async def build_payments_calendar() -> dict:
         cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
         ids = [u["isin"] for u in uni if u.get("isin")]
         external = [i for i in ids if i not in cache]
-        shortnames, secs, fulls = await asyncio.gather(
+        shortnames, secs, sizes, fulls = await asyncio.gather(
             MarketDataService.fetch_moex_shortnames(),
             MarketDataService.fetch_moex_securities(external) if external else _aempty(),
+            MarketDataService.fetch_issue_sizes(),
             asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids)),
         )
         MarketDataService.flush_schedule_cache()
@@ -145,9 +146,14 @@ async def build_payments_calendar() -> dict:
                 ref = build_universe_ref(u, isin, cache, secs)
                 name = shortnames.get(isin) or u.get("name") or isin
                 curve = ruonia_curve if ref.base == "RUONIA" else keyrate_curve
-                events.extend(_bond_events(
+                evs = _bond_events(
                     ref, u, name, curve, calc_date,
-                    full_by.get(isin) or {}, index_fns.get(ref.base)))
+                    full_by.get(isin) or {}, index_fns.get(ref.base))
+                # объём выплаты держателям всего по выпуску: ₽/бумага × штук
+                size = sizes.get(isin)
+                for e in evs:
+                    e["total_rub"] = round(e["amount_rub"] * size, 2) if size else None
+                events.extend(evs)
             except Exception as e:
                 logger.warning(f"calendar skip {isin}: {e}")
         events.sort(key=lambda e: (e["date"], e["emitter"], e["isin"]))

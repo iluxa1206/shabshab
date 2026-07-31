@@ -288,6 +288,52 @@ class MarketDataService:
                 pass
         return cls._shortnames
 
+    _issue_sizes: Dict[str, float] = {}
+    _issue_sizes_date: Optional[str] = None
+
+    @classmethod
+    async def fetch_issue_sizes(cls) -> Dict[str, float]:
+        """{isin: ISSUESIZE} (штук бумаг в обращении) по всем бондам MOEX одним
+        запросом. Кэш память+диск на день (как shortnames)."""
+        today = date.today().isoformat()
+        if cls._issue_sizes and cls._issue_sizes_date == today:
+            return cls._issue_sizes
+        try:
+            with open(cache_path("issue_sizes_cache.json"), "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("date") == today:
+                cls._issue_sizes = d.get("map", {})
+                cls._issue_sizes_date = today
+                return cls._issue_sizes
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+        out: Dict[str, float] = {}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
+                    params={"iss.only": "securities", "iss.meta": "off",
+                            "securities.columns": "SECID,ISIN,ISSUESIZE", "limit": 10000},
+                    timeout=20)
+            sec = resp.json().get("securities", {})
+            cols, rows = sec.get("columns", []), sec.get("data", [])
+            ii = cols.index("ISIN") if "ISIN" in cols else -1
+            zi = cols.index("ISSUESIZE") if "ISSUESIZE" in cols else -1
+            for row in rows:
+                isin = row[ii] if ii >= 0 else None
+                if isin and zi >= 0 and row[zi]:
+                    out[isin] = float(row[zi])
+        except Exception as e:
+            logger.warning(f"MOEX issue sizes error: {e}")
+            return cls._issue_sizes
+        if out:
+            cls._issue_sizes, cls._issue_sizes_date = out, today
+            try:
+                atomic_write_json(cache_path("issue_sizes_cache.json"), {"date": today, "map": out})
+            except OSError:
+                pass
+        return cls._issue_sizes
+
     _full_mem: Dict[str, dict] = {}
     _full_mem_date: Optional[str] = None
 
