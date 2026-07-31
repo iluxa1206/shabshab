@@ -9,6 +9,7 @@ from api.schemas import (
     BondListItem, BondListResponse, BondFiltersResponse,
     BondDetailsResponse, CashflowResponse,
     RepriceResponse, BondAuditResponse, CouponDaysResponse,
+    PaymentsCalendarResponse,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
@@ -242,6 +243,23 @@ async def get_bond_filters():
         base_rates=sorted(list(bases - {"UNKNOWN"})),
         maturities=["1Y", "3Y", "5Y", "10Y"] # Placeholder, can be generated dynamically
     )
+
+
+# ВАЖНО: до /{isin}, иначе "calendar" матчится как ISIN-путь
+@router.get("/calendar", response_model=PaymentsCalendarResponse, tags=["Bonds"])
+async def get_payments_calendar(
+    date_from: Optional[date] = Query(None, alias="from"),
+    date_to: Optional[date] = Query(None, alias="to"),
+):
+    """Календарь выплат юниверса: будущие купоны/погашения в ₽ на бумагу.
+    Полный расчёт кэшируется на день; from/to режут окно (дефолт — год вперёд)."""
+    from services.payments_calendar import build_payments_calendar
+    data = await build_payments_calendar()
+    cd = data["calc_date"]
+    lo = date_from or cd
+    hi = date_to or date(lo.year + 1, lo.month, min(lo.day, 28))
+    events = [e for e in data["events"] if lo <= e["date"] <= hi]
+    return PaymentsCalendarResponse(calc_date=cd, date_from=lo, date_to=hi, events=events)
 
 
 @router.get("/{isin}", response_model=BondDetailsResponse, tags=["Bonds"])

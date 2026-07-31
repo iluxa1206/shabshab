@@ -193,6 +193,15 @@ export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
 };
 
 // --- Фиксы (ОФЗ-ПД + ликвидные корпораты) ---
+// календарь выплат юниверса (купоны/погашения, ₽ на бумагу); from/to = ISO-даты
+export const fetchPaymentsCalendar = ({ from, to } = {}) => {
+  const p = new URLSearchParams();
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+  const q = p.toString();
+  return request(`/api/bonds/calendar${q ? "?" + q : ""}`);
+};
+
 export const fetchFixed = () => request("/api/fixed");
 export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 

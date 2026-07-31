@@ -7,7 +7,8 @@
     "dev": "vite",
     "dev:alt": "VITE_API_PROXY_TARGET=http://127.0.0.1:8010 vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:cal": "VITE_API_PROXY_TARGET=http://127.0.0.1:8020 vite"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

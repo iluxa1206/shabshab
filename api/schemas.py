@@ -188,6 +188,24 @@ class CashflowResponse(BaseModel):
     items: List[CashflowItem]
     redemption_amount: float
 
+# --- Календарь выплат (юниверс): купоны/погашения в деньгах на одну бумагу ---
+class PaymentEvent(BaseModel):
+    date: date
+    isin: str
+    name: str
+    emitter: str
+    base: str                      # KEYRATE | RUONIA | прочее
+    type: str                      # COUPON | REDEMPTION
+    amount_rub: float              # на одну бумагу
+    rate_pct: Optional[float] = None
+    projected: bool = False        # купон не зафиксирован — проекция форвардом
+
+class PaymentsCalendarResponse(BaseModel):
+    calc_date: date
+    date_from: date
+    date_to: date
+    events: List[PaymentEvent]
+
 class ValuationResponse(BaseModel):
     isin: str
     calc_date: date

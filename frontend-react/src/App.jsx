@@ -19,6 +19,7 @@ import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import BondAudit from "./components/BondAudit.jsx";
+import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -289,6 +290,7 @@ function Dashboard() {
         <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/euro" element={<EuroStub />} />
+        <Route path="/payments" element={<PaymentsCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="/status" element={<StatusPage />} />

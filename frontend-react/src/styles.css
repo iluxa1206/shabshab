@@ -1003,3 +1003,62 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .daymodal-body { overflow-y: auto; padding: 0 16px 16px; }
 .cf-table tr.daygroup td { font-weight: 700; font-size: 11.5px; border-top: 1px solid var(--fg);
   background: var(--hover); position: sticky; top: 30px; }
+
+/* ── календарь выплат (вкладка Выплаты) ── */
+.pay-cal .ia-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pay-monthnav { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.pay-month-label { font-size: 12px; font-weight: 700; min-width: 118px; text-align: center; }
+
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); border: 1px solid var(--line);
+  border-width: 1px 0 0 1px; }
+.cal-wday { padding: 4px 8px; font-size: 10px; font-weight: 700; color: var(--mut);
+  text-transform: uppercase; border: 1px solid var(--line); border-width: 0 1px 1px 0;
+  background: var(--hover); }
+.cal-cell { position: relative; min-height: 86px; padding: 4px 6px;
+  border: 1px solid var(--line); border-width: 0 1px 1px 0; font-size: 11px; }
+.cal-empty { background: var(--hover); }
+.cal-wknd { background: var(--hover); }
+.cal-today .cal-daynum { background: var(--fg); color: var(--bg); }
+.cal-daynum { display: inline-block; min-width: 18px; text-align: center; padding: 1px 3px;
+  font-weight: 700; color: var(--mut); }
+.cal-has .cal-daynum { color: var(--fg); }
+.cal-has:hover { outline: 1px solid var(--fg); outline-offset: -1px; cursor: default; }
+
+.pay-sum { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; align-items: flex-start; }
+.pay-chip { font-size: 10px; padding: 0 5px; border: 1px solid var(--line-2); white-space: nowrap; }
+.pay-chip.pay-cpn { color: var(--up); border-color: var(--up); }
+.pay-chip.pay-red { color: var(--accent); border-color: var(--accent); }
+.pay-total { font-size: 10px; color: var(--mut); white-space: nowrap; }
+
+.cal-pop { display: none; position: absolute; z-index: 40; min-width: 380px; max-width: 520px;
+  max-height: 320px; overflow-y: auto; background: var(--bg); border: 1px solid var(--fg);
+  box-shadow: 0 4px 18px rgba(0,0,0,.25); padding: 8px 10px; }
+.cal-has:hover .cal-pop { display: block; }
+.cal-pop.pop-down { top: calc(100% - 4px); left: 0; }
+.cal-pop.pop-up { bottom: calc(100% - 4px); left: 0; }
+.cal-pop.pop-left { left: auto; right: 0; }
+.cal-pop-head { font-size: 11px; font-weight: 700; margin-bottom: 6px; }
+.cal-pop-more { font-size: 10px; color: var(--mut); padding: 4px 0 0; }
+
+.pay-day-table { width: 100%; border-collapse: collapse; }
+.pay-day-table td { padding: 2px 8px 2px 0; font-size: 11px; border-bottom: 1px solid var(--line);
+  vertical-align: top; }
+.pay-day-table tr:last-child td { border-bottom: none; }
+.pay-day-table.compact td { font-size: 10.5px; padding: 1px 6px 1px 0; }
+.pay-name { font-weight: 600; white-space: nowrap; max-width: 180px; overflow: hidden;
+  text-overflow: ellipsis; }
+.pay-emitter { color: var(--mut); max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.pay-badge { font-size: 9.5px; padding: 0 4px; border: 1px solid var(--line-2); white-space: nowrap; }
+.pay-badge.pay-cpn { color: var(--up); border-color: var(--up); }
+.pay-badge.pay-red { color: var(--accent); border-color: var(--accent); }
+.pay-rate, .pay-amt { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.pay-rows { max-width: 860px; }
+.pay-month-head { font-size: 13px; font-weight: 700; margin: 18px 0 8px;
+  border-bottom: 1px solid var(--fg); padding-bottom: 4px; }
+.pay-date-group { margin-bottom: 12px; border: 1px solid var(--line); padding: 6px 10px; }
+.pay-date-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.pay-date-head .pay-sum { flex-direction: row; gap: 6px; margin: 0 0 0 auto; align-items: baseline; }
+.pay-date { font-weight: 700; font-size: 12px; }
+.pay-wday { color: var(--mut); font-size: 10px; text-transform: uppercase; }
