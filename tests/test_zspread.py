@@ -37,16 +37,22 @@ def test_gcurve_needs_two_points():
     assert GCurve([(1, 12.0), (2, 13.0)]).ok()
 
 
-def test_project_cfs_matches_build_cashflows(exp_keyrate, keyrate_curve, calc_date, flat_index_15):
+def test_project_cfs_matches_build_cashflows(exp_keyrate, calc_date, flat_index_15):
     """ИНВАРИАНТ C2: суммы потоков project_cfs == build_cashflows_to_maturity на
-    идентичном входе (после слияния это один алгоритм). Сверяем по датам платежей."""
+    идентичном входе (после слияния это один алгоритм). Сверяем по датам платежей.
+
+    ОДНА кривая в оба пайплайна: с 8fda88b ExpCurve внутри — SheetForwardCurve
+    (методика вкладки КРИВЫЕ), а bootstrap-фикстура даёт ДРУГИЕ форварды на
+    flat-квотах (лист: 1Y par → 14.24% квартального номинала, бутстрап → 15.0) —
+    сравнение через разные кривые проверяло бы методики, а не алгоритм."""
     bond = make_bond(base="KEYRATE", margin_bps=150)
     periods = quarterly_periods(calc_date, bond.maturity_date)
     coupons = [{"start": s, "end": e, "value": v} for s, e, v in periods]
     fn, _ = flat_index_15
+    sheet_curve = exp_keyrate._curve   # та же кривая, что возьмёт project_cfs
 
     # build_cashflows (valuation)
-    val_cfs = build_cashflows_with_spread(bond, keyrate_curve, calc_date, 150,
+    val_cfs = build_cashflows_with_spread(bond, sheet_curve, calc_date, 150,
                                           explicit_periods=periods, index_pct_fn=fn)
     val_by_date = {}
     for cf in val_cfs:
