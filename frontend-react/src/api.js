@@ -96,6 +96,11 @@ export const setInstrumentParams = (isin, params) =>
 export const markInstrumentReviewed = (isin) =>
   request(`/api/instruments/${encodeURIComponent(isin)}/reviewed`, { method: "POST" });
 
+// Сброс ручной правки: снять lock + обнулить явные поля спеки фиксинга —
+// спека дальше от авто-источников (bondresearch > парсер > калибратор)
+export const resetInstrumentManual = (isin) =>
+  request(`/api/instruments/${encodeURIComponent(isin)}/reset-manual`, { method: "POST" });
+
 // Разбор текста формулы купона → {parsed:{base,margin_bps,coupon_mode,cap_pct,floor_pct,...}}
 export const parseCouponFormula = (formula) =>
   request("/api/instruments/parse-formula", { method: "POST", json: { formula } });

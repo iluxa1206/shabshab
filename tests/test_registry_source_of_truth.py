@@ -116,3 +116,18 @@ def test_avg_window_days_projection(reg):
             "avg_window_days": 10}
     got = projected_ks_pct(spec, start, end, calc, fwd, idx=(dates, rates))
     assert abs(got - 16.0) < 1e-9
+
+
+def test_reset_manual(reg):
+    isin = "RU000TEST0005"
+    reg.set_manual(isin, {"base": "KEYRATE", "margin_bps": 150,
+                          "coupon_mode": "point", "fixing_lag": 2,
+                          "avg_window_days": 1})
+    removed = reg.reset_manual(isin)
+    assert removed["coupon_mode"] == "point" and removed["fixing_lag"] == 2
+    row = reg.get(isin)
+    # спека снята, lock снят — расчётные поля остались
+    assert row["coupon_mode"] is None and row["fixing_lag"] is None
+    assert row["avg_window_days"] is None and row["manual_locked"] == 0
+    assert row["margin_bps"] == 150 and row["base"] == "KEYRATE"
+    assert reg.reset_manual("RU000NOSUCH00") is None

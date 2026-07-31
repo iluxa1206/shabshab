@@ -282,6 +282,19 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
     return {"ok": True, "instrument": reg.get(isin)}
 
 
+@router.post("/{isin}/reset-manual", tags=["Instruments"])
+async def reset_manual(isin: str = Path(...), _admin: dict = Depends(require_admin)):
+    """Сброс ручной правки: снять manual_locked + обнулить явные поля спеки
+    фиксинга (coupon_mode/fixing_lag/fixing_lag_unit/avg_window_days). Спека
+    дальше резолвится авто-источниками (bondresearch > парсер > калибратор);
+    расчётные поля остаются и обновляются sync'ом."""
+    isin = _require_isin(isin)
+    removed = reg.reset_manual(isin)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Нет в реестре")
+    return {"ok": True, "removed": removed, "instrument": reg.get(isin)}
+
+
 @router.post("/{isin}/reviewed", tags=["Instruments"])
 async def mark_reviewed(isin: str = Path(...), _admin: dict = Depends(require_admin)):
     """Пометить бумагу проверенной без правок (параметры из авто-sync устраивают)."""

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, cbondsUrl } from "../api.js";
+import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, resetInstrumentManual, cbondsUrl } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
 
 const CATALOG_KEY = ["admin", "catalog"];
@@ -179,6 +179,17 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
     mutationFn: () => markInstrumentReviewed(r.isin),
     onSuccess: () => qc.invalidateQueries({ queryKey: CATALOG_KEY }),
   });
+  const reset = useMutation({
+    mutationFn: () => resetInstrumentManual(r.isin),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CATALOG_KEY }),
+  });
+  const onReset = () => {
+    if (window.confirm(
+      `${r.short_name || r.isin}: сбросить ручную правку?\n` +
+      "Снимет 🔒 и очистит режим/лаг/окно — спека уйдёт на авто-источники " +
+      "(bondresearch → парсер → калибратор). Маржа/даты останутся и будут обновляться синком."))
+      reset.mutate();
+  };
   return (
     <>
       <tr className={r.priceable ? "" : "cat-row-incomplete"}>
@@ -193,6 +204,12 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
         {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} /></td>)}
         <td className="admin-actions">
           <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Правка"}</button>
+          {(r.manual_locked || r.coupon_mode || r.fixing_lag != null || r.avg_window_days != null) && (
+            <button className="btn admin-btn-sm" onClick={onReset} disabled={reset.isPending}
+              title="Сбросить ручную правку: снять 🔒, очистить режим/лаг/окно — спека от авто-источников">
+              Сброс
+            </button>
+          )}
           {!r.reviewed && (
             <button className="btn admin-btn-sm" onClick={() => review.mutate()}
               disabled={review.isPending} title="пометить проверенной">Ок</button>

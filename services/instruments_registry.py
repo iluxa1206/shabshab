@@ -248,6 +248,32 @@ def calc_params_map() -> Dict[str, dict]:
     return out
 
 
+# Поля спеки фиксинга, обнуляемые при сбросе ручной правки: дальше спека
+# резолвится живьём (bondresearch > парсер > калибратор). Расчётные поля
+# (маржа/даты/номинал) НЕ трогаем — значения остаются, но со снятым lock их
+# при следующем проходе освежит sync из источников.
+_RESET_SPEC_FIELDS = ("coupon_mode", "fixing_lag", "fixing_lag_unit", "avg_window_days")
+
+
+def reset_manual(isin: str) -> Optional[dict]:
+    """Сброс ручной правки бумаги: manual_locked=0 + обнуление явных полей спеки
+    фиксинга. Возвращает снятые значения (для отображения/отката) или None,
+    если бумаги нет."""
+    _ensure()
+    isin = (isin or "").strip()
+    with _lock, _conn() as c:
+        r = c.execute("SELECT * FROM instruments WHERE isin=?", (isin,)).fetchone()
+        if r is None:
+            return None
+        removed = {k: r[k] for k in _RESET_SPEC_FIELDS if r[k] is not None}
+        removed["manual_locked"] = r["manual_locked"]
+        sets = ", ".join(f"{k}=NULL" for k in _RESET_SPEC_FIELDS)
+        c.execute(f"UPDATE instruments SET {sets}, manual_locked=0, updated_at=? WHERE isin=?",
+                  (_now(), isin))
+    invalidate_params_cache()
+    return removed
+
+
 def mark_reviewed(isin: str) -> None:
     _ensure()
     with _lock, _conn() as c:
