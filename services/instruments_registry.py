@@ -94,6 +94,13 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN avg_window_days INTEGER",
     # окно bondresearch-слоя: «Отсечка» = average·окно 1 (point убран из модели)
     "ALTER TABLE instruments ADD COLUMN br_avg_window_days INTEGER",
+    # Бэктест спеки фиксинга по ФАКТУ выплат (дневной синк, шаг 8): средняя
+    # |ошибка| пересчёта прошлых купонов нашей спекой. Вердикт OK<0.15пп,
+    # WARN<0.5пп, BAD иначе — фильтр «спека расходится» в Справочнике.
+    "ALTER TABLE instruments ADD COLUMN spec_err_pp REAL",
+    "ALTER TABLE instruments ADD COLUMN spec_verdict TEXT",
+    "ALTER TABLE instruments ADD COLUMN spec_checked_at TEXT",
+    "ALTER TABLE instruments ADD COLUMN spec_n_coupons INTEGER",
 ]
 
 
@@ -589,7 +596,8 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "coupon_mode", "avg_window_days", "br_fixing_lag", "br_coupon_mode",
                  "cap_pct", "floor_pct", "coupon_text", "rating",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
-                 "emitter_name", "active")
+                 "emitter_name", "active",
+                 "spec_err_pp", "spec_verdict", "spec_n_coupons", "spec_checked_at")
 
 
 # Поля купона, которыми ручной слой реестра ПЕРЕОПРЕДЕЛЯЕТ прайсинг (мост в
@@ -624,6 +632,32 @@ def set_br_specs_bulk(specs: Dict[str, dict]) -> int:
             n += cur.rowcount
     invalidate_params_cache()
     return n
+
+
+def set_spec_backtest(isin: str, err_pp, verdict: str, n_coupons: int) -> None:
+    """Записать результат бэктеста спеки (дневной синк). verdict OK|WARN|BAD|NO_DATA."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET spec_err_pp=?, spec_verdict=?, "
+                  "spec_n_coupons=?, spec_checked_at=? WHERE isin=?",
+                  (err_pp, verdict, n_coupons, _now(), (isin or "").strip()))
+
+
+def list_spec_mismatch(min_verdict: str = "WARN") -> list[dict]:
+    """Бумаги, у которых спека фиксинга (лаг/окно/режим) расходится с фактом
+    выплат: вердикт бэктеста WARN/BAD. Для фильтра «спека расходится»."""
+    _ensure()
+    verdicts = ("WARN", "BAD") if min_verdict == "WARN" else ("BAD",)
+    ph = ",".join("?" * len(verdicts))
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT isin, short_name, base, margin_bps, coupon_mode, fixing_lag, "
+            f"fixing_lag_unit, avg_window_days, br_coupon_mode, br_fixing_lag, "
+            f"br_avg_window_days, spec_err_pp, spec_verdict, spec_n_coupons, "
+            f"spec_checked_at, manual_locked "
+            f"FROM instruments WHERE active=1 AND spec_verdict IN ({ph}) "
+            f"ORDER BY spec_err_pp DESC", verdicts).fetchall()
+    return [dict(r) for r in rows]
 
 
 def br_specs_all() -> dict:

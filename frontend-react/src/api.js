@@ -101,6 +101,10 @@ export const markInstrumentReviewed = (isin) =>
 export const resetInstrumentManual = (isin) =>
   request(`/api/instruments/${encodeURIComponent(isin)}/reset-manual`, { method: "POST" });
 
+// Пересчёт бэктеста спеки (лаг/окно vs факт выплат) после правки
+export const recheckInstrumentSpec = (isin) =>
+  request(`/api/instruments/${encodeURIComponent(isin)}/recheck-spec`, { method: "POST" });
+
 // Разбор текста формулы купона → {parsed:{base,margin_bps,coupon_mode,cap_pct,floor_pct,...}}
 export const parseCouponFormula = (formula) =>
   request("/api/instruments/parse-formula", { method: "POST", json: { formula } });

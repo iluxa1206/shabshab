@@ -170,8 +170,20 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("bondresearch specs sync failed: %s", e)
 
+    # 8. бэктест спеки фиксинга по факту выплат: порция бумаг за проход
+    #    (самые давно не проверенные первыми) → spec_verdict в реестре,
+    #    фильтр «спека расходится» в Справочнике читает его.
+    bt_stats = {}
+    try:
+        from services import spec_backtest
+        bt_stats = await spec_backtest.run()
+    except Exception as e:
+        logger.warning("spec backtest failed: %s", e)
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
                   "br_specs": br_stats.get("written", 0),
+                  "spec_checked": bt_stats.get("checked", 0),
+                  "spec_bad": bt_stats.get("bad", 0) + bt_stats.get("warn", 0),
                   "ofz_pk_normalized": ofz_fixed,
                   "reclassified_fixed": vstats.get("reclassified_fixed", 0),
                   "suspect": vstats.get("suspect", 0),

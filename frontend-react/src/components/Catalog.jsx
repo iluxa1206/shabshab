@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, resetInstrumentManual, cbondsUrl } from "../api.js";
+import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, resetInstrumentManual, recheckInstrumentSpec, cbondsUrl } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
 
 const CATALOG_KEY = ["admin", "catalog"];
@@ -24,6 +24,7 @@ const COLS = [
   ["br_coupon_mode", "Режим (BR)"],
   ["br_fixing_lag", "Лаг (BR)"],
   ["spec_eff", "Спека (эфф.)"],
+  ["spec_backtest", "Бэктест"],
   ["cap_pct", "Кэп %"],
   ["floor_pct", "Флор %"],
   ["var_type", "Тип ставки"],
@@ -35,7 +36,25 @@ const COLS = [
 // Поля, обязательные для прайсинга — их пропуск красный (иначе бумага не считается).
 const REQUIRED = new Set(["base", "margin_bps", "maturity_date"]);
 
-function Cell({ col, val }) {
+// Бэктест спеки: вердикт + средняя |ошибка| пересчёта прошлых купонов.
+// OK — лаг/окно/режим согласованы с фактическими выплатами эмитента.
+function SpecBacktest({ r }) {
+  const v = r.spec_verdict;
+  if (!v) return <span className="cat-miss">—</span>;
+  if (v === "NO_DATA") {
+    return <span className="muted" title="Нет прошлых плавающих купонов для проверки">нет данных</span>;
+  }
+  const cls = v === "OK" ? "bt-ok" : v === "WARN" ? "bt-warn" : "bt-bad";
+  return (
+    <span className={"bt-badge " + cls}
+      title={`Средняя |ошибка| пересчёта ${r.spec_n_coupons || 0} прошлых купонов нашей спекой`}>
+      {v} {r.spec_err_pp != null ? `${r.spec_err_pp} пп` : ""}
+    </span>
+  );
+}
+
+function Cell({ col, val, row }) {
+  if (col === "spec_backtest") return <SpecBacktest r={row} />;
   if (val === null || val === undefined || val === "") {
     return <span className={REQUIRED.has(col) ? "cat-miss cat-req" : "cat-miss"}>—</span>;
   }
@@ -51,6 +70,7 @@ export default function Catalog({ user }) {
   const qc = useQueryClient();
   const [query, setQuery] = useState("");
   const [missOnly, setMissOnly] = useState(false);
+  const [specBadOnly, setSpecBadOnly] = useState(false);
   const [floatersOnly, setFloatersOnly] = useState(true);
   const [editIsin, setEditIsin] = useState(null);
   const [importMsg, setImportMsg] = useState(null);
@@ -78,11 +98,18 @@ export default function Catalog({ user }) {
   const rows = useMemo(() => {
     let items = q.data?.items || [];
     if (missOnly) items = items.filter((r) => !r.priceable);
+    // спека расходится с фактом выплат: неверный лаг/окно/режим
+    if (specBadOnly) items = items.filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD");
     const s = query.trim().toLowerCase();
     if (s) items = items.filter((r) =>
       r.isin.toLowerCase().includes(s) || (r.short_name || "").toLowerCase().includes(s));
+    if (specBadOnly) items = [...items].sort((a, b) => (b.spec_err_pp || 0) - (a.spec_err_pp || 0));
     return items;
-  }, [q.data, missOnly, query]);
+  }, [q.data, missOnly, specBadOnly, query]);
+
+  const specBadCount = useMemo(
+    () => (q.data?.items || []).filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD").length,
+    [q.data]);
 
   const cnt = q.data?.count;
   const invalidate = () => qc.invalidateQueries({ queryKey: CATALOG_KEY });
@@ -115,6 +142,12 @@ export default function Catalog({ user }) {
           {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
           {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
           {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
+          {specBadCount > 0 && (
+            <span className="admin-badge admin-warn"
+              title="Пересчёт прошлых купонов расходится с фактом выплат — проверь лаг/окно/режим">
+              {specBadCount} спека расходится
+            </span>
+          )}
           {q.data?.offers_no_spec?.length > 0 && (
             <span className="admin-badge admin-warn"
               title={"Будущая оферта, поведение купона не задано (var_type) — считаются к погашению:\n"
@@ -131,6 +164,11 @@ export default function Catalog({ user }) {
           </span>
           <button className={"chip-btn" + (missOnly ? " on" : "")} onClick={() => setMissOnly(!missOnly)}>
             только пропуски
+          </button>
+          <button className={"chip-btn" + (specBadOnly ? " on" : "")}
+            onClick={() => setSpecBadOnly(!specBadOnly)}
+            title="Бумаги, где пересчёт прошлых купонов нашей спекой расходится с фактом выплат — признак неверного лага/окна/режима">
+            спека расходится{specBadCount ? ` (${specBadCount})` : ""}
           </button>
           <button className={"chip-btn" + (floatersOnly ? " on" : "")} onClick={() => setFloatersOnly(!floatersOnly)}>
             только флоатеры
@@ -196,6 +234,10 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
     mutationFn: () => resetInstrumentManual(r.isin),
     onSuccess: () => qc.invalidateQueries({ queryKey: CATALOG_KEY }),
   });
+  const recheck = useMutation({
+    mutationFn: () => recheckInstrumentSpec(r.isin),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CATALOG_KEY }),
+  });
   const onReset = () => {
     if (window.confirm(
       `${r.short_name || r.isin}: сбросить ручную правку?\n` +
@@ -214,10 +256,15 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
           {r.manual_locked ? <span className="cat-lock" title="ручной lock — sync не затрёт">🔒</span> : null}
           {!r.reviewed ? <span className="cat-new" title="новая, не подтверждена">•</span> : null}
         </td>
-        {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} /></td>)}
+        {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} row={r} /></td>)}
         <td className="admin-actions">
           <Link className="btn admin-btn-sm" to={`/audit/${r.isin}`}
             title="Паспорт бумаги: провенанс, бэктест спеки, фиксинг по дням">Паспорт</Link>
+          <button className="btn admin-btn-sm" onClick={() => recheck.mutate()}
+            disabled={recheck.isPending}
+            title="Пересчитать бэктест спеки по факту выплат (после правки лага/окна)">
+            {recheck.isPending ? "…" : "Проверить"}
+          </button>
           <button className="btn admin-btn-sm" onClick={onEdit}>{editing ? "×" : "Правка"}</button>
           {(r.manual_locked || r.coupon_mode || r.fixing_lag != null || r.avg_window_days != null) && (
             <button className="btn admin-btn-sm" onClick={onReset} disabled={reset.isPending}

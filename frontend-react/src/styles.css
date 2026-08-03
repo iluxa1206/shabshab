@@ -973,6 +973,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .audit-head h2 { font-size: 17px; font-weight: 800; letter-spacing: 0.03em; margin: 0; }
 .audit-edit { margin: 10px 0 18px; padding: 10px 12px; border: 1px solid var(--border, #333);
   border-radius: 8px; }
+/* Бэктест спеки в Справочнике: вердикт + |ошибка| пп */
+.bt-badge { display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 11px; font-weight: 700; white-space: nowrap; }
+.bt-ok { background: rgba(34, 160, 90, 0.18); color: #2fae6b; }
+.bt-warn { background: rgba(214, 158, 46, 0.18); color: #d69e2e; }
+.bt-bad { background: rgba(220, 70, 70, 0.20); color: #e05252; }
 .audit-head .btn.on { outline: 1px solid var(--accent, #6aa9ff); }
 .audit-gen { font-size: 11px; margin-left: auto; }
 .audit-checks { display: flex; flex-direction: column; border: 1px solid var(--line); margin-bottom: 20px; }

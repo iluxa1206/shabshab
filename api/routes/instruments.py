@@ -128,7 +128,25 @@ async def catalog(only_active: bool = True, floaters_only: bool = False,
     # прайсуемые с будущей офертой без спеки поведения (var_type/cut_at_offer):
     # горизонт по дефолту «до погашения», админ должен видеть кандидатов
     return {"items": items, "count": reg.count(),
-            "offers_no_spec": _offers_no_spec()}
+            "offers_no_spec": _offers_no_spec(),
+            "spec_mismatch": [r["isin"] for r in reg.list_spec_mismatch()]}
+
+
+@router.post("/{isin}/recheck-spec", tags=["Instruments"])
+async def recheck_spec(isin: str = Path(...), _admin: dict = Depends(require_admin)):
+    """Пересчитать бэктест спеки бумаги прямо сейчас (после правки лага/окна):
+    прошлые купоны пересчитываются нашей спекой и сверяются с фактом выплат."""
+    from datetime import date as _date
+    from services import spec_backtest
+    isin = _require_isin(isin)
+    row = reg.get(isin)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Нет в реестре")
+    r = await spec_backtest._one(isin, row, _date.today())
+    if r is None:
+        raise HTTPException(status_code=422, detail="Бэктест неприменим (база/расписание)")
+    reg.set_spec_backtest(isin, r["err"], r["verdict"], r["n"])
+    return {"ok": True, "verdict": r["verdict"], "err_pp": r["err"], "n_coupons": r["n"]}
 
 
 @router.get("/catalog/export", tags=["Instruments"])
