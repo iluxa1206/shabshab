@@ -160,6 +160,39 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
     if not idx or not idx[0]:
         return out
 
+    # Маржа-лесенка: надбавка периода зависит от НОМЕРА купона («S 1-7 = 2.5%,
+    # S8-21 = 4.6%»). Без неё бэктест сравнивал факт со скаляром реестра и давал
+    # ложные BAD до 3пп (ТрансФин-М, БинФарм, Мегафон). Ординалы — по полному
+    # графику MOEX (1-based), как в прайсинге.
+    ms = spec.get("margin_schedule")
+    ord_by_start = {}
+    if ms:
+        def _ck(c):
+            v = c.get("start") or ""
+            return v if isinstance(v, str) else v.isoformat()
+        for i, c in enumerate(sorted(coupons or [], key=_ck)):
+            s0 = c.get("start")
+            if isinstance(s0, str):
+                try:
+                    s0 = date.fromisoformat(s0)
+                except ValueError:
+                    continue
+            ord_by_start[s0] = i + 1
+        # лесенка задаёт, КАКИЕ купоны плавающие: фикс-ступени вне диапазонов
+        # («1-16 купоны — X% годовых») не флоатер — из бэктеста вон
+        flo = {o for st in ms for o in range(st["from"], st["to"] + 1)}
+        rows_past = [r for r in rows_past if ord_by_start.get(r[0]) in flo]
+        if not rows_past:
+            return out
+
+    def _margin_for(s):
+        o = ord_by_start.get(s)
+        if o is not None:
+            for st in ms or []:
+                if st["from"] <= o <= st["to"]:
+                    return st["bps"] / 100.0
+        return margin_pct
+
     pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
              "avg_window_days": avg_w}
     cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
@@ -179,7 +212,16 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
             row["skipped"] = "нет значения индекса на дату фиксинга"
             out["rows"].append(row)
             continue
-        pred_full, obs_full = pred + margin_pct, obs + margin_pct
+        # битая строка MOEX: value ≈ 0 при живой базе (наблюдалось у Мегафон2P4
+        # — купон 0.02% при КС 21%). Это дефект данных, а не ошибка спеки:
+        # без отсечки один такой купон уводил вердикт в BAD (2.6пп на 8 куп.)
+        if obs + margin_pct < 1.0 and pred > 2.0:
+            row["skipped"] = "битые данные MOEX (ставка купона ≈ 0)"
+            out["rows"].append(row)
+            continue
+        # предсказание — с маржой ЛЕСЕНКИ своего периода; факт (obs) снят на
+        # скаляре реестра, поэтому к нему прибавляем скаляр
+        pred_full, obs_full = pred + _margin_for(s), obs + margin_pct
         if cap is not None:
             pred_full = min(pred_full, float(cap))
         if floor is not None:
@@ -191,12 +233,18 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
         out["rows"].append(row)
 
     if errs:
-        mean_abs = sum(abs(x) for x in errs) / len(errs)
+        a = sorted(abs(x) for x in errs)
+        mean_abs = sum(a) / len(a)
+        # вердикт по МЕДИАНЕ: один аномальный купон (правка эмитента, дефект
+        # выгрузки) не должен объявлять спеку неверной — систематику ловит
+        # медиана, а разовый выброс виден в max_err_pp
+        med = a[len(a) // 2] if len(a) % 2 else (a[len(a) // 2 - 1] + a[len(a) // 2]) / 2
         out["n"] = len(errs)
         out["mean_err_pp"] = round(mean_abs, 3)
-        out["max_err_pp"] = round(max(abs(x) for x in errs), 3)
-        out["verdict"] = ("OK" if mean_abs < TOL_OK_PP
-                          else "WARN" if mean_abs < TOL_BAD_PP else "BAD")
+        out["med_err_pp"] = round(med, 3)
+        out["max_err_pp"] = round(max(a), 3)
+        out["verdict"] = ("OK" if med < TOL_OK_PP
+                          else "WARN" if med < TOL_BAD_PP else "BAD")
     return out
 
 

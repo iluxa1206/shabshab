@@ -55,8 +55,10 @@ async def _one(isin: str, row: dict, today: date) -> dict | None:
     except Exception as e:
         logger.debug("spec-backtest %s: %s", isin, e)
         return None
+    # в реестр пишем МЕДИАННУЮ ошибку — тот же показатель, по которому вынесен
+    # вердикт (среднее задирает разовый выброс битого купона)
     return {"isin": isin, "verdict": bt.get("verdict") or "NO_DATA",
-            "err": bt.get("mean_err_pp"), "n": bt.get("n") or 0}
+            "err": bt.get("med_err_pp", bt.get("mean_err_pp")), "n": bt.get("n") or 0}
 
 
 async def run(limit: int = _BATCH, only_stale: bool = True) -> dict:

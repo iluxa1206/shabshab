@@ -31,6 +31,21 @@ PY"
   exit 0
 fi
 
+if [[ "${1:-}" == "--backtest-fill" ]]; then
+  echo '>>> заполнить вердикты бэктеста по ВСЕМУ универсу (иначе копится порциями в дневном синке)'
+  RUN "$DC exec -T floaters python -c \"
+import asyncio
+from services import spec_backtest, instruments_registry as reg
+st = asyncio.run(spec_backtest.run(limit=2000))
+print('бэктест:', st)
+bad = reg.list_spec_mismatch()
+print('расхождений:', len(bad))
+for r in bad[:20]:
+    print(f\\\"  {r['isin']} {r['short_name']}: {r['spec_verdict']} {r['spec_err_pp']}пп лаг={r['fixing_lag'] or r['br_fixing_lag']} окно={r['avg_window_days'] or r['br_avg_window_days']}\\\")
+\""
+  exit 0
+fi
+
 if [[ "${1:-}" == "--fix-rzd" ]]; then
   echo '>>> ручная спека РЖД 1Р-32R/49R: average·лаг7·окно31 (бэктест: err 0.38→0.016)'
   RUN "$DC exec -T floaters python scripts/set_spec.py RU000A108Z85 --mode average --lag 7 --window 31 --apply"
