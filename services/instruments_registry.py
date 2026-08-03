@@ -30,7 +30,7 @@ _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "fixing_lag", "fixing_lag_unit", "coupon_mode",
                   "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text",
-                  "avg_window_days")
+                  "avg_window_days", "compounded")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instruments(
@@ -101,6 +101,10 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN spec_verdict TEXT",
     "ALTER TABLE instruments ADD COLUMN spec_checked_at TEXT",
     "ALTER TABLE instruments ADD COLUMN spec_n_coupons INTEGER",
+    # Капитализация индекса внутри купонного периода: конвенция
+    # «Index_end/Index_start − 1» (ВЭБ.РФ, Роснефть, ОФЗ-ПК нового типа).
+    # 1 — купон считается по накопленному индексу RUONIA, а не среднему.
+    "ALTER TABLE instruments ADD COLUMN compounded INTEGER",
 ]
 
 
@@ -137,7 +141,7 @@ def _ensure() -> None:
 _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
          "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
-         "cap_pct", "floor_pct", "coupon_text", "avg_window_days")
+         "cap_pct", "floor_pct", "coupon_text", "avg_window_days", "compounded")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True,
@@ -273,7 +277,8 @@ def calc_params_map() -> Dict[str, dict]:
 # резолвится живьём (bondresearch > парсер > калибратор). Расчётные поля
 # (маржа/даты/номинал) НЕ трогаем — значения остаются, но со снятым lock их
 # при следующем проходе освежит sync из источников.
-_RESET_SPEC_FIELDS = ("coupon_mode", "fixing_lag", "fixing_lag_unit", "avg_window_days")
+_RESET_SPEC_FIELDS = ("coupon_mode", "fixing_lag", "fixing_lag_unit",
+                      "avg_window_days", "compounded")
 
 
 def reset_manual(isin: str) -> Optional[dict]:
@@ -593,7 +598,8 @@ def list_exotic() -> list[dict]:
 _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                  "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
-                 "coupon_mode", "avg_window_days", "br_fixing_lag", "br_coupon_mode",
+                 "coupon_mode", "avg_window_days", "compounded",
+                 "br_fixing_lag", "br_coupon_mode",
                  "cap_pct", "floor_pct", "coupon_text", "rating",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
                  "emitter_name", "active",
@@ -604,7 +610,7 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
 # ref_data.coupon_formula). Только эти + только manual_locked=1 (явная правка).
 _COUPON_OVERRIDE_COLS = ("base", "margin_bps", "fixing_lag", "fixing_lag_unit",
                          "coupon_mode", "cap_pct", "floor_pct", "coupon_text",
-                         "avg_window_days")
+                         "avg_window_days", "compounded")
 
 
 def set_br_spec(isin: str, fixing_lag, coupon_mode) -> None:

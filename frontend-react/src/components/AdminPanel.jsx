@@ -80,7 +80,7 @@ function PasswordSection() {
 
 // --- Ручной ввод параметров бумаги (форма используется на странице «Справочник») ---
 const _NUM = new Set(["margin_bps", "coupon_period_days", "coupons_per_year",
-  "fixing_lag", "avg_window_days", "face_value", "cap_pct", "floor_pct"]);
+  "fixing_lag", "avg_window_days", "compounded", "face_value", "cap_pct", "floor_pct"]);
 
 // Значения enum-полей (селекты — чтобы не опечататься). day_count/var_type —
 // как в выгрузке cbonds; var_type «…решением эмитента»/«Изменение ставки…»
@@ -110,6 +110,7 @@ const _FIELDS = [
   ["fixing_lag_unit", "Ед. лага", "text"],
   ["coupon_mode", "Режим", "text"],
   ["avg_window_days", "Окно усреднения, дней (1=точечный; пусто=период)", "number"],
+  ["compounded", "Капитализация индекса (1=да, Index_end/Index_start)", "number"],
   ["short_name", "Название", "text"],
   ["cap_pct", "Кэп ставки, % год.", "number"],
   ["floor_pct", "Флор ставки, % год.", "number"],

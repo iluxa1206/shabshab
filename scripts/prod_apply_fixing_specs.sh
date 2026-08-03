@@ -31,6 +31,13 @@ PY"
   exit 0
 fi
 
+if [[ "${1:-}" == "--fit-spec" ]]; then
+  shift
+  echo '>>> подбор спеки (лаг × окно) по факту выплат для расходящихся бумаг'
+  RUN "$DC exec -T floaters python scripts/fit_spec.py $*"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--backtest-fill" ]]; then
   echo '>>> заполнить вердикты бэктеста по ВСЕМУ универсу (иначе копится порциями в дневном синке)'
   RUN "$DC exec -T floaters python -c \"

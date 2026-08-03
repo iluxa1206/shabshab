@@ -107,8 +107,17 @@ def parse_prospectus_formula(text: str) -> Optional[dict]:
     return res
 
 
+# Капитализация индекса внутри периода: конвенция «Index_end/Index_start − 1»
+# (ВЭБ.РФ, Роснефть, ОФЗ-ПК нового типа). В тексте — отношение значений
+# НАКОПЛЕННОГО индекса RUONIA на границы периода, а не среднее ставок.
+_COMPOUND_RE = re.compile(
+    r"index\s*end.{0,40}index\s*start|индекс\w*\s*docp.{0,40}индекс\w*\s*днкп"
+    r"|indexдокп.{0,40}indexднкп", re.I | re.S)
+
+
 def _parse_prospectus_formula(text: str) -> Optional[dict]:
     tl = text.replace("&hellip;", "…").replace("\xa0", " ").lower()
+    compounded = bool(_COMPOUND_RE.search(tl))
     best_point = best_avg = None
     # Явные окончания причастия, а не \w* — в выгрузке Cbonds пробел часто теряется
     # («предшествующийдате Di»), и жадный \w* съедал бы «дате», унося якорь фиксинга
@@ -258,6 +267,12 @@ def _parse_prospectus_formula(text: str) -> Optional[dict]:
     # кэп/флор биндится к бумаге даже если режим фиксинга не распознан
     if out is None and (cap_pct is not None or floor_pct is not None):
         out = {}
+    if compounded:
+        # конвенция Index_end/Index_start: режим — среднее по периоду (окно =
+        # период) с капитализацией; лаг из текста («для 7-го дня, предшествующего»)
+        out = out or {"mode": "average", "lag": 7, "lag_unit": "cal"}
+        out["compounded"] = True
+        out.setdefault("mode", "average")
     if out is not None:
         if capped:
             out["capped"] = True
@@ -551,7 +566,8 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
         if s.get("coupon_mode") is not None or s.get("avg_window_days"):
             spec = {"mode": s.get("coupon_mode"), "lag": s.get("fixing_lag") or 0,
                     "lag_unit": s.get("fixing_lag_unit") or "cal", "base": base,
-                    "avg_window_days": s.get("avg_window_days")}
+                    "avg_window_days": s.get("avg_window_days"),
+                    "compounded": s.get("compounded")}
     except Exception:
         spec = None
     if start > calc_date:
@@ -615,6 +631,26 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
         idx = _index(spec.get("base", "KEYRATE"))
     lag = spec.get("lag", 0)
     unit = spec.get("lag_unit", "cal")
+
+    # КАПИТАЛИЗАЦИЯ индекса внутри периода (spec.compounded): конвенция
+    # «Rj = (Index_end(j−lag)/Index_start(j−lag) − 1)·B/Tj» — ВЭБ.РФ, Роснефть,
+    # ОФЗ-ПК нового типа. Index — накопленный индекс RUONIA (произведение
+    # (1+r_d/365)), поэтому воспроизводим его по дням дохода (s,e] со сдвигом
+    # lag и приводим к эквивалентной simple-ставке ·365/n — дальше маржа и
+    # начисление идут общей веткой. Простое среднее занижало купон на 0.3-0.5пп
+    # (ОФЗ 29026-29029, ВЭБ2Р-50..57, Роснфт5P1).
+    if spec.get("compounded"):
+        factor, n, cur = 1.0, 0, start + timedelta(days=1)
+        while cur <= end:
+            obs = _obs_date(cur, lag, unit)
+            k = _rate_at(idx, obs) if _realized(idx, obs, calc_date) else fwd_pct(obs)
+            if k is not None:
+                factor *= 1.0 + k / 100.0 / 365.0
+                n += 1
+            cur += timedelta(days=1)
+        if n < 1:
+            return 0.0
+        return (factor - 1.0) * 365.0 / n * 100.0
     # Единая параметризация: явное окно усреднения W дней, зафиксированное на
     # старте периода — окно [obs(start) − W, obs(start)). W=1 ≡ point,
     # W=длина периода ≡ avg_prev. Явное W из Справочника сильнее mode.

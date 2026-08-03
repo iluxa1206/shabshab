@@ -239,6 +239,7 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "fixing_lag_unit": p.get("fixing_lag_unit"),
         "coupon_mode": p.get("coupon_mode"),
         "avg_window_days": p.get("avg_window_days"),  # окно усреднения, дней (1=point, NULL=период)
+        "compounded": p.get("compounded"),  # капитализация индекса внутри периода (Index_end/Index_start)
         "capped": p.get("capped"),        # есть ли кэп/флор (bool)
         "cap_pct": p.get("cap_pct"),      # потолок ставки купона, % годовых (MIN/«не более»)
         "floor_pct": p.get("floor_pct"),  # пол ставки купона, % годовых (MAX/«не менее»)
@@ -266,7 +267,8 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                 if out["avg_window_days"] is None and br.get("avg_window_days") is not None:
                     out["avg_window_days"] = br["avg_window_days"]
     # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
-    if (out["fixing_lag"] is None or out["coupon_mode"] is None or out["capped"] is None) and p.get("coupon_text"):
+    if (out["fixing_lag"] is None or out["coupon_mode"] is None
+            or out["capped"] is None or out["compounded"] is None) and p.get("coupon_text"):
         try:
             from services.coupon_calib import parse_prospectus_formula
             ps = parse_prospectus_formula(p["coupon_text"])
@@ -276,6 +278,10 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                 if out["fixing_lag"] is None and ps.get("lag") is not None:
                     out["fixing_lag"] = ps["lag"]
                     out["fixing_lag_unit"] = ps.get("lag_unit", "cal")
+                if out["compounded"] is None and ps.get("compounded"):
+                    out["compounded"] = 1
+                    if out["fixing_lag"] is None and ps.get("lag") is not None:
+                        out["fixing_lag"] = ps["lag"]
                 if out["capped"] is None:
                     out["capped"] = ps.get("capped", False)
                 if out["cap_pct"] is None:

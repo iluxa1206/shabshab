@@ -25,14 +25,14 @@ router = APIRouter()
 _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
               "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
-              "avg_window_days", "br_coupon_mode", "br_fixing_lag", "spec_eff",
+              "avg_window_days", "compounded", "br_coupon_mode", "br_fixing_lag", "spec_eff",
               "cap_pct", "floor_pct", "var_type", "coupon_text", "rating", "source")
 _XLSX_EDITABLE = ("short_name", "base", "margin_bps", "maturity_date",
                   "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
-                  "avg_window_days", "cap_pct", "floor_pct", "var_type", "coupon_text")
+                  "avg_window_days", "compounded", "cap_pct", "floor_pct", "var_type", "coupon_text")
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
-             "avg_window_days"}
+             "avg_window_days", "compounded"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
@@ -65,6 +65,9 @@ class InstrumentParams(BaseModel):
     avg_window_days: Optional[int] = Field(
         None, ge=1, le=400,
         description="окно усреднения базы, дней: 1=точечный фиксинг, пусто=длина купонного периода")
+    compounded: Optional[int] = Field(
+        None, ge=0, le=1,
+        description="1 — индекс капитализируется внутри периода (Index_end/Index_start: ВЭБ.РФ, ОФЗ-ПК 29026+)")
     short_name: Optional[str] = Field(None, max_length=128)
     var_type: Optional[str] = None
     cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")

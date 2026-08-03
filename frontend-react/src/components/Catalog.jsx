@@ -21,6 +21,7 @@ const COLS = [
   ["fixing_lag", "Лаг (БД)"],
   ["fixing_lag_unit", "Ед. лага"],
   ["avg_window_days", "Окно, дн"],
+  ["compounded", "Капит."],
   ["br_coupon_mode", "Режим (BR)"],
   ["br_fixing_lag", "Лаг (BR)"],
   ["spec_eff", "Спека (эфф.)"],

@@ -194,7 +194,7 @@ def _backtest(isin: str, base: str, spec: dict, coupons, margin_pct, face,
         return margin_pct
 
     pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
-             "avg_window_days": avg_w}
+             "avg_window_days": avg_w, "compounded": spec.get("compounded")}
     cap, floor = spec.get("cap_pct"), spec.get("floor_pct")
     errs = []
     for s, e, obs in rows_past:
@@ -715,7 +715,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
                          "y_idx_bps": (h or {}).get("y_idx")})
         mean_rows = round(sum(vals) / len(vals), 4) if vals else None
         pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
-                 "avg_window_days": avg_w}
+                 "avg_window_days": avg_w, "compounded": spec.get("compounded")}
         try:
             prod = round(projected_ks_pct(pspec, s, e, calc_date,
                                           fwd_pct=lambda d: _fwd_step(d) or 0.0,
@@ -743,7 +743,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     return {
         "isin": isin, "calc_date": _iso(calc_date), "base": base,
         "spec": {"mode": mode, "lag": lag, "lag_unit": unit,
-                 "avg_window_days": avg_w,
+                 "avg_window_days": avg_w, "compounded": spec.get("compounded"),
                  "margin_bps": ref_obj.spread_issue_bps,
                  "cap_pct": cap, "floor_pct": floor},
         "coupons": groups,

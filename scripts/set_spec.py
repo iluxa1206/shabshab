@@ -17,9 +17,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("isin")
     ap.add_argument("--mode", choices=["average", "month_start"])
+    ap.add_argument("--base", choices=["KEYRATE", "RUONIA", "FIXED", "EXOTIC"],
+                    help="EXOTIC — купон вне линейной модели (ИПЦ/GCurve): уходит из универса")
     ap.add_argument("--lag", type=int)
     ap.add_argument("--lag-unit", choices=["cal", "work"])
     ap.add_argument("--window", type=int, help="avg_window_days")
+    ap.add_argument("--compounded", type=int, choices=[0, 1],
+                    help="1 — индекс капитализируется внутри периода (Index_end/Index_start)")
     ap.add_argument("--margin-bps", type=int)
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
@@ -30,6 +34,8 @@ def main() -> int:
         print(f"{args.isin}: нет в реестре")
         return 1
     params = {}
+    if args.base:
+        params["base"] = args.base
     if args.mode:
         params["coupon_mode"] = args.mode
     if args.lag is not None:
@@ -38,6 +44,8 @@ def main() -> int:
         params["fixing_lag_unit"] = args.lag_unit
     if args.window is not None:
         params["avg_window_days"] = args.window
+    if args.compounded is not None:
+        params["compounded"] = args.compounded
     if args.margin_bps is not None:
         params["margin_bps"] = args.margin_bps
     if not params:
