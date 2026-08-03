@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SCHEDULE_CACHE_FILE = cache_path("schedule_cache.json")
 SCHEDULE_FULL_CACHE_FILE = cache_path("schedule_full_cache.json")
+SECID_CACHE_FILE = cache_path("secid_board_cache.json")
 
 _MSK = timezone(timedelta(hours=3))
 
@@ -388,6 +389,61 @@ class MarketDataService:
         if cls._full_dirty:
             cls._save_full_disk(force=True)
 
+    # ---- ISIN → SECID/борд -------------------------------------------------
+    # ISS-эндпоинты bondization и history принимают ТИКЕР (SECID). У корпоратов
+    # SECID == ISIN, поэтому по ISIN всё работало; у ОФЗ SECID = SU29023RMFS7 —
+    # bondization по ISIN отдавал ПУСТО (0 купонов/амортизаций), а history по
+    # TQCB — 0 строк. Следствие: ОФЗ-ПК прайсились генерённой сеткой купонов без
+    # ФАКТИЧЕСКИХ value, а весь as-of путь (НКД/цена на дату) для них падал.
+    _secid_cache: Dict[str, dict] = {}
+    _secid_loaded = False
+
+    @classmethod
+    def _load_secid_cache(cls) -> None:
+        if cls._secid_loaded:
+            return
+        try:
+            with open(SECID_CACHE_FILE, "r", encoding="utf-8") as f:
+                cls._secid_cache = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            cls._secid_cache = {}
+        cls._secid_loaded = True
+
+    @classmethod
+    async def resolve_secid_board(cls, isin: str) -> Tuple[str, Optional[str]]:
+        """ISIN → (SECID, основной борд) по q-поиску ISS. Справочник стабилен —
+        кэш память+диск навсегда. Не резолвится → (isin, None): вызывающий
+        работает как раньше (для корпоратов это и есть верный SECID)."""
+        isin = (isin or "").strip().upper()
+        cls._load_secid_cache()
+        hit = cls._secid_cache.get(isin)
+        if hit:
+            return hit.get("secid") or isin, hit.get("board")
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await _moex_get(
+                    client, "https://iss.moex.com/iss/securities.json",
+                    params={"q": isin, "iss.meta": "off", "limit": 10}, timeout=8)
+            if resp is None or resp.status_code != 200:
+                return isin, None
+            sec = resp.json().get("securities", {})
+            cols, rows = sec.get("columns", []), sec.get("data", [])
+            g = lambda r, n: r[cols.index(n)] if n in cols else None
+            for r in rows:
+                if (g(r, "isin") or "").upper() != isin:
+                    continue
+                secid = g(r, "secid") or isin
+                board = g(r, "primary_boardid") or g(r, "marketprice_boardid")
+                cls._secid_cache[isin] = {"secid": secid, "board": board}
+                try:
+                    atomic_write_json(SECID_CACHE_FILE, cls._secid_cache)
+                except OSError:
+                    pass
+                return secid, board
+        except Exception as e:
+            logger.warning(f"resolve_secid_board {isin}: {e}")
+        return isin, None
+
     @classmethod
     async def fetch_bond_schedule_full(cls, isin: str) -> dict:
         """Полное расписание MOEX по одной бумаге: купоны (с реальными value/valueprc для
@@ -399,8 +455,8 @@ class MarketDataService:
         if isin in cls._full_mem:
             return cls._full_mem[isin]
 
-        out = {"coupons": [], "amorts": [], "offers": []}
-        try:
+        async def _fetch(sec: str) -> dict:
+            out = {"coupons": [], "amorts": [], "offers": []}
             # через _moex_get (семафор 5) — иначе gather по всему юниверсу на прогреве
             # даёт 453 одновременных коннекта к ISS → таймауты/дропы.
             # ISS отдаёт bondization страницами по 100 (limit>100 игнорируется) —
@@ -413,7 +469,7 @@ class MarketDataService:
                     guard += 1
                     resp = await _moex_get(
                         client,
-                        f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
+                        f"https://iss.moex.com/iss/securities/{sec}/bondization.json",
                         params={"iss.only": "coupons,amortizations,offers",
                                 "limit": PAGE, "start": start}, timeout=10)
                     if resp is None or resp.status_code != 200:
@@ -451,6 +507,17 @@ class MarketDataService:
                     if len(crows) < PAGE:  # последняя страница
                         break
                     start += PAGE
+            return out
+
+        out = {"coupons": [], "amorts": [], "offers": []}
+        try:
+            out = await _fetch(isin)
+            if not out["coupons"]:
+                # ОФЗ: bondization по ISIN пуст, тикер отдельный (SU29023RMFS7) —
+                # без ретрая ОФЗ-ПК прайсились БЕЗ фактических купонов и амортизаций
+                secid, _board = await cls.resolve_secid_board(isin)
+                if secid and secid != isin:
+                    out = await _fetch(secid)
         except Exception as e:
             logger.warning(f"bondization error {isin}: {e}")
         # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем
@@ -603,13 +670,28 @@ class MarketDataService:
 
         async def fetch_one(client: httpx.AsyncClient, isin: str):
             try:
-                url = f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/{isin}.json"
-                resp = await _moex_get(client, url, timeout=6)
-                if resp is None or resp.status_code != 200:
-                    return
-                j = resp.json()
+                async def _get(sec_id: str, brd: str):
+                    return await _moex_get(
+                        client,
+                        "https://iss.moex.com/iss/engines/stock/markets/bonds/"
+                        f"boards/{brd}/securities/{sec_id}.json", timeout=6)
+
+                resp = await _get(isin, "TQCB")
+                j = resp.json() if (resp is not None and resp.status_code == 200) else {}
                 sec = j.get("securities", {})
                 s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
+                if not s_rows:
+                    # ОФЗ (SU29…@TQOB) и риск-сектор (TQRD) на TQCB не котируются —
+                    # раньше отдавали пустой снапшот: НКД=None → live SM/DM/y-idx
+                    # у ОФЗ-ПК в watchlist-пути не считались вовсе
+                    secid, brd = await cls.resolve_secid_board(isin)
+                    if secid != isin or (brd and brd != "TQCB"):
+                        resp = await _get(secid, brd or "TQOB")
+                        j = resp.json() if (resp is not None and resp.status_code == 200) else {}
+                        sec = j.get("securities", {})
+                        s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
+                if not s_rows and not j:
+                    return
                 prev = accrued = prev_date = None
                 if s_rows:
                     row = s_rows[0]
@@ -977,34 +1059,43 @@ class MarketDataService:
                 missing.append(isin)
 
         if missing:
+            async def fetch_pages(client: httpx.AsyncClient, sec: str) -> list:
+                # ISS отдаёт bondization страницами по 100 (limit>100 игнорится) —
+                # ПАГИНИРУЕМ по start=, иначе у месячных бумаг >100 купонов
+                # хвост дропался: текущий зафикс. купон терялся → перепрогноз.
+                sched = []
+                start_pg, PAGE, guard = 0, 100, 0
+                while guard < 40:
+                    guard += 1
+                    resp = await _moex_get(
+                        client,
+                        f"https://iss.moex.com/iss/securities/{sec}/bondization.json",
+                        params={"iss.only": "coupons", "limit": PAGE, "start": start_pg},
+                        timeout=8)
+                    if resp is None or resp.status_code != 200:
+                        break
+                    cp = resp.json().get("coupons", {})
+                    cols = cp.get("columns", [])
+                    if "startdate" not in cols or "coupondate" not in cols:
+                        break
+                    si, ei = cols.index("startdate"), cols.index("coupondate")
+                    vi = cols.index("value") if "value" in cols else None
+                    rows = cp.get("data", [])
+                    sched.extend((row[si], row[ei], (row[vi] if vi is not None else None))
+                                 for row in rows if row[si] and row[ei])
+                    if len(rows) < PAGE:
+                        break
+                    start_pg += PAGE
+                return sched
+
             async def fetch_one(client: httpx.AsyncClient, isin: str):
                 try:
-                    # ISS отдаёт bondization страницами по 100 (limit>100 игнорится) —
-                    # ПАГИНИРУЕМ по start=, иначе у месячных бумаг >100 купонов
-                    # хвост дропался: текущий зафикс. купон терялся → перепрогноз.
-                    sched = []
-                    start_pg, PAGE, guard = 0, 100, 0
-                    while guard < 40:
-                        guard += 1
-                        resp = await _moex_get(
-                            client,
-                            f"https://iss.moex.com/iss/securities/{isin}/bondization.json",
-                            params={"iss.only": "coupons", "limit": PAGE, "start": start_pg},
-                            timeout=8)
-                        if resp is None or resp.status_code != 200:
-                            break
-                        cp = resp.json().get("coupons", {})
-                        cols = cp.get("columns", [])
-                        if "startdate" not in cols or "coupondate" not in cols:
-                            break
-                        si, ei = cols.index("startdate"), cols.index("coupondate")
-                        vi = cols.index("value") if "value" in cols else None
-                        rows = cp.get("data", [])
-                        sched.extend((row[si], row[ei], (row[vi] if vi is not None else None))
-                                     for row in rows if row[si] and row[ei])
-                        if len(rows) < PAGE:
-                            break
-                        start_pg += PAGE
+                    sched = await fetch_pages(client, isin)
+                    if not sched:
+                        # ОФЗ: расписание живёт на тикере (SU29…), не на ISIN
+                        secid, _b = await cls.resolve_secid_board(isin)
+                        if secid and secid != isin:
+                            sched = await fetch_pages(client, secid)
                     if sched:
                         disk[isin] = sched
                         cls._schedule_mem[isin] = [(date.fromisoformat(a), date.fromisoformat(b), v)

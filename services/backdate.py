@@ -136,8 +136,8 @@ async def fetch_history_row(secid: str, d: date, board: str = "TQCB") -> Optiona
         return None
 
 
-def _accrued_from_periods(periods, d: date, face: float) -> Optional[float]:
-    """Фолбэк-НКД из графика купонов: value·(d−start)/(end−start) периода, где start≤d<end."""
+def _period_at(periods, d: date) -> Optional[tuple]:
+    """Купонный период (start, end, value|None), накрывающий d: start ≤ d < end."""
     for c in periods or []:
         try:
             s = c[0] if isinstance(c, (tuple, list)) else c.get("start")
@@ -147,14 +147,81 @@ def _accrued_from_periods(periods, d: date, face: float) -> Optional[float]:
             e = date.fromisoformat(e) if isinstance(e, str) else e
         except Exception:
             continue
-        if s and e and v is not None and s <= d < e and e > s:
-            return float(v) * (d - s).days / (e - s).days
+        if s and e and e > s and s <= d < e:
+            return (s, e, v)
     return None
+
+
+def _accrued_from_periods(periods, d: date, face: float) -> Optional[float]:
+    """Фолбэк-НКД из графика купонов: value·(d−start)/(end−start) периода, где start≤d<end."""
+    p = _period_at(periods, d)
+    if p and p[2] is not None:
+        s, e, v = p
+        return float(v) * (d - s).days / (e - s).days
+    return None
+
+
+def _accrued_estimate(periods, d: date, face: float, index_pct: Optional[float],
+                      margin_bps: int) -> Optional[float]:
+    """Последний рубеж, когда НКД неоткуда взять: купон периода ещё НЕ опубликован
+    (value=None) и биржевого ACCINT на дату нет. Начисляем по конвенции выпуска
+    (индекс + маржа) simple ACT/365 от факта индекса ЦБ на d."""
+    p = _period_at(periods, d)
+    if not p or index_pct is None:
+        return None
+    s, _e, _v = p
+    rate = (index_pct / 100.0) + (margin_bps or 0) / 10000.0
+    return face * rate * (d - s).days / 365.0
+
+
+def _accrue_to_date(accint_fact: float, trade_date: date, d: date, periods,
+                    face: float) -> Tuple[float, Optional[str]]:
+    """НКД на календарную дату d из биржевого факта на trade_date ≤ d.
+
+    MOEX history отдаёт последнюю ТОРГОВУЮ строку ≤ d, а calc_date остаётся d:
+    на выходных/праздниках НКД замирал на пятнице, хотя купон капает каждый день
+    (наблюдалось: 2 дня × 0.41₽ на номинале 900 ≈ 9bps цены → SM/YTM смещены).
+    Доначисляем от факта:
+      • тот же купонный период и купон опубликован → факт + value·Δдней/период;
+      • период тот же, купон не опубликован → пропорция по дням от самого факта
+        (не требует ни прогноза, ни спеки);
+      • период сменился (в промежутке выплата) → чистое начисление нового
+        периода из графика.
+    """
+    gap = (d - trade_date).days
+    if gap <= 0:
+        return accint_fact, None
+    p_t, p_d = _period_at(periods, trade_date), _period_at(periods, d)
+    note = (f"НКД доначислен с {trade_date.isoformat()} (последние торги) до "
+            f"{d.isoformat()}: {gap} нерабочих дн")
+    if p_t and p_d and p_t[0] == p_d[0]:
+        s, e, v = p_d
+        if v is not None:
+            daily = float(v) / ((e - s).days or 1)
+            return round(accint_fact + daily * gap, 4), note
+        elapsed = (trade_date - s).days
+        if elapsed > 0:
+            return round(accint_fact * (d - s).days / elapsed, 4), note
+    sched = _accrued_from_periods(periods, d, face)
+    if sched is not None:
+        return round(sched, 4), note + " (по графику купонов: в промежутке выплата)"
+    return accint_fact, ("НКД не удалось доначислить до даты расчёта — взят факт "
+                         f"на {trade_date.isoformat()}, занижен на {gap} дн")
 
 
 # ------------------------------------------------------------------ контекст
 
-async def load_backdate_ctx(isin: str, d: date, board: str = "TQCB") -> dict:
+async def resolve_market(isin: str, board: Optional[str] = None) -> Tuple[str, str]:
+    """(SECID, борд) для history-эндпоинта. У корпоратов SECID == ISIN и борд
+    TQCB/TQRD, у ОФЗ — SU29…/TQOB (по ISIN history отдаёт 0 строк → раньше весь
+    as-of путь для ОФЗ-ПК падал на «НКД не восстановился»). board задан явно —
+    уважаем его, резолвим только тикер."""
+    from services.market_data import MarketDataService
+    secid, primary = await MarketDataService.resolve_secid_board(isin)
+    return secid or isin, (board or primary or "TQCB")
+
+
+async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> dict:
     """Тёплый as-of контекст: статика бумаги + факт-строка MOEX history на D +
     кривая as-of. Далее reprice_asof(ctx, price) — без I/O (батчится по ценам)."""
     from datetime import date as _date
@@ -169,6 +236,7 @@ async def load_backdate_ctx(isin: str, d: date, board: str = "TQCB") -> dict:
     cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     data = cache.get(isin)
     external = data is None
+    secid, board = await resolve_market(isin, board)
 
     async def _aempty():
         return {}
@@ -177,7 +245,7 @@ async def load_backdate_ctx(isin: str, d: date, board: str = "TQCB") -> dict:
         MarketDataService.fetch_coupon_schedules([isin]),                             # 0
         MarketDataService.get_curves(),                                               # 1
         MarketDataService.fetch_bond_schedule_full(isin),                             # 2
-        fetch_history_row(isin, d, board),                                            # 3
+        fetch_history_row(secid, d, board),                                           # 3
         MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 4
         return_exceptions=True,
     )
@@ -212,24 +280,63 @@ async def load_backdate_ctx(isin: str, d: date, board: str = "TQCB") -> dict:
 
     curve, curve_mode = curve_asof(ref_obj.base, d, today_curve, hist_pairs)
 
-    periods = schedules.get(isin)
+    periods = schedules.get(isin) or schedules.get(secid)
     amorts = sched_full.get("amorts")
     offers = sched_full.get("offers")
+    if not periods:
+        # без расписания ядро строит сетку купонов сама и прогнозирует ВСЕ купоны,
+        # включая уже зафиксированный текущий — раньше это происходило молча
+        # (сбой ISS / бумага без bondization), и цифра расходилась с паспортом
+        warnings.append("расписание купонов MOEX не получено — даты купонов сгенерированы, "
+                        "фактические (уже объявленные) суммы купонов НЕ использованы")
 
-    # номинал на D: факт биржи; фолбэк — остаток по графику амортизаций на D
+    # дата факт-строки: MOEX отдаёт последний ТОРГОВЫЙ день ≤ D (выходные/праздники
+    # и неликвид без сделок) — по ней решаем, доначислять ли НКД/пересчитывать номинал
+    try:
+        row_date = date.fromisoformat(hist_row["date"]) if (hist_row and hist_row.get("date")) else None
+    except (TypeError, ValueError):
+        row_date = None
+    stale_days = (d - row_date).days if row_date else None
+
+    # номинал на D: факт биржи; на несвежей строке и при её отсутствии — остаток
+    # по графику амортизаций именно на D (транш мог пройти после row_date)
+    from services.bonds import amort_remaining_face
     face_asof = hist_row.get("facevalue") if hist_row else None
-    if face_asof is None:
-        from services.bonds import amort_remaining_face
-        face_asof = amort_remaining_face(amorts, d)
+    if face_asof is None or (stale_days or 0) > 0:
+        face_by_sched = amort_remaining_face(amorts, d)
+        if face_by_sched is not None:
+            if face_asof is not None and abs(face_by_sched - face_asof) > 0.5:
+                warnings.append(
+                    f"номинал на {d.isoformat()} взят из графика амортизаций ({face_by_sched:g}₽): "
+                    f"биржевая строка от {row_date.isoformat()} даёт {face_asof:g}₽")
+            face_asof = face_by_sched
     if face_asof is not None and abs(face_asof - ref_obj.face_value) > 0.5:
         ref_obj.face_value = float(face_asof)
 
-    # НКД на D: факт биржи; фолбэк — линейное начисление из графика купонов
+    # НКД на D: факт биржи (доначисленный до D, если торгов в этот день не было);
+    # фолбэки — график купонов, затем начисление по конвенции выпуска
     accrued_asof = hist_row.get("accint") if hist_row else None
+    if accrued_asof is not None and stale_days:
+        accrued_asof, note = _accrue_to_date(float(accrued_asof), row_date, d,
+                                             periods, ref_obj.face_value)
+        if note:
+            warnings.append(note)
     if accrued_asof is None:
         accrued_asof = _accrued_from_periods(periods, d, ref_obj.face_value)
         if accrued_asof is not None:
             warnings.append("НКД на дату оценён из графика купонов (MOEX history не отдал ACCINT)")
+    if accrued_asof is None:
+        idx_at_d = None
+        for _md, _r in hist_pairs:          # факт индекса ЦБ на D (история отсортирована)
+            if _md <= d:
+                idx_at_d = _r
+            else:
+                break
+        accrued_asof = _accrued_estimate(periods, d, ref_obj.face_value, idx_at_d,
+                                         ref_obj.spread_issue_bps)
+        if accrued_asof is not None:
+            warnings.append("НКД на дату начислен по конвенции выпуска (индекс+маржа): "
+                            "ни биржевого ACCINT, ни опубликованного купона периода нет")
     if accrued_asof is None:
         raise CalculationException(f"НКД на {d.isoformat()} не восстановился")
 
@@ -247,6 +354,9 @@ async def load_backdate_ctx(isin: str, d: date, board: str = "TQCB") -> dict:
         "close": hist_row.get("close") if hist_row else None,
         "legalclose": hist_row.get("legalclose") if hist_row else None,
         "trade_date": hist_row.get("date") if hist_row else None,
+        "stale_days": stale_days,
+        "secid": secid,
+        "board": board,
         "periods": periods,
         "amorts": amorts,
         "offers": offers,
@@ -294,7 +404,7 @@ _honest_memo: dict = {}     # (isin, days, board) → (msk_day, result); про�
                             # хвост realized-кривой обновляется раз в день — TTL сутки
 
 
-async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB",
+async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] = None,
                                price_overrides: Optional[dict] = None) -> dict:
     """Честная динамика спредов: для КАЖДОГО торгового дня — свой calc_date,
     своя as-of кривая, фактические НКД/номинал/close того дня → SM/DM/y-idx.
@@ -312,7 +422,12 @@ async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB",
     d_from = d_till - _td(days=int(days * 1.55) + 7)   # запас на выходные
 
     ctx = await load_backdate_ctx(isin, d_till, board)  # статика + кривая на d_till
-    rows = await fetch_history_range(isin, d_from, d_till, board)
+    rows = await fetch_history_range(ctx["secid"], d_from, d_till, ctx["board"])
+    # цена дня: CLOSE, при её отсутствии — официальный LEGALCLOSEPRICE (у неликвида
+    # сделок может не быть, но оценочная цена биржей публикуется)
+    for r in rows:
+        if r.get("close") is None and r.get("legalclose") is not None:
+            r["close"] = r["legalclose"]
     rows = [r for r in rows if r.get("close") is not None][-days:]
 
     from services.valuation import calculate_valuation_metrics
@@ -337,6 +452,11 @@ async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB",
             accint = r.get("accint")
             if accint is None:
                 accint = _accrued_from_periods(ctx["periods"], d, ref.face_value)
+            if accint is None:
+                # accrued_override=None → движок взял бы bond.accrued_rub, т.е. НКД
+                # СЕГОДНЯШНЕГО дня на прошлую дату (тихий мусор в серии). Точку рвём.
+                logger.debug(f"honest point {isin}@{r['date']}: НКД на дату не восстановился")
+                continue
             px = (price_overrides or {}).get(r["date"], r["close"])
             m = calculate_valuation_metrics(
                 ref, px, curve, d, accrued_override=accint,
@@ -358,19 +478,32 @@ async def honest_spread_series(isin: str, days: int = 180, board: str = "TQCB",
 
 _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфилл уже сделан сегодня
 
+# Версия as-of движка. ПОДНЯТЬ при любой правке, меняющей цифру на прошлую дату
+# (НКД/номинал/купон/кривая) — honest-строки прошлых версий будут снесены и
+# пересчитаны при первом открытии графика бумаги.
+#   1 — базовая (до 2026-08-03)
+#   2 — 2026-08-03: НКД доначисляется до нерабочей даты, ОФЗ резолвятся в
+#       SECID/TQOB (были без фактических купонов), убран тихий фолбэк на
+#       сегодняшний НКД, цена дня падает на legalclose при отсутствии сделок
+HONEST_ENGINE_VERSION = 2
 
-async def ensure_honest_backfill(isin: str, days: int, board: str = "TQCB") -> int:
+
+async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
     """Разово досчитывает честную историю в spread_daily: даты без строки —
     INSERT (src='honest', цена=close), легаси-снапшоты без y_idx — пересчёт
-    НА ИХ ЦЕНЕ (price_pct) → UPDATE y_idx. Прошлое зафиксировано в базе —
-    дальше читается мгновенно; повторный вызов за день (и на меньший период)
-    no-op. Возвращает число записанных/обновлённых строк."""
+    НА ИХ ЦЕНЕ (price_pct) → UPDATE y_idx. Строки старых версий движка сносятся
+    и считаются заново. Прошлое зафиксировано в базе — дальше читается мгновенно;
+    повторный вызов за день (и на меньший период) no-op. Возвращает число
+    записанных/обновлённых строк."""
     from datetime import date as _date
     done = _backfill_done.get((isin, board))
     if done and done[0] == _date.today() and done[1] >= days:
         return 0
 
-    from services.spread_history import read_history, upsert_honest
+    from services.spread_history import read_history, upsert_honest, drop_stale_honest
+    dropped = drop_stale_honest(isin, HONEST_ENGINE_VERSION)
+    if dropped:
+        logger.info("honest %s: снесено %d строк старого движка → пересчёт", isin, dropped)
     existing = {r["date"]: r for r in read_history(isin, days=days + 10)
                 if (r.get("kind") or "floater") == "floater"}
     overrides = {d: r["price_pct"] for d, r in existing.items()
@@ -384,9 +517,10 @@ async def ensure_honest_backfill(isin: str, days: int, board: str = "TQCB") -> i
                                         price_overrides=overrides or None)
     missing_or_null = [p for p in series["points"]
                        if p["date"] not in existing or p["date"] in overrides]
-    n = upsert_honest(isin, missing_or_null, set(existing)) if missing_or_null else 0
+    n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION)
+         if missing_or_null else 0)
     _backfill_done[(isin, board)] = (_date.today(), days)
-    return n
+    return n + dropped
 
 
 def reprice_asof(ctx: dict, price: float) -> dict:

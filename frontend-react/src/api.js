@@ -177,19 +177,24 @@ export const fetchCouponDays = (isin) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/coupon-days`);
 
 // Динамика спредов: серия DM(флоатер)/g-спред(фикс) по историч. дневным ценам.
-export const fetchSpreadHistory = (isin, { kind = "floater", secid, board = "TQCB", days = 120 } = {}) => {
-  let u = `/api/history/${encodeURIComponent(isin)}/spread?kind=${kind}&days=${days}&board=${board}`;
+// board не задаём: бэкенд сам резолвит тикер/борд по ISIN (ОФЗ = SU29…@TQOB,
+// риск-сектор = TQRD) — прибитый TQCB отдавал по ним пустую историю.
+export const fetchSpreadHistory = (isin, { kind = "floater", secid, board, days = 120 } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/spread?kind=${kind}&days=${days}`;
+  if (board) u += `&board=${board}`;
   if (secid) u += `&secid=${encodeURIComponent(secid)}`;
   return request(u);
 };
 
 // Честная динамика спредов (флоатер): каждый день — свой calc_date/кривая/НКД.
-export const fetchSpreadHonest = (isin, { days = 120, board = "TQCB" } = {}) =>
-  request(`/api/history/${encodeURIComponent(isin)}/spread_honest?days=${days}&board=${board}`);
+export const fetchSpreadHonest = (isin, { days = 120, board } = {}) =>
+  request(`/api/history/${encodeURIComponent(isin)}/spread_honest?days=${days}`
+          + (board ? `&board=${board}` : ""));
 
 // Калькулятор прошлых периодов: (дата, цена) → метрики как-на-дату.
-export const fetchRepricePast = (isin, { date, price, board = "TQCB" } = {}) => {
-  let u = `/api/history/${encodeURIComponent(isin)}/reprice?date=${date}&board=${board}`;
+export const fetchRepricePast = (isin, { date, price, board } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/reprice?date=${date}`;
+  if (board) u += `&board=${board}`;
   if (price != null) u += `&price=${price}`;
   return request(u);
 };

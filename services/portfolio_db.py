@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS spread_daily(
   ytm REAL,
   y_idx REAL,                   -- флоатер: IRR−индекс, bps — ПЕРВИЧНАЯ метрика
   src TEXT,                     -- 'snap' вечерний снапшот | 'honest' as-of бэкфилл (NULL=легаси snap)
+  engine_ver INTEGER,           -- версия as-of движка для honest-строк (см. backdate.HONEST_ENGINE_VERSION)
   PRIMARY KEY(isin, date)
 );
 CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
@@ -65,6 +66,7 @@ CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
 _MIGRATIONS = [
     "ALTER TABLE spread_daily ADD COLUMN y_idx REAL",
     "ALTER TABLE spread_daily ADD COLUMN src TEXT",
+    "ALTER TABLE spread_daily ADD COLUMN engine_ver INTEGER",
 ]
 
 

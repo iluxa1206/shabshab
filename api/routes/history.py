@@ -16,22 +16,31 @@ router = APIRouter()
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 _SECID_RE = re.compile(r"[A-Z0-9]{4,14}")
+# Борды, где живут бумаги юниверса: корп TQCB, ОФЗ TQOB, риск-сектор TQRD.
+_BOARDS = ("TQCB", "TQOB", "TQRD")
 
 
 @router.get("/{isin}/spread", tags=["History"])
 async def spread_history(
     isin: str = Path(...),
     kind: str = Query("floater", description="floater | fixed"),
-    secid: str = Query(None, description="SECID (ОФЗ ≠ ISIN)"),
-    board: str = Query("TQCB", description="TQCB корп / TQOB ОФЗ"),
+    secid: str = Query(None, description="SECID (ОФЗ ≠ ISIN); пусто — резолв по ISIN"),
+    board: str = Query(None, description="TQCB корп / TQOB ОФЗ / TQRD риск-сектор; пусто — авто"),
     days: int = Query(120, ge=10, le=400),
 ):
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    if board is not None and board not in _BOARDS:
+        raise HTTPException(status_code=400, detail="bad board")
+    # ОФЗ: свечи/history живут на тикере SU29… и борде TQOB — по ISIN@TQCB пусто
+    if not secid or not board:
+        from services.backdate import resolve_market
+        auto_sec, auto_board = await resolve_market(isin, board)
+        secid, board = secid or auto_sec, board or auto_board
     sec = secid or isin
-    if not _SECID_RE.fullmatch(sec) or board not in ("TQCB", "TQOB"):
-        raise HTTPException(status_code=400, detail="bad secid/board")
+    if not _SECID_RE.fullmatch(sec):
+        raise HTTPException(status_code=400, detail="bad secid")
 
     candles = await MarketDataService.fetch_candles(sec, "1d", board)
     if not candles:
@@ -203,7 +212,7 @@ async def reprice_past(
     d: str = Query(..., alias="date", description="Дата в прошлом, YYYY-MM-DD"),
     price: float = Query(None, ge=1, le=500,
                          description="Чистая цена, % (пусто — close той даты)"),
-    board: str = Query("TQCB", description="TQCB корп / TQOB ОФЗ"),
+    board: str = Query(None, description="TQCB / TQOB / TQRD; пусто — авто по ISIN"),
 ):
     """Калькулятор прошлых периодов: (дата, цена) → SM/DM/y-idx/YTM как-на-дату.
     НКД/номинал — факт MOEX history той даты; кривая — архив котировок (market)
@@ -212,7 +221,7 @@ async def reprice_past(
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
-    if board not in ("TQCB", "TQOB"):
+    if board is not None and board not in _BOARDS:
         raise HTTPException(status_code=400, detail="bad board")
     try:
         dd = _date.fromisoformat(d)
@@ -228,14 +237,20 @@ async def reprice_past(
     except CalculationException as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    px = price if price is not None else ctx["close"]
+    # цена по умолчанию — close даты; сделок не было → официальный legalclose
+    px = price if price is not None else (ctx["close"] if ctx["close"] is not None
+                                          else ctx["legalclose"])
     if px is None:
         raise HTTPException(status_code=422,
                             detail=f"Нет цены: торгов ≤ {d} не найдено, задайте price")
     m = reprice_asof(ctx, px)
+    price_src = ("user" if price is not None
+                 else ("close" if ctx["close"] is not None else "legalclose"))
     return {
         "isin": isin, "date": d, "trade_date": ctx["trade_date"],
-        "price": px, "close": ctx["close"], "legalclose": ctx["legalclose"],
+        "price": px, "price_src": price_src,
+        "close": ctx["close"], "legalclose": ctx["legalclose"],
+        "stale_days": ctx["stale_days"], "secid": ctx["secid"], "board": ctx["board"],
         "accint": ctx["accrued"], "face_value": ctx["ref_obj"].face_value,
         "base": ctx["ref_obj"].base, "curve_mode": ctx["curve_mode"],
         "metrics": m,
@@ -246,14 +261,14 @@ async def reprice_past(
 async def spread_honest(
     isin: str = Path(...),
     days: int = Query(180, ge=10, le=400),
-    board: str = Query("TQCB", description="TQCB корп / TQOB ОФЗ"),
+    board: str = Query(None, description="TQCB / TQOB / TQRD; пусто — авто по ISIN"),
 ):
     """Честная динамика спредов: каждый день пересчитан своим calc_date, своей
     as-of кривой и фактическими НКД/номиналом/close (MOEX history)."""
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
-    if board not in ("TQCB", "TQOB"):
+    if board is not None and board not in _BOARDS:
         raise HTTPException(status_code=400, detail="bad board")
     from services.backdate import honest_spread_series
     from services.exceptions import NotFoundException, CalculationException

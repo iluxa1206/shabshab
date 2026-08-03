@@ -106,7 +106,9 @@ function PastCalc({ isin }) {
         </div>
         <span className="pc-status">
           {mut.isPending ? "пересчёт…"
-            : res?.ok ? `на ${fmt.date(res.data.trade_date)} · НКД ${fmt.num(res.data.accint)} ₽ · кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
+            : res?.ok ? `${res.data.stale_days > 0
+                  ? `цена от ${fmt.date(res.data.trade_date)} (в этот день торгов не было) · `
+                  : ""}НКД ${fmt.num(res.data.accint)} ₽ · кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
             : res && !res.ok ? res.err
             : "дата в прошлом → метрики как-на-дату"}
         </span>
@@ -135,6 +137,9 @@ function PastCalc({ isin }) {
           </div>
         </div>
       )}
+      {/* деградации входов на дату (доначисленный НКД, ex-coupon, отсутствие
+          расписания) — без них цифра выглядит точнее, чем есть */}
+      {m?.warnings?.length > 0 && <div className="warn-box">{m.warnings.join(" · ")}</div>}
     </div>
   );
 }

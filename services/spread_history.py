@@ -56,18 +56,33 @@ def read_history(isin: str, days: int = 400) -> List[dict]:
     """Точная история по бумаге, по возрастанию даты."""
     with _connect() as c:
         r = c.execute(
-            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx, src "
+            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx, src, engine_ver "
             "FROM spread_daily WHERE isin=? ORDER BY date DESC LIMIT ?",
             (isin, days)).fetchall()
     return [dict(x) for x in reversed(r)]
 
 
-def upsert_honest(isin: str, points: list, existing_dates: set) -> int:
+def drop_stale_honest(isin: str, engine_ver: int) -> int:
+    """Сносит honest-строки, посчитанные СТАРЫМ as-of движком (engine_ver < текущей
+    либо NULL). Точки, персистённые до фикса НКД/SECID, иначе живут вечно: бэкфилл
+    их не трогает (он дописывает только отсутствующие даты), и график показывал бы
+    старые цифры без единого признака. Вечерние снапшоты (src='snap') не трогаем —
+    это независимый источник, считанный в свой день на живых данных."""
+    with _lock, _connect() as c:
+        cur = c.execute(
+            "DELETE FROM spread_daily WHERE isin=? AND src='honest' "
+            "AND (engine_ver IS NULL OR engine_ver < ?)", (isin, engine_ver))
+        return cur.rowcount or 0
+
+
+def upsert_honest(isin: str, points: list, existing_dates: set,
+                  engine_ver: int = 0) -> int:
     """Персистит честный бэкфилл: INSERT точек для дат без строки (src='honest');
     для существующих строк (вечерние снапшоты) НИЧЕГО не перезаписывает, кроме
     y_idx, если он NULL (легаси-строки до появления колонки — пересчитаны на их
     же цене, см. backdate.ensure_honest_backfill). Прошлое не меняется —
-    идемпотентно."""
+    идемпотентно. engine_ver штампуется на вставляемые строки, чтобы следующий
+    фикс движка мог их инвалидировать (drop_stale_honest)."""
     ins, upd = [], []
     for p in points:
         if p.get("y_idx_bps") is None and p.get("dm_bps") is None:
@@ -76,12 +91,12 @@ def upsert_honest(isin: str, points: list, existing_dates: set) -> int:
             upd.append((p.get("y_idx_bps"), isin, p["date"]))
         else:
             ins.append((isin, p["date"], "floater", p.get("price"), p.get("dm_bps"),
-                        None, None, p.get("ytm"), p.get("y_idx_bps"), "honest"))
+                        None, None, p.get("ytm"), p.get("y_idx_bps"), "honest", engine_ver))
     with _lock, _connect() as c:
         if ins:
             c.executemany(
                 "INSERT OR IGNORE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-                "g_spread_bps,z_bps,ytm,y_idx,src) VALUES(?,?,?,?,?,?,?,?,?,?)", ins)
+                "g_spread_bps,z_bps,ytm,y_idx,src,engine_ver) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ins)
         if upd:
             c.executemany(
                 "UPDATE spread_daily SET y_idx=? WHERE isin=? AND date=? AND y_idx IS NULL",
