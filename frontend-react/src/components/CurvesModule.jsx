@@ -7,7 +7,7 @@ import { fmt } from "../format.js";
 import {
   extent, sqrtScale, linearScale, timeScale, linTicks, yearTicks,
   linePath, stepPath, GridY, XTicks, useNearestHover, Tooltip,
-  Legend, LegendLine, LegendDot,
+  Legend, LegendLine, LegendDot, useChartSize,
 } from "../charts/index.js";
 
 // Вкладка кривых. Виды (URL /curves/:view):
@@ -97,7 +97,10 @@ function nearestQuote(quotes, days) {
 
 function Chart({ data }) {
   const { quotes, samples } = data;
-  const W = 900, H = 380, L = 46, R = 64, T = 16, B = 40;
+  // размер по замеру контейнера: viewBox 900×380 растягивался на всю ширину
+  // страницы (до 1.5×), вместе с ним плыли шрифты подписей и толщина линий
+  const { ref, width: W, height: H, measured } = useChartSize({ height: 380, minWidth: 420 });
+  const L = 46, R = 64, T = 16, B = 40;
 
   const geom = useMemo(() => {
     const maxDays = Math.max(...samples.map((s) => s.days), ...quotes.map((q) => q.days), 1);
@@ -109,7 +112,7 @@ function Chart({ data }) {
     const X = sqrtScale([7, maxDays], [L, W - R]);
     const Y = linearScale([ymin, ymax], [H - B, T]);
     return { X, Y, ymin, ymax };
-  }, [samples, quotes]);
+  }, [samples, quotes, W, H]);
 
   const { X, Y, ymin, ymax } = geom;
   // hover по плотной сетке сэмплов — тянет обе линии (spot/forward) сразу;
@@ -119,8 +122,9 @@ function Chart({ data }) {
   const last = samples[samples.length - 1];
 
   return (
-    <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+    <div style={{ position: "relative", height: H }} ref={ref}>
+      {measured && (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="cf-svg" {...handlers}>
         <GridY ticks={linTicks(ymin, ymax, 4)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(2)} />
         <XTicks ticks={quotes.map((q) => ({ x: X(q.days), label: q.tenor }))} y={H - B + 14} />
         {/* forward — ступень по сегментам между тенорами (пунктир) */}
@@ -155,6 +159,7 @@ function Chart({ data }) {
           </g>
         )}
       </svg>
+      )}
       {hover && (
         <Tooltip x={X(hover.days)} viewW={W}>
           {`${(hover.days / 365).toFixed(hover.days < 365 ? 2 : 1)}г · avg ${hover.spot_pct.toFixed(3)}% · fwd ${hover.forward_pct.toFixed(3)}%`
@@ -260,7 +265,8 @@ function KsPathView() {
 }
 
 function KsPathChart({ points, calcDate }) {
-  const W = 900, H = 380, L = 46, R = 16, T = 16, B = 40;
+  const { ref, width: W, height: H, measured } = useChartSize({ height: 380, minWidth: 420 });
+  const L = 46, R = 16, T = 16, B = 40;
 
   const g = useMemo(() => {
     const xs = points.map((p) => new Date(p.date).getTime());
@@ -276,7 +282,7 @@ function KsPathChart({ points, calcDate }) {
     const X = timeScale([xmin, xmax], [L, W - R]);
     const Y = linearScale([ymin, ymax], [H - B, T]);
     return { X, Y, xmin, xmax, ymin, ymax };
-  }, [points]);
+  }, [points, W, H]);
 
   const { X, Y, ymin, ymax, xmin, xmax } = g;
   const { hover, handlers } = useNearestHover({ viewW: W, points, px: (p) => X(p.date) });
@@ -286,8 +292,9 @@ function KsPathChart({ points, calcDate }) {
   const todayX = X(calcDate);
 
   return (
-    <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+    <div style={{ position: "relative", height: H }} ref={ref}>
+      {measured && (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="cf-svg" {...handlers}>
         <GridY ticks={linTicks(ymin, ymax, 5)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(1)} />
         <XTicks ticks={yearTicks(xmin, xmax).filter((t) => t >= xmin && t <= xmax).map((t) => ({ x: X(t), label: new Date(t).getFullYear() }))}
           y={H - B + 14} />
@@ -306,6 +313,7 @@ function KsPathChart({ points, calcDate }) {
           <line x1={X(hover.date)} y1={T} x2={X(hover.date)} y2={H - B} stroke="var(--mut)" strokeDasharray="1 2" />
         )}
       </svg>
+      )}
       {hover && (
         <Tooltip x={X(hover.date)} viewW={W} top={4} dy={0} padding="3px 7px">
           {fmt.date(hover.date)} · {hover.actual_pct != null ? `факт ${hover.actual_pct}%` :
@@ -402,7 +410,8 @@ function FloaterScenariosView() {
 
 // bond-vs-index: ступени ставки купона бумаги vs пути индекса КС по датам купонов
 function BondVsIndexChart({ series, calcDate }) {
-  const W = 900, H = 320, L = 46, R = 16, T = 16, B = 40;
+  const { ref, width: W, height: H, measured } = useChartSize({ height: 320, minWidth: 420 });
+  const L = 46, R = 16, T = 16, B = 40;
   const g = useMemo(() => {
     const pts = series.map((s) => ({ ...s, t: new Date(s.date).getTime() }));
     const xs = pts.map((p) => p.t);
@@ -413,15 +422,16 @@ function BondVsIndexChart({ series, calcDate }) {
     const X = timeScale([xmin, xmax], [L, W - R]);
     const Y = linearScale([ymin, ymax], [H - B, T]);
     return { pts, X, Y, xmin, xmax, ymin, ymax };
-  }, [series, calcDate]);
+  }, [series, calcDate, W, H]);
 
   const { pts, X, Y, ymin, ymax, xmin, xmax } = g;
   const { hover, handlers } = useNearestHover({ viewW: W, points: pts, px: (p) => X(p.t) });
   const step = (key) => stepPath(pts, (p) => X(p.t), (p) => Y(p[key]));
 
   return (
-    <div style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} {...handlers}>
+    <div style={{ position: "relative", height: H }} ref={ref}>
+      {measured && (
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="cf-svg" {...handlers}>
         <GridY ticks={linTicks(ymin, ymax, 5)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(1)} />
         <XTicks ticks={yearTicks(xmin, xmax).filter((t) => t >= xmin && t <= xmax).map((t) => ({ x: X(t), label: new Date(t).getFullYear() }))}
           y={H - B + 14} />
@@ -433,6 +443,7 @@ function BondVsIndexChart({ series, calcDate }) {
           <line x1={X(hover.t)} y1={T} x2={X(hover.t)} y2={H - B} stroke="var(--mut)" strokeDasharray="1 2" />
         )}
       </svg>
+      )}
       {hover && (
         <Tooltip x={X(hover.t)} viewW={W} top={4} dy={0} padding="3px 7px">
           {fmt.date(hover.date)} · купон {hover.coupon_pct}% · индекс {hover.base_pct}%

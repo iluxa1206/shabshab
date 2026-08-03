@@ -388,6 +388,57 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px; }
 .ob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
 .ob-close { font-size: 12px; padding: 2px 8px; }
+/* «на весь экран» — открывает /chart/:isin в новой вкладке */
+.charts-full { font-size: 13px; padding: 2px 8px; text-decoration: none; line-height: 1.4; }
+
+/* ── полноэкранный график выпуска (/chart/:isin) ── */
+.chart-page { display: flex; flex-direction: column; padding: 10px 16px 0; gap: 8px; }
+/* блок над графиком: за его высотой следит ResizeObserver — шапка переносится
+   на 2–3 строки на узком окне, и график должен ужаться, а не уехать за низ */
+.cp-top { display: flex; flex-direction: column; gap: 8px; }
+.cp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+.cp-id { display: flex; align-items: baseline; gap: 8px; }
+.cp-back { color: var(--mut); text-decoration: none; font-size: 16px; line-height: 1; padding: 2px 4px;
+  border-radius: 3px; transition: color .15s, background .15s; }
+.cp-back:hover { color: var(--fg); background: var(--line-2); }
+.cp-name { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
+.cp-isin { font: 11px var(--mono); color: var(--mut-2); }
+.cp-rating { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
+  padding: 1px 5px; color: var(--mut); }
+.cp-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
+.cp-stat { display: inline-flex; align-items: baseline; gap: 5px; }
+.cp-stat-k { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--mut-2); }
+.cp-stat-v { font: 12px var(--mono); color: var(--fg); }
+.cp-stat-v.hi { font-weight: 700; }
+
+.cp-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.cp-group { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.cp-btn { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mut);
+  background: var(--bg); border: 0; padding: 4px 9px; cursor: pointer; min-height: 26px;
+  transition: color .15s, background .15s; }
+.cp-group .cp-btn + .cp-btn { border-left: 1px solid var(--line); }
+.cp-btn:hover { color: var(--fg); background: var(--line-2); }
+.cp-btn.on { background: var(--accent); color: var(--bg); }
+.cp-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cp-reset { border: 1px solid var(--line); border-radius: 4px; }
+.cp-date { display: inline-flex; align-items: center; gap: 4px; font: 10px var(--mono);
+  text-transform: uppercase; letter-spacing: .06em; color: var(--mut-2); }
+.cp-date input { font: 11px var(--mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; min-height: 26px; }
+.cp-date input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cp-hint { font: 10px var(--mono); color: var(--mut-2); margin-left: auto; }
+.cp-legend { font: 11px var(--mono); color: var(--fg); min-height: 16px; }
+.cp-chart { width: 100%; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+/* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
+.cp-brush { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
+  overflow: hidden; outline-offset: 2px; }
+.cp-brush:focus-visible { outline: 2px solid var(--accent); }
+.cp-foot { font: 10px var(--mono); color: var(--mut-2); padding: 4px 0 8px; }
+.cp-warn { color: var(--down); }
+@media (max-width: 720px) {
+  .chart-page { padding: 8px 10px 0; }
+  .cp-hint { display: none; }
+}
 .ob-ctl { display: flex; align-items: center; gap: 10px; padding: 0 20px 10px; }
 .ob-ctl .chip-btn { font-size: 10px; padding: 3px 9px; }
 .ob-depth { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
@@ -713,7 +764,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-card { border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; background: var(--bg); }
 .an-title { font-size: 11px; letter-spacing: .05em; color: var(--fg); margin-bottom: 8px; text-transform: uppercase; }
 .an-hint { font-size: 10px; color: var(--mut-2); text-transform: none; letter-spacing: 0; margin-left: 6px; }
-.an-svg { width: 100%; height: auto; display: block; }
+.an-svg { width: 100%; height: auto; display: block; touch-action: none; }
+/* графики на ChartFrame: размер задаётся атрибутами (реальные px, viewBox 1:1),
+   поэтому width:100% сюда НЕ применяем — иначе текст осей снова поплывёт */
+.cf-box { position: relative; }
+.cf-svg { display: block; touch-action: none; cursor: crosshair; }
+.cf-cross { stroke: var(--mut-2); stroke-width: 1; stroke-dasharray: 3 3; }
 .an-grid { stroke: var(--line); stroke-width: 1; }
 .an-axis { fill: var(--mut); font-size: 9.5px; font-family: var(--mono); }
 .an-axis-lbl { fill: var(--mut-2); font-size: 9px; font-family: var(--mono); }
@@ -726,11 +782,19 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 10px; color: var(--mut); font-family: var(--mono); }
 .an-leg-lbl { color: var(--mut-2); }
 .an-leg-item { display: inline-flex; align-items: center; gap: 4px; }
+/* кликабельная легенда: скрыть/показать серию */
+.an-leg-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0;
+  padding: 1px 3px; border-radius: 3px; font: inherit; color: var(--mut); cursor: pointer;
+  transition: color .15s, opacity .15s; }
+.an-leg-btn:hover { color: var(--fg); background: var(--line-2); }
+.an-leg-btn.off { opacity: .38; text-decoration: line-through; }
+.an-leg-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .an-note { font-size: 9.5px; color: var(--mut-2); margin-top: 4px; font-family: var(--mono); }
 .an-mut2 { color: var(--mut-2); }
-/* клик-фильтр по эмитенту */
-.an-row-pick { cursor: pointer; }
+/* клик-фильтр по эмитенту (курсор и на детях строки — иначе .an-svg circle
+   с cursor:help перебивал pointer на кликабельной медиане) */
+.an-row-pick, .an-row-pick * { cursor: pointer; }
 .an-pt { cursor: pointer !important; }
 .an-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px;
   font: 10px var(--mono); color: var(--mut); }

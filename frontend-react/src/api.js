@@ -163,6 +163,15 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
+// Строка списка по одной бумаге (рейтинг, эмитент, Y-IDX, DM, спред-дюрация) —
+// того в /api/bonds/{isin} нет. extra тянет любой ISIN вне базового списка;
+// limit=1 держит ответ маленьким, нужную строку выбираем по ISIN.
+export const fetchBondRow = async (isin) => {
+  const r = await request(`/api/bonds?with_market=true&with_valuation=true&limit=1`
+    + `&extra=${encodeURIComponent(isin)}`);
+  return (r.items || []).find((b) => b.isin === isin) || null;
+};
+
 // Динамика медианного Y-IDX по рейтинг-бакетам/топ-эмитентам (вкладка АНАЛИТИКА).
 // isins — отфильтрованный набор таблицы: график согласован с фильтрами дашборда.
 export const fetchYidxHistory = (days, by, isins, signal) =>
@@ -179,8 +188,11 @@ export const fetchCouponDays = (isin) =>
 // Динамика спредов: серия DM(флоатер)/g-спред(фикс) по историч. дневным ценам.
 // board не задаём: бэкенд сам резолвит тикер/борд по ISIN (ОФЗ = SU29…@TQOB,
 // риск-сектор = TQRD) — прибитый TQCB отдавал по ним пустую историю.
-export const fetchSpreadHistory = (isin, { kind = "floater", secid, board, days = 120 } = {}) => {
+// from (опц., ISO-дата) — календарная граница окна вместо числа торговых дней:
+// так график спреда показывает ТО ЖЕ окно, что график цены в карточке.
+export const fetchSpreadHistory = (isin, { kind = "floater", secid, board, days = 120, from } = {}) => {
   let u = `/api/history/${encodeURIComponent(isin)}/spread?kind=${kind}&days=${days}`;
+  if (from) u += `&from=${from}`;
   if (board) u += `&board=${board}`;
   if (secid) u += `&secid=${encodeURIComponent(secid)}`;
   return request(u);
@@ -196,6 +208,26 @@ export const fetchRepricePast = (isin, { date, price, board } = {}) => {
   let u = `/api/history/${encodeURIComponent(isin)}/reprice?date=${date}`;
   if (board) u += `&board=${board}`;
   if (price != null) u += `&price=${price}`;
+  return request(u);
+};
+
+// Часовые бары: средневзвешенная цена часа (VWAP) + спред по ней + стороны
+// сделок (buy/sell VWAP из тикового архива). hours>1 склеивает часы на бэке.
+export const fetchHourlyBars = (isin, { kind = "floater", days = 30, hours = 1,
+                                        board, refresh = true } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/bars?kind=${kind}&days=${days}&hours=${hours}`;
+  if (board) u += `&board=${board}`;
+  if (!refresh) u += "&refresh=false";
+  return request(u);
+};
+
+// Сделки из тикового архива. min_value (₽) отсекает мелочь — остаются крупные
+// принты. Глубина: у брокера ~30 дней, глубже — только то, что накопил демон.
+export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
+                                    refresh = true } = {}) => {
+  let u = `/api/history/${encodeURIComponent(isin)}/trades?days=${days}&min_value=${minValue}&limit=${limit}`;
+  if (side) u += `&side=${side}`;
+  if (!refresh) u += "&refresh=false";
   return request(u);
 };
 

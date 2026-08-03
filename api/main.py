@@ -320,10 +320,40 @@ async def spread_snapshotter():
             logger.warning(f"spread snapshot error: {e}")
 
 
+BARS_WORKER = os.getenv("BARS_WORKER", "1") not in ("0", "false", "no")
+BARS_WORKER_DAYS = int(os.getenv("BARS_WORKER_DAYS", "3"))
+
+
+async def hourly_bars_worker():
+    """Часовой налив bar_hourly (средневзвес + спред) и тикового архива по всему
+    юниверсу. Окно 3 дня с перехлёстом: закрывает дыры после рестарта и
+    доливает свежий час. Тики Alor живут ~30 дней — то, что не слито вовремя,
+    теряется навсегда, поэтому демон крутится всегда, а не по требованию UI."""
+    if not BARS_WORKER:
+        return
+    from services import bars as bars_svc
+    await asyncio.sleep(120)   # не конкурировать со стартовым прогревом
+    while True:
+        try:
+            # полный обход юниверса (≈30 мин) — раз в 6 часов: подхватывает новые
+            # выпуски и вернувшуюся ликвидность. Остальные часы — только бумаги,
+            # по которым сделки реально идут (единицы минут).
+            full = datetime.now(_MSK).hour % 6 == 0
+            stat = await bars_svc.refresh_universe(days=BARS_WORKER_DAYS, full=full)
+            logger.info("hourly bars (full=%s): %s", full, stat)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"hourly bars worker error: {e}")
+        now = datetime.now(_MSK)
+        nxt = (now + timedelta(hours=1)).replace(minute=7, second=0, microsecond=0)
+        await asyncio.sleep(max(60.0, (nxt - now).total_seconds()))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
-    init_db()  # схема alerts/spread_daily (идемпотентно)
+    init_db()  # схема alerts/spread_daily/bar_hourly/trade_tick (идемпотентно)
     warm = asyncio.create_task(warmup_caches())
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
@@ -332,6 +362,7 @@ async def lifespan(app: FastAPI):
     from services.alor_ws import alor_orderbook_ws
     alor_ws = asyncio.create_task(alor_orderbook_ws())
     spread_snap = asyncio.create_task(spread_snapshotter())
+    bars_worker = asyncio.create_task(hourly_bars_worker())
     yield
     warm.cancel()
     task.cancel()
@@ -340,6 +371,7 @@ async def lifespan(app: FastAPI):
     alert_mon.cancel()
     alor_ws.cancel()
     spread_snap.cancel()
+    bars_worker.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",

@@ -4,11 +4,16 @@ import { useState } from "react";
 // px(point) → пиксель-X в координатах viewBox; viewW — ширина viewBox.
 // onHover (опц.) — колбэк наружу (синхронизация курсора между графиками).
 // Возвращает { hover, setHover, handlers } для навешивания на <svg>.
+//
+// Тач: pointer-события покрывают мышь, перо и палец одним кодом (раньше был
+// только onMouseMove — на планшете графики были мертвы). touch-action: none
+// на .an-svg в CSS, иначе браузер съедает движение пальца под скролл.
 export function useNearestHover({ viewW, points, px, onHover }) {
   const [hover, setHover] = useState(null);
-  const onMouseMove = (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const mx = ((e.clientX - r.left) / r.width) * viewW;
+
+  const pick = (clientX, target) => {
+    const r = target.getBoundingClientRect();
+    const mx = ((clientX - r.left) / r.width) * viewW;
     let best = null, bd = Infinity;
     for (const p of points) {
       const d = Math.abs(px(p) - mx);
@@ -17,19 +22,51 @@ export function useNearestHover({ viewW, points, px, onHover }) {
     setHover(best);
     onHover?.(best ?? null);
   };
-  const onMouseLeave = () => { setHover(null); onHover?.(null); };
-  return { hover, setHover, handlers: { onMouseMove, onMouseLeave } };
+  const clear = () => { setHover(null); onHover?.(null); };
+
+  return {
+    hover,
+    setHover,
+    handlers: {
+      onPointerMove: (e) => pick(e.clientX, e.currentTarget),
+      onPointerDown: (e) => pick(e.clientX, e.currentTarget),
+      onPointerLeave: clear,
+      // палец убран с экрана — курсор снимаем (pointerleave для touch не летит)
+      onPointerUp: (e) => { if (e.pointerType !== "mouse") clear(); },
+      onPointerCancel: clear,
+    },
+  };
 }
 
-// Инверсная плашка-подсказка (--inv-bg/--inv-fg), позиционируется по X в % от viewBox.
-// Родитель должен быть position:relative.
-export function Tooltip({ x, viewW, top = 0, dy = -4, padding = "2px 6px", children }) {
+// Ховер дискретных элементов (точки scatter, строки box-графика). Заменяет
+// нативный <title>: тот появляется через ~1.5 c, не стилизуется и не работает
+// на тач. Возвращает bind(x, y, content) — набор pointer-обработчиков.
+export function useElementHover() {
+  const [hover, setHover] = useState(null); // { x, y, content }
+  const bind = (x, y, content) => ({
+    onPointerEnter: () => setHover({ x, y, content }),
+    onPointerLeave: () => setHover(null),
+  });
+  return { hover, bind, clear: () => setHover(null) };
+}
+
+// Инверсная плашка-подсказка (--inv-bg/--inv-fg). Позиционируется либо по X
+// в % от viewBox (передан viewW), либо в абсолютных px (viewW не передан).
+// y (опц.) — вертикальная привязка в px вместо top. Родитель — position:relative.
+export function Tooltip({ x, y, viewW, top = 0, dy = -4, padding = "2px 6px", multiline = false, children }) {
+  // у края держим плашку внутри графика: сдвигаем якорь вместо вылета за границу
+  const f = viewW ? x / viewW : null;
+  const frac = f == null ? 0.5 : f;
+  const shift = frac < 0.15 ? "0%" : frac > 0.85 ? "-100%" : "-50%";
   return (
     <div style={{
-      position: "absolute", left: `${(x / viewW) * 100}%`, top,
-      transform: `translate(-50%, ${dy}px)`, fontSize: 11,
+      position: "absolute",
+      left: f == null ? `${x}px` : `${f * 100}%`,
+      top: y == null ? top : y,
+      transform: `translate(${shift}, ${y == null ? dy : dy - 10}px)`, fontSize: 11,
       background: "var(--inv-bg)", color: "var(--inv-fg)", padding,
-      borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
+      borderRadius: 4, whiteSpace: multiline ? "pre-line" : "nowrap", pointerEvents: "none", zIndex: 2,
+      lineHeight: 1.35, boxShadow: "0 2px 8px rgba(0,0,0,.18)",
     }}>{children}</div>
   );
 }

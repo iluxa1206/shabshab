@@ -883,7 +883,7 @@ class MarketDataService:
                     except (KeyError, TypeError, ValueError):
                         continue
         except Exception as e:
-            logger.warning(f"candles error {isin} tf={tf}: {e}")
+            logger.warning(f"candles error {security} tf={tf}: {e}")
             return []
         raw.sort(key=lambda x: x["t"])  # ISO-строки → лексикографически = хронологически
         if bucket_min:

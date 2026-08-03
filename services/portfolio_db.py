@@ -59,6 +59,46 @@ CREATE TABLE IF NOT EXISTS spread_daily(
   PRIMARY KEY(isin, date)
 );
 CREATE INDEX IF NOT EXISTS ix_spread_isin ON spread_daily(isin, date);
+
+-- Часовые бары: средневзвешенная цена часа + спред по ней. Источник цены —
+-- часовые свечи MOEX ISS (vwap = value/volume/face), метрики — reprice текущей
+-- моделью бумаги (оценка формы динамики, не точный as-of; см. services/bars.py).
+-- buy_*/sell_* дозаполняются из тикового архива (Alor даёт агрессора).
+CREATE TABLE IF NOT EXISTS bar_hourly(
+  isin TEXT NOT NULL,
+  ts TEXT NOT NULL,             -- 'YYYY-MM-DD HH:00' МСК, начало часа
+  kind TEXT NOT NULL DEFAULT 'floater',
+  open REAL, high REAL, low REAL, close REAL,
+  vwap_pct REAL,                -- средневзвешенная ЧИСТАЯ цена, % номинала
+  volume REAL,                  -- бумаг
+  value REAL,                   -- руб, без НКД
+  face REAL,                    -- номинал на дату бара (амортизация)
+  y_idx_bps REAL,               -- спред по vwap: ПЕРВИЧНАЯ метрика флоатера
+  dm_bps REAL,
+  g_spread_bps REAL,            -- фикс
+  ytm REAL,
+  trades INTEGER,               -- число сделок в часе (из тиков)
+  buy_volume REAL, sell_volume REAL, buy_vwap REAL, sell_vwap REAL,
+  src TEXT,                     -- 'candle' | 'ticks'
+  PRIMARY KEY(isin, ts)
+);
+CREATE INDEX IF NOT EXISTS ix_bar_isin ON bar_hourly(isin, ts);
+
+-- Тиковый архив сделок (Alor alltrades). Копится вперёд: у брокера глубина
+-- ~30 календарных дней, дальше история существует только у нас.
+CREATE TABLE IF NOT EXISTS trade_tick(
+  isin TEXT NOT NULL,
+  trade_id INTEGER NOT NULL,    -- id сделки Alor (== TRADENO MOEX)
+  ts TEXT NOT NULL,             -- 'YYYY-MM-DD HH:MM:SS' МСК
+  price REAL NOT NULL,          -- % номинала
+  qty REAL NOT NULL,            -- бумаг
+  value REAL,                   -- руб, без НКД
+  side TEXT,                    -- buy|sell — агрессор
+  board TEXT,
+  PRIMARY KEY(isin, trade_id)
+);
+CREATE INDEX IF NOT EXISTS ix_tick_isin_ts ON trade_tick(isin, ts);
+CREATE INDEX IF NOT EXISTS ix_tick_big ON trade_tick(isin, value);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;

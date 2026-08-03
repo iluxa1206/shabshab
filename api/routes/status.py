@@ -27,6 +27,23 @@ async def _ping(url: str, timeout: float = 4.0) -> dict:
                 "error": type(e).__name__}
 
 
+def _bars_stat() -> dict:
+    """Сводка накопленного тик/бар-архива (см. services/bars.py). Битая или ещё
+    не созданная таблица не должна валить весь статус."""
+    from services.portfolio_db import _connect
+    try:
+        with _connect() as c:
+            b = c.execute("SELECT COUNT(*) n, COUNT(DISTINCT isin) p, MIN(ts) a "
+                          "FROM bar_hourly").fetchone()
+            t = c.execute("SELECT COUNT(*) n, COUNT(DISTINCT isin) p, MIN(ts) a "
+                          "FROM trade_tick").fetchone()
+        return {"bars": b["n"], "papers": b["p"], "bars_from": (b["a"] or "")[:10],
+                "ticks": t["n"], "tick_papers": t["p"], "ticks_from": (t["a"] or "")[:10]}
+    except Exception:
+        return {"bars": 0, "papers": 0, "bars_from": None,
+                "ticks": 0, "tick_papers": 0, "ticks_from": None}
+
+
 @router.get("", tags=["Status"])
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi
@@ -67,6 +84,7 @@ async def get_status():
     rat_json_miss = sum(1 for v in rc.values() if v.get("miss"))
 
     total = fl_n + fx_n
+    bars_stat = _bars_stat()
 
     def frac(n, d):
         return {"n": n, "total": d, "pct": round(100 * n / d) if d else 0}
@@ -95,6 +113,11 @@ async def get_status():
             {"key": "Рейтинги флоатеров", **frac(fl_rated, fl_n), "hint": "реестр (corpbonds)"},
             {"key": "Рейтинги фиксов", **frac(fx_rated, fx_n),
              "hint": "ОФЗ=AAA правилом; corpbonds не покрывает свежие 2025"},
+            {"key": "Часовые бары (средневзвес)", **frac(bars_stat["papers"], total),
+             "hint": f"строк {bars_stat['bars']} · глубина {bars_stat['bars_from'] or '—'}"},
+            {"key": "Архив сделок (тики)", **frac(bars_stat["tick_papers"], total),
+             "hint": f"сделок {bars_stat['ticks']} · с {bars_stat['ticks_from'] or '—'} "
+                     f"(у брокера глубина ~30 дней, дальше только наш архив)"},
         ],
         # очереди реестра: несходящаяся очередь копится и стареет — здесь это видно
         # числом (n растёт, oldest_days растёт = голодание corpbonds-обогащения)

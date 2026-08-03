@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
-import { fetchBondDetails, fetchFixedDetails, repriceBond, fetchRepricePast, UnauthorizedError, cbondsUrl } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, repriceBond, fetchRepricePast, UnauthorizedError, cbondsUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
@@ -165,14 +165,16 @@ function StaleChips({ m }) {
   );
 }
 
-// Общий период графиков карточки: [календарные дни, подпись, торговые дни
-// для истории спреда (~250 торговых в году)]
-const CHART_PERIODS = [[30, "1М", 21], [90, "3М", 60], [180, "6М", 120], [365, "1Г", 250]];
+// Общий период графиков карточки — календарные дни. Раньше цене шли
+// календарные (30), а истории спреда торговые (21) — окна не совпадали, и
+// синхронный курсор это маскировал. Теперь оба чарта режутся одной датой.
+const CHART_PERIODS = [[30, "1М"], [90, "3М"], [180, "6М"], [365, "1Г"]];
+const isoBack = (days) => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
 
 // Графики карточки: цена (сверху) + динамика Y-IDX (снизу) на ОДНОМ периоде —
 // видно, как двигались цена и спред в одинаковом окне. Рендерится в выездной
 // панели слева от карточки (desktop) или инлайн в теле карточки (узкий экран).
-function ChartsBody({ isin, period, setPeriod, tradingDays, onClose }) {
+function ChartsBody({ isin, period, setPeriod, onClose }) {
   // синхронный курсор: дата ховера одного графика — пунктирная вертикаль на другом
   const [hoverDate, setHoverDate] = useState(null);
   return (
@@ -185,12 +187,16 @@ function ChartsBody({ isin, period, setPeriod, tradingDays, onClose }) {
               onClick={() => setPeriod(cd)}>{l}</button>
           ))}
         </span>
+        {/* полноэкранный график в своей вкладке: гибкий период, zoom/pan */}
+        <a className="btn charts-full" target="_blank" rel="noopener noreferrer"
+          href={`${APP_BASENAME}/chart/${isin}?p=${period === 30 ? "1m" : period === 90 ? "3m" : period === 180 ? "6m" : "1y"}`}
+          title="Открыть на весь экран в новой вкладке">⤢</a>
         <button className="btn ob-close" onClick={onClose} aria-label="Закрыть графики">✕</button>
       </div>
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={isin} periodDays={period} syncDate={hoverDate} onHoverDate={setHoverDate} />
       <div className="section-title">Динамика Y-IDX</div>
-      <SpreadHistory isin={isin} kind="floater" board="TQCB" days={tradingDays}
+      <SpreadHistory isin={isin} kind="floater" board="TQCB" from={isoBack(period)}
         syncDate={hoverDate} onHoverDate={setHoverDate} />
     </div>
   );
@@ -379,9 +385,8 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const [showCharts, setShowCharts] = useState(false);
   useEffect(() => { setShowCharts(false); }, [isin]);
   const [period, setPeriod] = useState(90);
-  const tradingDays = CHART_PERIODS.find(([cd]) => cd === period)?.[2] ?? 60;
   const charts = !isFixed && data && showCharts
-    ? <ChartsBody isin={isin} period={period} setPeriod={setPeriod} tradingDays={tradingDays}
+    ? <ChartsBody isin={isin} period={period} setPeriod={setPeriod}
         onClose={() => setShowCharts(false)} />
     : null;
 

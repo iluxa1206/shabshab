@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { fmt } from "../format.js";
 import { fetchYidxHistory } from "../api.js";
-import { linearScale, linTicks, linePath, GridY, XTicks } from "../charts/index.js";
+import {
+  linearScale, linTicks, linePath, GridY, XTicks,
+  MeasuredSvg, ChartFrame, dateTickIdx, tickLabel, spanDays,
+} from "../charts/index.js";
 
 // рейтинг-бакеты и их цвет (градация риска) — CSS-переменные, тема-aware
 const BUCKETS = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
@@ -67,11 +70,16 @@ const quantile = (a, q) => {
   return s[b] + (s[b + 1] - s[b] || 0) * (pos - b);
 };
 
+// Общие поля scatter-графиков. Размер берётся замером контейнера (см.
+// useChartSize): раньше viewBox 460×260 растягивался CSS'ом и вместе с
+// геометрией плыл шрифт подписей осей.
+const SC_PAD = { l: 44, r: 12, t: 12, b: 30 };
+const SC_H = 260;
+
 // ── Scatter: DM vs spread duration, цвет = рейтинг ──
 // sel/onPick: выбранный эмитент — его выпуски подсвечены, остальные пригашены;
 // клик по точке выбирает/сбрасывает эмитента
 function ScatterZDur({ rows, sel, onPick }) {
-  const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
   const pts = rows
     .map((b) => ({ b, z: dmval(b) }))
     .filter(({ b, z }) => b.spread_dur_yrs != null && z != null)
@@ -80,36 +88,42 @@ function ScatterZDur({ rows, sel, onPick }) {
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
-  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
-  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-  const nx = Math.min(Math.ceil(xmax), 6);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="DM vs spread duration">
-      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-      {pts.map((p) => {
-        const on = sel != null && p.iss === sel;
+    <MeasuredSvg height={SC_H} label="DM vs spread duration">
+      {({ W, H, bind }) => {
+        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
+        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
+        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
         return (
-          <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={on ? 4.4 : 3.2} fill={BCOLOR[p.r]}
-            fillOpacity={sel == null ? 0.72 : on ? 0.95 : 0.12}
-            stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0}
-            className="an-pt" onClick={() => onPick && p.iss && onPick(p.iss)}>
-            <title>{`${p.name} — ${p.iss || "без эмитента"}\nDM: ${p.y} bps (Fabozzi)\nspread duration: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}\nклик — фильтр по эмитенту`}</title>
-          </circle>
+          <>
+            <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+              y={H - SC_PAD.b + 14} textClass="an-axis" />
+            {pts.map((p) => {
+              const on = sel != null && p.iss === sel;
+              return (
+                <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={on ? 4.4 : 3.2} fill={BCOLOR[p.r]}
+                  fillOpacity={sel == null ? 0.72 : on ? 0.95 : 0.12}
+                  stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0}
+                  className="an-pt" onClick={() => onPick && p.iss && onPick(p.iss)}
+                  {...bind(sx(p.x), sy(p.y),
+                    `${p.name} — ${p.iss || "без эмитента"}\nDM: ${Math.round(p.y)} bps (Fabozzi)\nspread duration: ${fmt.yrs(p.x)} · рейтинг: ${p.r}\nклик — фильтр по эмитенту`)} />
+              );
+            })}
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>DM, bps</text>
+          </>
         );
-      })}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
-      <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>DM, bps</text>
-    </svg>
+      }}
+    </MeasuredSvg>
   );
 }
 
 // ── Scatter агрегированный по эмитенту: точка = (медиана spread dur, медиана DM),
 //    размер = число бумаг, цвет = доминирующий рейтинг эмитента ──
 function ScatterIssuer({ rows, sel, onPick }) {
-  const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const zs = bonds.map(dmval).filter((v) => v != null);
@@ -121,71 +135,86 @@ function ScatterIssuer({ rows, sel, onPick }) {
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
-  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
-  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-  const nx = Math.min(Math.ceil(xmax), 6);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="DM vs spread duration по эмитентам">
-      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-      {pts.map((p) => {
-        const on = sel != null && p.name === sel;
+    <MeasuredSvg height={SC_H} label="DM vs spread duration по эмитентам">
+      {({ W, H, bind }) => {
+        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
+        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
+        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
         return (
-          <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n)) + (on ? 1 : 0)}
-            fill={BCOLOR[p.r]} fillOpacity={sel == null ? 0.55 : on ? 0.85 : 0.1}
-            stroke={on ? "var(--fg)" : BCOLOR[p.r]} strokeOpacity={sel == null ? 0.9 : on ? 1 : 0.15}
-            className="an-pt" onClick={() => onPick && onPick(p.name)}>
-            <title>{`${p.name}\nмедиана DM: ${Math.round(p.y)} bps · медиана spread dur: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}\nклик — фильтр по эмитенту`}</title>
-          </circle>
+          <>
+            <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+              y={H - SC_PAD.b + 14} textClass="an-axis" />
+            {pts.map((p) => {
+              const on = sel != null && p.name === sel;
+              return (
+                <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n)) + (on ? 1 : 0)}
+                  fill={BCOLOR[p.r]} fillOpacity={sel == null ? 0.55 : on ? 0.85 : 0.1}
+                  stroke={on ? "var(--fg)" : BCOLOR[p.r]} strokeOpacity={sel == null ? 0.9 : on ? 1 : 0.15}
+                  className="an-pt" onClick={() => onPick && onPick(p.name)}
+                  {...bind(sx(p.x), sy(p.y),
+                    `${p.name}\nмедиана DM: ${Math.round(p.y)} bps · медиана spread dur: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}\nклик — фильтр по эмитенту`)} />
+              );
+            })}
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>DM, bps</text>
+          </>
         );
-      })}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
-      <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>DM, bps</text>
-    </svg>
+      }}
+    </MeasuredSvg>
   );
 }
 
 // ── Общий рендер box-строк (p25–медиана–p75) для рейтингов/эмитентов ──
 function BoxRows({ entries, note, label, sel, onPick }) {
+  // pad.l 140: подпись «Балтийский лизинг…» (18 симв.) не влезает в 100px
+  const PAD = { l: 140, r: 40, t: 6 };
+  const rowH = entries.length > 8 ? 22 : 30;
+  const H = entries.length * rowH + PAD.t + 8 + (note ? 14 : 0);
   if (!entries.length) return <div className="an-empty">нет данных</div>;
   const all = entries.flatMap((e) => e.arr);
   const zmax = Math.max(...all), zmin = Math.min(0, ...all);
-  // pad.l 140: подпись «Балтийский лизинг…» (18 симв.) не влезала в 100px и
-  // клипалась слева viewBox'ом («тийский лизинг…»)
-  const W = 460, rowH = entries.length > 8 ? 22 : 30, pad = { l: 140, r: 40, t: 6 };
-  const H = entries.length * rowH + pad.t + 8 + (note ? 14 : 0);
-  const sx = linearScale([zmin, zmax], [pad.l, W - pad.r]);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label={label}>
-      {entries.map((e, i) => {
-        const arr = e.arr;
-        const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
-        const y = pad.t + i * rowH + rowH / 2;
-        const on = sel != null && e.key === sel;
-        const dim = sel != null && !on;
+    <MeasuredSvg height={H} label={label}>
+      {({ W, bind }) => {
+        const sx = linearScale([zmin, zmax], [PAD.l, W - PAD.r]);
         return (
-          <g key={e.key} className={onPick ? "an-row-pick" : undefined} opacity={dim ? 0.3 : 1}
-            onClick={onPick ? () => onPick(e.key) : undefined}>
-            {/* невидимая подложка — кликабельна вся строка, не только элементы */}
-            {onPick && <rect x={0} y={y - rowH / 2} width={W} height={rowH} fill="transparent" />}
-            <text x={pad.l - 6} y={y + 3} className="an-axis" textAnchor="end"
-              fontWeight={on ? 700 : undefined} fill={on ? "var(--fg)" : undefined}>{e.label}</text>
-            {arr.length > 1 && (
-              <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round">
-                <title>{`${e.label}: линия = разброс DM, p25–p75 = ${Math.round(q1)}–${Math.round(q3)} bps`}</title>
-              </line>
-            )}
-            <circle cx={sx(md)} cy={y} r={on ? 5 : 4} fill={e.color} stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0}>
-              <title>{`${e.label}: точка = медиана DM ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}`}</title>
-            </circle>
-            <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
-          </g>
+          <>
+            {entries.map((e, i) => {
+              const arr = e.arr;
+              const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
+              const y = PAD.t + i * rowH + rowH / 2;
+              const on = sel != null && e.key === sel;
+              const dim = sel != null && !on;
+              const pick = onPick ? "\nклик — фильтр по эмитенту" : "";
+              const tip = arr.length > 1
+                ? `${e.label}\nмедиана DM ${Math.round(md)} bps · p25–p75 ${Math.round(q1)}–${Math.round(q3)}\n${arr.length} ${plu(arr.length)}${pick}`
+                : `${e.label}\nDM ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}${pick}`;
+              return (
+                <g key={e.key} className={onPick ? "an-row-pick" : undefined} opacity={dim ? 0.3 : 1}
+                  onClick={onPick ? () => onPick(e.key) : undefined} {...bind(sx(md), y, tip)}>
+                  {/* невидимая подложка — ховер/клик по всей строке, не только по элементам */}
+                  <rect x={0} y={y - rowH / 2} width={W} height={rowH} fill="transparent" />
+                  <text x={PAD.l - 6} y={y + 3} className="an-axis" textAnchor="end"
+                    fontWeight={on ? 700 : undefined} fill={on ? "var(--fg)" : undefined}>{e.label}</text>
+                  {arr.length > 1 && (
+                    <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7}
+                      strokeOpacity={0.35} strokeLinecap="round" />
+                  )}
+                  <circle cx={sx(md)} cy={y} r={on ? 5 : 4} fill={e.color}
+                    stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0} />
+                  <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
+                </g>
+              );
+            })}
+            {note && <text x={W - PAD.r} y={H - 4} className="an-mut" textAnchor="end" fontSize="9">{note}</text>}
+          </>
         );
-      })}
-      {note && <text x={W - pad.r} y={H - 4} className="an-mut" textAnchor="end" fontSize="9">{note}</text>}
-    </svg>
+      }}
+    </MeasuredSvg>
   );
 }
 
@@ -251,12 +280,15 @@ const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
 // палитра линий эмитентов (рейтинг-цвета заняты бакетами); РЫНОК — нейтральный
 const ICOLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9", "#3fc6c6", "#d4b83f", "#f97cc0"];
 const dmm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+const YH_PAD = { l: 44, r: 12, t: 12, b: 30 };
 
 function YidxHistory({ groupBy, rows }) {
   const byIss = groupBy === "issuer";
   const [period, setPeriod] = useState(91);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  // серии, скрытые кликом по легенде (8+ линий эмитентов — иначе не разобрать)
+  const [off, setOff] = useState(() => new Set());
   // стабильный ключ фильтра: rows пересоздаются каждым поллом с тем же составом —
   // рефетч только при реальной смене набора ISIN
   const isinsKey = useMemo(() => rows.map((b) => b.isin).sort().join(","), [rows]);
@@ -269,68 +301,99 @@ function YidxHistory({ groupBy, rows }) {
       .catch((e) => { if (e.name !== "AbortError") setErr(e.message || "ошибка"); });
     return () => ac.abort();
   }, [period, byIss, isinsKey]);
+  useEffect(() => { setOff(new Set()); }, [byIss]);
 
-  const body = useMemo(() => {
-    if (err) return <div className="an-empty">не загрузилось: {err}</div>;
-    if (!data) return <div className="an-empty">загрузка…</div>;
-    const { dates, series } = data;
-    if (!dates.length || !series.length) return <div className="an-empty">нет истории снапшотов за период</div>;
-    const W = 460, H = 220, pad = { l: 44, r: 12, t: 12, b: 30 };
-    const di = new Map(dates.map((d, i) => [d, i]));
-    const vals = series.flatMap((s) => s.points.map((p) => p.med));
+  const ctl = (
+    <span className="an-toggle" role="group" aria-label="период">
+      {PERIODS.map(([l, d]) => (
+        <button key={d} type="button" className={"an-tgl-btn" + (period === d ? " on" : "")}
+          aria-pressed={period === d} onClick={() => setPeriod(d)}>{l}</button>
+      ))}
+    </span>
+  );
+
+  if (err) return <>{ctl}<div className="an-empty">не загрузилось: {err}</div></>;
+  if (!data) return <>{ctl}<div className="an-empty">загрузка…</div></>;
+  const { dates, series } = data;
+  if (!dates.length || !series.length) return <>{ctl}<div className="an-empty">нет истории снапшотов за период</div></>;
+
+  const colorOf = (s, i) => (byIss
+    ? (s.key === "РЫНОК" ? "var(--mut-2)" : ICOLORS[i % ICOLORS.length])
+    : BCOLOR[s.key] || "var(--mut-2)");
+  const shown = series.filter((s) => !off.has(s.key));
+  const di = new Map(dates.map((d, i) => [d, i]));
+  const span = spanDays(dates);
+  // точки для nearest-hover — индексы дат (crosshair общий для всех серий)
+  const idxPts = dates.map((d, i) => ({ i, date: d }));
+
+  const build = (g) => {
+    const vals = (shown.length ? shown : series).flatMap((s) => s.points.map((p) => p.med));
     const ymax = Math.max(...vals), ymin = Math.min(...vals, 0);
-    const sx = linearScale([0, Math.max(dates.length - 1, 1)], [pad.l, W - pad.r]);
-    const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-    const nTicks = Math.min(dates.length, 5);
-    const tickIdx = Array.from({ length: nTicks }, (_, i) => Math.round((i * (dates.length - 1)) / Math.max(nTicks - 1, 1)));
-    const colorOf = (s, i) => (byIss
-      ? (s.key === "РЫНОК" ? "var(--mut-2)" : ICOLORS[i % ICOLORS.length])
-      : BCOLOR[s.key] || "var(--mut-2)");
-    return (
-      <>
-        <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="динамика Y-IDX">
-          <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-            lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-          <XTicks ticks={[...new Set(tickIdx)].map((i) => ({ x: sx(i), label: dmm(dates[i]) }))}
-            y={H - pad.b + 14} textClass="an-axis" />
-          {series.map((s, i) => {
-            const pts = s.points.map((p) => ({ x: di.get(p.date), y: p.med }));
-            const c = colorOf(s, i);
-            const last = s.points[s.points.length - 1];
-            return (
-              <g key={s.key}>
-                {pts.length > 1
-                  ? <path d={linePath(pts, (p) => sx(p.x), (p) => sy(p.y))} fill="none" stroke={c}
-                      strokeWidth={s.key === "РЫНОК" ? 1 : 1.6} strokeDasharray={s.key === "РЫНОК" ? "4 3" : undefined} />
-                  : pts.map((p) => <circle key={p.x} cx={sx(p.x)} cy={sy(p.y)} r={2.5} fill={c} />)}
-                <title>{`${s.key}: медиана Y-IDX, последняя ${Math.round(last.med)} bps (${last.n} ${plu(last.n)})`}</title>
-              </g>
-            );
-          })}
-          <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>Y-IDX, bps</text>
-        </svg>
-        <div className="an-legend">
-          {series.map((s, i) => (
-            <span key={s.key} className="an-leg-item" title={s.key}>
-              <span className="an-leg-swatch" style={{ background: colorOf(s, i) }} />
-              {trunc(s.key)} <span className="an-mut2">{Math.round(s.points[s.points.length - 1].med)}</span>
-            </span>
-          ))}
-        </div>
-        {data.exact_from && <div className="an-note">точная история копится с {dmm(data.exact_from)} — глубже данных пока нет</div>}
-      </>
-    );
-  }, [data, err, byIss]);
+    const sx = linearScale([0, Math.max(dates.length - 1, 1)], [g.x0, g.x1]);
+    const sy = linearScale([ymin, ymax], [g.y0, g.y1]);
+    const nx = Math.max(3, Math.min(7, Math.round(g.iw / 70)));
+    return {
+      sx, sy,
+      yTicks: linTicks(ymin, ymax, 4),
+      yFormat: (v) => Math.round(v),
+      xTicks: dateTickIdx(dates, nx).map((i) => ({ x: sx(i), label: tickLabel(dates[i], span) })),
+    };
+  };
+
+  const toggle = (k) => setOff((s) => {
+    const n = new Set(s);
+    n.has(k) ? n.delete(k) : n.add(k);
+    return n;
+  });
 
   return (
     <>
-      <span className="an-toggle" role="group" aria-label="период">
-        {PERIODS.map(([l, d]) => (
-          <button key={d} type="button" className={"an-tgl-btn" + (period === d ? " on" : "")}
-            aria-pressed={period === d} onClick={() => setPeriod(d)}>{l}</button>
+      {ctl}
+      <ChartFrame
+        height={220} pad={YH_PAD} label="динамика Y-IDX"
+        data={idxPts} build={build} px={(p, s) => s.sx(p.i)}
+        tooltip={(p) => (
+          <>
+            {fmt.date(p.date)}
+            {shown.map((s, i) => {
+              const pt = s.points.find((q) => q.date === p.date);
+              if (!pt) return null;
+              const gi = series.indexOf(s);
+              return <div key={s.key} style={{ color: colorOf(s, gi) }}>{trunc(s.key)} {Math.round(pt.med)}</div>;
+            })}
+          </>
+        )}
+        overlay={(s, g) => (
+          <text x={g.x0 - 38} y={g.y1 + 4} className="an-axis-lbl"
+            transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>Y-IDX, bps</text>
+        )}
+      >
+        {(s) => shown.map((ser) => {
+          const gi = series.indexOf(ser);
+          const pts = ser.points.map((p) => ({ x: di.get(p.date), y: p.med }));
+          const c = colorOf(ser, gi);
+          return (
+            <g key={ser.key}>
+              {pts.length > 1
+                ? <path d={linePath(pts, (p) => s.sx(p.x), (p) => s.sy(p.y))} fill="none" stroke={c}
+                    strokeWidth={ser.key === "РЫНОК" ? 1 : 1.6}
+                    strokeDasharray={ser.key === "РЫНОК" ? "4 3" : undefined} />
+                : pts.map((p) => <circle key={p.x} cx={s.sx(p.x)} cy={s.sy(p.y)} r={2.5} fill={c} />)}
+            </g>
+          );
+        })}
+      </ChartFrame>
+      <div className="an-legend">
+        {series.map((s, i) => (
+          <button key={s.key} type="button" className={"an-leg-btn" + (off.has(s.key) ? " off" : "")}
+            onClick={() => toggle(s.key)} aria-pressed={!off.has(s.key)}
+            title={`${s.key} — клик скрывает/показывает линию`}>
+            <span className="an-leg-swatch" style={{ background: colorOf(s, i) }} />
+            {trunc(s.key)} <span className="an-mut2">{Math.round(s.points[s.points.length - 1].med)}</span>
+          </button>
         ))}
-      </span>
-      {body}
+      </div>
+      {data.exact_from && <div className="an-note">точная история копится с {dmm(data.exact_from)} — глубже данных пока нет</div>}
     </>
   );
 }
@@ -388,7 +451,7 @@ export default function AnalyticsPanel({ rows }) {
       </div>
       <div className="an-card">
         <div className="an-title">Y-IDX ДИНАМИКА
-          <span className="an-hint">{byIss ? "медиана по топ-эмитентам · пунктир = рынок · по текущему фильтру" : "медиана по рейтинг-бакетам · по текущему фильтру"}</span>
+          <span className="an-hint">{byIss ? "медиана по топ-эмитентам · пунктир = рынок · клик по легенде скрывает линию" : "медиана по рейтинг-бакетам · клик по легенде скрывает линию"}</span>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         <YidxHistory groupBy={groupBy} rows={rows} />

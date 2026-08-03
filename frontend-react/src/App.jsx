@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
@@ -20,6 +20,9 @@ import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
+// lightweight-charts тянет ~180 kB — грузим только на самой странице графика,
+// а не в общий бандл дашборда
+const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -295,6 +298,10 @@ function Dashboard() {
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="/status" element={<StatusPage />} />
         <Route path="/audit/:isin" element={<BondAudit />} />
+        <Route path="/chart/:isin" element={
+          <Suspense fallback={<div className="cp-foot" style={{ padding: 16 }}>загрузка графика…</div>}>
+            <ChartPage />
+          </Suspense>} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"} onClose={closeDrawer} />

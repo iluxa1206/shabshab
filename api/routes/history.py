@@ -27,6 +27,12 @@ async def spread_history(
     secid: str = Query(None, description="SECID (ОФЗ ≠ ISIN); пусто — резолв по ISIN"),
     board: str = Query(None, description="TQCB корп / TQOB ОФЗ / TQRD риск-сектор; пусто — авто"),
     days: int = Query(120, ge=10, le=400),
+    from_date: Optional[str] = Query(
+        None, alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Календарная граница окна (ISO). Задана — days игнорируется: "
+                    "серия режется по дате, как график цены. Нужна, чтобы окна "
+                    "цены и спреда в карточке совпадали (30 календарных дней ≠ "
+                    "30 торговых)."),
 ):
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
@@ -45,7 +51,15 @@ async def spread_history(
     candles = await MarketDataService.fetch_candles(sec, "1d", board)
     if not candles:
         return {"isin": isin, "kind": kind, "points": [], "warning": "нет свечей MOEX"}
-    candles = candles[-days:]
+    if from_date:
+        # календарное окно: число торговых точек в нём и есть эффективный days
+        # (им дальше режется бэкфилл и чтение точной истории)
+        candles = [c for c in candles if str(c.get("t", ""))[:10] >= from_date]
+        if not candles:
+            return {"isin": isin, "kind": kind, "points": [], "warning": "нет сделок за период"}
+        days = max(10, min(400, len(candles)))
+    else:
+        candles = candles[-days:]
 
     from services.orderbook_svc import build_metrics_fn
     try:
@@ -87,6 +101,10 @@ async def spread_history(
 
     from services.spread_history import read_history
     exact_rows = read_history(isin, days=days)
+    if from_date:
+        # read_history режет по числу строк — календарную границу держим здесь,
+        # иначе точная история могла бы уйти левее окна графика цены
+        exact_rows = [r for r in exact_rows if str(r.get("date", "")) >= from_date]
     exact = [{
         "date": r["date"], "price": r.get("price_pct"),
         "dm_bps": r.get("dm_bps"), "y_idx_bps": r.get("y_idx"),
@@ -115,6 +133,112 @@ async def spread_history(
 
     return {"isin": isin, "kind": kind, "calc_date": str(calc_date),
             "exact_from": first_exact, "points": points}
+
+
+_bar_locks: dict = {}        # per-ISIN, чтобы параллельные запросы не дублировали налив
+
+
+def _bar_lock(isin: str):
+    import asyncio
+    lock = _bar_locks.get(isin)
+    if lock is None:
+        lock = _bar_locks[isin] = asyncio.Lock()
+    return lock
+
+
+@router.get("/{isin}/bars", tags=["History"])
+async def hourly_bars(
+    isin: str = Path(...),
+    kind: str = Query("floater", description="floater | fixed"),
+    days: int = Query(30, ge=1, le=730),
+    hours: int = Query(1, ge=1, le=24, description="склейка часов в N-часовой бар"),
+    board: str = Query(None, description="TQCB / TQOB / TQRD; пусто — авто"),
+    refresh: bool = Query(True, description="дотянуть свежие свечи/сделки перед ответом"),
+    with_ticks: bool = Query(True, description="стороны сделок (buy/sell VWAP) из тиков"),
+):
+    """Часовые бары: средневзвешенная цена часа (VWAP) и спред по ней.
+
+    Цена — часовые свечи MOEX (value/volume/номинал), спред — reprice VWAP через
+    текущую модель бумаги: уровень серии оценочный, форма движения честная.
+    buy_vwap/sell_vwap — из тикового архива Alor (агрессор), глубина ~30 дней
+    назад от первого запуска демона, дальше копится нашим архивом."""
+    isin = (isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    if board is not None and board not in _BOARDS:
+        raise HTTPException(status_code=400, detail="bad board")
+    if kind not in ("floater", "fixed"):
+        raise HTTPException(status_code=400, detail="kind: floater | fixed")
+
+    from datetime import date as _date, timedelta as _td
+    from services import bars as bars_svc
+    frm = (_date.today() - _td(days=days)).isoformat()
+
+    if refresh:
+        async with _bar_lock(isin):
+            try:
+                await bars_svc.ensure_bars(isin, days=days, kind=kind, board=board)
+            except NotFoundException:
+                raise HTTPException(status_code=404, detail="Bond not found")
+            except Exception as e:
+                logger.warning("bars refresh %s: %s", isin, e)
+            if with_ticks:
+                try:
+                    from services import trades_archive as ta
+                    await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS), board=board)
+                    ta.enrich_bars_with_ticks(isin, frm=frm)
+                except Exception as e:
+                    logger.warning("ticks %s: %s", isin, e)
+
+    rows = bars_svc.read_bars(isin, frm=frm)
+    if hours > 1:
+        rows = bars_svc.resample(rows, hours)
+    return {"isin": isin, "kind": kind, "hours": hours, "from": frm,
+            "bars": rows, "n": len(rows)}
+
+
+@router.get("/{isin}/trades", tags=["History"])
+async def trades(
+    isin: str = Path(...),
+    days: int = Query(7, ge=1, le=400),
+    min_value: float = Query(0, ge=0, description="порог в рублях — фильтр крупных"),
+    side: str = Query(None, description="buy | sell (агрессор)"),
+    limit: int = Query(500, ge=1, le=5000),
+    refresh: bool = Query(True),
+    board: str = Query(None),
+):
+    """Сделки из тикового архива: цена, объём, рублёвый оборот, агрессор.
+    min_value отсекает мелочь — остаются крупные принты."""
+    isin = (isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    if side is not None and side not in ("buy", "sell"):
+        raise HTTPException(status_code=400, detail="side: buy | sell")
+    from datetime import date as _date, timedelta as _td
+    from services import trades_archive as ta
+    frm = (_date.today() - _td(days=days)).isoformat()
+    if refresh:
+        async with _bar_lock(isin):
+            try:
+                await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS), board=board)
+            except Exception as e:
+                logger.warning("trades drain %s: %s", isin, e)
+    rows = ta.read_trades(isin, frm=frm, min_value=min_value, side=side, limit=limit)
+
+    def _vwap(rs):
+        q = sum(r.get("qty") or 0 for r in rs)
+        return round(sum((r["price"] or 0) * (r["qty"] or 0) for r in rs) / q, 4) if q else None
+
+    buys = [r for r in rows if r.get("side") == "buy"]
+    sells = [r for r in rows if r.get("side") == "sell"]
+    vb, vs = _vwap(buys), _vwap(sells)
+    return {"isin": isin, "from": frm, "min_value": min_value, "n": len(rows),
+            "vwap_pct": _vwap(rows), "buy_vwap": vb, "sell_vwap": vs,
+            # эффективный спред по агрессору, б.п. цены (100 б.п. = 1 п.п. цены)
+            "eff_spread_bps": round((vb - vs) * 100, 1) if vb is not None and vs is not None else None,
+            "volume": sum(r.get("qty") or 0 for r in rows),
+            "value": sum(r.get("value") or 0 for r in rows),
+            "archive": ta.stats(isin), "trades": rows}
 
 
 _YIDX_BAND = (-1500, 3000)   # тот же бэнд, что у DM в аналитике: мусор стейл/тонких цен

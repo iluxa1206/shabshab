@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { fmt } from "../format.js";
-import { linearScale, linTicks, GridY, XTicks } from "../charts/index.js";
+import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
 
 // Аналитика фиксов — зеркало AnalyticsPanel флоатеров, но метрики к погашению:
 // g-спред vs модифицированная дюрация, распределение g-спреда, срочность.
@@ -59,9 +59,13 @@ const quantile = (a, q) => {
   return s[b] + (s[b + 1] - s[b] || 0) * (pos - b);
 };
 
+// Общая геометрия scatter'ов. Размер — по замеру контейнера (MeasuredSvg):
+// фиксированный viewBox 460×260 растягивался CSS'ом и вместе с ним плыл шрифт осей.
+const SC_PAD = { l: 44, r: 12, t: 12, b: 30 };
+const SC_H = 260;
+
 // ── Scatter: g-спред vs mod duration, цвет = рейтинг ──
 function ScatterGDur({ rows }) {
-  const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
   const pts = rows
     .map((b) => ({ b, g: gval(b) }))
     .filter(({ b, g }) => b.mod_dur != null && g != null)
@@ -70,29 +74,35 @@ function ScatterGDur({ rows }) {
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
-  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
-  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-  const nx = Math.min(Math.ceil(xmax), 6);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="g-спред vs дюрация">
-      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-      {pts.map((p) => (
-        <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}>
-          <title>{`${p.name}\ng-спред: ${Math.round(p.y)} bps\nмод. дюрация: ${fmt.yrs(p.x)}\nрейтинг: ${p.r}`}</title>
-        </circle>
-      ))}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
-      <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>g-спред, bps</text>
-    </svg>
+    <MeasuredSvg height={SC_H} label="g-спред vs дюрация">
+      {({ W, H, bind }) => {
+        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
+        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
+        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
+        return (
+          <>
+            <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+              y={H - SC_PAD.b + 14} textClass="an-axis" />
+            {pts.map((p) => (
+              <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}
+                {...bind(sx(p.x), sy(p.y),
+                  `${p.name}\ng-спред: ${Math.round(p.y)} bps\nмод. дюрация: ${fmt.yrs(p.x)} · рейтинг: ${p.r}`)} />
+            ))}
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
+            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>g-спред, bps</text>
+          </>
+        );
+      }}
+    </MeasuredSvg>
   );
 }
 
 // ── Scatter агрегированный по эмитенту: (медиана дюрации, медиана g-спреда) ──
 function ScatterIssuer({ rows }) {
-  const W = 460, H = 260, pad = { l: 44, r: 12, t: 12, b: 30 };
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const gs = bonds.map(gval).filter((v) => v != null);
@@ -104,24 +114,31 @@ function ScatterIssuer({ rows }) {
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
-  const sx = linearScale([0, xmax], [pad.l, W - pad.r]);
-  const sy = linearScale([ymin, ymax], [H - pad.b, pad.t]);
-  const nx = Math.min(Math.ceil(xmax), 6);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="g-спред vs дюрация по эмитентам">
-      <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-        lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-      <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-      {pts.map((p) => (
-        <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n))}
-          fill={BCOLOR[p.r]} fillOpacity={0.55} stroke={BCOLOR[p.r]} strokeOpacity={0.9}>
-          <title>{`${p.name}\nмедиана g-спреда: ${Math.round(p.y)} bps · медиана дюрации: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`}</title>
-        </circle>
-      ))}
-      <text x={pad.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
-      <text x={pad.l - 38} y={pad.t + 4} className="an-axis-lbl" transform={`rotate(-90 ${pad.l - 38} ${pad.t + 4})`}>g-спред, bps</text>
-    </svg>
+    <MeasuredSvg height={SC_H} label="g-спред vs дюрация по эмитентам">
+      {({ W, H, bind }) => {
+        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
+        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
+        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
+        return (
+          <>
+            <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
+            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
+              y={H - SC_PAD.b + 14} textClass="an-axis" />
+            {pts.map((p) => (
+              <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n))}
+                fill={BCOLOR[p.r]} fillOpacity={0.55} stroke={BCOLOR[p.r]} strokeOpacity={0.9}
+                {...bind(sx(p.x), sy(p.y),
+                  `${p.name}\nмедиана g-спреда: ${Math.round(p.y)} bps · медиана дюрации: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`)} />
+            ))}
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
+            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>g-спред, bps</text>
+          </>
+        );
+      }}
+    </MeasuredSvg>
   );
 }
 
@@ -130,30 +147,35 @@ function BoxRows({ entries, note, label }) {
   if (!entries.length) return <div className="an-empty">нет данных</div>;
   const all = entries.flatMap((e) => e.arr);
   const zmax = Math.max(...all), zmin = Math.min(0, ...all);
-  const W = 460, rowH = entries.length > 8 ? 22 : 30, pad = { l: 100, r: 40, t: 6 };
-  const H = entries.length * rowH + pad.t + 8 + (note ? 14 : 0);
-  const sx = linearScale([zmin, zmax], [pad.l, W - pad.r]);
+  const rowH = entries.length > 8 ? 22 : 30, PAD = { l: 100, r: 40, t: 6 };
+  const H = entries.length * rowH + PAD.t + 8 + (note ? 14 : 0);
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label={label}>
-      {entries.map((e, i) => {
-        const arr = e.arr;
-        const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
-        const y = pad.t + i * rowH + rowH / 2;
+    <MeasuredSvg height={H} label={label}>
+      {({ W, bind }) => {
+        const sx = linearScale([zmin, zmax], [PAD.l, W - PAD.r]);
         return (
-          <g key={e.key}>
-            <text x={pad.l - 6} y={y + 3} className="an-axis" textAnchor="end">{e.label}</text>
-            <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7} strokeOpacity={0.35} strokeLinecap="round">
-              <title>{`${e.label}: линия = разброс g-спреда, p25–p75 = ${Math.round(q1)}–${Math.round(q3)} bps`}</title>
-            </line>
-            <circle cx={sx(md)} cy={y} r={4} fill={e.color}>
-              <title>{`${e.label}: точка = медиана g-спреда ${Math.round(md)} bps · ${arr.length} ${plu(arr.length)}`}</title>
-            </circle>
-            <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
-          </g>
+          <>
+            {entries.map((e, i) => {
+              const arr = e.arr;
+              const q1 = quantile(arr, 0.25), md = median(arr), q3 = quantile(arr, 0.75);
+              const y = PAD.t + i * rowH + rowH / 2;
+              return (
+                <g key={e.key} {...bind(sx(md), y,
+                  `${e.label}\nмедиана g-спреда ${Math.round(md)} bps · p25–p75 ${Math.round(q1)}–${Math.round(q3)}\n${arr.length} ${plu(arr.length)}`)}>
+                  <rect x={0} y={y - rowH / 2} width={W} height={rowH} fill="transparent" />
+                  <text x={PAD.l - 6} y={y + 3} className="an-axis" textAnchor="end">{e.label}</text>
+                  <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7}
+                    strokeOpacity={0.35} strokeLinecap="round" />
+                  <circle cx={sx(md)} cy={y} r={4} fill={e.color} />
+                  <text x={sx(q3) + 6} y={y + 3} className="an-axis">{Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
+                </g>
+              );
+            })}
+            {note && <text x={W - PAD.r} y={H - 4} className="an-mut" textAnchor="end" fontSize="9">{note}</text>}
+          </>
         );
-      })}
-      {note && <text x={W - pad.r} y={H - 4} className="an-mut" textAnchor="end" fontSize="9">{note}</text>}
-    </svg>
+      }}
+    </MeasuredSvg>
   );
 }
 
@@ -202,26 +224,31 @@ function MaturityProfile({ rows }) {
   if (!yrs.length) return <div className="an-empty">нет дат погашения</div>;
   const counts = bins.map((bin) => yrs.filter((v) => v >= bin.lo && v < bin.hi).length);
   const cmax = Math.max(...counts, 1);
-  const W = 460, H = 150, pad = { l: 30, r: 10, t: 10, b: 24 };
-  const bw = (W - pad.l - pad.r) / bins.length;
-  const sh = linearScale([0, cmax], [0, H - pad.t - pad.b]);
+  const PAD = { l: 30, r: 10, t: 10, b: 24 };
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="профиль срочности">
-      {bins.map((bin, i) => {
-        const h = sh(counts[i]);
-        const x = pad.l + i * bw + bw * 0.15;
+    <MeasuredSvg height={150} label="профиль срочности">
+      {({ W, H, bind }) => {
+        const bw = (W - PAD.l - PAD.r) / bins.length;
+        const sh = linearScale([0, cmax], [0, H - PAD.t - PAD.b]);
         return (
-          <g key={bin.lbl}>
-            <rect x={x} y={H - pad.b - h} width={bw * 0.7} height={h} className="an-bar">
-              <title>{`погашение через ${bin.lbl}: ${counts[i]} ${plu(counts[i])}`}</title>
-            </rect>
-            {counts[i] > 0 && <text x={x + bw * 0.35} y={H - pad.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
-          </g>
+          <>
+            {bins.map((bin, i) => {
+              const h = sh(counts[i]);
+              const x = PAD.l + i * bw + bw * 0.15;
+              return (
+                <g key={bin.lbl}>
+                  <rect x={x} y={H - PAD.b - h} width={bw * 0.7} height={h} className="an-bar"
+                    {...bind(x + bw * 0.35, H - PAD.b - h, `погашение через ${bin.lbl}\n${counts[i]} ${plu(counts[i])}`)} />
+                  {counts[i] > 0 && <text x={x + bw * 0.35} y={H - PAD.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
+                </g>
+              );
+            })}
+            <XTicks ticks={bins.map((bin, i) => ({ x: PAD.l + i * bw + bw * 0.5, label: bin.lbl }))}
+              y={H - PAD.b + 14} textClass="an-axis" />
+          </>
         );
-      })}
-      <XTicks ticks={bins.map((bin, i) => ({ x: pad.l + i * bw + bw * 0.5, label: bin.lbl }))}
-        y={H - pad.b + 14} textClass="an-axis" />
-    </svg>
+      }}
+    </MeasuredSvg>
   );
 }
 

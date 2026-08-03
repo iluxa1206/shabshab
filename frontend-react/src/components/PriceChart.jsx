@@ -2,11 +2,12 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchCandles } from "../api.js";
 import { fmt } from "../format.js";
-import { linearScale, linTicks, linePath, GridY, XTicks, useNearestHover, Tooltip } from "../charts/index.js";
+import { linearScale, linTicks, linePath, ChartFrame, dateTickIdx, tickLabel, spanDays } from "../charts/index.js";
 
 const TFS = [["5m", "5м"], ["1h", "1ч"], ["1d", "1д"], ["1w", "1н"]];
+const PAD = { l: 46, r: 8, t: 8, b: 20 };
 
-// подпись времени свечи: внутридневные tf → дата+время, дневные/недельные → дата
+// подпись времени свечи в тултипе: внутридневные tf → дата+время, иначе дата
 function tlabel(t, tf) {
   const [d, hm = ""] = t.split(" ");
   const [Y, M, D] = d.split("-");
@@ -18,78 +19,57 @@ function tlabel(t, tf) {
 // свой ховер репортится наружу датой (YYYY-MM-DD), чужая дата рисуется
 // пунктирной вертикалью, когда свой курсор вне графика.
 function Chart({ candles, type, tf, syncDate, onHoverDate }) {
-  const W = 480, H = 210, pad = { l: 46, r: 8, t: 8, b: 20 };
-  const n = candles.length;
-  const bw = (W - pad.l - pad.r) / n;
-  const cx = (i) => pad.l + i * bw + bw / 2;
   const isLine = type === "line";
-  const ymax = Math.max(...(isLine ? candles.map((c) => c.c) : candles.map((c) => c.h)));
-  const ymin = Math.min(...(isLine ? candles.map((c) => c.c) : candles.map((c) => c.l)));
-  const padY = (ymax - ymin) * 0.08 || 0.1;
-  const sy = linearScale([ymin - padY, ymax + padY], [H - pad.b, pad.t]);
+  const data = candles.map((c, i) => ({ ...c, i }));
+  const n = data.length;
+  const times = data.map((c) => c.t);
+  const span = spanDays(times);
+  const syncPoint = syncDate ? data.find((c) => c.t.slice(0, 10) === syncDate) : null;
 
-  const pts = candles.map((c, i) => ({ ...c, i }));
-  const { hover, handlers } = useNearestHover({
-    viewW: W, points: pts, px: (p) => cx(p.i),
-    onHover: (p) => onHoverDate?.(p ? p.t.slice(0, 10) : null),
-  });
-  // чужой курсор (дата с соседнего графика) — только когда свой не активен
-  const syncI = !hover && syncDate ? candles.findIndex((c) => c.t.slice(0, 10) === syncDate) : -1;
-
-  const bodyW = Math.max(1, bw * 0.6);
-  const step = Math.max(1, Math.floor(n / 4));
-  const xticks = [];
-  for (let i = 0; i < n; i += step) xticks.push({ x: cx(i), label: tlabel(candles[i].t, tf) });
+  const build = (g) => {
+    const bw = g.iw / n;
+    const cx = (i) => g.x0 + i * bw + bw / 2;
+    const ymax = Math.max(...(isLine ? data.map((c) => c.c) : data.map((c) => c.h)));
+    const ymin = Math.min(...(isLine ? data.map((c) => c.c) : data.map((c) => c.l)));
+    const padY = (ymax - ymin) * 0.08 || 0.1;
+    const sy = linearScale([ymin - padY, ymax + padY], [g.y0, g.y1]);
+    const nx = Math.max(3, Math.min(8, Math.round(g.iw / 70)));
+    return {
+      cx, bw, sy,
+      bodyW: Math.max(1, bw * 0.6),
+      yTicks: linTicks(ymin, ymax, 4),
+      yFormat: (v) => v.toFixed(2),
+      xTicks: dateTickIdx(times, nx).map((i) => ({ x: cx(i), label: tickLabel(times[i], span) })),
+    };
+  };
 
   return (
-    <div className="pchart-body">
-      <svg viewBox={`0 0 ${W} ${H}`} className="an-svg" role="img" aria-label="график цены" {...handlers}>
-        <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={pad.l} x2={W - pad.r}
-          lineClass="an-grid" textClass="an-axis" label={(v) => v.toFixed(2)} />
-        <XTicks ticks={xticks} y={H - pad.b + 13} textClass="an-axis" />
-        {isLine ? (
-          <path d={linePath(candles, (c, i) => cx(i), (c) => sy(c.c))}
-            fill="none" stroke="var(--accent)" strokeWidth={1.4} />
-        ) : candles.map((c, i) => {
-          const col = c.c >= c.o ? "var(--up)" : "var(--down)";
-          const yO = sy(c.o), yC = sy(c.c);
-          return (
-            <g key={i} stroke={col} fill={col}>
-              <line x1={cx(i)} x2={cx(i)} y1={sy(c.h)} y2={sy(c.l)} strokeWidth={1} />
-              <rect x={cx(i) - bodyW / 2} y={Math.min(yO, yC)} width={bodyW} height={Math.max(1, Math.abs(yO - yC))} />
-            </g>
-          );
-        })}
-        {syncI >= 0 && (
-          <line x1={cx(syncI)} x2={cx(syncI)} y1={pad.t} y2={H - pad.b} pointerEvents="none"
-            stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
-        )}
-        {hover && (
-          <g pointerEvents="none">
-            <line x1={cx(hover.i)} x2={cx(hover.i)} y1={pad.t} y2={H - pad.b}
-              stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
-            <line x1={pad.l} x2={W - pad.r} y1={sy(hover.c)} y2={sy(hover.c)}
-              stroke="var(--mut-2)" strokeWidth={1} strokeDasharray="3 3" />
-            {(() => {
-              const label = hover.c.toFixed(2);
-              const tw = label.length * 6 + 8, ty = sy(hover.c);
-              return (
-                <g>
-                  <rect x={pad.l - 3 - tw} y={ty - 7} width={tw} height={14} rx={2} fill="var(--inv-bg)" />
-                  <text x={pad.l - 3 - tw / 2} y={ty + 3} textAnchor="middle" className="an-axis"
-                    style={{ fill: "var(--inv-fg)" }}>{label}</text>
-                </g>
-              );
-            })()}
-          </g>
-        )}
-      </svg>
-      {hover && (
-        <Tooltip x={cx(hover.i)} viewW={W} top={2}>
-          {tlabel(hover.t, tf)} · О {fmt.pct(hover.o)} М {fmt.pct(hover.h)} Н {fmt.pct(hover.l)} З {fmt.pct(hover.c)}
-        </Tooltip>
+    <ChartFrame
+      height={210} pad={PAD} label="график цены"
+      data={data} build={build}
+      px={(p, s) => s.cx(p.i)} py={(p, s) => s.sy(p.c)}
+      yBadge={(p) => p.c.toFixed(2)}
+      syncPoint={syncPoint}
+      onHoverPoint={(p) => onHoverDate?.(p ? p.t.slice(0, 10) : null)}
+      tooltip={(p) => (
+        <>{tlabel(p.t, tf)} · О {fmt.pct(p.o)} М {fmt.pct(p.h)} Н {fmt.pct(p.l)} З {fmt.pct(p.c)}</>
       )}
-    </div>
+    >
+      {(s) => (isLine ? (
+        <path d={linePath(data, (c, i) => s.cx(i), (c) => s.sy(c.c))}
+          fill="none" stroke="var(--accent)" strokeWidth={1.4} />
+      ) : data.map((c, i) => {
+        const col = c.c >= c.o ? "var(--up)" : "var(--down)";
+        const yO = s.sy(c.o), yC = s.sy(c.c);
+        return (
+          <g key={i} stroke={col} fill={col}>
+            <line x1={s.cx(i)} x2={s.cx(i)} y1={s.sy(c.h)} y2={s.sy(c.l)} strokeWidth={1} />
+            <rect x={s.cx(i) - s.bodyW / 2} y={Math.min(yO, yC)} width={s.bodyW}
+              height={Math.max(1, Math.abs(yO - yC))} />
+          </g>
+        );
+      }))}
+    </ChartFrame>
   );
 }
 
