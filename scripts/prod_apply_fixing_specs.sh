@@ -31,6 +31,19 @@ PY"
   exit 0
 fi
 
+if [[ "${1:-}" == "--fix-rzd" ]]; then
+  echo '>>> ручная спека РЖД 1Р-32R/49R: average·лаг7·окно31 (бэктест: err 0.38→0.016)'
+  RUN "$DC exec -T floaters python scripts/set_spec.py RU000A108Z85 --mode average --lag 7 --window 31 --apply"
+  RUN "$DC exec -T floaters python scripts/set_spec.py RU000A10DJR7 --mode average --lag 7 --window 31 --apply"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--backtest" ]]; then
+  echo '>>> полный бэктест спек всех прайсуемых бумаг (verify_fixing_specs)'
+  RUN "$DC exec -T floaters python -m scripts.verify_fixing_specs"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--verify-conv" ]]; then
   echo '>>> verify: сходимость карточка vs фиксинг по дням'
   RUN "$DC exec -T floaters python scripts/prod_verify_coupon_convergence.py"

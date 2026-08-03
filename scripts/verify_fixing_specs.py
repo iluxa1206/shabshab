@@ -139,7 +139,8 @@ def backtest_bond(row, full, today) -> dict:
     if not idx or not idx[0]:
         return out
 
-    pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base}
+    pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
+             "avg_window_days": spec.get("avg_window_days")}
 
     def _margin_for(s):
         o = ord_by_start.get(s)
