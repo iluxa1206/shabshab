@@ -56,7 +56,8 @@ function AlertsCell({ bonds = [] }) {
     closeT.current = setTimeout(() => setOpen(false), 260);
   }, [cancelClose]);
 
-  // клик по алерту → карточка + стакан (ob=1 авто-открывает панель стакана)
+  // клик по алерту → карточка + стакан (ob=1; стакан и так открыт по умолчанию,
+  // параметр держим явным — он перебивает опт-аут ?ob=0, если тот в адресе)
   const openBond = (a) => {
     setSearchParams((sp) => {
       const n = new URLSearchParams(sp);

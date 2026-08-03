@@ -366,9 +366,10 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const panelRef = useRef(null);
   const closeRef = useRef(null);
 
-  // Стакан: вторая панель слева от карточки. Сброс при смене/закрытии бумаги.
-  // autoOrderbook (клик по алерту, ?ob=1) — открываем стакан сразу.
-  const [showOb, setShowOb] = useState(false);
+  // Стакан: вторая панель слева от карточки. Открыт ПО УМОЛЧАНИЮ при открытии
+  // бумаги и сбрасывается в открытое состояние при смене выпуска; закрыть можно
+  // кнопкой СТАКАН или крестиком панели. Опт-аут — ?ob=0 в адресе (autoOrderbook).
+  const [showOb, setShowOb] = useState(true);
   useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
   const face = data?.reference?.face_value ?? null;
 

@@ -297,7 +297,7 @@ function Dashboard() {
         <Route path="/audit/:isin" element={<BondAudit />} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
-      <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") === "1"} onClose={closeDrawer} />
+      <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"} onClose={closeDrawer} />
       <StatusBar count={bonds.length} bonds={bonds} kpiBonds={filtered} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
