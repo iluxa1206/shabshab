@@ -705,11 +705,14 @@ def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[
             if mode is None:
                 d["spec_eff"] = "авто (калибратор/дефолт)"
             else:
-                # point убран из модели: показываем как average·окно1
+                # point/avg_prev убраны из модели: показываем в единой
+                # параметризации average+окно
                 w = r["avg_window_days"] if src == "ручной" else (
                     r["br_avg_window_days"] if src == "bondresearch" else None)
                 if mode == "point":
                     mode, w = "average", 1
+                elif mode == "avg_prev":
+                    mode, w = "average", w or r["coupon_period_days"]
                 lag_s = "" if lag is None else f"·{lag}{'р' if unit == 'work' else ''}"
                 w_s = f"·окно{w}" if w else ""
                 d["spec_eff"] = f"{mode}{lag_s}{w_s} ({src})"

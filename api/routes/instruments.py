@@ -60,7 +60,8 @@ class InstrumentParams(BaseModel):
     fixing_lag: Optional[int] = Field(None, ge=0, le=400)
     fixing_lag_unit: Optional[str] = Field(None, description="cal | work")
     coupon_mode: Optional[str] = Field(
-        None, description="average | avg_prev | month_start (легаси point принимается и конвертится в average+окно 1)")
+        None, description="average | month_start (легаси point/avg_prev принимаются и конвертятся: "
+                          "point → average+окно 1, avg_prev → average+окно=период)")
     avg_window_days: Optional[int] = Field(
         None, ge=1, le=400,
         description="окно усреднения базы, дней: 1=точечный фиксинг, пусто=длина купонного периода")
@@ -207,12 +208,22 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
             errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED")
             continue
         if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev", "month_start"):
-            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ average|avg_prev|month_start (point = average + окно 1)")
+            errors.append(f"строка {rn} ({isin}): coupon_mode ∈ average|month_start "
+                          "(point = average+окно1, avg_prev = average+окно=период)")
             continue
-        # легаси point из старых шаблонов → единая параметризация
+        # легаси из старых шаблонов → единая параметризация
         if params.get("coupon_mode") == "point":
             params["coupon_mode"] = "average"
             params.setdefault("avg_window_days", 1)
+        elif params.get("coupon_mode") == "avg_prev":
+            params["coupon_mode"] = "average"
+            if not params.get("avg_window_days"):
+                w = params.get("coupon_period_days") or (reg.get(isin) or {}).get("coupon_period_days")
+                if w:
+                    params["avg_window_days"] = int(w)
+                else:
+                    errors.append(f"строка {rn} ({isin}): avg_prev без известного периода — задай avg_window_days")
+                    continue
         if params.get("fixing_lag_unit") and params["fixing_lag_unit"] not in ("cal", "work"):
             errors.append(f"строка {rn} ({isin}): fixing_lag_unit ∈ cal|work")
             continue
@@ -285,10 +296,20 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
     params = {k: v for k, v in body.model_dump().items() if v is not None}
     if not params:
         raise HTTPException(status_code=422, detail="Нет полей для сохранения")
-    # легаси-вход point (старые шаблоны/скрипты) → единая параметризация
+    # легаси-вход (старые шаблоны/скрипты) → единая параметризация
     if params.get("coupon_mode") == "point":
         params["coupon_mode"] = "average"
         params.setdefault("avg_window_days", 1)
+    elif params.get("coupon_mode") == "avg_prev":
+        params["coupon_mode"] = "average"
+        if not params.get("avg_window_days"):
+            row = reg.get(isin) or {}
+            w = params.get("coupon_period_days") or row.get("coupon_period_days")
+            if w:
+                params["avg_window_days"] = int(w)
+            else:
+                raise HTTPException(status_code=422,
+                                    detail="avg_prev: неизвестен купонный период — задай avg_window_days явно")
     if body.base is not None and body.base not in ("KEYRATE", "RUONIA", "FIXED"):
         raise HTTPException(status_code=422, detail="base ∈ KEYRATE|RUONIA|FIXED")
     for f in ("maturity_date", "issue_date"):

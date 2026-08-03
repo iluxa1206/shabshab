@@ -304,14 +304,29 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
             pass
     if out["fixing_lag"] is not None and out["fixing_lag_unit"] is None:
         out["fixing_lag_unit"] = "cal"
-    # НОРМАЛИЗАЦИЯ: point убран из модели — это average с окном 1 день.
-    # Легаси-значения (старые ручные строки, парсер, калибратор) приводятся
-    # здесь, в единственной точке резолва: потребители видят только
-    # average/avg_prev/month_start + avg_window_days.
+    # НОРМАЛИЗАЦИЯ (единственная точка резолва): point и avg_prev убраны из
+    # модели — всё выражается average + avg_window_days:
+    #   point    ≡ average + окно 1 день (тот же лаг);
+    #   avg_prev ≡ average + окно = купонный период (окно [start−lag−W, start−lag)
+    #              зафиксировано на старте — буквальная семантика avg_prev).
+    # Потребители видят только average/month_start + окно. Легаси-значения из
+    # старых ручных строк/парсера/калибратора приводятся здесь.
     if out["coupon_mode"] == "point":
         out["coupon_mode"] = "average"
         if out["avg_window_days"] is None:
             out["avg_window_days"] = 1
+    elif out["coupon_mode"] == "avg_prev":
+        w = out["avg_window_days"]
+        if not w:
+            try:
+                from services import instruments_registry as _reg
+                w = (_reg.calc_params_map().get(isin) or {}).get("coupon_period_days")
+            except Exception:
+                w = None
+        if w:
+            out["coupon_mode"] = "average"
+            out["avg_window_days"] = int(w)
+        # период неизвестен → оставляем avg_prev (движок поддерживает legacy)
     return out
 
 
