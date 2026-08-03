@@ -31,6 +31,13 @@ PY"
   exit 0
 fi
 
+if [[ "${1:-}" == "--infer" ]]; then
+  shift
+  echo '>>> восстановление базы/маржи непрайсуемых из фактических купонов'
+  RUN "$DC exec -T floaters python scripts/infer_base_margin.py $*"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--fit-spec" ]]; then
   shift
   echo '>>> подбор спеки (лаг × окно) по факту выплат для расходящихся бумаг'
