@@ -108,33 +108,20 @@ def calculate_valuation_metrics(
     # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
     warnings: list = []
 
-    # EX-COUPON КОНСИСТЕНТНОСТЬ dirty ↔ поток. Купон с pay_date ∈ (calc, settle]
-    # покупателю не достаётся и в cashflow не включается (см. settle_date). Но
-    # когда settle прыгает через праздники (пример: calc 11.06.2026, купон 13.06,
-    # праздники 12–14.06 → settle 15.06), MOEX ACCINT ещё начислен ЗА СТАРЫЙ
-    # период (≈целый купон) — dirty завышался на купон, которого в потоке нет →
-    # яма в YTM/SM/Y-IDX на канунах праздничных купонных стыков (наблюдалось:
-    # −70bps YTM у Росагрл1Р5 на 11.06.2026 при той же цене). Если НКД уже
-    # обнулён биржей (обычный канун купона, accrued < value/2) — не трогаем,
-    # иначе вычитаем купон: НКД становится слегка отрицательным (экономически
-    # корректный ex-coupon период).
-    if accrued is not None and periods:
-        from core.valuation import settle_date as _sd_ex
-        _settle_ex = _sd_ex(calc_date)
-        for _c in periods:
-            try:
-                _e = _c[1] if isinstance(_c, (tuple, list)) else _c.get("end")
-                _v = _c[2] if isinstance(_c, (tuple, list)) else _c.get("value")
-                if isinstance(_e, str):
-                    _e = date.fromisoformat(_e)
-            except Exception:
-                continue
-            if _e and _v and calc_date < _e <= _settle_ex and accrued > float(_v) / 2:
-                accrued = round(accrued - float(_v), 4)
-                warnings.append(
-                    f"ex-coupon: купон {_v}₽ ({_e.isoformat()}) уходит продавцу (settle "
-                    f"{_settle_ex.isoformat()}), НКД скорректирован на его величину")
-                break
+    # НКД НА ДАТУ ПОСТАВКИ. Покупатель платит на settle (T+1 раб) — туда же
+    # якорятся XIRR/SM/DM (xirr_yield_pct, pv_cashflows_with_dm,
+    # solve_discount_margin_bps). Раньше НКД брался на calc_date: dirty был
+    # занижен на день-три накопления, и обе стороны сравнения жили на разных
+    # датах. accrue_to_settle заодно закрывает ex-coupon (купон в окне
+    # (calc, settle] уходит продавцу — НКД считается от начала нового периода):
+    # прежняя коррекция вычитала купон из НКД и давала слегка отрицательный НКД.
+    from core.valuation import settle_date as _sd_ex, accrue_to_settle as _ats
+    settle_dt = _sd_ex(calc_date)
+    accrued_calc_date = accrued
+    if accrued is not None:
+        accrued, _acc_note = _ats(accrued, calc_date, periods)
+        if _acc_note:
+            warnings.append(_acc_note)
 
     # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
     from core.valuation import face_for_pricing
@@ -314,6 +301,11 @@ def calculate_valuation_metrics(
     return {
         "clean_price_pct": price,
         "dirty_price_rub": dirty_rub,
+        # дата поставки и НКД на неё — то, из чего собран dirty (калькулятор их показывает)
+        "settlement_date": settle_dt,
+        "accrued_settle_rub": round(accrued, 4) if accrued is not None else None,
+        "accrued_calc_rub": round(accrued_calc_date, 4) if accrued_calc_date is not None else None,
+        "pricing_face_rub": _pricing_face,
         "dm_bps": sm_bps,                      # backward-compat (= simple margin)
         "sm_bps": sm_bps,                      # simple margin (наш) ≈ НРД simple_margin
         "disc_margin_bps": disc_margin_bps,    # discount margin (наш) ≈ НРД discount_margin

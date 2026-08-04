@@ -38,8 +38,56 @@ const json = (body) => Promise.resolve({
   ok: true, status: 200, json: () => Promise.resolve(body),
 });
 
+// Часовые бары своего архива: средневзвес + спред по нему + стороны сделок.
+// Времена лежат на той же сетке, что мок-свечи "1h", иначе слой не совпал бы
+// с ценой и проверка ничего бы не доказала.
+function mkBars(n) {
+  const src = CANDLES["1h"].slice(-n);
+  return src.map((c, i) => {
+    const vol = 400 + (i % 11) * 90;
+    const vwap = +(c.c + ((i % 5) - 2) * 0.01).toFixed(4);
+    const bq = Math.round(vol * (0.35 + ((i % 7) / 20)));
+    return {
+      isin: ISIN, ts: c.t.slice(0, 13) + ":00", kind: "floater",
+      open: c.o, high: c.h, low: c.l, close: c.c,
+      vwap_pct: vwap, volume: vol, value: vwap / 100 * 1000 * vol, face: 1000,
+      y_idx_bps: Math.round(180 + Math.sin(i / 18) * 40 + (i % 5)),
+      dm_bps: Math.round(200 + Math.sin(i / 18) * 35), ytm: 21.4,
+      trades: 4 + (i % 9), buy_volume: bq, sell_volume: vol - bq,
+      buy_vwap: +(vwap + 0.03).toFixed(4), sell_vwap: +(vwap - 0.03).toFixed(4),
+      src: "candle",
+    };
+  });
+}
+
+function mkTrades(n) {
+  const bars = mkBars(300);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const b = bars[(i * 7) % bars.length];
+    const qty = 3000 + (i % 6) * 9000;
+    out.push({ isin: ISIN, trade_id: 1e9 + i, ts: b.ts.slice(0, 14) + "31:00",
+      price: b.vwap_pct, qty, value: b.vwap_pct / 100 * 1000 * qty,
+      side: i % 3 === 0 ? "sell" : "buy", board: "TQCB" });
+  }
+  return out.sort((a, b) => (a.ts < b.ts ? -1 : 1));
+}
+
 window.fetch = (url) => {
   const u = String(url);
+  if (u.includes("/bars")) {
+    const p = new URL(u, location.origin).searchParams;
+    return json({ isin: ISIN, kind: "floater", hours: +(p.get("hours") || 1),
+                  bars: mkBars(300), n: 300 });
+  }
+  if (u.includes("/trades")) {
+    const p = new URL(u, location.origin).searchParams;
+    const mv = +(p.get("min_value") || 0);
+    const rows = mkTrades(60).filter((t) => t.value >= mv);
+    return json({ isin: ISIN, n: rows.length, vwap_pct: 100.4, buy_vwap: 100.44,
+                  sell_vwap: 100.37, eff_spread_bps: 7, volume: 1e5, value: 1e8,
+                  archive: { ticks: rows.length, bars: 300 }, trades: rows });
+  }
   if (u.includes("/candles")) {
     const tf = new URL(u, location.origin).searchParams.get("tf") || "1d";
     return json({ isin: ISIN, tf, candles: CANDLES[tf] || CANDLES["1d"] });
@@ -74,7 +122,9 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 createRoot(document.getElementById("root")).render(
   <div id="app">
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[`/chart/${ISIN}?p=3m`]}>
+      {/* окно намеренно на сетке мок-свечей "1h": слои (VWAP/стороны/принты)
+          живут на часовых барах, вне этого окна проверять нечего */}
+      <MemoryRouter initialEntries={[`/chart/${ISIN}?from=2025-06-02&to=2025-06-15&tf=1h`]}>
         <Routes>
           <Route path="/chart/:isin" element={<ChartPage />} />
         </Routes>

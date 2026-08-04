@@ -254,7 +254,7 @@ function Content({ d, charts }) {
     <>
       <StaleChips m={m} />
       <div className="price-calc">
-        <label className="pc-label" htmlFor="pc-price">Калькулятор цены</label>
+        <label className="pc-label" htmlFor="pc-price">Калькулятор на дату поставки</label>
         <div className="pc-input-wrap">
           <input
             id="pc-price"
@@ -276,6 +276,17 @@ function Content({ d, charts }) {
             : isRepriced ? "под введённую цену"
             : "рыночная цена"}
         </span>
+      </div>
+      {/* Конвенция расчёта: цена — котировка дня (T0), деньги и НКД — на дату
+          поставки T+1 (выходные/праздники MOEX пропускаются). От неё же считаются
+          YTM, SM и DM. */}
+      <div className="pc-conv">
+        цена {fmt.pct(v.clean_price_pct) ?? "—"}% на {fmt.date(m.calc_date) ?? "—"}
+        {v.settlement_date && <> · поставка <b>{fmt.date(v.settlement_date)}</b></>}
+        {v.accrued_settle_rub != null && <> · НКД на поставку {fmt.num(v.accrued_settle_rub)} ₽</>}
+        {v.accrued_calc_rub != null && v.accrued_settle_rub != null
+          && Math.abs(v.accrued_settle_rub - v.accrued_calc_rub) > 0.005
+          && <span className="pc-conv-mut"> (биржевой на {fmt.date(m.calc_date)}: {fmt.num(v.accrued_calc_rub)} ₽)</span>}
       </div>
       <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
         <div className="vc">

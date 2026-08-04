@@ -65,6 +65,13 @@ class BondValuation(BaseModel):
     # UNKNOWN_BASE) возвращают dirty=None. Пока поле было обязательным, такие
     # бумаги роняли /reprice в 500 на сериализации ответа. Фронт null-safe.
     dirty_price_rub: Optional[float] = None
+    # Расчёт ведётся НА ДАТУ ПОСТАВКИ (T+1 раб): цена — котировка дня расчёта,
+    # НКД и дисконтирование — на settlement_date. Поля отдаются наружу, чтобы
+    # калькулятор карточки показывал, из чего собран dirty.
+    settlement_date: Optional[date] = None
+    accrued_settle_rub: Optional[float] = None   # НКД на дату поставки (в dirty)
+    accrued_calc_rub: Optional[float] = None     # НКД биржи на дату расчёта (справочно)
+    pricing_face_rub: Optional[float] = None     # номинал, от которого котируется цена
     dm_bps: Optional[int]                       # = sm_bps (backward-compat)
     sm_bps: Optional[int] = None               # наш simple margin ≈ НРД simple_margin
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin

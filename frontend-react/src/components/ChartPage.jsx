@@ -235,6 +235,17 @@ export default function ChartPage() {
     return layerPoints(rows, tf);
   }, [qBars.data, tf, from, to]);
 
+  const bigTrades = useMemo(() => {
+    const rows = (qTrades.data?.trades || []).filter((t) => {
+      const d = t.ts.slice(0, 10);
+      return (!from || d >= from) && (!to || d <= to);
+    });
+    return rows;
+  }, [qTrades.data, from, to]);
+
+  // панель спреда есть либо от дневной истории, либо от часовых баров
+  const spreadPaneOn = spreadOn || (barsOn && layersOk);
+
   // ── график ────────────────────────────────────────────────────────────────
   const wrapRef = useRef(null);
   const hostRef = useRef(null);
@@ -289,15 +300,18 @@ export default function ChartPage() {
     return () => { chart.remove(); chartRef.current = null; seriesRef.current = {}; };
     // пересоздаём при смене типа графика/наличия панели спреда: так проще и
     // надёжнее, чем снимать и добавлять серии в живом графике
-  }, [theme && theme.bg, type, spreadOn, tf === "5m" || tf === "1h"]); // eslint-disable-line
+  }, [theme && theme.bg, type, spreadPaneOn, tf === "5m" || tf === "1h"]); // eslint-disable-line
 
   // серии + данные
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !theme || !candles.length) return;
 
-    for (const s of Object.values(seriesRef.current)) {
-      try { chart.removeSeries(s); } catch { /* серия уже снята */ }
+    for (const [k, s] of Object.entries(seriesRef.current)) {
+      try {
+        if (k === "marks") s.detach();     // плагин маркеров, не серия
+        else chart.removeSeries(s);
+      } catch { /* серия уже снята */ }
     }
     seriesRef.current = {};
 
@@ -327,16 +341,76 @@ export default function ChartPage() {
     })));
     seriesRef.current.vol = vol;
 
+    // ── слой «средневзвес»: VWAP часа поверх свечей ──────────────────────────
+    if (on("vwap")) {
+      const pts = layerPts.filter((p) => p.vwap_pct != null);
+      if (pts.length > 1) {
+        const vwap = chart.addSeries(LineSeries, {
+          color: theme.accent, lineWidth: 2, lineStyle: 0,
+          priceLineVisible: false, lastValueVisible: false,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+        }, 0);
+        vwap.setData(pts.map((p) => ({ time: p.time, value: p.vwap_pct })));
+        seriesRef.current.vwap = vwap;
+      }
+    }
+
+    // ── слой «покупки/продажи»: VWAP по агрессору ────────────────────────────
+    if (on("sides")) {
+      for (const [key, field, color] of [["buy", "buy_vwap", theme.up],
+                                         ["sell", "sell_vwap", theme.down]]) {
+        const pts = layerPts.filter((p) => p[field] != null);
+        if (pts.length < 2) continue;
+        const s = chart.addSeries(LineSeries, {
+          color, lineWidth: 1, lineStyle: 2,   // пунктир: вспомогательные линии
+          priceLineVisible: false, lastValueVisible: false,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+        }, 0);
+        s.setData(pts.map((p) => ({ time: p.time, value: p[field] })));
+        seriesRef.current[key] = s;
+      }
+    }
+
+    // ── слой «крупные сделки»: маркеры на ценовой серии ──────────────────────
+    if (on("big") && bigTrades.length) {
+      // одна цена — один маркер: в час может прийти несколько крупных принтов,
+      // накладываясь друг на друга; берём самый крупный в баре
+      const best = new Map();
+      for (const t of bigTrades) {
+        const time = tradeTime(t.ts, tf);
+        const key = `${time}|${t.side}`;
+        const prev = best.get(key);
+        if (!prev || (t.value || 0) > (prev.value || 0)) best.set(key, { ...t, time });
+      }
+      const marks = [...best.values()]
+        .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0))
+        .map((t) => ({
+          time: t.time,
+          position: t.side === "sell" ? "aboveBar" : "belowBar",
+          shape: t.side === "sell" ? "arrowDown" : "arrowUp",
+          color: t.side === "sell" ? theme.down : theme.up,
+          text: `${Math.round((t.value || 0) / 1e6)}М`,
+        }));
+      if (marks.length) seriesRef.current.marks = createSeriesMarkers(price, marks);
+    }
+
     let yidxDrawn = false;
-    if (spreadOn) {
-      const pts = (qSpread.data?.points || []).filter((p) => p.y_idx_bps != null);
+    if (spreadPaneOn) {
+      // Внутридневной масштаб: спред берём по средневзвешенной цене часа (своя
+      // база), дневной/недельный — из истории спредов. Смешивать нельзя: у них
+      // разная сетка времени и разный источник цены.
+      const useBars = (tf === "5m" || tf === "1h" || barsOn) && layerPts.some((p) => p.y_idx_bps != null);
+      const pts = useBars
+        ? layerPts.filter((p) => p.y_idx_bps != null).map((p) => ({ time: p.time, value: p.y_idx_bps }))
+        : (qSpread.data?.points || []).filter((p) => p.y_idx_bps != null)
+            .map((p) => ({ time: p.date, value: p.y_idx_bps }));
       if (pts.length > 1) {
         yidxDrawn = true;
         const yidx = chart.addSeries(LineSeries, {
           color: theme.fg, lineWidth: 2,
           priceFormat: { type: "price", precision: 0, minMove: 1 },
         }, 2);
-        yidx.setData(pts.map((p) => ({ time: p.date, value: p.y_idx_bps })));
+        yidx.setData(pts);
         seriesRef.current.yidx = yidx;
       }
     }
@@ -354,13 +428,34 @@ export default function ChartPage() {
       const c = chartRef.current;
       if (!c) return;
       c.timeScale().fitContent();
+      // ширину поля под ценовой шкалой меряем здесь: в момент подписки шкала
+      // ещё не отрисована и полоса-обзор получалась во всю ширину контейнера
+      measureRightPad(c, candles.length);
     });
     return () => cancelAnimationFrame(raf);
-  }, [candles, type, tf, theme, spreadOn, qSpread.data]);
+  }, [candles, type, tf, theme, spreadPaneOn, qSpread.data, layerPts, bigTrades,
+      layers, layersOk]);
 
   // при смене окна/таймфрейма старая строка легенды осталась бы висеть от
   // предыдущего курсора — гасим
   useEffect(() => { setLegend(null); }, [tf, type, from, to]);
+
+  // Правый отступ полосы-обзора = поле под ценовой шкалой. Прямые API его не
+  // дают: chart.priceScale('right').width() возвращает 0, а вариант через
+  // panes()[0] — 2px, потому что в v5 шкала рисуется поверх общего холста.
+  // Меряем по координате крайнего бара при ПОЛНОМ окне: правее него область
+  // данных не идёт. Вызывается и после fitContent (шкала уже отрисована), и на
+  // каждом изменении видимого диапазона.
+  const measureRightPad = (chart, n, range) => {
+    const el = hostRef.current;
+    const full = el ? el.getBoundingClientRect().width : 0;
+    if (!full || n < 2) return;
+    const ts = chart.timeScale();
+    const r = range ?? ts.getVisibleLogicalRange();
+    if (!r || r.to < n - 1) return;          // окно неполное — крайний бар вне вида
+    const xLast = ts.logicalToCoordinate(n - 1);
+    if (xLast != null) setRightPad(Math.max(0, Math.round(full - xLast - 3)));
+  };
 
   // Размер графика задаём вручную (autoSize в v5 ломал императивные методы
   // timeScale: setVisibleLogicalRange/scrollToPosition молча не применялись).
@@ -373,7 +468,7 @@ export default function ChartPage() {
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [theme, type, spreadOn, height]);
+  }, [theme, type, spreadPaneOn, height]);
 
   // видимое окно графика → рамка на полосе-обзоре (зум колесом и pan драгом
   // двигают её так же, как перетаскивание самой рамки)
@@ -384,22 +479,12 @@ export default function ChartPage() {
     const ts = chart.timeScale();
     const onRange = (r) => {
       if (r) setVisRange({ from: r.from, to: r.to });
-      // Правый отступ полосы-обзора = поле под ценовой шкалой. Прямые API его
-      // не дают: chart.priceScale('right').width() возвращает 0, а вариант с
-      // panes()[0] — 2px, потому что в v5 шкала рисуется поверх общего холста.
-      // Поэтому меряем по координате крайнего бара при полном окне: правее
-      // него область данных не идёт.
-      const el = hostRef.current;
-      const full = el ? el.getBoundingClientRect().width : 0;
-      if (full && n > 1 && r && r.to >= n - 1) {
-        const xLast = ts.logicalToCoordinate(n - 1);
-        if (xLast != null) setRightPad(Math.max(0, Math.round(full - xLast - 3)));
-      }
+      measureRightPad(chart, n, r);
     };
     ts.subscribeVisibleLogicalRangeChange(onRange);
     onRange(ts.getVisibleLogicalRange());
     return () => ts.unsubscribeVisibleLogicalRangeChange(onRange);
-  }, [candles, type, spreadOn, theme, tf]);
+  }, [candles, type, spreadPaneOn, theme, tf]);
 
   // рамка → график
   const applyBrush = (r) => chartRef.current?.timeScale().setVisibleLogicalRange(r);
@@ -413,16 +498,17 @@ export default function ChartPage() {
       if (!param.time || !s.price) { setLegend(null); return; }
       const p = param.seriesData.get(s.price);
       if (!p) { setLegend(null); return; }
+      const val = (ser) => (ser ? param.seriesData.get(ser)?.value : null);
       setLegend({
         time: param.time,
         o: p.open, h: p.high, l: p.low, c: p.close ?? p.value,
         v: param.seriesData.get(s.vol)?.value,
-        y: s.yidx ? param.seriesData.get(s.yidx)?.value : null,
+        y: val(s.yidx), w: val(s.vwap), b: val(s.buy), sl: val(s.sell),
       });
     };
     chart.subscribeCrosshairMove(onMove);
     return () => chart.unsubscribeCrosshairMove(onMove);
-  }, [candles, type, spreadOn]);
+  }, [candles, type, spreadPaneOn]);
 
   // ── шапка ─────────────────────────────────────────────────────────────────
   const r = qDetails.data?.reference;
@@ -501,16 +587,56 @@ export default function ChartPage() {
         <span className="cp-hint">колесо — зум · драг — сдвиг · двойной клик по оси — сброс</span>
       </div>
 
-      {legend && candles.length > 0 && (
-        <div className="cp-legend">
-          <b>{typeof legend.time === "string" ? fmt.date(legend.time)
-            : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ")}</b>
-          {legend.o != null && <> · О {fmt.pct(legend.o)} М {fmt.pct(legend.h)} Н {fmt.pct(legend.l)} З {fmt.pct(legend.c)}</>}
-          {legend.o == null && legend.c != null && <> · цена {fmt.pct(legend.c)}</>}
-          {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
-          {legend.y != null && <> · Y-IDX {Math.round(legend.y)} bps</>}
-        </div>
-      )}
+      <div className="cp-ctl cp-ctl-layers">
+        <span className="cp-layers-k">слои</span>
+        <span className="cp-group" role="group" aria-label="Слои">
+          {LAYERS.map(([k, l, hint]) => (
+            <button key={k} type="button" title={layersOk ? hint : "недоступно на недельном масштабе"}
+              disabled={!layersOk}
+              className={"cp-btn" + (on(k) ? " on" : "") + (layersOk ? "" : " off")}
+              onClick={() => toggleLayer(k)}>{l}</button>
+          ))}
+        </span>
+        {on("big") && (
+          <label className="cp-date">крупнее
+            <select value={bigMln} onChange={(e) => setParam({ mv: e.target.value })}>
+              {BIG_THRESHOLDS.map((v) => <option key={v} value={v}>{v} млн ₽</option>)}
+            </select>
+          </label>
+        )}
+        <span className="cp-hint">
+          {(qBars.isPending && barsOn) || (qTrades.isPending && on("big"))
+            ? "загрузка архива…"
+            : barsOn || on("big")
+              ? [
+                  barsOn && layerPts.length ? `${layerPts.length} баров` : null,
+                  on("big") ? `${bigTrades.length} крупных сделок` : null,
+                  qTrades.data?.eff_spread_bps != null
+                    ? `эфф. спред ${qTrades.data.eff_spread_bps} б.п. цены` : null,
+                ].filter(Boolean).join(" · ")
+              : "средневзвес и сделки — из своего архива"}
+        </span>
+      </div>
+
+      {/* Строка под курсором рендерится ВСЕГДА: раньше она появлялась только
+          при наведении, а за высотой .cp-top следит ResizeObserver — блок
+          возникал/исчезал, высота графика пересчитывалась, и график прыгал
+          вместе с масштабом. Пустая строка держит место. */}
+      <div className="cp-legend">
+        {legend && candles.length > 0 ? (
+          <>
+            <b>{typeof legend.time === "string" ? fmt.date(legend.time)
+              : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ")}</b>
+            {legend.o != null && <> · О {fmt.pct(legend.o)} М {fmt.pct(legend.h)} Н {fmt.pct(legend.l)} З {fmt.pct(legend.c)}</>}
+            {legend.o == null && legend.c != null && <> · цена {fmt.pct(legend.c)}</>}
+            {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
+            {legend.w != null && <> · ср.взвес {fmt.pct(legend.w)}</>}
+            {legend.b != null && <> · покупки {fmt.pct(legend.b)}</>}
+            {legend.sl != null && <> · продажи {fmt.pct(legend.sl)}</>}
+            {legend.y != null && <> · Y-IDX {Math.round(legend.y)} bps</>}
+          </>
+        ) : <span className="cp-legend-hint">наведи курсор на график — здесь будут цифры бара</span>}
+      </div>
       </div>
 
       <div className="cp-chart" ref={hostRef} style={{ height }} />
@@ -530,8 +656,10 @@ export default function ChartPage() {
           <>
             {candles.length} свечей · {tf}
             {depthShort && <span className="cp-warn"> · MOEX отдаёт по {tf} только {tfDepth} дней — окно урезано</span>}
-            {spreadOn && !hasYidx && " · история Y-IDX за период пуста"}
-            {!spreadOn && " · Y-IDX только на дневном/недельном масштабе"}
+            {spreadPaneOn && !hasYidx && " · история Y-IDX за период пуста"}
+            {!spreadPaneOn && " · Y-IDX: включите слой «Средневзвес» или дневной масштаб"}
+            {on("big") && !bigTrades.length &&
+              ` · сделок крупнее ${bigMln} млн ₽ в архиве нет (глубина тиков ~30 дней)`}
           </>
         )}
       </div>

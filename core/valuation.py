@@ -263,6 +263,84 @@ def settle_date(calc_date: date) -> date:
     return d
 
 
+def _period_bounds(p) -> tuple:
+    """(start, end, value) из элемента расписания: кортеж (s,e,v) ИЛИ dict."""
+    try:
+        if isinstance(p, (tuple, list)):
+            s, e, v = p[0], p[1], (p[2] if len(p) > 2 else None)
+        else:
+            s, e, v = p.get("start"), p.get("end"), p.get("value")
+        if isinstance(s, str):
+            s = date.fromisoformat(s[:10])
+        if isinstance(e, str):
+            e = date.fromisoformat(e[:10])
+        return s, e, (float(v) if v is not None else None)
+    except Exception:
+        return None, None, None
+
+
+def period_at(periods, d: date) -> Optional[tuple]:
+    """Купонный период (start, end, value), в который попадает d: start ≤ d < end."""
+    for p in periods or []:
+        s, e, v = _period_bounds(p)
+        if s and e and e > s and s <= d < e:
+            return (s, e, v)
+    return None
+
+
+def accrued_at(periods, d: date) -> Optional[float]:
+    """НКД на дату d линейно внутри купонного периода: value·(d−start)/(end−start).
+    None, если период не найден или купон ещё не опубликован (value=None)."""
+    p = period_at(periods, d)
+    if not p or p[2] is None:
+        return None
+    s, e, v = p
+    return v * (d - s).days / ((e - s).days or 1)
+
+
+def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
+                     periods) -> tuple[Optional[float], Optional[str]]:
+    """НКД на ДАТУ ПОСТАВКИ из НКД на calc_date. Возвращает (нкд, пояснение|None).
+
+    Зачем: деньги за бумагу уходят на settle (T+1 раб), и вся модель уже
+    дисконтирует оттуда — XIRR, simple margin, discount margin якорятся на
+    settle_date(). А НКД до этого брался на calc_date, т.е. dirty был занижен
+    на 1–3 дня накопления (при купоне 22% годовых это ≈6 b.p. цены за день и
+    единицы b.p. в SM/DM). Теперь обе стороны сравнения — на одну дату.
+
+    Три случая:
+      • период тот же, купон опубликован → факт + value·Δдней/длина периода;
+      • период тот же, купон не опубликован → пропорция по дням от самого факта;
+      • период сменился (в окне (calc, settle] выплата) → купон уходит продавцу,
+        НКД на settle = чистое начисление НОВОГО периода из графика.
+    """
+    if accrued_calc is None:
+        return None, None
+    settle = settle_date(calc_date)
+    gap = (settle - calc_date).days
+    if gap <= 0 or not periods:
+        return accrued_calc, None
+
+    p_c, p_s = period_at(periods, calc_date), period_at(periods, settle)
+    note = f"НКД доначислен с {calc_date.isoformat()} до даты поставки {settle.isoformat()} ({gap} дн)"
+
+    if p_c and p_s and p_c[0] == p_s[0]:
+        s, e, v = p_s
+        if v is not None:
+            daily = v / ((e - s).days or 1)
+            return round(accrued_calc + daily * gap, 4), note
+        elapsed = (calc_date - s).days
+        if elapsed > 0:
+            return round(accrued_calc * (settle - s).days / elapsed, 4), note
+        return accrued_calc, None
+
+    a = accrued_at(periods, settle)
+    if a is not None:
+        return round(a, 4), (f"ex-coupon: купон уходит продавцу (поставка {settle.isoformat()}), "
+                             "НКД пересчитан от начала нового купонного периода")
+    return accrued_calc, None
+
+
 def offer_kind(type_str: Optional[str]) -> str:
     """Тип оферты MOEX offertype → {'call','put'}.
 

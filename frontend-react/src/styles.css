@@ -427,7 +427,19 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; min-height: 26px; }
 .cp-date input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .cp-hint { font: 10px var(--mono); color: var(--mut-2); margin-left: auto; }
-.cp-legend { font: 11px var(--mono); color: var(--fg); min-height: 16px; }
+/* вторая строка управления — слои поверх свечей (свой архив: VWAP/стороны/принты) */
+.cp-ctl-layers { margin-top: 4px; }
+.cp-layers-k { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--mut-2); }
+.cp-btn[disabled] { opacity: .45; cursor: not-allowed; }
+.cp-btn[disabled]:hover { color: var(--mut); background: var(--bg); }
+.cp-date select { font: 11px var(--mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; min-height: 26px; }
+/* высота строки фиксирована и текст не переносится: любой скачок высоты здесь
+   пересчитывает высоту графика и заставляет его прыгать под курсором */
+.cp-legend { font: 11px var(--mono); color: var(--fg); height: 16px; line-height: 16px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-legend-hint { color: var(--mut-2); }
 .cp-chart { width: 100%; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 /* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
 .cp-brush { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
@@ -610,6 +622,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .pc-reset { font-size: 11px; color: var(--accent); background: none; border: none; cursor: pointer; padding: 2px 4px; font-family: var(--mono); }
 .pc-reset:hover { text-decoration: underline; }
 .pc-status { font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
+/* конвенция расчёта под калькулятором: T0-цена → T+1 поставка/НКД */
+.pc-conv { font: 10.5px var(--mono); color: var(--mut); margin: -6px 0 12px; }
+.pc-conv b { color: var(--fg); font-weight: 700; }
+.pc-conv-mut { color: var(--mut-2); }
 /* подсветка карточек, когда показаны пересчитанные (не рыночные) значения */
 .val-cards-calc { box-shadow: inset 0 0 0 1px var(--accent); }
 
