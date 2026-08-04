@@ -37,6 +37,7 @@ function Dashboard() {
   const [basesSel, setBasesSel] = useState([]);    // KEYRATE / RUONIA
   const [ratingsSel, setRatingsSel] = useState([]); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState([]); // имена эмитентов (мульти)
+  const [twoSided, setTwoSided] = useState(false);  // только двусторонние котировки
   const [query, setQuery] = useState("");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
@@ -192,6 +193,9 @@ function Dashboard() {
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
     if (ratingsSel.length) rows = rows.filter((b) => ratingMatch(b.rating));
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
+    // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
+    // (только бид или только оффер) торговать нечем — прячем целиком.
+    if (twoSided) rows = rows.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
     const q = query.trim().toLowerCase();
     if (q) {
       rows = rows.filter((b) =>
@@ -209,7 +213,7 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, query, sort, watch]);
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch]);
 
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
@@ -260,6 +264,7 @@ function Dashboard() {
         ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
         issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
+        twoSided={twoSided} setTwoSided={setTwoSided}
         query={query} setQuery={setQuery}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
@@ -277,7 +282,7 @@ function Dashboard() {
         watch={watch}
         onToggleStar={toggleStar}
         filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || emittersSel.length > 0 || query !== ""}
-        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setQuery(""); }}
+        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setTwoSided(false); setQuery(""); }}
         onRetry={loadBonds}
         visibleCols={visibleCols}
       />

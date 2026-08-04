@@ -374,10 +374,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    (bid/offer) — контекст вокруг неё: тот же ряд цифр, но приглушены, чтобы
    глаз не спорил, что здесь главное. */
 .grid tbody td.px-last { font-weight: 600; }
-.grid tbody td.px-quote { color: var(--mut); }
+/* Котировка стакана в два этажа: цена сверху, Y-IDX по ней снизу. Компактные
+   line-height + урезанный вертикальный padding → строка не выше однострочных. */
+.grid tbody td.q-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; }
+.q-px { color: var(--mut); }
+.q-sp { font-size: 11px; font-weight: 600; line-height: 1.1; margin-top: 1px; }
+.q-sp .dash { font-weight: 400; }
 /* Y-IDX по стакану: цвет знака сохраняем (это та же метрика), но мельче и
    без стрелки — доминирует mid-чип. */
-.dm-chip.sub { font-weight: 500; font-size: 12px; opacity: 0.85; }
 
 /* ---- Drawer ---- */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; }

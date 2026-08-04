@@ -11,12 +11,24 @@ const D = () => <span className="dash">—</span>;
 // от прошлого расчёта бэка → dim-класс, чтобы трейдер не читал их как актуальные.
 const ms = (b) => (b._mstale ? " mstale" : "");
 
-// mid-чип (жирный, со стрелкой) — первичная метрика; sub-чип (bid/offer) без
-// стрелки и приглушён: три стрелки подряд рябят, а доминировать должен mid.
-function Chip({ value, sub }) {
+function Chip({ value }) {
   if (value == null) return <D />;
-  return <span className={"dm-chip" + (sub ? " sub" : "")} style={dmColor(value)}>
-    {fmt.bps(value)}{sub ? "" : ` ${value >= 0 ? "▲" : "▼"}`}</span>;
+  return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
+}
+
+// Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
+// ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
+// значение, а не бегает через полтаблицы, чтобы их сопоставить.
+function Quote({ px, spread, cls = "", title }) {
+  // заявки нет вовсе — один прочерк, а не два друг под другом
+  if (px == null && spread == null) return <td className={"num " + cls} title={title}><D /></td>;
+  return (
+    <td className={"num q-cell " + cls} title={title}>
+      <div className="q-px">{fmt.pct(px) ?? <D />}</div>
+      <div className="q-sp" style={spread == null ? undefined : dmColor(spread)}>
+        {spread == null ? <D /> : fmt.bps(spread)}</div>
+    </td>
+  );
 }
 
 // Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align (стили шапки),
@@ -63,14 +75,16 @@ export const COLS = [
     cell: (b) => <td className={"num col-sep px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
       {fmt.pct(b.last_price_pct) ?? <D />}</td> },
-  // верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена покупки/продажи.
-  // grp — мягкий разделитель группы: PRICE-якорь отделён от котировок стакана.
-  { key: "bid_price_pct", label: "BID", sub: "CLN %", align: "num", grp: true, w: 7,
-    cell: (b) => <td className="num col-grp px-quote" key="bid_price_pct"
-      title="лучшая заявка на покупку (MOEX BID), чистая цена">{fmt.pct(b.bid_price_pct) ?? <D />}</td> },
-  { key: "ask_price_pct", label: "OFFER", sub: "CLN %", align: "num", w: 7,
-    cell: (b) => <td className="num px-quote" key="ask_price_pct"
-      title="лучшая заявка на продажу (MOEX OFFER), чистая цена">{fmt.pct(b.ask_price_pct) ?? <D />}</td> },
+  // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
+  // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
+  // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
+  // спред — да. grp — мягкий разделитель: PRICE-якорь отделён от стакана.
+  { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", grp: true, w: 8,
+    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} cls="col-grp"
+      title="лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)" /> },
+  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
+    cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
+      title="лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)" /> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", grp: true, w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;
@@ -81,14 +95,6 @@ export const COLS = [
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num col-grp" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
-  // Y-IDX по верху стакана: продажа по bid / покупка по offer — граница сделки,
-  // а не по последнему принту. Считаются на том же потоке, что mid-Y-IDX.
-  { key: "y_idx_bid_bps", label: "Y−IDX", sub: "BID", align: "num", w: 9,
-    cell: (b) => <td className="num" key="y_idx_bid_bps"
-      title="Y-IDX по цене лучшей покупки (продажа в бид)"><Chip value={b.y_idx_bid_bps} sub /></td> },
-  { key: "y_idx_ask_bps", label: "Y−IDX", sub: "OFFER", align: "num", w: 9,
-    cell: (b) => <td className="num" key="y_idx_ask_bps"
-      title="Y-IDX по цене лучшей продажи (покупка с оффера)"><Chip value={b.y_idx_ask_bps} sub /></td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num col-grp" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,

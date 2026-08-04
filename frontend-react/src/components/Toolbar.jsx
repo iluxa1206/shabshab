@@ -12,7 +12,7 @@ const RTCOLOR = {
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
-  issuers, emittersSel, toggleEmitter, clearEmitters,
+  issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
   visibleCols, onToggleCol, onResetCols,
 }) {
@@ -54,6 +54,14 @@ export default function Toolbar({
               : { color: RTCOLOR[v] }}
             onClick={() => toggleRating(v)}>{l}</button>
         ))}
+      </div>
+
+      {/* группа: ликвидность — только бумаги с обеими сторонами стакана */}
+      <div className="fgroup">
+        <button className={"chip-btn" + (twoSided ? " on" : "")} onClick={() => setTwoSided(!twoSided)}
+          title="Показывать только бумаги с двусторонней котировкой (есть и бид, и оффер)">
+          BID×OFFER
+        </button>
       </div>
 
       {/* группа: эмитент */}
