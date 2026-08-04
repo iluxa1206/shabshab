@@ -1,5 +1,6 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
+import { IconChart, IconSearch, IconX } from "./icons.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
@@ -24,6 +25,7 @@ export default function Toolbar({
   return (
     <section className="toolbar">
       <span className="search-wrap">
+        <IconSearch size={13} className="search-ico" />
         <input
           className="search"
           type="text"
@@ -53,8 +55,9 @@ export default function Toolbar({
           activeCount={activeFilters}
         />
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}
+          aria-label="Сбросить все фильтры"
           title="Снять все фильтры: watchlist, база, рейтинг, эмитент, BID×OFFER, объём, погашение, поиск">
-          ✕ СБРОС{activeFilters ? ` (${activeFilters})` : ""}
+          <IconX size={12} />{activeFilters ? String(activeFilters) : ""}
         </button>
       </div>
 
@@ -96,7 +99,7 @@ export default function Toolbar({
 
       {/* группа: окно погашения */}
       <div className="fgroup" title="Погашение в интервале [от, до]. Бумаги без даты погашения при заданной границе скрыты.">
-        <span className="fg-lbl">ПОГАШ</span>
+        <span className="fg-lbl">MAT</span>
         <input className="date-input" type="date" value={matFrom} aria-label="Погашение от"
           onChange={(e) => setMatFrom(e.target.value)} />
         <span className="fg-lbl">—</span>
@@ -110,8 +113,9 @@ export default function Toolbar({
 
       <div className="fgroup">
         <button className={"chip-btn" + (showAnalytics ? " on" : "")}
-          onClick={() => setShowAnalytics(!showAnalytics)} title="Кросс-секция рынка">
-          📊 АНАЛИТИКА
+          onClick={() => setShowAnalytics(!showAnalytics)}
+          aria-label="Аналитика" title="Аналитика — кросс-секция рынка">
+          <IconChart size={13} />
         </button>
       </div>
 

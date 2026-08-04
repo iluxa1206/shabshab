@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { IconFilter } from "./icons.jsx";
 
 // Кнопка «ФИЛЬТРЫ» → всплывающее окно: база (КС/RUONIA) и эмитент.
 // Счётчик на кнопке — сколько фильтров активно ВСЕГО (не только тех, что внутри окна),
@@ -31,8 +32,9 @@ export default function FiltersMenu({
   return (
     <div className="filters-menu" ref={ref}>
       <button className={"chip-btn" + (activeCount ? " on" : "")} onClick={() => setOpen((o) => !o)}
-        title="Фильтры: база, эмитент, сброс">
-        ФИЛЬТРЫ{activeCount ? ` (${activeCount})` : ""} ▾
+        aria-haspopup="true" aria-expanded={open} aria-label="Фильтры"
+        title="Фильтры: база, эмитент">
+        <IconFilter size={12} />{activeCount ? String(activeCount) : ""}
       </button>
       {open && (
         <div className="filters-pop">
