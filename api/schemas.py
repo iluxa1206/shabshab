@@ -169,6 +169,8 @@ class CouponDayRow(BaseModel):
     src: str                       # fact | forward
     close_pct: Optional[float] = None   # цена закрытия дня (spread_daily)
     y_idx_bps: Optional[float] = None   # Y-IDX as-of дня по этой цене (spread_daily)
+    index: Optional[float] = None       # расчётный индекс базы, старт 1.0 на начало периода
+                                        # (капитализация по рабочим дням, выходные простыми)
 
 class CouponDayGroup(BaseModel):
     n: Optional[int]               # № купона (как в таблице PV паспорта)
@@ -180,6 +182,8 @@ class CouponDayGroup(BaseModel):
     coupon_rate_pct: Optional[float]   # среднее + маржа, с кэпом/полом
     display_rate_pct: Optional[float]  # ставка купона из display-cashflow
     n_fact: int
+    index_end: Optional[float] = None      # расчётный индекс на конец периода
+    index_rate_pct: Optional[float] = None # он же в % годовых (Index_end−1)·365/дней
     rows: List[CouponDayRow]
 
 class CouponDaysResponse(BaseModel):

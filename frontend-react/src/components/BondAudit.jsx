@@ -184,7 +184,7 @@ function MarketSection({ m, v }) {
 
 // Окно дневной раскладки фиксинга: ВСЕ неистёкшие купоны одним прокручиваемым
 // списком — по каждому дню ставка индекса (факт ЦБ / форвард-ступень кривой).
-function DayRatesModal({ isin, onClose }) {
+export function DayRatesModal({ isin, onClose }) {
   const q = useQuery({
     queryKey: ["coupon-days", isin],
     queryFn: () => fetchCouponDays(isin),
@@ -216,6 +216,7 @@ function DayRatesModal({ isin, onClose }) {
                 <thead>
                   <tr>
                     <th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th>
+                    <th title="расчётный индекс базы: старт 1.0 в начале периода, фиксинг дня даёт прирост следующего; капитализация по рабочим дням, выходные простыми">Индекс</th>
                     <th className="left">Источник</th><th>Close %</th><th>Y-IDX</th>
                   </tr>
                 </thead>
@@ -223,10 +224,12 @@ function DayRatesModal({ isin, onClose }) {
                   {d.coupons.map((g) => (
                     [
                       <tr key={"h" + g.n} className="daygroup">
-                        <td className="left" colSpan={6}>
+                        <td className="left" colSpan={7}>
                           Купон #{g.n} · {fmt.date(g.start)} — {fmt.date(g.end)} · выплата {fmt.date(g.pay_date)} ·
                           факт {g.n_fact}/{g.rows.length} дн · среднее {fmt.pct(g.mean_pct, 4) ?? "—"}%
                           {g.coupon_rate_pct != null && <> · купон {fmt.pct(g.coupon_rate_pct, 4)}%</>}
+                          {g.index_end != null && <> · индекс на конец {g.index_end.toFixed(8).replace(".", ",")}
+                            {g.index_rate_pct != null && <> ({fmt.pct(g.index_rate_pct, 4)}% годовых)</>}</>}
                           {g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct
                             && <span className="neg"> · прайсинг {fmt.pct(g.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>}
                         </td>
@@ -236,6 +239,7 @@ function DayRatesModal({ isin, onClose }) {
                           <td className="left">{fmt.date(r.day)}</td>
                           <td className="left">{fmt.date(r.obs_date)}</td>
                           <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
+                          <td className="mono-idx">{r.index != null ? r.index.toFixed(8).replace(".", ",") : "—"}</td>
                           <td className="left">{r.src === "fact" ? "факт ЦБ" : "форвард (ступень)"}</td>
                           <td>{r.close_pct != null ? fmt.pct(r.close_pct) : "—"}</td>
                           <td>{r.y_idx_bps != null ? fmt.bps(r.y_idx_bps) : "—"}</td>

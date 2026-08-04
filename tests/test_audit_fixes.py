@@ -294,3 +294,58 @@ def test_settle_skips_january_holidays():
     s = settle_date(date(2026, 12, 31))
     assert (s.month, s.day) not in {(1, d) for d in range(1, 9)}
     assert s.year == 2027 and s.month == 1 and s.day >= 9
+
+
+# ── расчётный индекс в дневной раскладке паспорта ─────────────────────────
+from services.bond_audit import accrue_index
+
+
+def _row(day, obs, rate):
+    return {"day": day, "obs_date": obs, "rate_pct": rate}
+
+
+def test_accrue_index_weekend_is_simple_then_capitalizes():
+    """Твоя арифметика: пт 14.25% → сб, вс И ПН прирастают на 14.25/365 каждый
+    (фиксинг дня даёт прирост следующего, база заморожена на выходные);
+    пн 15% → вторник прирастает на 15/365 уже от капитализированной базы."""
+    rows = [
+        _row("2026-08-07", "2026-08-07", 14.25),   # пт — фиксинг опубликован
+        _row("2026-08-08", "2026-08-08", 14.25),   # сб — повтор пятничного
+        _row("2026-08-09", "2026-08-09", 14.25),   # вс — повтор
+        _row("2026-08-10", "2026-08-10", 15.00),   # пн — новый фиксинг
+        _row("2026-08-11", "2026-08-11", 15.00),   # вт
+        _row("2026-08-12", "2026-08-12", 15.00),   # ср
+    ]
+    end = accrue_index(rows)
+    idx = [r["index"] for r in rows]
+    inc = [idx[i] - idx[i - 1] for i in range(1, len(idx))]
+    # index округляется до 10 знаков → сравниваем с допуском 1e-9
+    assert idx[0] == 1.0, "первый день периода — старт индекса"
+    # сб, вс, пн: три равных прироста по пятничной ставке от уровня пятницы
+    assert inc[0] == pytest.approx(0.1425 / 365, abs=1e-9)
+    assert inc[1] == pytest.approx(inc[0], abs=1e-9)
+    assert inc[2] == pytest.approx(inc[0], abs=1e-9)
+    # вторник: ставка понедельника, база капитализирована в понедельник
+    assert inc[3] == pytest.approx(idx[3] * 0.15 / 365, abs=1e-9)
+    assert inc[3] > inc[2], "во вторник ступенька вверх"
+    # среда: та же ставка, но база выросла ещё на день
+    assert inc[4] > inc[3]
+    assert end == idx[-1]
+
+
+def test_accrue_index_skips_days_without_rate():
+    """День без ставки (нет истории и кривая молчит) индекс не двигает."""
+    rows = [_row("2026-08-05", "2026-08-05", 14.0),
+            _row("2026-08-06", "2026-08-06", None),
+            _row("2026-08-07", "2026-08-07", None),
+            _row("2026-08-10", "2026-08-10", 14.0)]
+    accrue_index(rows)
+    assert rows[1]["index"] > rows[0]["index"], "ставка 06-го есть у пред. строки"
+    assert rows[2]["index"] == rows[1]["index"], "у 06-го ставки нет → 07-е не растёт"
+    assert rows[3]["index"] == rows[2]["index"]
+
+
+def test_accrue_index_all_empty_returns_none():
+    rows = [_row("2026-08-07", "2026-08-07", None),
+            _row("2026-08-10", "2026-08-10", None)]
+    assert accrue_index(rows) is None

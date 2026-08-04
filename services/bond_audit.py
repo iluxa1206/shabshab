@@ -18,6 +18,9 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+
+from core.valuation import _is_settlement_day_off
 
 from services.market_data import MarketDataService
 from services.bonds import create_bond_ref_data, build_ref_external, external_formula
@@ -601,6 +604,38 @@ def _day_pairs(mode: str, start: date, end: date, lag: int, unit: str,
     return pairs
 
 
+def accrue_index(rows: list) -> Optional[float]:
+    """Расчётный индекс базы на каждый день раскладки: пишет в строки поле
+    "index" (старт 1.0 на начало купонного периода), возвращает уровень на конец.
+
+    Механика — ровно та, что у базы Y-IDX (core.valuation._RuoniaCompoundPath):
+      • ФИКСИНГ ДНЯ ДАЁТ ПРИРОСТ СЛЕДУЮЩЕГО ДНЯ — прирост строки берётся по
+        ставке ПРЕДЫДУЩЕЙ строки (пятничные 14.25% отрабатывают сб, вс и пн);
+      • капитализация только когда опубликован новый фиксинг, то есть по рабочим
+        дням КАЛЕНДАРЯ НАБЛЮДЕНИЯ (obs_date); внутри нерабочего окна начисление
+        простое от замороженного уровня.
+    Поэтому приросты сб/вс/пн равны до последнего знака, а во вторник ступенька
+    вверх — база капитализировалась в понедельник. Первая строка периода — 1.0
+    (фиксинг того дня отработает завтра).
+
+    Дни без ставки (истории нет и кривая молчит) индекс не двигают: уровень
+    остаётся прежним, дыра видна по пустой ставке в той же строке.
+    """
+    level = base = 1.0          # level — текущий индекс, base — замороженный уровень окна
+    prev_rate = None
+    seen = False
+    for r in rows:
+        if prev_rate is not None:
+            level += base * (prev_rate / 100.0) / 365.0
+            seen = True
+        r["index"] = round(level, 10)
+        obs = _parse_d(r.get("obs_date"))
+        if obs is not None and not _is_settlement_day_off(obs):
+            base = level        # новый фиксинг опубликован → капитализируем
+        prev_rate = r.get("rate_pct")
+    return round(level, 10) if seen else None
+
+
 async def coupon_day_rates(isin: str, cache: dict) -> dict:
     """Полная дневная раскладка фиксинга по ВСЕМ неистёкшим купонам (текущий
     начавшийся + будущие до погашения/оферты): по каждому дню — дата наблюдения
@@ -713,6 +748,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
                          "src": "fact" if fact else "forward",
                          "close_pct": (h or {}).get("price_pct"),
                          "y_idx_bps": (h or {}).get("y_idx")})
+        index_end = accrue_index(rows)
         mean_rows = round(sum(vals) / len(vals), 4) if vals else None
         pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
                  "avg_window_days": avg_w, "compounded": spec.get("compounded")}
@@ -735,6 +771,11 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
             "pay_date": _iso(c.get("payment_date")),
             "mean_pct": mean_rows, "projected_pct": prod,
             "coupon_rate_pct": cpn,
+            # индекс на конец периода + его годовой эквивалент: для бумаг с
+            # compounded=1 купон считается именно как Index_end/Index_start − 1
+            "index_end": index_end,
+            "index_rate_pct": (round((index_end - 1.0) * 365.0 / max((e - s).days, 1) * 100.0, 4)
+                               if index_end is not None else None),
             "display_rate_pct": c.get("coupon_rate_pct"),  # ставка из таблицы PV
             "n_fact": sum(1 for r in rows if r["src"] == "fact"),
             "rows": rows,

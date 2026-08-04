@@ -711,6 +711,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cf-table th.left { text-align: left; }
 .cf-table td { padding: 6px 12px; font-size: 12px; text-align: right; border-bottom: 1px solid var(--line); }
 .cf-table td.left { text-align: left; }
+/* расчётный индекс базы: 7 знаков после запятой — разница между сб и вс сидит
+   в шестом, поэтому колонку не сжимаем и держим на табличных цифрах */
+.cf-table td.mono-idx { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cf-table tr.past td { color: var(--mut-2); }
 .cf-table tr.redemption td { color: var(--fg); font-weight: 700; }
 
