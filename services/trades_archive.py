@@ -36,12 +36,69 @@ _MSK = timezone(timedelta(hours=3))
 _DEFAULT_FACE = 1000.0
 
 
-async def _headers() -> Optional[dict]:
-    from auth import get_access_token, REFRESH_TOKEN
-    if not REFRESH_TOKEN:
-        return None
-    token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
-    return {"Authorization": f"Bearer {token}"} if token else None
+# Ограничитель обращений к Alor. Массовый прогон (1300 бумаг × пагинация) на
+# concurrency 4 упирался в rate-limit: 429 на данных И таймауты/SSL-обрывы на
+# самом oauth.alor.ru — токен-эндпоинт живёт под тем же лимитом, что данные.
+_ALOR_SEM = asyncio.Semaphore(2)
+_TOKEN_LOCK = asyncio.Lock()
+_token_cache: dict = {"headers": None, "at": 0.0}
+_TOKEN_TTL = 10 * 60          # свой TTL короче серверного (28 мин у auth.py)
+_RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+async def _headers(force: bool = False) -> Optional[dict]:
+    """Заголовок с bearer'ом. Токен кэшируется в процессе: без этого каждая
+    бумага массового прогона дёргала oauth и он начинал рвать соединения."""
+    import time as _time
+    now = _time.monotonic()
+    if not force and _token_cache["headers"] and now - _token_cache["at"] < _TOKEN_TTL:
+        return _token_cache["headers"]
+    async with _TOKEN_LOCK:
+        now = _time.monotonic()
+        if not force and _token_cache["headers"] and now - _token_cache["at"] < _TOKEN_TTL:
+            return _token_cache["headers"]
+        from auth import get_access_token, REFRESH_TOKEN
+        if not REFRESH_TOKEN:
+            return None
+        token = None
+        for attempt in range(3):
+            try:
+                token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+            except Exception as e:      # таймаут/SSL к oauth — ждём и пробуем ещё
+                logger.warning("alor token attempt %d: %s", attempt + 1, e)
+                token = None
+            if token:
+                break
+            await asyncio.sleep(2 ** attempt)
+        if not token:
+            return None
+        _token_cache["headers"] = {"Authorization": f"Bearer {token}"}
+        _token_cache["at"] = _time.monotonic()
+        return _token_cache["headers"]
+
+
+async def _alor_get(client: httpx.AsyncClient, url: str, headers: dict, params: dict):
+    """GET к Alor под семафором, с бэкоффом на 429/5xx и одним ре-логином на 401."""
+    async with _ALOR_SEM:
+        for attempt in range(4):
+            try:
+                r = await client.get(url, headers=headers, params=params, timeout=60.0)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                if attempt == 3:
+                    logger.warning("alor %s: %s", url.rsplit("/", 2)[-2], e)
+                    return None
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            if r.status_code == 401 and attempt == 0:
+                fresh = await _headers(force=True)
+                if fresh:
+                    headers = fresh
+                continue
+            if r.status_code in _RETRY_STATUS and attempt < 3:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            return r
+    return None
 
 
 def _msk_ts(iso_utc: str) -> str:
@@ -70,8 +127,9 @@ async def fetch_history(client: httpx.AsyncClient, isin: str, headers: dict,
     out: list[dict] = []
     offset = 0
     while True:
-        r = await client.get(url, headers=headers, params={**params, "offset": offset},
-                             timeout=60.0)
+        r = await _alor_get(client, url, headers, {**params, "offset": offset})
+        if r is None:
+            break
         if r.status_code != 200:
             logger.warning("alor trades %s %s: %s", isin, r.status_code, r.text[:160])
             break
@@ -88,9 +146,10 @@ async def fetch_history(client: httpx.AsyncClient, isin: str, headers: dict,
 async def fetch_today(client: httpx.AsyncClient, isin: str, headers: dict) -> list[dict]:
     """Сделки текущей сессии (у /history сегодняшний день недоступен)."""
     from auth import BASE_API
-    r = await client.get(f"{BASE_API}/md/v2/Securities/MOEX/{isin}/alltrades",
-                         headers=headers, params={"format": "Simple", "take": _PAGE},
-                         timeout=60.0)
+    r = await _alor_get(client, f"{BASE_API}/md/v2/Securities/MOEX/{isin}/alltrades",
+                        headers, {"format": "Simple", "take": _PAGE})
+    if r is None:
+        return []
     if r.status_code != 200:
         logger.warning("alor today %s %s: %s", isin, r.status_code, r.text[:160])
         return []
@@ -135,9 +194,12 @@ async def drain(isin: str, days: int = ALOR_HISTORY_DAYS,
         logger.warning("drain %s: нет кредов Alor", isin)
         return 0
     days = min(days, ALOR_HISTORY_DAYS)
-    today = date.today()
+    today = datetime.now(_MSK).date()      # день считаем по МСК, как биржа
     frm = datetime.combine(today - timedelta(days=days), datetime.min.time(), _MSK)
-    to = datetime.combine(today, datetime.min.time(), _MSK)   # строго < сегодня
+    # Ровно полночь Alor уже относит к «сегодня» и отвечает 400 ("From and To
+    # must be less than today") — отступаем на секунду во вчера. Сегодняшние
+    # сделки всё равно приходят отдельным вызовом /alltrades.
+    to = datetime.combine(today, datetime.min.time(), _MSK) - timedelta(seconds=1)
 
     # номиналы по дням — для рублёвого объёма амортизируемых бумаг
     from services.bars import fetch_daily_face

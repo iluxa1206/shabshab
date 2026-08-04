@@ -34,7 +34,7 @@ function TypeBadge({ type }) {
 // строки одного дня (общие для попапа и режима «Строки»)
 function DayRows({ events, compact }) {
   return (
-    <table className={"grid pay-day-table" + (compact ? " compact" : "")}>
+    <table className={"grid pay-day-table packed" + (compact ? " compact" : "")}>
       <tbody>
         {events.map((e, i) => (
           <tr key={e.isin + e.type + i}>
@@ -46,6 +46,7 @@ function DayRows({ events, compact }) {
             </td>
             <td className="num pay-amt">{rub(e.amount_rub)}</td>
             <td className="num pay-vol">{vol(e.total_rub)}</td>
+            <td className="fill-col" />
           </tr>
         ))}
       </tbody>

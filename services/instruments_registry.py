@@ -430,6 +430,8 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "rating": r["rating"],
             "emitter_id": r["emitter_id"],
             "emitter_name": r["emitter_name"],
+            "coupon_period_days": r["coupon_period_days"],
+            "coupons_per_year": r["coupons_per_year"],
         })
     return out
 

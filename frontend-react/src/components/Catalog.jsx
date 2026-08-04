@@ -201,12 +201,13 @@ export default function Catalog({ user }) {
         <div className="admin-msg admin-err">{q.error?.message || "Ошибка загрузки"}</div>
       ) : (
         <div className="cat-table-wrap">
-          <table className="admin-table cat-table">
+          <table className="admin-table cat-table packed">
             <thead>
               <tr>
                 <th>ISIN</th>
                 {COLS.map(([k, label]) => <th key={k}>{label}</th>)}
                 <th></th>
+                <th className="fill-col" aria-hidden="true" />
               </tr>
             </thead>
             <tbody>
@@ -278,9 +279,10 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
               disabled={review.isPending} title="пометить проверенной">Ок</button>
           )}
         </td>
+        <td className="fill-col" />
       </tr>
       {editing && (
-        <tr><td colSpan={COLS.length + 2}><InstrumentForm isin={r.isin} onSaved={onSaved} /></td></tr>
+        <tr><td colSpan={COLS.length + 3}><InstrumentForm isin={r.isin} onSaved={onSaved} /></td></tr>
       )}
     </>
   );

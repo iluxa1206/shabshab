@@ -182,6 +182,21 @@ def external_formula(ref: BondRefData) -> str:
     return label
 
 
+def coupons_per_year(period_days: Optional[int], declared: Optional[int] = None) -> Optional[int]:
+    """Купонов в год для витрины. Приоритет — фактический период купона
+    (coupon_period_days считается из реального графика выплат и переживает
+    кривой COUPONFREQUENCY в справочниках), декларированная частота — фолбэк."""
+    try:
+        if period_days and int(period_days) > 0:
+            return max(1, min(365, round(365 / int(period_days))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(declared) or None
+    except (TypeError, ValueError):
+        return None
+
+
 def next_coupon_after(ref_obj: BondRefData, today: date) -> Optional[date]:
     """Ближайшая купонная дата >= today (шагаем от первого купона по периоду).
     Для списка — корректная замена first_coupon_date (тот часто в прошлом)."""

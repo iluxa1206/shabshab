@@ -235,6 +235,7 @@ class BondListItem(BaseModel):
     emitter_id: Optional[int] = None       # MOEX EMITTER_ID (фильтр/агрегаты по эмитенту)
     emitter_name: Optional[str] = None
     spread_issue_bps: int
+    coupons_per_year: Optional[int] = None  # частота купона для подписи формулы (N/год)
     maturity_date: Optional[date]
     next_coupon_date: Optional[date]
     last_price_pct: Optional[float]

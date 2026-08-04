@@ -96,7 +96,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
         <div className="ia-empty">эмитенты подгружаются (бэкфилл MOEX EMITTER_ID, ~40/цикл) — обнови позже</div>
       ) : (
         <div className="ia-table-wrap">
-          <table className="grid ia-table">
+          <table className="grid ia-table packed">
             <thead>
               <tr>
                 {COLS.map(([k, lbl, al]) => (
@@ -105,6 +105,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
                     {lbl}{sort.key === k ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
                   </th>
                 ))}
+                <th className="fill-col" aria-hidden="true" />
               </tr>
             </thead>
             <tbody>
@@ -113,6 +114,7 @@ export default function IssuerAggregates({ bonds, onPickIssuer }) {
                   {COLS.map(([k, , al]) => (
                     <td key={k} className={al === "num" ? "num" : "left"}>{cell(r, k)}</td>
                   ))}
+                  <td className="fill-col" />
                 </tr>
               ))}
             </tbody>

@@ -175,7 +175,7 @@ export default function FixedModule({ onOpen }) {
           : q.error ? <div className="an-empty">ошибка загрузки</div>
           : !rows.length ? <div className="an-empty">нет данных (прогрев метрик — до минуты после старта)</div>
           : (
-            <table className="grid fx-grid">
+            <table className="grid fx-grid packed">
               <thead>
                 <tr>
                   {COLS.map((c) => (
@@ -185,6 +185,7 @@ export default function FixedModule({ onOpen }) {
                       {c.label}{c.sub && <small>{c.sub}</small>}
                     </th>
                   ))}
+                  <th className="fill-col" aria-hidden="true" />
                 </tr>
               </thead>
               <tbody>
@@ -194,6 +195,7 @@ export default function FixedModule({ onOpen }) {
                     onClick={(e) => onOpen(b.isin, e.currentTarget, "fixed")}
                     onKeyDown={(e) => { if (e.key === "Enter") onOpen(b.isin, e.currentTarget, "fixed"); }}>
                     {COLS.map((c) => c.cell(b))}
+                    <td className="fill-col" />
                   </tr>
                 ))}
               </tbody>

@@ -286,6 +286,14 @@ td.mut { color: var(--mut); }
 .star { background: transparent; border: none; color: var(--mut-2); cursor: pointer; font-size: 15px; line-height: 1; padding: 8px 6px; }
 .star:hover { color: var(--fg); }
 .star.on { color: var(--fg); }
+/* Компактные колонки: таблица остаётся на 100% ширины (полосы строк и sticky-шапка
+   тянутся до правого края), но всё свободное место забирает пустая колонка-филлер —
+   значащие колонки жмутся по контенту и прижаты влево. */
+.packed .fill-col { width: 100%; padding: 0; cursor: default; }
+.grid.packed .fill-col { border-bottom: 1px solid var(--line); }
+.grid.packed thead .fill-col { border-bottom: 1px solid var(--fg); }
+.grid.packed thead th:nth-last-child(2), .grid.packed tbody td:nth-last-child(2) { padding-right: 24px; }
+.admin-table.packed .fill-col { border-bottom: 1px solid var(--line); }
 .grid tbody tr:focus-visible { outline: 1px solid var(--fg); outline-offset: -2px; }
 .grid tbody tr.flash td { animation: flash .8s ease-out; }
 @keyframes flash { 0% { background: var(--inv-bg); } 100% { background: transparent; } }
@@ -746,6 +754,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   .ob-panel { right: 0; width: 100%; max-width: 100%; z-index: 61; border-left: none; }
   .grid thead th:last-child, .grid tbody td:last-child { padding-right: 16px; }
   .grid thead th, .grid tbody td { padding-left: 12px; padding-right: 12px; }
+  .grid.packed thead th:nth-last-child(2), .grid.packed tbody td:nth-last-child(2) { padding-right: 16px; }
+  .grid.packed .fill-col { padding: 0; }
 }
 @media (max-width: 460px) {
   .kpis { grid-template-columns: 1fr 1fr; }
@@ -1134,6 +1144,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   vertical-align: top; }
 .pay-day-table tr:last-child td { border-bottom: none; }
 .pay-day-table.compact td { font-size: 10.5px; padding: 1px 6px 1px 0; }
+/* колонка-филлер уже прижимает столбцы влево — широкий отступ последней ячейки не нужен */
+.pay-day-table.packed tbody td:nth-last-child(2) { padding-right: 8px; }
+.pay-day-table.packed.compact tbody td:nth-last-child(2) { padding-right: 6px; }
+.pay-day-table.packed tr:last-child td { border-bottom: none; }
 .pay-name { font-weight: 600; white-space: nowrap; max-width: 180px; overflow: hidden;
   text-overflow: ellipsis; }
 .pay-emitter { color: var(--mut); max-width: 160px; overflow: hidden; text-overflow: ellipsis;

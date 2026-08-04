@@ -14,6 +14,7 @@ from api.schemas import (
 from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, external_formula, next_coupon_after,
+    coupons_per_year as _coupons_per_year,
 )
 from services.valuation import calculate_valuation_metrics
 from services.exceptions import NotFoundException
@@ -61,7 +62,10 @@ def _uni_item(u, name, mx, spread_dur):
     last = mx.get("last")
     return BondListItem(
         isin=u["isin"], short_name=name, base_rate_type=base, formula=formula,
-        spread_issue_bps=int(spread), maturity_date=u.get("maturity_date"),
+        spread_issue_bps=int(spread),
+        coupons_per_year=_coupons_per_year(u.get("coupon_period_days"),
+                                           u.get("coupons_per_year")),
+        maturity_date=u.get("maturity_date"),
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
         val_today=mx.get("val_today"),
@@ -208,6 +212,8 @@ async def get_bonds(
                 base_rate_type=ref_obj.base,
                 formula=formula,
                 spread_issue_bps=ref_obj.spread_issue_bps,
+                coupons_per_year=_coupons_per_year(ref_obj.coupon_period_days,
+                                                   ref_obj.coupons_per_year),
                 maturity_date=ref_obj.maturity_date,
                 next_coupon_date=next_coupon_after(ref_obj, calc_date),
                 last_price_pct=last_price_pct,

@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { baseLabel, shortFormula, fmt, dmColor } from "../format.js";
+import { baseLabel, formulaWithFreq, fmt, dmColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
 
 const D = () => <span className="dash">—</span>;
@@ -42,7 +42,7 @@ export const COLS = [
     cell: (b) => <td className="rating-cell" key="rating">{b.rating || <D />}</td> },
   { key: "formula", label: "FORMULA", align: "left",
     cell: (b) => <td className="left bond-formula" key="formula" title={b.formula || undefined}>
-      {shortFormula(b.formula) || "—"}</td> },
+      {formulaWithFreq(b.formula, b.coupons_per_year) || "—"}</td> },
   { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num",
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT",
@@ -117,6 +117,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
         </button>
       </td>
       {cols.map((c) => c.cell(b))}
+      <td className="fill-col" />
     </tr>
   );
 });
@@ -154,7 +155,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
   const firedIsins = useMemo(
     () => new Set((alertsQ.data || []).filter((a) => a.status === "fired").map((a) => a.isin)),
     [alertsQ.data]);
-  const ncols = cols.length + 1; // + star
+  const ncols = cols.length + 2; // + star + фиктивная колонка-филлер
 
   let body;
   if (status === "loading") body = <tr><td colSpan={ncols} className="loading">ЗАГРУЗКА ДАННЫХ</td></tr>;
@@ -176,11 +177,12 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
 
   return (
     <section className="table-wrap">
-      <table className="grid">
+      <table className="grid packed">
         <thead>
           <tr>
             <th className="star-col" aria-label="Watchlist" />
             {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort} />)}
+            <th className="fill-col" aria-hidden="true" />
           </tr>
         </thead>
         <tbody>{body}</tbody>

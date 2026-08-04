@@ -25,6 +25,21 @@ export const baseLabel = (b) => (b === "RUONIA" ? "RU" : b === "KEYRATE" ? "КС
 export const shortFormula = (f) =>
   f == null ? f : f.replace(/Ключевая ставка/gi, "КС").replace(/RUONIA/g, "RU");
 
+// Купонов в год. Фактический период купона (считается из реального графика выплат)
+// авторитетнее декларированной частоты из справочников — тот же приоритет, что на бэке.
+export const couponsPerYear = (periodDays, declared) => {
+  const p = Number(periodDays);
+  if (p > 0) return Math.max(1, Math.min(365, Math.round(365 / p)));
+  const d = Number(declared);
+  return d > 0 ? Math.round(d) : null;
+};
+
+// «КС + 1,5%» + частота купона → «КС + 1,5% (4/год)».
+export const formulaWithFreq = (f, cpy) => {
+  const s = shortFormula(f);
+  return s && cpy ? `${s} (${cpy}/год)` : s;
+};
+
 // Семантика для сканируемости: DM выше/положительный = дёшево (up), ниже = дорого (down).
 export function dmColor(dm) {
   if (dm == null) return { color: "var(--mut-2)" };
