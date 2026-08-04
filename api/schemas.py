@@ -240,6 +240,12 @@ class BondListItem(BaseModel):
     maturity_date: Optional[date]
     next_coupon_date: Optional[date]
     last_price_pct: Optional[float]
+    # верх стакана MOEX (чистые цены, % номинала) + Y-IDX по ним. ask — это MOEX
+    # OFFER (лучшая продажа), НЕ оферта put/call (та живёт в offer_date ниже).
+    bid_price_pct: Optional[float] = None
+    ask_price_pct: Optional[float] = None
+    y_idx_bid_bps: Optional[int] = None
+    y_idx_ask_bps: Optional[int] = None
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)

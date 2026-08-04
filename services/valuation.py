@@ -59,6 +59,7 @@ def calculate_valuation_metrics(
     amorts=None,
     offers=None,
     ruonia_curve: DiscountCurve = None,
+    alt_prices=None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
@@ -71,6 +72,9 @@ def calculate_valuation_metrics(
               value (зафикс. рублёвая сумма купона) прокидывается в DM-cashflow,
               чтобы текущий/прошлый купон брался фактом, а не перепрогнозом.
     amorts — график амортизаций MOEX [{date, value},...] для DM амортизируемых бумаг.
+    alt_prices — доп. чистые цены (напр. bid/ask верха стакана): для каждой считаем
+              ТОЛЬКО Y-IDX (XIRR по УЖЕ построенному потоку − та же база RUONIA) →
+              "y_idx_by_price": {price: bps}. Дёшево: поток и base leg не пересобираются.
     Returns a dictionary suitable for formatting by Pydantic.
     """
     # Бумага гасится не позже даты расчётов T+1: покупателю не достаётся ни одного
@@ -202,7 +206,26 @@ def calculate_valuation_metrics(
     yield_over_index_bps = None
     if impl_yield is not None and index_yield is not None:
         yield_over_index_bps = round((impl_yield - index_yield) * 100.0)
-        
+
+    # Y-IDX на альтернативных ценах (bid/ask): поток cfs и base leg от цены не
+    # зависят — меняется только dirty на входе XIRR. Реюз, а не пересчёт модели.
+    y_idx_by_price: Dict[float, Any] = {}
+    for _p in (alt_prices or []):
+        if _p is None or index_yield is None:
+            continue
+        try:
+            _dirty = dirty_price_rub(_pricing_face, _p, accrued)
+            if _dirty is None or _dirty <= 0 or _dirty > _future_sum * 1.0005:
+                y_idx_by_price[_p] = None      # та же отсечка «гарант. убыток», что для mid
+                continue
+            _y = xirr_yield_pct(_dirty, cfs, calc_date)
+            y_idx_by_price[_p] = (round((_y - index_yield) * 100.0)
+                                  if _y is not None else None)
+        except Exception as e:
+            logger.warning(f"alt-price Y-IDX error {bond.isin} @{_p}: {e}")
+            y_idx_by_price[_p] = None
+
+
     # SIMPLE MARGIN (наш sm_bps): дисконт по форвард-кривей+спред. Воспроизводит
     # НРД simple_margin (сверка: ликвид near-par med 0-2bps). Поле dm_bps сохранено
     # для обратной совместимости = то же значение (это простая маржа, не discount).
@@ -288,6 +311,8 @@ def calculate_valuation_metrics(
     sm_bps = _sane_bps(sm_bps, warnings, "sm")
     disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
     yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
+    y_idx_by_price = {p: _sane_bps(v, warnings, "yield_over_index_alt")
+                      for p, v in y_idx_by_price.items()}
     sm_to_offer = _sane_bps(sm_to_offer, warnings, "sm_to_offer")
     dm_to_offer = _sane_bps(dm_to_offer, warnings, "disc_margin_to_offer")
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
@@ -323,6 +348,7 @@ def calculate_valuation_metrics(
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,
         "yield_over_index_bps": yield_over_index_bps,
+        "y_idx_by_price": y_idx_by_price,          # {alt-цена: Y-IDX bps} (bid/ask)
         "price_implausible": price_implausible,   # гарант. убыток → z тоже занулить
         "pricing_status": status,
         "warnings": sorted(set(warnings)),

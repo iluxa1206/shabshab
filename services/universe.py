@@ -39,7 +39,8 @@ def build_universe_ref(u: dict, isin: str, cache: dict, secs: dict):
 def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 prev: Optional[float], accrued: Optional[float],
                 ruonia_curve, keyrate_curve, exp_ks, exp_ru, g_curve,
-                calc_date: date, prev_date: Optional[str] = None) -> dict:
+                calc_date: date, prev_date: Optional[str] = None,
+                bid: Optional[float] = None, ask: Optional[float] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
     вызывающий (фон — board snapshot + кэш поллера; watch — live-цена +
@@ -77,6 +78,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
+    yoi_bid = yoi_ask = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
@@ -85,9 +87,13 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             accrued_override=accrued,
                                             periods=periods or None,
                                             amorts=amorts, offers=offers,
-                                            ruonia_curve=ruonia_curve)
+                                            ruonia_curve=ruonia_curve,
+                                            alt_prices=[p for p in (bid, ask) if p])
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             yoi = m.get("yield_over_index_bps")
+            # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
+            _alt = m.get("y_idx_by_price") or {}
+            yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
             ytm, base_ytm = m.get("yield_xirr_pct"), m.get("index_yield_pct")
             implausible = bool(m.get("price_implausible"))
             hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
@@ -139,6 +145,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
         except (ValueError, TypeError):
             price_thin = False
     return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
+            "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
             "next_coupon": next_cpn, "z_model": z_model,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
@@ -185,6 +192,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             u, ref, full_by.get(isin) or {},
             last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
             accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
+            bid=snap.get("bid"), ask=snap.get("ask"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
         out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
@@ -248,6 +256,7 @@ async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
             u, ref, full_by.get(isin) or {},
             last=prices.get(isin), prev=prev, accrued=snap.get("accrued"),
             prev_date=snap.get("prev_date"),
+            bid=snap.get("bid"), ask=snap.get("ask"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
     return out

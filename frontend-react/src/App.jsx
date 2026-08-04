@@ -53,7 +53,12 @@ function Dashboard() {
   const [visibleCols, setVisibleCols] = useState(() => {
     try {
       const s = JSON.parse(localStorage.getItem("cols") || "null");
-      return Array.isArray(s) && s.length ? s : DEFAULT_COLS;
+      if (!Array.isArray(s) || !s.length) return DEFAULT_COLS;
+      // колонки, добавленные после того, как юзер последний раз сохранял набор,
+      // показываем: иначе новая колонка невидима всем, кто хоть раз трогал меню
+      const known = new Set(JSON.parse(localStorage.getItem("cols_known") || "[]"));
+      const fresh = DEFAULT_COLS.filter((k) => !known.has(k) && !s.includes(k));
+      return fresh.length ? [...s, ...fresh] : s;
     } catch { return DEFAULT_COLS; }
   });
   const lastTriggerRef = useRef(null);
@@ -61,6 +66,8 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
+  // снимок известных на этой сборке колонок — база для авто-показа новых (см. выше)
+  useEffect(() => { localStorage.setItem("cols_known", JSON.stringify(DEFAULT_COLS)); }, []);
 
   // стабильная ссылка (не inline-стрелка) — иначе memo(BondRow) бесполезен
   const toggleStar = useCallback((isin) =>

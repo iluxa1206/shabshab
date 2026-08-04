@@ -367,6 +367,17 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .dash { color: var(--mut-2); }
 /* Разделитель блоков: портфель | наша модель */
 .grid thead th.col-sep, .grid tbody td.col-sep { border-left: 2px solid var(--line-2); }
+/* Мягкий разделитель ГРУППЫ внутри блока (цена | котировки стакана,
+   Y-IDX mid | Y-IDX по стакану) — тоньше, чем граница блока. */
+.grid thead th.col-grp, .grid tbody td.col-grp { border-left: 1px solid var(--line-2); }
+/* Цена последней сделки — якорь строки: выделена весом. Котировки стакана
+   (bid/offer) — контекст вокруг неё: тот же ряд цифр, но приглушены, чтобы
+   глаз не спорил, что здесь главное. */
+.grid tbody td.px-last { font-weight: 600; }
+.grid tbody td.px-quote { color: var(--mut); }
+/* Y-IDX по стакану: цвет знака сохраняем (это та же метрика), но мельче и
+   без стрелки — доминирует mid-чип. */
+.dm-chip.sub { font-weight: 500; font-size: 12px; opacity: 0.85; }
 
 /* ---- Drawer ---- */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; }

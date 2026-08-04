@@ -652,7 +652,7 @@ class MarketDataService:
 
     @classmethod
     async def fetch_moex_snapshot(cls, isins: List[str]) -> Dict[str, dict]:
-        """{isin: {'prev': float|None, 'accrued': float|None}} по MOEX ISS.
+        """{isin: {'prev','accrued','prev_date','bid','ask'}} по MOEX ISS.
         Память-кэш TTL 120с — при повторном тогле/открытии карточки не бомбим ISS."""
         out: Dict[str, dict] = {}
         if not isins:
@@ -700,16 +700,20 @@ class MarketDataService:
                     prev = sg("PREVPRICE")
                     accrued = sg("ACCRUEDINT")
                     prev_date = sg("PREVDATE")   # дата prev-цены → возраст цены (стейл?)
-                # фолбэк prev на marketdata, если в securities пусто
-                if prev is None:
-                    md = j.get("marketdata", {})
-                    md_cols, md_rows = md.get("columns", []), md.get("data", [])
-                    if md_rows and "PREVPRICE" in md_cols:
-                        prev = md_rows[0][md_cols.index("PREVPRICE")]
+                # marketdata: фолбэк prev + верх стакана (BID / OFFER=ask, чистые %)
+                md = j.get("marketdata", {})
+                md_cols, md_rows = md.get("columns", []), md.get("data", [])
+                mrow = md_rows[0] if md_rows else None
+                mg = lambda n: mrow[md_cols.index(n)] if (mrow is not None and n in md_cols) else None
+                if prev is None and mrow is not None:
+                    prev = mg("PREVPRICE")
+                bid, ask = mg("BID"), mg("OFFER")
                 out[isin] = {
                     "prev": float(prev) if prev is not None else None,
                     "accrued": float(accrued) if accrued is not None else None,
                     "prev_date": prev_date,
+                    "bid": float(bid) if bid is not None else None,
+                    "ask": float(ask) if ask is not None else None,
                 }
             except Exception:
                 pass
@@ -770,7 +774,7 @@ class MarketDataService:
 
     @classmethod
     async def fetch_board_snapshot(cls) -> Dict[str, dict]:
-        """{isin: {'prev','accrued','prev_date','last'}} по бордам _SNAP_BOARDS одним
+        """{isin: {'prev','accrued','prev_date','last','vol','bid','ask'}} по бордам _SNAP_BOARDS одним
         запросом на борд — для фонового расчёта метрик юниверса без 453 per-isin вызовов.
         `last` — цена сегодняшней сделки MOEX (LAST → LCURRENTPRICE → WAPRICE);
         `prev` — PREVPRICE → PREVWAPRICE → PREVLEGALCLOSEPRICE (у неликвида без
@@ -787,7 +791,7 @@ class MarketDataService:
                         f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/securities.json",
                         params={"iss.only": "securities,marketdata",
                                 "securities.columns": "SECID,ISIN,PREVPRICE,PREVWAPRICE,PREVLEGALCLOSEPRICE,ACCRUEDINT,PREVDATE",
-                                "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY"},
+                                "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY,BID,OFFER"},
                         timeout=15)
                     if resp is None or resp.status_code != 200:
                         continue
@@ -801,10 +805,19 @@ class MarketDataService:
                     mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
                     last_by_secid: Dict[str, float] = {}
                     vol_by_secid: Dict[str, float] = {}
+                    bid_by_secid: Dict[str, float] = {}
+                    ask_by_secid: Dict[str, float] = {}
                     for mr in mrows:
                         secid = mg(mr, "SECID")
                         if not secid:
                             continue
+                        # верх стакана MOEX (BID/OFFER — чистые цены, % номинала).
+                        # OFFER здесь = ASK (лучшая заявка на продажу), НЕ оферта put/call.
+                        bd, ak = mg(mr, "BID"), mg(mr, "OFFER")
+                        if bd is not None:
+                            bid_by_secid[secid] = float(bd)
+                        if ak is not None:
+                            ask_by_secid[secid] = float(ak)
                         px = mg(mr, "LAST")
                         if px is None:
                             px = mg(mr, "LCURRENTPRICE")
@@ -831,6 +844,8 @@ class MarketDataService:
                             "prev_date": g(row, "PREVDATE"),
                             "last": last_by_secid.get(g(row, "SECID")),
                             "vol": vol_by_secid.get(g(row, "SECID")),
+                            "bid": bid_by_secid.get(g(row, "SECID")),
+                            "ask": ask_by_secid.get(g(row, "SECID")),
                         }
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")
