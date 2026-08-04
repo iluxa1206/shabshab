@@ -343,6 +343,8 @@ async def get_ruonia_index(
             last_rate = r
         rows.append({"day": d.isoformat(), "obs_date": d.isoformat(),
                      "rate_pct": r if r is not None else last_rate,
+                     # день публикации нового фиксинга = день капитализации у ЦБ
+                     "is_fixing": r is not None,
                      "rate_is_fixing": r is not None})
         d += timedelta(days=1)
 

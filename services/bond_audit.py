@@ -615,11 +615,17 @@ def accrue_index(rows: list, state: dict = None) -> dict:
     Механика — ровно та, что у базы Y-IDX (core.valuation._RuoniaCompoundPath):
       • ФИКСИНГ ДНЯ ДАЁТ ПРИРОСТ СЛЕДУЮЩЕГО ДНЯ — прирост строки берётся по
         ставке ПРЕДЫДУЩЕЙ строки (пятничные 14.25% отрабатывают сб, вс и пн);
-      • капитализация только когда опубликован новый фиксинг, то есть по рабочим
-        дням КАЛЕНДАРЯ НАБЛЮДЕНИЯ (obs_date); внутри нерабочего окна начисление
-        простое от замороженного уровня.
+      • капитализация только когда ОПУБЛИКОВАН НОВЫЙ ФИКСИНГ — строка помечает
+        это флагом "is_fixing"; внутри окна без фиксинга начисление простое от
+        замороженного уровня.
     Поэтому приросты сб/вс/пн равны до последнего знака, а во вторник ступенька
     вверх — база капитализировалась в понедельник.
+
+    ФЛАГ ФИКСИНГА, А НЕ КАЛЕНДАРЬ. Раньше капитализация шла по рабочим дням
+    календаря MOEX, и в дни-переносы, когда биржа работает, а фиксинга нет
+    (03.05.2010 и такие же «повторы» ЦБ), расчёт капитализировался лишний раз —
+    индекс уезжал вверх на 0.5 bps за 16 лет. Строки без флага (будущее: фиксинга
+    ещё не существует) падают на прежний календарный признак.
 
     Дни без ставки (истории нет и кривая молчит) индекс не двигают: уровень
     остаётся прежним, дыра видна по пустой ставке в той же строке.
@@ -634,23 +640,27 @@ def accrue_index(rows: list, state: dict = None) -> dict:
     level, base = st["level"], st["base"]
     prev_rate, seen = st["prev_rate"], st["seen"]
     start = level
+    # ACT/ACT: делитель — ФАКТИЧЕСКАЯ длина года ДНЯ НАЧИСЛЕНИЯ, а день начисления
+    # на сутки РАНЬШЕ дня прироста (фиксинг дня T отрабатывает день T, а виден в
+    # индексе на T+1). Именно так считает официальный индекс ЦБ: на 365 расчёт
+    # уезжал вверх в високосные годы, а базис по году дня ПРИРОСТА врал каждое
+    # 1 января (декабрьский день начисления делился на 366 нового года).
+    _yb_at = lambda d: (366.0 if _cal.isleap((d - timedelta(days=1)).year) else 365.0) if d else 365.0
     for r in rows:
         day = _parse_d(r.get("day"))
-        # ACT/ACT: делитель — ФАКТИЧЕСКАЯ длина года дня начисления. Именно так
-        # считает официальный индекс ЦБ: на 365 в високосные годы расчёт уезжал
-        # вверх (сверено на всей истории с 2010 — расхождение копилось ровно в
-        # 2012/2016/2020/2024 и нигде больше).
-        yb = 366.0 if (day and _cal.isleap(day.year)) else 365.0
         if prev_rate is not None:
-            level += base * (prev_rate / 100.0) / yb
+            level += base * (prev_rate / 100.0) / _yb_at(day)
             seen = True
         r["index"] = round(level, 10)
-        obs = _parse_d(r.get("obs_date"))
-        if obs is not None and not _is_settlement_day_off(obs):
+        fixing = r.get("is_fixing")
+        if fixing is None:      # будущее: флага нет — фолбэк на календарь MOEX
+            obs = _parse_d(r.get("obs_date"))
+            fixing = obs is not None and not _is_settlement_day_off(obs)
+        if fixing:
             base = level        # новый фиксинг опубликован → капитализируем
         prev_rate = r.get("rate_pct")
     _last = _parse_d(rows[-1].get("day")) if rows else None
-    _yb = 366.0 if (_last and _cal.isleap(_last.year)) else 365.0
+    _yb = _yb_at(_last + timedelta(days=1)) if _last else 365.0
     end = level + (base * (prev_rate / 100.0) / _yb if prev_rate is not None else 0.0)
     return {"level": level, "base": base, "prev_rate": prev_rate, "seen": seen,
             "start": round(start, 10) if rows else None,
@@ -704,6 +714,9 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     offers = sched_full.get("offers") or []
     margin_pct = (ref_obj.spread_issue_bps or 0) / 100.0
     idx = index_history(base)
+    # даты, на которые ЦБ реально опубликовал фиксинг: только в такие дни
+    # официальный индекс капитализируется (см. accrue_index)
+    _fix_days = set(idx[0]) if idx and idx[0] else set()
 
     # номинал: остаток из графика амортизаций > кэш (стейл-кэш травит калибровку,
     # см. одноимённый блок в build_bond_audit)
@@ -767,6 +780,10 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
             h = hist_by_date.get(_iso(day))
             rows.append({"day": _iso(day), "obs_date": _iso(obs),
                          "rate_pct": round(rate, 4) if rate is not None else None,
+                         # капитализация индекса — в день ПУБЛИКАЦИИ фиксинга;
+                         # для прошлого это точное попадание в историю ЦБ, для
+                         # будущего флага нет и accrue_index берёт календарь
+                         "is_fixing": (obs in _fix_days) if fact else None,
                          "src": "fact" if fact else "forward",
                          "close_pct": (h or {}).get("price_pct"),
                          "y_idx_bps": (h or {}).get("y_idx")})

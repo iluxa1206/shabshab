@@ -366,6 +366,37 @@ def test_accrue_index_skips_days_without_rate():
     assert rows[3]["index"] == rows[2]["index"]
 
 
+def test_accrue_index_capitalizes_on_fixing_not_calendar():
+    """Капитализация — по ФЛАГУ ФИКСИНГА, а не по календарю MOEX. 03.05.2010 —
+    рабочий понедельник биржи, но фиксинга RUONIA нет (ЦБ повторяет пятничный):
+    база в этот день замораживается, иначе индекс уезжает вверх (расхождение с
+    официальным рядом ЦБ, видное с 04.05.2010)."""
+    def _fx(day, rate, is_fixing):
+        return {"day": day, "obs_date": day, "rate_pct": rate, "is_fixing": is_fixing}
+
+    rows = [_fx("2010-04-30", 2.91, True),    # пт — фиксинг
+            _fx("2010-05-01", 2.91, False),   # сб — повтор
+            _fx("2010-05-02", 2.91, False),   # вс — повтор
+            _fx("2010-05-03", 2.91, False),   # пн-праздник: биржа работает, ЦБ молчит
+            _fx("2010-05-04", 2.84, True)]    # вт — новый фиксинг
+    accrue_index(rows)
+    idx = [r["index"] for r in rows]
+    inc = [idx[i] - idx[i - 1] for i in range(1, len(idx))]
+    # четыре прироста по одной ставке от ОДНОЙ замороженной базы — все равны
+    for i in range(1, 4):
+        assert inc[i] == pytest.approx(inc[0], abs=1e-9)
+
+
+def test_accrue_index_year_basis_is_of_accrual_day():
+    """Делитель — длина года ДНЯ НАЧИСЛЕНИЯ, а не дня прироста: прирост 1 января
+    относится к 31 декабря и делится на длину СТАРОГО года."""
+    rows = [{"day": "2015-12-31", "obs_date": "2015-12-31", "rate_pct": 10.0, "is_fixing": True},
+            {"day": "2016-01-01", "obs_date": "2016-01-01", "rate_pct": 10.0, "is_fixing": False}]
+    accrue_index(rows)
+    inc = rows[1]["index"] - rows[0]["index"]
+    assert inc == pytest.approx(0.10 / 365, abs=1e-9), "2015 — не високосный"
+
+
 def test_accrue_index_all_empty_returns_none_end():
     rows = [_row("2026-08-07", "2026-08-07", None),
             _row("2026-08-10", "2026-08-10", None)]
