@@ -20,6 +20,54 @@ function RefCell({ k, children }) {
   );
 }
 
+// ЕДИНАЯ схема метрик флоатера: спред Y-IDX, обе доходности, цена (чистая с
+// грязной в подписи), НКД и дата поставки. Один компонент на рыночный блок и на
+// оба калькулятора (под введённую цену и на прошлую дату) — подписи и порядок
+// не разъезжаются. Всё считается НА ДАТУ ПОСТАВКИ: цена — котировка своего дня,
+// деньги и НКД — T+1 раб. DM/SM убраны из карточки (первичная метрика — Y-IDX).
+export function ValCards({ v, priceDate, calc = false }) {
+  const u = (t) => <span className="vc-u"> {t}</span>;
+  // копейки только пока число короткое: у бумаг с номиналом в миллионы
+  // (RU000A1034Q5 — НКД 385 000 ₽) дробная часть не влезала в плитку
+  const money = (x) => (x == null ? null : Math.abs(x) >= 1e5 ? fmt.num(x, 0) : fmt.num(x, 2));
+  return (
+    <div className={"val-cards val-cards-6" + (calc ? " val-cards-calc" : "")}>
+      <div className="vc">
+        <div className="vc-label">Y-IDX</div>
+        <div className="vc-val" style={{ color: dmColor(v.yield_over_index_bps).color }}>
+          {fmt.bps(v.yield_over_index_bps) ?? "—"}{u("bps")}</div>
+        <div className="vc-sub">спред: YTM − база</div>
+      </div>
+      <div className="vc">
+        <div className="vc-label">YTM</div>
+        <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}{u("%")}</div>
+        <div className="vc-sub">XIRR бумаги</div>
+      </div>
+      <div className="vc">
+        <div className="vc-label">YTM база</div>
+        <div className="vc-val">{fmt.pct(v.index_yield_pct) ?? "—"}{u("%")}</div>
+        <div className="vc-sub">роллирование RUONIA</div>
+      </div>
+      <div className="vc">
+        <div className="vc-label">Цена</div>
+        <div className="vc-val">{fmt.pct(v.clean_price_pct) ?? "—"}{u("%")}</div>
+        <div className="vc-sub">грязная {money(v.dirty_price_rub) ?? "—"} ₽
+          {priceDate ? ` · ${fmt.date(priceDate)}` : ""}</div>
+      </div>
+      <div className="vc">
+        <div className="vc-label">НКД (ACI)</div>
+        <div className="vc-val">{money(v.accrued_settle_rub) ?? "—"}{u("₽")}</div>
+        <div className="vc-sub">на дату поставки</div>
+      </div>
+      <div className="vc">
+        <div className="vc-label">Дата поставки</div>
+        <div className="vc-val vc-val-sm">{fmt.date(v.settlement_date) ?? "—"}</div>
+        <div className="vc-sub">T+1 раб. день</div>
+      </div>
+    </div>
+  );
+}
+
 // специфика флоатера: rate duration мала (до рефиксинга), spread duration = весь
 // кредитный риск до погашения
 function FloaterSection({ f, base }) {
@@ -109,35 +157,12 @@ function PastCalc({ isin }) {
           {mut.isPending ? "пересчёт…"
             : res?.ok ? `${res.data.stale_days > 0
                   ? `цена от ${fmt.date(res.data.trade_date)} (в этот день торгов не было) · `
-                  : ""}НКД ${fmt.num(res.data.accint)} ₽ · кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
+                  : ""}кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
             : res && !res.ok ? res.err
             : "дата в прошлом → метрики как-на-дату"}
         </span>
       </div>
-      {m && (
-        <div className="val-cards val-cards-calc">
-          <div className="vc">
-            <div className="vc-label">Y-IDX</div>
-            <div className="vc-val" style={{ color: dmColor(m.yield_over_index_bps).color }}>{fmt.bps(m.yield_over_index_bps) ?? "—"}<span className="vc-u"> bps</span></div>
-            <div className="vc-sub">на дату · цена {fmt.pct(res.data.price)}%</div>
-          </div>
-          <div className="vc">
-            <div className="vc-label">YTM (XIRR)</div>
-            <div className="vc-val">{fmt.pct(m.yield_xirr_pct) ?? "—"}<span className="vc-u"> %</span></div>
-            <div className="vc-sub">RUONIA-ролл {fmt.pct(m.index_yield_pct) ?? "—"}%</div>
-          </div>
-          <div className="vc">
-            <div className="vc-label">DM (дисконтная)</div>
-            <div className="vc-val" style={{ color: dmColor(m.disc_margin_bps).color }}>{fmt.bps(m.disc_margin_bps) ?? "—"}<span className="vc-u"> bps</span></div>
-            <div className="vc-sub">вспом.</div>
-          </div>
-          <div className="vc">
-            <div className="vc-label">SM (простая)</div>
-            <div className="vc-val" style={{ color: dmColor(m.sm_bps).color }}>{fmt.bps(m.sm_bps) ?? "—"}<span className="vc-u"> bps</span></div>
-            <div className="vc-sub">вспом.</div>
-          </div>
-        </div>
-      )}
+      {m && <ValCards v={m} priceDate={dateInput} calc />}
       {/* деградации входов на дату (доначисленный НКД, ex-coupon, отсутствие
           расписания) — без них цифра выглядит точнее, чем есть */}
       {m?.warnings?.length > 0 && <div className="warn-box">{m.warnings.join(" · ")}</div>}
@@ -239,7 +264,6 @@ function Content({ d, charts }) {
 
   const isRepriced = repriced != null;
   const v = repriced || baseVal;
-  const dc = dmColor(v.yield_over_index_bps);
   const warnings = [...(baseVal.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
   // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
@@ -278,39 +302,7 @@ function Content({ d, charts }) {
             : "рыночная цена"}
         </span>
       </div>
-      {/* Конвенция расчёта: цена — котировка дня (T0), деньги и НКД — на дату
-          поставки T+1 (выходные/праздники MOEX пропускаются). От неё же считаются
-          YTM, SM и DM. */}
-      <div className="pc-conv">
-        цена {fmt.pct(v.clean_price_pct) ?? "—"}% на {fmt.date(m.calc_date) ?? "—"}
-        {v.settlement_date && <> · поставка <b>{fmt.date(v.settlement_date)}</b></>}
-        {v.accrued_settle_rub != null && <> · НКД на поставку {fmt.num(v.accrued_settle_rub)} ₽</>}
-        {v.accrued_calc_rub != null && v.accrued_settle_rub != null
-          && Math.abs(v.accrued_settle_rub - v.accrued_calc_rub) > 0.005
-          && <span className="pc-conv-mut"> (биржевой на {fmt.date(m.calc_date)}: {fmt.num(v.accrued_calc_rub)} ₽)</span>}
-      </div>
-      <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
-        <div className="vc">
-          <div className="vc-label">Y-IDX</div>
-          <div className="vc-val" style={{ color: dc.color }}>{fmt.bps(v.yield_over_index_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">IRR − индекс · основная</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">YTM (XIRR)</div>
-          <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> %</span></div>
-          <div className="vc-sub">индекс {fmt.pct(v.index_yield_pct) ?? "—"}%</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">Грязная цена</div>
-          <div className="vc-val">{fmt.num(v.dirty_price_rub) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> ₽</span></div>
-          <div className="vc-sub">clean {fmt.pct(v.clean_price_pct) ?? "—"}% + НКД</div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">DM / SM</div>
-          <div className="vc-val" style={{ color: dmColor(v.disc_margin_bps).color }}>{fmt.bps(v.disc_margin_bps) ?? "—"}<span style={{ fontSize: 12, color: "var(--mut)" }}> bps</span></div>
-          <div className="vc-sub">вспом. · SM {fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"} bps</div>
-        </div>
-      </div>
+      <ValCards v={v} priceDate={m.calc_date} calc={isRepriced} />
 
       {warnings.length > 0 && <div className="warn-box">{warnings.join(" · ")}</div>}
 

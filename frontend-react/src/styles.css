@@ -650,7 +650,25 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .vc:last-child { border-right: none; }
 .vc-label { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.16em; }
 .vc-val { font-size: 26px; font-weight: 700; letter-spacing: -0.03em; margin-top: 8px; line-height: 1; }
+.vc-val-sm { font-size: 19px; }
 .vc-sub { font-size: 11px; color: var(--mut); margin-top: 8px; letter-spacing: 0.02em; }
+/* Схема карточки флоатера — 6 метрик (Y-IDX, YTM, YTM база, цена+грязная, НКД,
+   поставка). 3 колонки → ровно два полных ряда, дыр нет. Разделители — границы
+   ячеек: правая снимается у последней в ряду, нижняя ставится только первому
+   ряду. На узком (ящик во всю ширину) — 2 колонки, три ряда. */
+.val-cards-6 { grid-template-columns: repeat(3, 1fr); }
+.val-cards-6 .vc { padding: 13px 15px; border-right: 1px solid var(--line); }
+.val-cards-6 .vc:nth-child(3n) { border-right: none; }
+.val-cards-6 .vc:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+.val-cards-6 .vc-val { font-size: 22px; margin-top: 7px; white-space: nowrap; }
+.val-cards-6 .vc-val-sm { font-size: 18px; }
+.val-cards-6 .vc-sub { margin-top: 6px; }
+@media (max-width: 760px) {
+  .val-cards-6 { grid-template-columns: repeat(2, 1fr); }
+  .val-cards-6 .vc:nth-child(3n) { border-right: 1px solid var(--line); }
+  .val-cards-6 .vc:nth-child(2n) { border-right: none; }
+  .val-cards-6 .vc:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
+}
 
 /* Калькулятор цены в карточке */
 .price-calc { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
