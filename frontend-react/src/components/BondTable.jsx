@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { baseLabel, fmt, dmColor, ratingColor } from "../format.js";
@@ -19,11 +19,11 @@ function Chip({ value }) {
 // Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
 // ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
 // значение, а не бегает через полтаблицы, чтобы их сопоставить.
-function Quote({ px, spread, cls = "", title }) {
+function Quote({ px, spread, title }) {
   // заявки нет вовсе — один прочерк, а не два друг под другом
-  if (px == null && spread == null) return <td className={"num " + cls} title={title}><D /></td>;
+  if (px == null && spread == null) return <td className="num" title={title}><D /></td>;
   return (
-    <td className={"num q-cell " + cls} title={title}>
+    <td className="num q-cell" title={title}>
       <div className="q-px">{fmt.pct(px) ?? <D />}</div>
       <div className="q-sp" style={spread == null ? undefined : dmColor(spread)}>
         {spread == null ? <D /> : fmt.bps(spread)}</div>
@@ -76,14 +76,14 @@ export const COLS = [
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
   { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", sep: true, w: 8,
-    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} cls="col-sep"
+    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} 
       title="лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)" /> },
   { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
     cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
       title="лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)" /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
-    cell: (b) => <td className={"num col-grp px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
+    cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
       {fmt.pct(b.last_price_pct) ?? <D />}</td> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
@@ -95,9 +95,9 @@ export const COLS = [
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num", w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
-    cell: (b) => <td className={"num col-grp" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
-    cell: (b) => <td className={"num col-grp" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
+    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.disc_margin_bps)} key="disc_margin_bps">{fmt.bps(b.disc_margin_bps) ?? <D />}</td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num", w: 7,
@@ -148,38 +148,83 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
           {starred ? "★" : "☆"}
         </button>
       </td>
-      {cols.map((c) => c.cell(b))}
+      {/* границы блоков навешиваем ЗДЕСЬ, а не внутри cell: колонки переставляемы,
+          и разделитель должен ехать с колонкой, а не быть вшит в её разметку */}
+      {cols.map((c) => {
+        const el = c.cell(b);
+        const extra = c.sep ? "col-sep" : c.grp ? "col-grp" : "";
+        return extra
+          ? cloneElement(el, { className: ((el.props.className || "") + " " + extra).trim() })
+          : el;
+      })}
       <td className="fill-col" />
     </tr>
   );
 });
 
-function HeaderCell({ col, sort, onSort }) {
+// Шапка: клик — сортировка, перетаскивание — перенос колонки. HTML5 dnd после
+// drop клик не генерит, так что сортировка от переноса не срабатывает.
+// Alt+←/→ с клавиатуры двигает колонку без мыши.
+function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey, overKey, setOverKey }) {
   const active = sort.key === col.key;
   const cls =
     (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
     (col.sep ? "col-sep " : "") + (col.grp ? "col-grp " : "") +
+    (dragKey === col.key ? "th-drag " : "") +
+    (overKey === col.key && dragKey && dragKey !== col.key ? "th-over " : "") +
     (active ? "sorted " + (sort.dir === "asc" ? "asc" : "") : "");
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSort(col.key); return; }
+    if (onMoveCol && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault();
+      onMoveCol(col.key, e.key === "ArrowLeft" ? "-1" : "+1");
+    }
+  };
   return (
     <th
       className={cls.trim()}
       role="button"
       tabIndex={0}
+      draggable={!!onMoveCol}
       aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+      title="Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"
       onClick={() => onSort(col.key)}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSort(col.key); } }}
+      onKeyDown={onKeyDown}
+      // источник переноса держим в ref, а не только в state: state обновляется
+      // асинхронно, и обработчик drop в том же тике видел бы ещё null
+      onDragStart={(e) => {
+        dragRef.current = col.key; setDragKey(col.key);
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", col.key); } catch { /* Safari */ }
+      }}
+      onDragEnd={() => { dragRef.current = null; setDragKey(null); setOverKey(null); }}
+      onDragOver={(e) => { if (dragRef.current) { e.preventDefault(); setOverKey(col.key); } }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const from = dragRef.current || e.dataTransfer.getData("text/plain");
+        if (from && from !== col.key) onMoveCol(from, col.key);
+        dragRef.current = null; setDragKey(null); setOverKey(null);
+      }}
     >
       {col.label}{col.sub && <><br /><small>{col.sub}</small></>}
     </th>
   );
 }
 
-export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols }) {
-  // видимые колонки в исходном порядке COLS; useMemo — стабильная ссылка для memo(BondRow)
+export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol }) {
+  // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),
+  // а не порядок объявления COLS. useMemo — стабильная ссылка для memo(BondRow).
   const cols = useMemo(() => {
-    const visSet = new Set(visibleCols?.length ? visibleCols : DEFAULT_COLS);
-    return COLS.filter((c) => visSet.has(c.key));
+    const byKey = new Map(COLS.map((c) => [c.key, c]));
+    const keys = visibleCols?.length ? visibleCols : DEFAULT_COLS;
+    const out = keys.map((k) => byKey.get(k)).filter(Boolean);
+    return out.length ? out : COLS;   // пустой/битый набор → дефолт, а не голая таблица
   }, [visibleCols]);
+  // какую колонку тащим и над какой висим — для подсветки цели (ref — источник
+  // правды в обработчиках, state только для стилей)
+  const dragRef = useRef(null);
+  const [dragKey, setDragKey] = useState(null);
+  const [overKey, setOverKey] = useState(null);
   // O(1) вместо watch.includes на каждую строку
   const watchSet = useMemo(() => new Set(watch), [watch]);
   // isin'ы со сработавшим алертом → красная строка (общий кэш ['alerts'])
@@ -218,7 +263,9 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
         <thead>
           <tr>
             <th className="star-col" aria-label="Watchlist" />
-            {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort} />)}
+            {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
+              onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
+              overKey={overKey} setOverKey={setOverKey} />)}
             <th className="fill-col" aria-hidden="true" />
           </tr>
         </thead>

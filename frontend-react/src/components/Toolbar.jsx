@@ -10,7 +10,7 @@ export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
   issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
-  visibleCols, onToggleCol, onResetCols,
+  visibleCols, onToggleCol, onResetCols, onMoveCol,
 }) {
   return (
     <section className="toolbar">
@@ -75,7 +75,7 @@ export default function Toolbar({
 
       {/* группа: столбцы */}
       <div className="fgroup">
-        <ColumnsMenu visibleCols={visibleCols} onToggle={onToggleCol} onReset={onResetCols} />
+        <ColumnsMenu visibleCols={visibleCols} onToggle={onToggleCol} onReset={onResetCols} onMove={onMoveCol} />
       </div>
 
       <span className="grow" />

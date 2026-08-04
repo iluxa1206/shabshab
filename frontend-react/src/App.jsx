@@ -59,7 +59,20 @@ function Dashboard() {
       // показываем: иначе новая колонка невидима всем, кто хоть раз трогал меню
       const known = new Set(JSON.parse(localStorage.getItem("cols_known") || "[]"));
       const fresh = DEFAULT_COLS.filter((k) => !known.has(k) && !s.includes(k));
-      return fresh.length ? [...s, ...fresh] : s;
+      let next = fresh.length ? [...s, ...fresh] : s;
+      // Одноразовая нормализация: до появления drag-n-drop порядок в cols не имел
+      // значения (таблица шла по COLS), и новые колонки просто дописывались в
+      // конец. Теперь порядок — источник истины, поэтому первый заход на новую
+      // версию раскладывает сохранённый набор по дефолтному порядку; дальше
+      // порядок пользовательский и мы его не трогаем.
+      // (флаг cols_ord выставляет эффект ниже: initializer обязан быть чистым —
+      // в StrictMode он зовётся дважды, и запись отсюда съедала бы нормализацию)
+      if (localStorage.getItem("cols_ord") !== "1") {
+        const inSaved = new Set(next);
+        next = [...DEFAULT_COLS.filter((k) => inSaved.has(k)),
+                ...next.filter((k) => !DEFAULT_COLS.includes(k))];
+      }
+      return next;
     } catch { return DEFAULT_COLS; }
   });
   const lastTriggerRef = useRef(null);
@@ -69,6 +82,8 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
   // снимок известных на этой сборке колонок — база для авто-показа новых (см. выше)
   useEffect(() => { localStorage.setItem("cols_known", JSON.stringify(DEFAULT_COLS)); }, []);
+  // порядок колонок нормализован — дальше он пользовательский, не трогаем
+  useEffect(() => { localStorage.setItem("cols_ord", "1"); }, []);
 
   // стабильная ссылка (не inline-стрелка) — иначе memo(BondRow) бесполезен
   const toggleStar = useCallback((isin) =>
@@ -77,6 +92,17 @@ function Dashboard() {
   const toggleCol = useCallback((key) => setVisibleCols((cs) =>
     cs.includes(key) ? cs.filter((k) => k !== key) : [...cs, key]), []);
   const resetCols = useCallback(() => setVisibleCols(DEFAULT_COLS), []);
+  // Перенос колонки: from встаёт НА МЕСТО to (порядок visibleCols = порядок в
+  // таблице). to может быть "+1"/"-1" — сдвиг на шаг (Alt+←/→ на заголовке).
+  const moveCol = useCallback((from, to) => setVisibleCols((cs) => {
+    const i = cs.indexOf(from);
+    if (i < 0) return cs;
+    const j = to === "+1" ? i + 1 : to === "-1" ? i - 1 : cs.indexOf(to);
+    if (j < 0 || j >= cs.length || i === j) return cs;
+    const next = cs.slice();
+    next.splice(j, 0, next.splice(i, 1)[0]);
+    return next;
+  }), []);
 
   const bondsRef = useRef(bonds);
   bondsRef.current = bonds;
@@ -269,7 +295,7 @@ function Dashboard() {
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
         showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
-        visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols}
+        visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
       />
       {showAnalytics && <AnalyticsPanel rows={filtered} />}
       <BondTable
@@ -285,6 +311,7 @@ function Dashboard() {
         onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setTwoSided(false); setQuery(""); }}
         onRetry={loadBonds}
         visibleCols={visibleCols}
+        onMoveCol={moveCol}
       />
     </>
   );
