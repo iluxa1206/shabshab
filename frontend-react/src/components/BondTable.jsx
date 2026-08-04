@@ -70,26 +70,27 @@ export const COLS = [
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   { key: "maturity_date", label: "MATURITY", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
-  // ── НАША МОДЕЛЬ (цена → CHG → dirty → Y−IDX (первичная) → SM → DM → Z) ──
-  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true, w: 7,
-    cell: (b) => <td className={"num col-sep px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
-      title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
-      {fmt.pct(b.last_price_pct) ?? <D />}</td> },
+  // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → Y−IDX (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
-  // спред — да. grp — мягкий разделитель: PRICE-якорь отделён от стакана.
-  { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", grp: true, w: 8,
-    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} cls="col-grp"
+  // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
+  { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", sep: true, w: 8,
+    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} cls="col-sep"
       title="лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)" /> },
   { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
     cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
       title="лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)" /> },
-  { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", grp: true, w: 8,
+  // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
+  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
+    cell: (b) => <td className={"num col-grp px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
+      title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
+      {fmt.pct(b.last_price_pct) ?? <D />}</td> },
+  { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;
       const deltaCls = delta == null ? "" : delta >= 0 ? "pos" : "neg";
-      return <td className={"num col-grp " + deltaCls} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
+      return <td className={"num " + deltaCls} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num", w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
