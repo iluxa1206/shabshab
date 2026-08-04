@@ -106,6 +106,15 @@ def test_settle_skips_weekends_and_holidays():
     assert not _is_settlement_day_off(s)
 
 
+def test_settle_skips_new_years_eve():
+    """31 декабря расчётов нет (нерабочий с 2023): последний день года — 30-е,
+    поставка с него уезжает на первый рабочий день января."""
+    assert _is_settlement_day_off(date(2026, 12, 31))
+    s = settle_date(date(2026, 12, 30))
+    assert s.year == 2027 and s.month == 1 and s.day >= 9
+    assert not _is_settlement_day_off(s)
+
+
 def test_extend_periods_fills_gap_to_maturity():
     """Достройка хвоста: обрыв bondization на 100-м купоне → пробел заполняется."""
     issue = date(2024, 1, 12)
