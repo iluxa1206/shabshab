@@ -99,12 +99,17 @@ async def spread_history(
         except Exception as e:
             logger.warning(f"honest backfill {isin}: {e} — серия останется candle-оценкой")
 
-    from services.spread_history import read_history
+    from services.spread_history import read_history, keep_trade_days
     exact_rows = read_history(isin, days=days)
     if from_date:
         # read_history режет по числу строк — календарную границу держим здесь,
         # иначе точная история могла бы уйти левее окна графика цены
         exact_rows = [r for r in exact_rows if str(r.get("date", "")) >= from_date]
+    # ДНИ БЕЗ СДЕЛОК НЕ ПРАЙСИМ: точка спреда рисуется только там, где есть
+    # свеча. Иначе снапшот/бэкфилл добавляли даты без торгов (цена — стейл
+    # prev-close), график спреда шёл по календарю, а график цены — по сделкам.
+    _trade_days = {p["date"] for p in est}
+    exact_rows, skipped_no_trades = keep_trade_days(exact_rows, _trade_days)
     exact = [{
         "date": r["date"], "price": r.get("price_pct"),
         "dm_bps": r.get("dm_bps"), "y_idx_bps": r.get("y_idx"),
@@ -132,7 +137,10 @@ async def spread_history(
     points = sorted(pre + exact + post, key=lambda x: x["date"])
 
     return {"isin": isin, "kind": kind, "calc_date": str(calc_date),
-            "exact_from": first_exact, "points": points}
+            "exact_from": first_exact, "points": points,
+            # сколько дней истории отброшено как неторговые (диагностика: у
+            # неликвида это может быть половина календаря)
+            "skipped_no_trades": skipped_no_trades}
 
 
 _bar_locks: dict = {}        # per-ISIN, чтобы параллельные запросы не дублировали налив

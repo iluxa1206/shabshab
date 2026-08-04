@@ -62,6 +62,21 @@ def read_history(isin: str, days: int = 400) -> List[dict]:
     return [dict(x) for x in reversed(r)]
 
 
+def keep_trade_days(rows: List[dict], trade_days) -> tuple:
+    """Оставить только строки истории за дни, когда бумага РЕАЛЬНО торговалась.
+
+    spread_daily наполняется вечерним снапшотом и honest-бэкфиллом по календарю,
+    поэтому там заводятся даты, которых нет в свечах MOEX: сделок не было, цена
+    берётся стейл prev-close, а точка спреда на графике всё равно рисуется. На
+    графике цены такого дня нет — линии разъезжаются по датам, и пользователь
+    видит спред, посчитанный от цены, которой в этот день никто не показывал.
+
+    trade_days — множество ISO-дат со свечами. Возвращает (оставшиеся, сколько
+    отброшено)."""
+    kept = [r for r in rows if str(r.get("date", "")) in trade_days]
+    return kept, len(rows) - len(kept)
+
+
 def drop_stale_honest(isin: str, engine_ver: int) -> int:
     """Сносит honest-строки, посчитанные СТАРЫМ as-of движком (engine_ver < текущей
     либо NULL). Точки, персистённые до фикса НКД/SECID, иначе живут вечно: бэкфилл

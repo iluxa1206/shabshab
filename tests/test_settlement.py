@@ -151,3 +151,43 @@ def test_xirr_anchored_at_settlement(keyrate_curve, calc_date, flat_index_15):
     ghost = Cashflow(pay_date=settle - timedelta(days=1), amount_rub=500.0, type="COUPON")
     y_ghost = xirr_yield_pct(dirty, cfs + [ghost], calc_date)
     assert y_ghost == pytest.approx(y, abs=1e-9), "поток до даты поставки просочился в расчёт"
+
+
+# ── дни без сделок не прайсим ───────────────────────────────────────────────
+
+def test_keep_trade_days_drops_calendar_only_rows():
+    """История спредов чистится по свечам: honest-бэкфилл подставляет
+    LEGALCLOSEPRICE в дни без сделок, снапшот пишется по календарю — такие даты
+    рисовали точку спреда там, где на графике цены дня нет."""
+    from services.spread_history import keep_trade_days
+    rows = [{"date": "2026-08-03", "y_idx": 180},
+            {"date": "2026-08-04", "y_idx": 181},   # сделок не было
+            {"date": "2026-08-05", "y_idx": 179}]
+    kept, dropped = keep_trade_days(rows, {"2026-08-03", "2026-08-05"})
+    assert [r["date"] for r in kept] == ["2026-08-03", "2026-08-05"]
+    assert dropped == 1
+
+
+def test_keep_trade_days_empty_candles_drops_everything():
+    """Свечей нет вовсе → истории тоже нет: молча показывать календарную серию,
+    не подтверждённую сделками, нельзя (эндпоинт отдаёт warning раньше)."""
+    from services.spread_history import keep_trade_days
+    kept, dropped = keep_trade_days([{"date": "2026-08-03"}], set())
+    assert kept == [] and dropped == 1
+
+
+def test_irr_matches_analytic_effective_rate(keyrate_curve, calc_date, flat_index_15):
+    """IRR проверяется независимо от солвера: бумага по номиналу, плоский индекс
+    15%, маржа 150 б.п. → купон 16.5% simple с квартальной выплатой, значит
+    эффективная годовая = (1+0.165/4)^4−1. Движок обязан выдать ровно её —
+    расхождение ловит любую ошибку в day-count, якоре даты или компаундировании."""
+    margin = 150
+    bond = make_bond(margin_bps=margin, accrued=0.0)
+    settle = settle_date(calc_date)
+    periods = quarterly_periods(settle, bond.maturity_date)   # период стартует в день поставки
+    fn, _ = flat_index_15
+    cfs = build_cashflows_with_spread(bond, keyrate_curve, calc_date, margin,
+                                      explicit_periods=periods, index_pct_fn=fn)
+    y = xirr_yield_pct(dirty_price_rub(bond.face_value, 100.0, 0.0), cfs, calc_date)
+    eff = ((1 + (15.0 + margin / 100.0) / 100 / 4) ** 4 - 1) * 100
+    assert y == pytest.approx(eff, abs=0.02), f"IRR={y:.4f}% != аналитика {eff:.4f}%"
