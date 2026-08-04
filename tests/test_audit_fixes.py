@@ -305,9 +305,9 @@ def _row(day, obs, rate):
 
 
 def test_accrue_index_weekend_is_simple_then_capitalizes():
-    """Твоя арифметика: пт 14.25% → сб, вс И ПН прирастают на 14.25/365 каждый
-    (фиксинг дня даёт прирост следующего, база заморожена на выходные);
-    пн 15% → вторник прирастает на 15/365 уже от капитализированной базы."""
+    """Пт 14.25% → сб, вс И ПН прирастают на 14.25/365 каждый (фиксинг дня даёт
+    прирост следующего, база заморожена на выходные); пн 15% → вторник
+    прирастает на 15/365 уже от капитализированной базы."""
     rows = [
         _row("2026-08-07", "2026-08-07", 14.25),   # пт — фиксинг опубликован
         _row("2026-08-08", "2026-08-08", 14.25),   # сб — повтор пятничного
@@ -316,11 +316,10 @@ def test_accrue_index_weekend_is_simple_then_capitalizes():
         _row("2026-08-11", "2026-08-11", 15.00),   # вт
         _row("2026-08-12", "2026-08-12", 15.00),   # ср
     ]
-    end = accrue_index(rows)
+    st = accrue_index(rows)
     idx = [r["index"] for r in rows]
     inc = [idx[i] - idx[i - 1] for i in range(1, len(idx))]
-    # index округляется до 10 знаков → сравниваем с допуском 1e-9
-    assert idx[0] == 1.0, "первый день периода — старт индекса"
+    assert idx[0] == 1.0, "первый день раскладки — старт индекса"
     # сб, вс, пн: три равных прироста по пятничной ставке от уровня пятницы
     assert inc[0] == pytest.approx(0.1425 / 365, abs=1e-9)
     assert inc[1] == pytest.approx(inc[0], abs=1e-9)
@@ -328,9 +327,31 @@ def test_accrue_index_weekend_is_simple_then_capitalizes():
     # вторник: ставка понедельника, база капитализирована в понедельник
     assert inc[3] == pytest.approx(idx[3] * 0.15 / 365, abs=1e-9)
     assert inc[3] > inc[2], "во вторник ступенька вверх"
-    # среда: та же ставка, но база выросла ещё на день
-    assert inc[4] > inc[3]
-    assert end == idx[-1]
+    assert inc[4] > inc[3], "среда — от ещё подросшей базы"
+    assert st["start"] == 1.0
+    assert st["end"] > idx[-1], "конец периода = уровень после последнего фиксинга"
+
+
+def test_accrue_index_is_continuous_across_coupons():
+    """Индекс СКВОЗНОЙ: второй купон продолжает первый, а не стартует с 1.0.
+    Стык бесшовный — end первого купона == index первой строки второго."""
+    c1 = [_row("2026-08-05", "2026-08-05", 14.0),
+          _row("2026-08-06", "2026-08-06", 14.0),
+          _row("2026-08-07", "2026-08-07", 14.0)]
+    c2 = [_row("2026-08-10", "2026-08-10", 16.0),
+          _row("2026-08-11", "2026-08-11", 16.0)]
+    st1 = accrue_index(c1)
+    st2 = accrue_index(c2, st1)
+
+    assert c2[0]["index"] > 1.0, "второй купон не должен зануляться"
+    assert c2[0]["index"] == st1["end"], "стык купонов без разрыва"
+    assert st2["start"] == pytest.approx(st1["level"], abs=1e-9)   # start округлён до 10 знаков
+    # прирост первого дня второго купона — по ставке последней строки первого
+    assert c2[0]["index"] - c1[-1]["index"] == pytest.approx(
+        c1[-1]["index"] * 0.14 / 365, abs=1e-9)
+    # монотонность через границу купонов
+    all_idx = [r["index"] for r in c1 + c2]
+    assert all_idx == sorted(all_idx)
 
 
 def test_accrue_index_skips_days_without_rate():
@@ -345,7 +366,8 @@ def test_accrue_index_skips_days_without_rate():
     assert rows[3]["index"] == rows[2]["index"]
 
 
-def test_accrue_index_all_empty_returns_none():
+def test_accrue_index_all_empty_returns_none_end():
     rows = [_row("2026-08-07", "2026-08-07", None),
             _row("2026-08-10", "2026-08-10", None)]
-    assert accrue_index(rows) is None
+    st = accrue_index(rows)
+    assert st["end"] is None and st["seen"] is False

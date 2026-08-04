@@ -228,8 +228,8 @@ export function DayRatesModal({ isin, onClose }) {
                           Купон #{g.n} · {fmt.date(g.start)} — {fmt.date(g.end)} · выплата {fmt.date(g.pay_date)} ·
                           факт {g.n_fact}/{g.rows.length} дн · среднее {fmt.pct(g.mean_pct, 4) ?? "—"}%
                           {g.coupon_rate_pct != null && <> · купон {fmt.pct(g.coupon_rate_pct, 4)}%</>}
-                          {g.index_end != null && <> · индекс на конец {g.index_end.toFixed(8).replace(".", ",")}
-                            {g.index_rate_pct != null && <> ({fmt.pct(g.index_rate_pct, 4)}% годовых)</>}</>}
+                          {g.index_end != null && <> · индекс {g.index_start?.toFixed(8).replace(".", ",")} → {g.index_end.toFixed(8).replace(".", ",")}
+                            {g.index_rate_pct != null && <> ({fmt.pct(g.index_rate_pct, 4)}% годовых за период)</>}</>}
                           {g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct
                             && <span className="neg"> · прайсинг {fmt.pct(g.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>}
                         </td>

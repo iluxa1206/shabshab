@@ -298,3 +298,74 @@ async def get_forward_rate(
     except Exception as e:
         logger.warning(f"forward-rate calc error ({type}, {start_date}..{end_date}): {e}")
         raise HTTPException(status_code=500, detail="Ошибка расчёта форвардной ставки")
+
+
+@router.get("/ruonia-index", tags=["Curves"])
+async def get_ruonia_index(
+    days: int = Query(400, ge=7, le=6000, description="Сколько последних дней отдать"),
+):
+    """Индекс RUONIA по дням: ставка ЦБ, ОФИЦИАЛЬНЫЙ индекс (SOAP RuoniaSV,
+    публикуется с 2010-01-11 со значения 1.0) и НАШ расчётный индекс на тех же
+    ставках по нашей же конвенции (фиксинг дня даёт прирост следующего;
+    капитализация в рабочие дни, выходные простыми).
+
+    Расчётный якорится значением официального в первый день окна — тогда третья
+    и четвёртая колонки сравнимы напрямую, а расхождение показывает, сходится ли
+    наша механика с эталоном ЦБ."""
+    from services import cbr
+    from services.bond_audit import accrue_index
+
+    idx_rows = await asyncio.to_thread(cbr.ruonia_index_history)
+    rate_hist = await asyncio.to_thread(cbr.ruonia_history)
+    if not idx_rows:
+        raise HTTPException(status_code=503, detail="Индекс RUONIA недоступен (ЦБ не ответил)")
+
+    rate_by_day = {d: r for d, r in rate_hist}
+    fact_by_day = {d: (ix, avg) for d, ix, avg in idx_rows}
+
+    # окно: последние days КАЛЕНДАРНЫХ дней официального ряда
+    window = idx_rows[-days:]
+    first = window[0][0]
+    # ставка нерабочего дня = последний опубликованный фиксинг (так же живёт
+    # официальный индекс: за сб/вс начисление идёт по пятничной ставке)
+    last_rate = None
+    for d, r in rate_hist:
+        if d <= first:
+            last_rate = r
+        else:
+            break
+
+    rows = []
+    d = first
+    while d <= window[-1][0]:
+        r = rate_by_day.get(d)
+        if r is not None:
+            last_rate = r
+        rows.append({"day": d.isoformat(), "obs_date": d.isoformat(),
+                     "rate_pct": r if r is not None else last_rate,
+                     "rate_is_fixing": r is not None})
+        d += timedelta(days=1)
+
+    accrue_index(rows)                      # пишет "index" (старт 1.0)
+    anchor = fact_by_day.get(first, (1.0, None))[0]
+
+    out, max_gap = [], 0.0
+    for row in rows:
+        dd = date.fromisoformat(row["day"])
+        fact = fact_by_day.get(dd, (None, None))[0]
+        calc = round(row["index"] * anchor, 8)
+        gap = round((calc - fact) / fact * 1e4, 3) if fact else None
+        if gap is not None:
+            max_gap = max(max_gap, abs(gap))
+        out.append({"date": row["day"], "rate_pct": row["rate_pct"],
+                    "is_fixing": row["rate_is_fixing"],
+                    "index_fact": fact, "index_calc": calc, "gap_bps": gap})
+    return {
+        "start_date": cbr._RUONIA_INDEX_START.isoformat(),
+        "start_value": idx_rows[0][1],
+        "last_date": idx_rows[-1][0].isoformat(),
+        "last_index": idx_rows[-1][1],
+        "anchor_date": first.isoformat(), "anchor_value": anchor,
+        "max_gap_bps": round(max_gap, 3),
+        "rows": list(reversed(out)),        # свежие сверху
+    }

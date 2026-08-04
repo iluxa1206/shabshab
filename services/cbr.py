@@ -299,3 +299,81 @@ def ks_rate_at(d: date) -> Optional[float]:
 def current_ruonia() -> Optional[float]:
     h = ruonia_history()
     return h[-1][1] if h else None
+
+
+# ── Официальный ИНДЕКС RUONIA (SOAP RuoniaSV) ───────────────────────────────
+# ЦБ публикует накопленный индекс с 2010-01-11 (стартовое значение ровно 1.0)
+# и, в отличие от ставки, ДЛЯ КАЖДОГО КАЛЕНДАРНОГО ДНЯ: за выходные добавляется
+# простое начисление по пятничному фиксингу (проверено на 01–03.08.2026 — три
+# равных прироста), капитализация только в рабочие дни. Это внешний эталон для
+# нашего расчётного индекса (services.bond_audit.accrue_index).
+_RUONIA_INDEX_START = date(2010, 1, 11)
+_RUONIA_SV_URL = "https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx"
+_RUONIA_INDEX_CACHE = _cache_path("ruonia_index.json")
+_index_mem = {"date": None, "rows": None}
+_index_lock = threading.Lock()
+
+
+def _fetch_ruonia_index(frm: date, to: date) -> List[Tuple[date, float, Optional[float]]]:
+    """[(дата, индекс, срочная RUONIA 1M)] с SOAP RuoniaSV за период."""
+    import xml.etree.ElementTree as ET
+    env = ("<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+           "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+           "<soap:Body><RuoniaSV xmlns=\"http://web.cbr.ru/\">"
+           f"<fromDate>{frm.isoformat()}</fromDate><ToDate>{to.isoformat()}</ToDate>"
+           "</RuoniaSV></soap:Body></soap:Envelope>")
+    resp = requests.post(_RUONIA_SV_URL, data=env.encode("utf-8"), timeout=60,
+                         headers={**_UA, "Content-Type": "text/xml; charset=utf-8",
+                                  "SOAPAction": "http://web.cbr.ru/RuoniaSV"})
+    resp.raise_for_status()
+    out: List[Tuple[date, float, Optional[float]]] = []
+    for el in ET.fromstring(resp.text).iter():
+        if el.tag.split("}")[-1] != "ra":
+            continue
+        rec = {c.tag.split("}")[-1]: (c.text or "").strip() for c in el}
+        dt, ix = rec.get("DT"), rec.get("RUONIA_Index")
+        if not dt or not ix:
+            continue
+        try:
+            avg = rec.get("RUONIA_AVG_1M")
+            out.append((date.fromisoformat(dt[:10]), float(ix),
+                        float(avg) if avg else None))
+        except ValueError:
+            continue
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def ruonia_index_history() -> List[Tuple[date, float, Optional[float]]]:
+    """Полная история официального индекса RUONIA, [(дата, индекс, avg1M)].
+
+    Дневной кэш на диске + инкрементальная догрузка: полная выгрузка с 2010 года
+    тянется ОДИН раз (~6000 строк), дальше добираются только новые дни. Сбой ЦБ →
+    отдаём кэш (stale лучше пустого, как во всём модуле)."""
+    today = date.today().isoformat()
+    if _index_mem["date"] == today and _index_mem["rows"]:
+        return _index_mem["rows"]
+    with _index_lock:
+        if _index_mem["date"] == today and _index_mem["rows"]:
+            return _index_mem["rows"]
+        rows: List[Tuple[date, float, Optional[float]]] = []
+        try:
+            with open(_RUONIA_INDEX_CACHE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            rows = [(date.fromisoformat(d), ix, avg) for d, ix, avg in raw.get("rows", [])]
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, TypeError):
+            rows = []
+        frm = (rows[-1][0] + _dt.timedelta(days=1)) if rows else _RUONIA_INDEX_START
+        if frm <= date.today():
+            try:
+                fresh = _fetch_ruonia_index(frm, date.today())
+                have = {d for d, _, _ in rows}
+                rows.extend(r for r in fresh if r[0] not in have)
+                rows.sort(key=lambda x: x[0])
+                from services.paths import atomic_write_json as _awj
+                _awj(_RUONIA_INDEX_CACHE,
+                     {"rows": [[d.isoformat(), ix, avg] for d, ix, avg in rows]})
+            except Exception as e:
+                logger.warning(f"RUONIA index fetch failed ({e}) — фолбэк на кэш")
+        _index_mem["date"], _index_mem["rows"] = today, rows
+        return rows

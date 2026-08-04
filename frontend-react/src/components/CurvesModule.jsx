@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { IconAlert } from "./icons.jsx";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchCurvePlot, fetchKsPath, fetchFloaterYield } from "../api.js";
+import { fetchCurvePlot, fetchKsPath, fetchFloaterYield, fetchRuoniaIndex } from "../api.js";
 import { fmt } from "../format.js";
 import {
   extent, sqrtScale, linearScale, timeScale, linTicks, yearTicks,
@@ -17,8 +17,8 @@ import {
 // SVG без внешних либ, тема через CSS-переменные. 401 ловит глобальный onError QueryClient.
 export default function CurvesModule() {
   const navigate = useNavigate();
-  const { view: viewParam } = useParams(); // undefined | curve | kspath | floater
-  const view = viewParam === "kspath" || viewParam === "floater" ? viewParam : "curve";
+  const { view: viewParam } = useParams(); // undefined | curve | kspath | floater | ruonia
+  const view = ["kspath", "floater", "ruonia"].includes(viewParam) ? viewParam : "curve";
   const setView = (v) => navigate(v === "curve" ? "/curves" : `/curves/${v}`);
   return (
     <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
@@ -30,10 +30,13 @@ export default function CurvesModule() {
             onClick={() => setView("kspath")}>Путь ставки</button>
           <button className={"seg-btn" + (view === "floater" ? " active" : "")}
             onClick={() => setView("floater")}>Флоатер YTM</button>
+          <button className={"seg-btn" + (view === "ruonia" ? " active" : "")}
+            onClick={() => setView("ruonia")}>Индекс RUONIA</button>
         </span>
       </div>
       {view === "curve" ? <CurveView />
         : view === "kspath" ? <KsPathView />
+        : view === "ruonia" ? <RuoniaIndexView />
         : <FloaterScenariosView />}
     </div>
   );
@@ -448,6 +451,74 @@ function BondVsIndexChart({ series, calcDate }) {
         <Tooltip x={X(hover.t)} viewW={W} top={4} dy={0} padding="3px 7px">
           {fmt.date(hover.date)} · купон {hover.coupon_pct}% · индекс {hover.base_pct}%
         </Tooltip>
+      )}
+    </div>
+  );
+}
+
+
+// ── Индекс RUONIA ───────────────────────────────────────────────────────────
+// Дневная таблица: ставка ЦБ, ОФИЦИАЛЬНЫЙ накопленный индекс (SOAP RuoniaSV,
+// публикуется с 11.01.2010 со значения 1.0) и НАШ расчётный на тех же ставках.
+// Расчётный якорится официальным на первый день окна — колонки сравнимы
+// напрямую, а Δ показывает, сходится ли наша механика с эталоном ЦБ.
+// Конвенция обоих: фиксинг дня даёт прирост следующего, капитализация по
+// рабочим дням, выходные простыми, делитель — фактическая длина года (ACT/ACT).
+const RU_WINDOWS = [[90, "3 мес"], [400, "год"], [1200, "3 года"], [6000, "вся история"]];
+
+function RuoniaIndexView() {
+  const [days, setDays] = useState(400);
+  const q = useQuery({
+    queryKey: ["ruonia-index", days],
+    queryFn: () => fetchRuoniaIndex(days),
+    staleTime: 10 * 60_000,
+  });
+  const d = q.data;
+  const ix = (v) => (v == null ? "—" : v.toFixed(8).replace(".", ","));
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="seg" role="tablist" aria-label="Период">
+          {RU_WINDOWS.map(([n, lbl]) => (
+            <button key={n} className={"seg-btn" + (days === n ? " active" : "")}
+              onClick={() => setDays(n)}>{lbl}</button>
+          ))}
+        </span>
+        {d && (
+          <span className="fnote" style={{ margin: 0 }}>
+            публикуется с <b>{fmt.date(d.start_date)}</b> со значения {d.start_value} ·
+            последнее {fmt.date(d.last_date)} = <b>{ix(d.last_index)}</b> ·
+            расхождение с нашим расчётом макс <b>{d.max_gap_bps} bps</b> (якорь {fmt.date(d.anchor_date)})
+          </span>
+        )}
+      </div>
+      {q.isError && <div className="warn-box">Ошибка: {q.error?.message}</div>}
+      {!d && !q.isError && <div className="loading">ЗАГРУЗКА</div>}
+      {d && (
+        <div style={{ maxHeight: "70vh", overflow: "auto" }}>
+          <table className="cf-table">
+            <thead>
+              <tr>
+                <th className="left">Дата</th>
+                <th title="ставка RUONIA ЦБ; в нерабочие дни повторяется последний фиксинг">Ставка %</th>
+                <th title="официальный накопленный индекс ЦБ (RuoniaSV)">Факт индекс</th>
+                <th title="наш расчёт на тех же ставках, заякорен официальным на первый день окна">Расчётный индекс</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.rows.map((r) => (
+                <tr key={r.date} className={r.is_fixing ? "" : "past"}>
+                  <td className="left" title={r.is_fixing ? "" : "своего фиксинга нет — работает предыдущий (выходной/праздник либо ещё не опубликован)"}>
+                    {fmt.date(r.date)}{!r.is_fixing && <span className="muted"> · повтор</span>}</td>
+                  <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
+                  <td className="mono-idx">{ix(r.index_fact)}</td>
+                  <td className="mono-idx" title={r.gap_bps != null ? `Δ ${r.gap_bps} bps` : ""}>{ix(r.index_calc)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

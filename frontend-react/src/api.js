@@ -145,6 +145,10 @@ export const fetchCurvePlot = (type) => request(`/api/curves/plot?type=${type}`)
 
 export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);
 
+// Индекс RUONIA по дням: ставка ЦБ, официальный индекс (публикуется с 2010-01-11)
+// и наш расчётный на тех же ставках — сверка нашей механики с эталоном.
+export const fetchRuoniaIndex = (days = 400) => request(`/api/curves/ruonia-index?days=${days}`);
+
 export const fetchFloaterYield = (isin) =>
   request(`/api/curves/floater-yield?isin=${encodeURIComponent(isin)}`);
 
