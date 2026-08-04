@@ -397,6 +397,49 @@ def test_accrue_index_year_basis_is_of_accrual_day():
     assert inc == pytest.approx(0.10 / 365, abs=1e-9), "2015 — не високосный"
 
 
+# ── compounded-купон: ставка из ОФИЦИАЛЬНОГО индекса ЦБ ───────────────────
+def test_compounded_uses_official_cbr_index(monkeypatch):
+    """Rj = (Index(e−lag)/Index(s−lag) − 1)·365/T по ряду ЦБ, а не произведение
+    дневных ставок: индекс подменяем известным рядом и ждём точную формулу."""
+    import services.coupon_calib as cc
+
+    s, e, lag = date(2026, 1, 10), date(2026, 4, 10), 7
+    levels = {}
+    lvl = 1.0
+    d = date(2025, 12, 1)
+    while d <= date(2026, 5, 1):            # ровно 10% годовых, ежедневный ряд
+        levels[d] = lvl
+        lvl *= 1.0 + 0.10 / 365.0
+        d += timedelta(days=1)
+    last = date(2026, 5, 1)
+    monkeypatch.setattr(cc, "ruonia_index_levels", lambda: (levels, last))
+
+    spec = {"mode": "average", "lag": lag, "lag_unit": "cal", "base": "RUONIA",
+            "compounded": True}
+    got = cc.projected_ks_pct(spec, s, e, date(2026, 5, 1),
+                              fwd_pct=lambda d: 10.0, idx=([], []))
+    days = (e - s).days
+    want = (levels[e - timedelta(days=lag)] / levels[s - timedelta(days=lag)] - 1.0) \
+        * 365.0 / days * 100.0
+    assert got == pytest.approx(want, abs=1e-9)
+
+
+def test_compounded_falls_back_without_cbr_index(monkeypatch):
+    """ЦБ недоступен и кэша нет → приближение произведением дневных ставок,
+    а не падение и не ноль."""
+    import services.coupon_calib as cc
+
+    monkeypatch.setattr(cc, "ruonia_index_levels", lambda: (None, None))
+    spec = {"mode": "average", "lag": 0, "lag_unit": "cal", "base": "RUONIA",
+            "compounded": True}
+    s, e = date(2026, 1, 10), date(2026, 4, 10)
+    got = cc.projected_ks_pct(spec, s, e, date(2026, 1, 1),
+                              fwd_pct=lambda d: 10.0, idx=([], []))
+    n = (e - s).days
+    want = ((1.0 + 0.10 / 365.0) ** n - 1.0) * 365.0 / n * 100.0
+    assert got == pytest.approx(want, abs=1e-9)
+
+
 def test_accrue_index_all_empty_returns_none_end():
     rows = [_row("2026-08-07", "2026-08-07", None),
             _row("2026-08-10", "2026-08-10", None)]

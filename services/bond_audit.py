@@ -676,7 +676,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     список купонов совпадает с таблицей PV паспорта. Для каждого купона —
     среднее по дням, боевой projected_ks_pct (кросс-чек) и ставка из cashflow."""
     from services.coupon_calib import (index_history, projected_ks_pct,
-                                       _rate_at, _realized)
+                                       compounded_index_bounds, _rate_at, _realized)
     from services.ref_data import coupon_formula
 
     data = cache.get(isin)
@@ -798,6 +798,15 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
                                           idx=idx), 4)
         except Exception:
             prod = None
+        # compounded: уровни индекса ЦБ на границах окна наблюдения — ровно та
+        # пара, из которой прайсинг взял ставку периода (единый источник)
+        idx_lo = idx_hi = idx_rate = None
+        if spec.get("compounded"):
+            try:
+                idx_lo, idx_hi, idx_rate = compounded_index_bounds(
+                    pspec, s, e, calc_date, lambda d: _fwd_step(d) or 0.0, idx)
+            except Exception as ex:
+                logger.warning(f"compounded index bounds {isin}: {ex}")
         cpn = None
         if mean_rows is not None:
             cpn = mean_rows + margin_pct
@@ -812,13 +821,17 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
             "mean_pct": mean_rows, "projected_pct": prod,
             "coupon_rate_pct": cpn,
             # индекс на границах периода + годовой эквивалент ИМЕННО этого
-            # периода: для бумаг с compounded=1 купон считается ровно как
-            # Index_end/Index_start − 1 (индекс сквозной, поэтому нужна пара)
-            "index_start": index_start,
-            "index_end": index_end,
-            "index_rate_pct": (round((index_end / index_start - 1.0) * 365.0
-                                     / max((e - s).days, 1) * 100.0, 4)
-                               if index_end and index_start else None),
+            # периода. Для compounded=1 берём ОФИЦИАЛЬНЫЙ индекс ЦБ на границах
+            # окна наблюдения (s−lag, e−lag) — ту же пару, из которой прайсинг
+            # считает купон (coupon_calib.compounded_index_bounds), иначе на
+            # одной бумаге выходили две ставки. Для остальных — сквозной индекс
+            # раскладки (иллюстрация накопления базы).
+            "index_start": idx_lo if idx_lo is not None else index_start,
+            "index_end": idx_hi if idx_hi is not None else index_end,
+            "index_rate_pct": (round(idx_rate, 4) if idx_rate is not None else
+                               (round((index_end / index_start - 1.0) * 365.0
+                                      / max((e - s).days, 1) * 100.0, 4)
+                                if index_end and index_start else None)),
             "display_rate_pct": c.get("coupon_rate_pct"),  # ставка из таблицы PV
             "n_fact": sum(1 for r in rows if r["src"] == "fact"),
             "rows": rows,

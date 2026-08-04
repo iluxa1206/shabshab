@@ -395,6 +395,28 @@ def index_history(base: str):
     return _index(base)
 
 
+# ОФИЦИАЛЬНЫЙ индекс RUONIA ЦБ (RuoniaSV) — {дата: уровень} + последняя дата.
+# Нужен compounded-купонам: проспект (ВЭБ.РФ, Роснефть) описывает ставку как
+# Rj = (Index(e−lag)/Index(s−lag) − 1)·365/Tj именно по индексу ЦБ, а не по
+# самодельному произведению дневных ставок.
+_lvl_cache: dict = {"key": None, "map": None, "last": None}
+
+
+def ruonia_index_levels():
+    """({date: уровень}, последняя_дата) официального индекса; (None, None), если
+    ЦБ недоступен и кэша нет — вызывающий откатывается на приближение."""
+    try:
+        rows = cbr.ruonia_index_history()
+    except Exception:
+        rows = None
+    if not rows:
+        return None, None
+    key = (len(rows), rows[-1][0])
+    if _lvl_cache["key"] != key:
+        _lvl_cache.update(key=key, map={d: ix for d, ix, _ in rows}, last=rows[-1][0])
+    return _lvl_cache["map"], _lvl_cache["last"]
+
+
 def _rate_at(idx, d: date) -> Optional[float]:
     """idx = (dates, rates), отсортированы по дате. Последняя ставка ≤ d (bisect)."""
     dates, rates = idx
@@ -621,6 +643,99 @@ def _realized(idx, obs: date, calc_date: date) -> bool:
     return (obs - dts[i]).days <= _HIST_STALE_GRACE_DAYS
 
 
+def _index_grow(frm: date, to: date, calc_date: date, fwd_pct, idx) -> float:
+    """Рост индекса RUONIA за (frm, to] ЗА ПРЕДЕЛАМИ опубликованного ряда:
+    ставка дня отрабатывает СЛЕДУЮЩИЙ день, делитель ACT/ACT по дню начисления,
+    капитализация в рабочие дни (в будущем дней фиксинга ещё не существует —
+    рабочий календарь единственный доступный прокси). Механика повторяет
+    bond_audit.accrue_index, чтобы хвост стыковался с официальным рядом."""
+    import calendar as _cal
+    from core.valuation import _is_settlement_day_off as _off
+
+    def _rate(d):
+        return _rate_at(idx, d) if _realized(idx, d, calc_date) else fwd_pct(d)
+
+    level = base = 1.0
+    prev = _rate(frm)
+    cur = frm
+    while cur < to:
+        cur += timedelta(days=1)
+        if prev is not None:
+            yb = 366.0 if _cal.isleap((cur - timedelta(days=1)).year) else 365.0
+            level += base * (prev / 100.0) / yb
+        if not _off(cur):
+            base = level
+        prev = _rate(cur)
+    return level
+
+
+def compounded_index_bounds(spec: dict, start: date, end: date, calc_date: date,
+                            fwd_pct, idx=None, lag: int = None, unit: str = None):
+    """(Index(s−lag), Index(e−lag), ставка %) — уровни ОФИЦИАЛЬНОГО индекса RUONIA
+    ЦБ на границах окна наблюдения и ставка периода по букве проспекта
+    (Index(e−lag)/Index(s−lag) − 1)·365/T. Хвост за последней публикацией ЦБ
+    доращивается _index_grow (факт где есть, форвард кривой дальше).
+
+    (None, None, None) — ряда ЦБ нет (нет сети и кэша) либо база не RUONIA:
+    вызывающий берёт приближение.
+
+    ЕДИНАЯ ТОЧКА для прайсинга (projected_ks_pct) и паспорта (bond_audit):
+    раньше паспорт копил индекс по дням КУПОНА, а прайсинг перемножал дневные
+    ставки — на одну бумагу выходили две ставки, расходившиеся до 15 bps.
+
+    Почему не произведение дневных ставок: сверка с ФАКТИЧЕСКИ выплаченными
+    купонами ВЭБ2Р-50..57 и Роснфт5P1 даёт 0.01–0.18 bps по индексу ЦБ против
+    0.45–1.37 bps у произведения; на ставках 2022 разрыв самих методик доходил
+    до 13 bps (фиксированный 365 против ACT/ACT и капитализация в дни без
+    фиксинга)."""
+    none3 = (None, None, None)
+    if spec.get("base") != "RUONIA":
+        return none3
+    if idx is None:
+        idx = _index("RUONIA")
+    if lag is None:
+        lag = spec.get("lag", 0) or 0
+    if unit is None:
+        unit = spec.get("lag_unit", "cal") or "cal"
+    levels, last_off = ruonia_index_levels()
+    if not levels or not last_off:
+        return none3
+    days = (end - start).days
+    if days <= 0:
+        return none3
+    s0, e0 = _obs_date(start, lag, unit), _obs_date(end, lag, unit)
+    if e0 <= s0:
+        return none3
+
+    def _lvl(d):
+        cur = d
+        for _ in range(10):     # ряд ежедневный, но подстрахуемся от дыр
+            if cur in levels:
+                return levels[cur]
+            cur -= timedelta(days=1)
+        return None
+
+    i0 = _lvl(min(s0, last_off))
+    if not i0:
+        return none3
+    if s0 > last_off:                        # окно целиком в будущем
+        i0 = _lvl(last_off) * _index_grow(last_off, s0, calc_date, fwd_pct, idx)
+    if e0 <= last_off:                       # конец окна опубликован
+        i1 = _lvl(e0)
+    else:
+        base_lvl = _lvl(last_off)
+        i1 = base_lvl * _index_grow(last_off, e0, calc_date, fwd_pct, idx)
+    if not i0 or not i1:
+        return none3
+    return i0, i1, (i1 / i0 - 1.0) * 365.0 / days * 100.0
+
+
+def _compounded_pct(spec: dict, start: date, end: date, calc_date: date,
+                    fwd_pct, idx, lag: int, unit: str) -> Optional[float]:
+    """Ставка периода для compounded-купона; None → откат на приближение."""
+    return compounded_index_bounds(spec, start, end, calc_date, fwd_pct, idx, lag, unit)[2]
+
+
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float], idx=None) -> float:
     """Компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ (КС/RUONIA),
@@ -633,13 +748,16 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
     unit = spec.get("lag_unit", "cal")
 
     # КАПИТАЛИЗАЦИЯ индекса внутри периода (spec.compounded): конвенция
-    # «Rj = (Index_end(j−lag)/Index_start(j−lag) − 1)·B/Tj» — ВЭБ.РФ, Роснефть,
-    # ОФЗ-ПК нового типа. Index — накопленный индекс RUONIA (произведение
-    # (1+r_d/365)), поэтому воспроизводим его по дням дохода (s,e] со сдвигом
-    # lag и приводим к эквивалентной simple-ставке ·365/n — дальше маржа и
-    # начисление идут общей веткой. Простое среднее занижало купон на 0.3-0.5пп
-    # (ОФЗ 29026-29029, ВЭБ2Р-50..57, Роснфт5P1).
+    # «Rj = (Index(e−lag)/Index(s−lag) − 1)·B/Tj» — ВЭБ.РФ, Роснефть. Index —
+    # ОФИЦИАЛЬНЫЙ индекс RUONIA ЦБ, поэтому и берём его ряд, а прошлое дальше
+    # последней публикации доращиваем той же механикой, что accrue_index.
+    # Простое среднее занижало купон на 0.3-0.5пп (ВЭБ2Р-50..57, Роснфт5P1).
     if spec.get("compounded"):
+        r = _compounded_pct(spec, start, end, calc_date, fwd_pct, idx, lag, unit)
+        if r is not None:
+            return r
+        # индекс ЦБ недоступен (нет сети и кэша) — приближение произведением
+        # дневных ставок: держит порядок величины, но уезжает от ряда ЦБ
         factor, n, cur = 1.0, 0, start + timedelta(days=1)
         while cur <= end:
             obs = _obs_date(cur, lag, unit)
