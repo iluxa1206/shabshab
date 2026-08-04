@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
-import { fetchBonds, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { fetchBonds, fetchDepth, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { applyVolume } from "./vwap.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
@@ -38,6 +39,12 @@ function Dashboard() {
   const [ratingsSel, setRatingsSel] = useState([]); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState([]); // имена эмитентов (мульти)
   const [twoSided, setTwoSided] = useState(false);  // только двусторонние котировки
+  // размер тикета, ₽ (0 = фильтр выключен): котировки пересчитываются в VWAP на
+  // этот объём по лестнице стакана, строки без такой глубины уходят
+  const [volRub, setVolRub] = useState(() => Number(localStorage.getItem("volRub") || 0) || 0);
+  // окно погашения [от, до] — ISO-даты, пустая строка = граница не задана
+  const [matFrom, setMatFrom] = useState(() => localStorage.getItem("matFrom") || "");
+  const [matTo, setMatTo] = useState(() => localStorage.getItem("matTo") || "");
   const [query, setQuery] = useState("");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
@@ -77,6 +84,9 @@ function Dashboard() {
   });
   const lastTriggerRef = useRef(null);
 
+  useEffect(() => { localStorage.setItem("volRub", String(volRub)); }, [volRub]);
+  useEffect(() => { localStorage.setItem("matFrom", matFrom); }, [matFrom]);
+  useEffect(() => { localStorage.setItem("matTo", matTo); }, [matTo]);
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
@@ -219,6 +229,14 @@ function Dashboard() {
     };
   }, [scheduleReprice]);
 
+  // лестницы стаканов по всему рынку — только когда фильтр по объёму включён.
+  // Снимок на бэке обновляется раз в ~2 мин, чаще тянуть нечего.
+  const depthQ = useQuery({
+    queryKey: ["depth"], queryFn: fetchDepth, refetchInterval: 60000,
+    enabled: volRub > 0, staleTime: 30000,
+  });
+  const depth = depthQ.data?.items;
+
   const filtered = useMemo(() => {
     const ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"];
     const ratingMatch = (r) => ratingsSel.some((k) =>
@@ -231,6 +249,18 @@ function Dashboard() {
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
+    // окно погашения: строки без даты погашения (перп/дыра в справочнике) при
+    // заданной границе прячем — иначе они молча пролезают в любой срок
+    if (matFrom) rows = rows.filter((b) => b.maturity_date && b.maturity_date >= matFrom);
+    if (matTo) rows = rows.filter((b) => b.maturity_date && b.maturity_date <= matTo);
+    // ФИЛЬТР ПО ОБЪЁМУ. Котировка строки становится VWAP на тикет volRub ₽ по
+    // лестнице стакана, Y-IDX — спред к этой цене. Строка, где НИ ОДНА сторона не
+    // набирает объём, уходит: тикет по ней не исполнить. Сторона, которой не
+    // хватило глубины, гаснет в прочерк (вторую можно торговать). Нужны обе —
+    // добирается чипом BID×OFFER, он применяется следующим.
+    if (volRub > 0 && depth) {
+      rows = rows.map((b) => applyVolume(b, depth[b.isin], volRub)).filter(Boolean);
+    }
     if (twoSided) rows = rows.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
     const q = query.trim().toLowerCase();
     if (q) {
@@ -249,7 +279,8 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch]);
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch,
+      matFrom, matTo, volRub, depth]);
 
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
@@ -301,6 +332,9 @@ function Dashboard() {
         issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
         twoSided={twoSided} setTwoSided={setTwoSided}
+        volRub={volRub} setVolRub={setVolRub}
+        depthTs={depthQ.data?.ts} depthLoading={volRub > 0 && depthQ.isLoading}
+        matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         query={query} setQuery={setQuery}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
@@ -317,8 +351,9 @@ function Dashboard() {
         onOpen={openDrawer}
         watch={watch}
         onToggleStar={toggleStar}
-        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || emittersSel.length > 0 || query !== ""}
-        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setTwoSided(false); setQuery(""); }}
+        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || emittersSel.length > 0
+          || query !== "" || volRub > 0 || matFrom !== "" || matTo !== ""}
+        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setTwoSided(false); setQuery(""); setVolRub(0); setMatFrom(""); setMatTo(""); }}
         onRetry={loadBonds}
         visibleCols={visibleCols}
         onMoveCol={moveCol}

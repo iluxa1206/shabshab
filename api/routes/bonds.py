@@ -69,6 +69,8 @@ def _uni_item(u, name, mx, spread_dur):
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         bid_price_pct=mx.get("bid"), ask_price_pct=mx.get("ask"),
         y_idx_bid_bps=mx.get("yoi_bid"), y_idx_ask_bps=mx.get("yoi_ask"),
+        face_value_rub=mx.get("face_px"), accrued_rub=mx.get("accrued_settle"),
+        y_idx_slope_bps_per_pct=mx.get("yoi_slope"),
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
         val_today=mx.get("val_today"),
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),

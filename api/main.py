@@ -350,6 +350,30 @@ async def hourly_bars_worker():
         await asyncio.sleep(max(60.0, (nxt - now).total_seconds()))
 
 
+DEPTH_POLL_INTERVAL = int(os.getenv("DEPTH_POLL_INTERVAL", "120"))   # снимок стаканов, сек
+
+
+async def depth_poller():
+    """Батч-снимок стаканов по всему юниверсу раз в DEPTH_POLL_INTERVAL (торговые
+    часы) → market_cache['depth']. Питает фильтр по объёму в таблице: VWAP на
+    тикет считается по лестнице, а не по верху стакана. Вне торговых часов не
+    крутим — книга не меняется, а снимок и так помечен ts."""
+    from services import depth as depth_svc
+    await asyncio.sleep(60)   # пропускаем стартовый прогрев (цены/метрики важнее)
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                uni = await instruments_registry.fetch_floater_universe()
+                isins = [u["isin"] for u in uni if u.get("isin")]
+                n = await depth_svc.refresh_depth(isins, chunk=UNIVERSE_POLL_CHUNK)
+                logger.info("depth snapshot: %d/%d стаканов", n, len(isins))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"depth poller error: {e}")
+        await asyncio.sleep(DEPTH_POLL_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
@@ -363,6 +387,7 @@ async def lifespan(app: FastAPI):
     alor_ws = asyncio.create_task(alor_orderbook_ws())
     spread_snap = asyncio.create_task(spread_snapshotter())
     bars_worker = asyncio.create_task(hourly_bars_worker())
+    depth_task = asyncio.create_task(depth_poller())
     yield
     warm.cancel()
     task.cancel()
@@ -372,6 +397,7 @@ async def lifespan(app: FastAPI):
     alor_ws.cancel()
     spread_snap.cancel()
     bars_worker.cancel()
+    depth_task.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",

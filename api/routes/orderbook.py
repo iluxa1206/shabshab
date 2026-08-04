@@ -54,6 +54,21 @@ def _level(metrics_fn, price, qty):
                           g_spread_bps=m.get("g_spread_bps"))
 
 
+@router.get("/depth/all", tags=["Orderbook"])
+async def get_depth_all():
+    """Лестницы стаканов по всему юниверсу флоатеров одним ответом — сырьё для
+    фильтра по объёму в таблице (VWAP на тикет считает фронт: объём задаёт
+    пользователь, а деньги уровня = qty × (номинал × цена% + НКД) он берёт из
+    face_value/accrued_rub строки /api/bonds).
+
+    Наполняет фоновый depth_poller (батч-снимок Alor WS раз в ~2 мин в торговые
+    часы). Пустой items — снимка ещё нет или он протух: фронт в этом случае
+    молча не применяет фильтр, а не показывает пустую таблицу."""
+    from services import depth as depth_svc
+    items = depth_svc.get_depth()
+    return {"ts": depth_svc.depth_ts(), "count": len(items), "items": items}
+
+
 @router.get("/{isin}", response_model=OrderbookResponse, tags=["Orderbook"])
 async def get_orderbook(
     isin: str = Path(...),

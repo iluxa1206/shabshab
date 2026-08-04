@@ -182,8 +182,9 @@ class CouponDayGroup(BaseModel):
     coupon_rate_pct: Optional[float]   # среднее + маржа, с кэпом/полом
     display_rate_pct: Optional[float]  # ставка купона из display-cashflow
     n_fact: int
-    index_end: Optional[float] = None      # расчётный индекс на конец периода
-    index_rate_pct: Optional[float] = None # он же в % годовых (Index_end−1)·365/дней
+    index_start: Optional[float] = None    # расчётный индекс на начало периода (сквозной!)
+    index_end: Optional[float] = None      # он же на конец = index первой строки след. купона
+    index_rate_pct: Optional[float] = None # рост ЗА ПЕРИОД в % годовых (End/Start−1)·365/дней
     rows: List[CouponDayRow]
 
 class CouponDaysResponse(BaseModel):
@@ -252,6 +253,13 @@ class BondListItem(BaseModel):
     ask_price_pct: Optional[float] = None
     y_idx_bid_bps: Optional[int] = None
     y_idx_ask_bps: Optional[int] = None
+    # сырьё фильтра по объёму: деньги уровня стакана = qty × (face×цена%/100 + НКД),
+    # а Y-IDX по VWAP-цене = Y-IDX(верх) + Δцены × y_idx_slope_bps_per_pct.
+    # face/НКД — ровно те, из которых собран dirty_price_rub (амортизация учтена,
+    # НКД на дату поставки T+1).
+    face_value_rub: Optional[float] = None
+    accrued_rub: Optional[float] = None
+    y_idx_slope_bps_per_pct: Optional[float] = None
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)

@@ -161,6 +161,10 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
   return request(url, { signal });
 }
 
+// Лестницы стаканов по всему юниверсу (фоновый снимок Alor) — сырьё для фильтра
+// по объёму: VWAP на тикет считает фронт (src/vwap.js).
+export const fetchDepth = () => request("/api/orderbook/depth/all");
+
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
 // Строка списка по одной бумаге (рейтинг, эмитент, Y-IDX, DM, спред-дюрация) —

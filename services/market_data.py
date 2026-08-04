@@ -84,6 +84,8 @@ market_cache = {
     "last_prices": {},
     "last_prices_ts": {},     # {isin: unix-ts последнего обновления} — возраст цены
     "universe_metrics": {},   # {isin: полные метрики вне watchlist} — наполняет фоновый поллер
+    "depth": {},              # {isin: {"b": [[px,qty]], "a": [...]}} — стаканы юниверса (services.depth)
+    "depth_ts": 0.0,          # unix-ts последнего батч-снимка стаканов
     "rates_date": None,
     "calc_date": None
 }

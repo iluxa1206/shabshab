@@ -19,16 +19,30 @@ function Chip({ value }) {
 // Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
 // ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
 // значение, а не бегает через полтаблицы, чтобы их сопоставить.
-function Quote({ px, spread, title }) {
+function Quote({ px, spread, title, vwap }) {
   // заявки нет вовсе — один прочерк, а не два друг под другом
   if (px == null && spread == null) return <td className="num" title={title}><D /></td>;
   return (
     <td className="num q-cell" title={title}>
-      <div className="q-px">{fmt.pct(px) ?? <D />}</div>
+      <div className={"q-px" + (vwap ? " q-vwap" : "")}>{fmt.pct(px) ?? <D />}</div>
       <div className="q-sp" style={spread == null ? undefined : dmColor(spread)}>
         {spread == null ? <D /> : fmt.bps(spread)}</div>
     </td>
   );
+}
+
+// Подпись ячейки котировки. Без фильтра по объёму — верх стакана MOEX; с ним —
+// VWAP набора тикета по лестнице Alor (b._vwap = размер тикета в ₽).
+function qTitle(b, side) {
+  const base = side === "bid"
+    ? "лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)"
+    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)";
+  if (!b._vwap) return base;
+  const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
+  const mln = b._vwap / 1e6;
+  return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
+    + (lv ? `: ${lv} ур.` : "")
+    + `; Y-IDX пересчитан на неё (линеаризация от верха стакана)`;
 }
 
 // Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align (стили шапки),
@@ -76,11 +90,11 @@ export const COLS = [
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
   { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", sep: true, w: 8,
-    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} 
-      title="лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)" /> },
+    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap}
+      title={qTitle(b, "bid")} /> },
   { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
-    cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
-      title="лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)" /> },
+    cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap}
+      title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"

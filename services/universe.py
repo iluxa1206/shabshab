@@ -79,8 +79,15 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
     yoi_bid = yoi_ask = None
+    face_px = accrued_settle = yoi_slope = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
+    # ±0.5пп вокруг расчётной цены — численная производная Y-IDX по цене (bps на
+    # 1пп). Ею фронт переводит VWAP-цену тикета в Y-IDX, не гоняя reprice на 540
+    # бумаг: Y-IDX(цена) на масштабе стакана (доли пп) практически линеен.
+    _dp = 0.5
+    _probe = ([round(price_calc - _dp, 4), round(price_calc + _dp, 4)]
+              if price_calc is not None else [])
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
         try:
             m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
@@ -88,12 +95,18 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             periods=periods or None,
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
-                                            alt_prices=[p for p in (bid, ask) if p])
+                                            alt_prices=[p for p in (bid, ask) if p] + _probe)
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             yoi = m.get("yield_over_index_bps")
             # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
             _alt = m.get("y_idx_by_price") or {}
             yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
+            # номинал и НКД РОВНО те, из которых собран dirty (амортизация учтена,
+            # НКД на дату поставки) — фронт считает ими деньги уровня стакана
+            face_px, accrued_settle = m.get("pricing_face_rub"), m.get("accrued_settle_rub")
+            _lo, _hi = _alt.get(_probe[0]), _alt.get(_probe[1])
+            if _lo is not None and _hi is not None:
+                yoi_slope = round((_hi - _lo) / (2 * _dp), 2)
             ytm, base_ytm = m.get("yield_xirr_pct"), m.get("index_yield_pct")
             implausible = bool(m.get("price_implausible"))
             hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
@@ -146,6 +159,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             price_thin = False
     return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
             "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
+            "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
             "next_coupon": next_cpn, "z_model": z_model,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,

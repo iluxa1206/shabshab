@@ -201,7 +201,9 @@ td.mut { color: var(--mut); }
 .pchart-empty { font-size: 12px; color: var(--mut-2); padding: 40px 8px; text-align: center; border: 1px solid var(--line); border-radius: 4px; }
 
 /* ---- Toolbar ---- */
-.toolbar { display: flex; align-items: center; gap: 20px; padding: 0 24px; height: 46px; border-bottom: 1px solid var(--line); }
+/* Групп фильтров больше, чем влезает в одну строку на 13-14" — переносим, а не
+   режем: обрезанный справа фильтр пользователь просто не находит. */
+.toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 6px 24px; min-height: 46px; border-bottom: 1px solid var(--line); }
 .toolbar::before { content: "/ search"; font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.14em; }
 .search {
   background: transparent; border: none; border-bottom: 1px solid var(--line-2); color: var(--fg);
@@ -236,6 +238,17 @@ td.mut { color: var(--mut); }
 }
 .chip-btn:hover { color: var(--fg); border-color: var(--fg); }
 .chip-btn.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+/* подпись внутри группы фильтров (ОБЪЁМ / ПОГАШ) */
+.fg-lbl { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; align-self: center; }
+/* числовой/датовый ввод в тулбаре — под стиль .search (подчёркивание, без рамки) */
+.num-input, .date-input {
+  background: transparent; border: none; border-bottom: 1px solid var(--line-2); color: var(--fg);
+  font-family: var(--mono); font-size: 11px; padding: 4px 2px; outline: none;
+}
+.num-input { width: 46px; }
+.date-input { width: 104px; }
+.num-input:focus, .date-input:focus { border-color: var(--fg); }
+.num-input::placeholder { color: var(--mut-2); }
 
 /* ---- Add bar (watchlist) ---- */
 .addbar { display: flex; align-items: center; gap: 16px; padding: 0 24px; min-height: 44px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -380,6 +393,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    line-height + урезанный вертикальный padding → строка не выше однострочных. */
 .grid tbody td.q-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; }
 .q-px { color: var(--mut); }
+/* цена — не верх стакана, а VWAP набора тикета: пунктир под ценой */
+.q-px.q-vwap { color: var(--fg); border-bottom: 1px dotted var(--line-2); display: inline-block; }
 .q-sp { font-size: 11px; font-weight: 600; line-height: 1.1; margin-top: 1px; }
 .q-sp .dash { font-weight: 400; }
 /* Y-IDX по стакану: цвет знака сохраняем (это та же метрика), но мельче и
