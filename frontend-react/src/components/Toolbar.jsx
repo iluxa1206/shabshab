@@ -1,14 +1,10 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import IssuerFilter from "./IssuerFilter.jsx";
+import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
   ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
 ];
-// цвета бакетов как в FixedModule (тема-aware CSS-переменные)
-const RTCOLOR = {
-  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
-  BELOW: "var(--rt-bb)", NR: "var(--mut-2)",
-};
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,

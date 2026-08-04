@@ -307,7 +307,9 @@ td.mut { color: var(--mut); }
 .grid tbody tr.flash td { animation: flash .8s ease-out; }
 @keyframes flash { 0% { background: var(--inv-bg); } 100% { background: transparent; } }
 .bond-name { font-weight: 700; letter-spacing: -0.01em; }
-.rating-cell { font-size: 12px; letter-spacing: 0.04em; color: var(--fg); }
+/* рейтинг в скобках рядом с именем бумаги — цвет бакета как в фильтрах;
+   вес обычный, чтобы не спорить с именем (оно жирное) */
+.bond-rt { margin-left: 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; }
 .bond-formula { color: var(--mut); font-size: 12px; }
 /* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
    ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */

@@ -28,6 +28,21 @@ export const couponsPerYear = (periodDays, declared) => {
   return d > 0 ? Math.round(d) : null;
 };
 
+// Цвет рейтингового бакета — общий словарь для фильтров, таблиц и графиков.
+export const RT_COLOR = {
+  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
+  BELOW: "var(--rt-bb)", NR: "var(--mut-2)",
+};
+
+// Цвет КОНКРЕТНОГО рейтинга: всё ниже BBB схлопывается в бакет BELOW (в фильтре
+// это одна кнопка «BB↓»), нераспознанное/пустое — серый NR.
+export function ratingColor(rating) {
+  const r = (rating || "").toUpperCase();
+  if (!r) return RT_COLOR.NR;
+  if (RT_COLOR[r] && r !== "BELOW" && r !== "NR") return RT_COLOR[r];
+  return /^(BB|B|CCC|CC|C|D)$/.test(r) ? RT_COLOR.BELOW : RT_COLOR.NR;
+}
+
 // Семантика для сканируемости: DM выше/положительный = дёшево (up), ниже = дорого (down).
 export function dmColor(dm) {
   if (dm == null) return { color: "var(--mut-2)" };

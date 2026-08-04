@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { baseLabel, fmt, dmColor } from "../format.js";
+import { baseLabel, fmt, dmColor, ratingColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
 import CouponFormula from "./CouponFormula.jsx";
 
@@ -40,7 +40,7 @@ function Quote({ px, spread, cls = "", title }) {
 // table-layout: fixed для .grid.cols-fixed в styles.css.
 export const COLS = [
   // ── статика бумаги ──
-  { key: "short_name", label: "INSTRUMENT", align: "left", w: 17,
+  { key: "short_name", label: "INSTRUMENT", align: "left", w: 24,
     cell: (b) => {
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
@@ -49,6 +49,8 @@ export const COLS = [
           <div className="bond-name">
             <span className={"fx-cls fx-" + (isOfz ? "ofz" : "corp")}>{isOfz ? "ОФЗ" : "КОРП"}</span>
             {b.short_name || b.isin}
+            {/* рейтинг здесь же, цветом бакета (как в фильтрах) — отдельной колонки не держим */}
+            {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
             {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
             {!b.price_implausible && b.price_thin && <span className="badge-thin" title="0 сделок сегодня на MOEX — цена несвежая (вчерашний/старый принт). DM/z сняты с ненадёжной цены.">тонк</span>}
           </div>
@@ -58,8 +60,6 @@ export const COLS = [
   { key: "base_rate_type", label: "BASE", w: 6,
     cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}
       title={b.base_rate_type}>{baseLabel(b.base_rate_type)}</span></td> },
-  { key: "rating", label: "RATING", w: 7,
-    cell: (b) => <td className="rating-cell" key="rating">{b.rating || <D />}</td> },
   { key: "formula", label: "FORMULA", align: "left", w: 17,
     cell: (b) => <td className="left bond-formula" key="formula">
       <CouponFormula base={b.base_rate_type} spreadBps={b.spread_issue_bps}
