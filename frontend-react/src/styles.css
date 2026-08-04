@@ -361,6 +361,19 @@ td.px-stale { color: var(--mut); }
 .issuer-cnt { color: var(--mut); font-variant-numeric: tabular-nums; font-size: 11px; }
 .issuer-empty { color: var(--mut); font-size: 12px; padding: 6px; }
 
+/* всплывающее окно «ФИЛЬТРЫ»: база + эмитент + сброс всего */
+.filters-menu { position: relative; display: inline-block; }
+.filters-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; width: 300px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  padding: 10px; display: flex; flex-direction: column; gap: 12px; }
+.fp-sec { display: flex; flex-direction: column; gap: 6px; }
+.fp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fp-chips { display: flex; gap: 4px; }
+.fp-reset { width: 100%; padding: 6px 8px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg); background: none; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
+.fp-reset:hover:not(:disabled) { border-color: var(--neg, var(--fg)); color: var(--neg, var(--fg)); }
+.fp-reset:disabled { color: var(--mut); border-color: var(--line-2); cursor: default; }
+
 /* агрегаты по эмитентам */
 /* flex:1 + min-height:0 + overflow-y — иначе длинная таблица уходит за экран
    (#app = height:100vh; overflow:hidden; вертикального скролла не было) */

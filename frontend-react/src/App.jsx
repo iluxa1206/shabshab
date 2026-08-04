@@ -323,14 +323,25 @@ function Dashboard() {
     navigate("/floaters");
   }, [navigate]);
 
+  // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
+  const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
+    + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (query !== "" ? 1 : 0)
+    + (volRub > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0);
+  const resetFilters = useCallback(() => {
+    setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
+    setTwoSided(false); setQuery(""); setVolRub(0); setMatFrom(""); setMatTo("");
+  }, []);
+
   const floatersView = (
     <>
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
         ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+        clearBases={() => setBasesSel([])}
         issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
+        activeFilters={activeFilters} onResetFilters={resetFilters}
         twoSided={twoSided} setTwoSided={setTwoSided}
         volRub={volRub} setVolRub={setVolRub}
         depthTs={depthQ.data?.ts} depthLoading={volRub > 0 && depthQ.isLoading}
@@ -351,9 +362,8 @@ function Dashboard() {
         onOpen={openDrawer}
         watch={watch}
         onToggleStar={toggleStar}
-        filtered={onlyWatch || basesSel.length > 0 || ratingsSel.length > 0 || emittersSel.length > 0
-          || query !== "" || volRub > 0 || matFrom !== "" || matTo !== ""}
-        onClearFilters={() => { setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]); setTwoSided(false); setQuery(""); setVolRub(0); setMatFrom(""); setMatTo(""); }}
+        filtered={activeFilters > 0}
+        onClearFilters={resetFilters}
         onRetry={loadBonds}
         visibleCols={visibleCols}
         onMoveCol={moveCol}

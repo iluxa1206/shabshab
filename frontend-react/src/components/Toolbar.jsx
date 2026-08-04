@@ -1,5 +1,5 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
-import IssuerFilter from "./IssuerFilter.jsx";
+import FiltersMenu from "./FiltersMenu.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
@@ -11,10 +11,11 @@ const VOLS = [[1e6, "1"], [5e6, "5"], [10e6, "10"]];
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
-  issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
+  clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   volRub, setVolRub, depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
   visibleCols, onToggleCol, onResetCols, onMoveCol,
+  activeFilters, onResetFilters,
 }) {
   const volTitle = "Размер тикета: BID/OFFER пересчитываются в средневзвешенную цену "
     + "набора этой суммы по лестнице стакана (деньги грязные: кол-во × (номинал × цена% + НКД)), "
@@ -43,10 +44,14 @@ export default function Toolbar({
         </button>
       </div>
 
-      {/* группа 2: база */}
+      {/* группа 2: фильтры (база, эмитент, сброс всего) */}
       <div className="fgroup">
-        <button className={"chip-btn" + (basesSel.includes("KEYRATE") ? " on" : "")} onClick={() => toggleBase("KEYRATE")}>КС</button>
-        <button className={"chip-btn" + (basesSel.includes("RUONIA") ? " on" : "")} onClick={() => toggleBase("RUONIA")}>RUONIA</button>
+        <FiltersMenu
+          basesSel={basesSel} toggleBase={toggleBase} clearBases={clearBases}
+          issuers={issuers || []} emittersSel={emittersSel || []}
+          toggleEmitter={toggleEmitter} clearEmitters={clearEmitters}
+          activeCount={activeFilters} onResetAll={onResetFilters}
+        />
       </div>
 
       {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет */}
@@ -97,12 +102,6 @@ export default function Toolbar({
           <button className="chip-btn" title="Сбросить окно погашения"
             onClick={() => { setMatFrom(""); setMatTo(""); }}>×</button>
         )}
-      </div>
-
-      {/* группа: эмитент */}
-      <div className="fgroup">
-        <IssuerFilter issuers={issuers || []} selected={emittersSel || []}
-          onToggle={toggleEmitter} onClear={clearEmitters} />
       </div>
 
       <div className="fgroup">

@@ -54,6 +54,11 @@ function Harness() {
   const [twoSided, setTwoSided] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState({ key: "y_idx_bid_bps", dir: "asc" });
+  const [basesSel, setBasesSel] = useState([]);
+  const [emittersSel, setEmittersSel] = useState([]);
+  const ISSUERS = [{ name: "ТЕСТ", count: 3 }, { name: "РЖД", count: 12 }, { name: "ГТЛК", count: 7 }];
+  const toggleIn = (setter) => (v) =>
+    setter((a) => (a.includes(v) ? a.filter((x) => x !== v) : [...a, v]));
 
   const rows = useMemo(() => {
     let out = ROWS.slice();
@@ -68,8 +73,13 @@ function Harness() {
     <>
       <Toolbar
         onlyWatch={false} setOnlyWatch={() => {}}
-        basesSel={[]} toggleBase={() => {}} ratingsSel={[]} toggleRating={() => {}}
-        issuers={[]} emittersSel={[]} toggleEmitter={() => {}} clearEmitters={() => {}}
+        basesSel={basesSel} toggleBase={toggleIn(setBasesSel)} clearBases={() => setBasesSel([])}
+        ratingsSel={[]} toggleRating={() => {}}
+        issuers={ISSUERS} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
+        clearEmitters={() => setEmittersSel([])}
+        activeFilters={(basesSel.length ? 1 : 0) + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0)
+          + (volRub > 0 ? 1 : 0) + (matFrom ? 1 : 0) + (matTo ? 1 : 0) + (query ? 1 : 0)}
+        onResetFilters={() => { setBasesSel([]); setEmittersSel([]); setTwoSided(false); setVolRub(0); setMatFrom(""); setMatTo(""); setQuery(""); }}
         twoSided={twoSided} setTwoSided={setTwoSided}
         volRub={volRub} setVolRub={setVolRub} depthTs={Date.now() / 1000} depthLoading={false}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
