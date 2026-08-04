@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { baseLabel, formulaWithFreq, couponsPerYear, fmt, dmColor } from "../format.js";
+import { baseLabel, couponsPerYear, fmt, dmColor } from "../format.js";
+import CouponFormula from "./CouponFormula.jsx";
 import { fetchBondDetails, fetchFixedDetails, repriceBond, fetchRepricePast, UnauthorizedError, cbondsUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
@@ -321,7 +322,8 @@ function Content({ d, charts }) {
         <RefCell k="ISIN">{r.isin}</RefCell>
         <RefCell k="База">{baseLabel(r.base_rate_type)}</RefCell>
         <RefCell k="Формула купона">
-          {formulaWithFreq(r.formula, couponsPerYear(r.coupon_period_days, r.coupons_per_year))}
+          <CouponFormula base={r.base_rate_type} spreadBps={r.spread_bps} formula={r.formula}
+            couponsPerYear={couponsPerYear(r.coupon_period_days, r.coupons_per_year)} />
         </RefCell>
         <RefCell k="Спред выпуска">{r.spread_bps != null ? "+" + r.spread_bps + " bps" : null}</RefCell>
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>

@@ -19,12 +19,6 @@ export const orDash = (s) => (s == null || s === "" ? DASH : s);
 // Полные названия остаются только в поясняющих текстах и модуле кривых.
 export const baseLabel = (b) => (b === "RUONIA" ? "RU" : b === "KEYRATE" ? "КС" : b || DASH);
 
-// То же для готовой строки формулы с бэка («Ключевая ставка + 1,5%» → «КС + 1,5%»).
-// Сокращаем только на выводе: бэковый текст парсится (parse_base_and_spread ищет
-// «RUONIA»/«Ключевая ставка») — трогать его нельзя.
-export const shortFormula = (f) =>
-  f == null ? f : f.replace(/Ключевая ставка/gi, "КС").replace(/RUONIA/g, "RU");
-
 // Купонов в год. Фактический период купона (считается из реального графика выплат)
 // авторитетнее декларированной частоты из справочников — тот же приоритет, что на бэке.
 export const couponsPerYear = (periodDays, declared) => {
@@ -32,12 +26,6 @@ export const couponsPerYear = (periodDays, declared) => {
   if (p > 0) return Math.max(1, Math.min(365, Math.round(365 / p)));
   const d = Number(declared);
   return d > 0 ? Math.round(d) : null;
-};
-
-// «КС + 1,5%» + частота купона → «КС + 1,5% (4/год)».
-export const formulaWithFreq = (f, cpy) => {
-  const s = shortFormula(f);
-  return s && cpy ? `${s} (${cpy}/год)` : s;
 };
 
 // Семантика для сканируемости: DM выше/положительный = дёшево (up), ниже = дорого (down).

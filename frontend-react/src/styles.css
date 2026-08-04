@@ -290,6 +290,15 @@ td.mut { color: var(--mut); }
    тянутся до правого края), но всё свободное место забирает пустая колонка-филлер —
    значащие колонки жмутся по контенту и прижаты влево. */
 .packed .fill-col { width: 100%; padding: 0; cursor: default; }
+/* Ширины колонок заданы в <colgroup> (--cw в ch, см. COLS.w) и НЕ зависят от
+   данных: table-layout:fixed → тик цены, фильтр или сортировка не двигают
+   колонки. Всё, что не влезло, режется многоточием (полное значение в title). */
+.grid.cols-fixed { table-layout: fixed; }
+.grid.cols-fixed col { width: calc(var(--cw, 8ch) + 32px); }
+.grid.cols-fixed col.col-star { width: 42px; }
+.grid.cols-fixed col.col-fill { width: auto; }
+.grid.cols-fixed thead th, .grid.cols-fixed tbody td { overflow: hidden; text-overflow: ellipsis; }
+.grid.cols-fixed .bond-name { overflow: hidden; text-overflow: ellipsis; }
 .grid.packed .fill-col { border-bottom: 1px solid var(--line); }
 .grid.packed thead .fill-col { border-bottom: 1px solid var(--fg); }
 .grid.packed thead th:nth-last-child(2), .grid.packed tbody td:nth-last-child(2) { padding-right: 24px; }
@@ -300,6 +309,13 @@ td.mut { color: var(--mut); }
 .bond-name { font-weight: 700; letter-spacing: -0.01em; }
 .rating-cell { font-size: 12px; letter-spacing: 0.04em; color: var(--fg); }
 .bond-formula { color: var(--mut); font-size: 12px; }
+/* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
+   ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */
+.cf { display: inline-flex; align-items: baseline; }
+.cf-base { width: 3ch; }
+.cf-op { width: 2ch; text-align: center; }
+.cf-mrg { width: 7ch; text-align: right; }
+.cf-cpy { width: 5ch; text-align: right; color: var(--mut-2); }
 .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; padding: 2px 7px; border: 1px solid var(--line-2); color: var(--fg); }
 .dm-chip { font-weight: 700; }
 /* производная метрика устарела: цена тикнула по WS, расчёт ещё под старой ценой.
@@ -756,6 +772,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   .grid thead th, .grid tbody td { padding-left: 12px; padding-right: 12px; }
   .grid.packed thead th:nth-last-child(2), .grid.packed tbody td:nth-last-child(2) { padding-right: 16px; }
   .grid.packed .fill-col { padding: 0; }
+  .grid.cols-fixed col { width: calc(var(--cw, 8ch) + 24px); }
 }
 @media (max-width: 460px) {
   .kpis { grid-template-columns: 1fr 1fr; }

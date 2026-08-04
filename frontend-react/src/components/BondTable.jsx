@@ -1,8 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { baseLabel, formulaWithFreq, fmt, dmColor } from "../format.js";
+import { baseLabel, fmt, dmColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
+import CouponFormula from "./CouponFormula.jsx";
 
 const D = () => <span className="dash">—</span>;
 
@@ -18,9 +19,13 @@ function Chip({ value }) {
 // Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align (стили шапки),
 // cell(b) — полный <td>. Порядок = порядок в таблице.
 // sep: true — начало блока (портфель / наша модель) → вертикальный разделитель слева.
+// w — ширина колонки в ch (шрифт моноширинный): считается по МАКСИМУМУ формата
+// (самое длинное возможное значение либо подпись шапки), а не по текущим данным,
+// поэтому тик цены, смена фильтра или сортировки не двигают колонки. См.
+// table-layout: fixed для .grid.cols-fixed в styles.css.
 export const COLS = [
   // ── статика бумаги ──
-  { key: "short_name", label: "INSTRUMENT", align: "left",
+  { key: "short_name", label: "INSTRUMENT", align: "left", w: 17,
     cell: (b) => {
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
@@ -35,44 +40,45 @@ export const COLS = [
         </td>
       );
     } },
-  { key: "base_rate_type", label: "BASE",
+  { key: "base_rate_type", label: "BASE", w: 6,
     cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}
       title={b.base_rate_type}>{baseLabel(b.base_rate_type)}</span></td> },
-  { key: "rating", label: "RATING",
+  { key: "rating", label: "RATING", w: 7,
     cell: (b) => <td className="rating-cell" key="rating">{b.rating || <D />}</td> },
-  { key: "formula", label: "FORMULA", align: "left",
-    cell: (b) => <td className="left bond-formula" key="formula" title={b.formula || undefined}>
-      {formulaWithFreq(b.formula, b.coupons_per_year) || "—"}</td> },
-  { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num",
+  { key: "formula", label: "FORMULA", align: "left", w: 17,
+    cell: (b) => <td className="left bond-formula" key="formula">
+      <CouponFormula base={b.base_rate_type} spreadBps={b.spread_issue_bps}
+        couponsPerYear={b.coupons_per_year} formula={b.formula} /></td> },
+  { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num", w: 8,
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
-  { key: "next_coupon_date", label: "COUPON", sub: "NEXT",
+  { key: "next_coupon_date", label: "COUPON", sub: "NEXT", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
-  { key: "maturity_date", label: "MATURITY",
+  { key: "maturity_date", label: "MATURITY", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
   // ── НАША МОДЕЛЬ (цена → CHG → dirty → Y−IDX (первичная) → SM → DM → Z) ──
-  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
+  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true, w: 7,
     cell: (b) => <td className={"num col-sep" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
       {fmt.pct(b.last_price_pct) ?? <D />}</td> },
-  { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num",
+  { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;
       const deltaCls = delta == null ? "" : delta >= 0 ? "pos" : "neg";
       return <td className={"num " + deltaCls} key="delta_to_prev_close">{delta == null ? <D /> : <>{fmt.signed(delta)} {delta >= 0 ? "▲" : "▼"}</>}</td>;
     } },
-  { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num",
+  { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num", w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
-  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num",
+  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num", w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
-  { key: "dm_bps", label: "SM", sub: "MODEL", align: "num",
+  { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
-  { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num",
+  { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.disc_margin_bps)} key="disc_margin_bps">{fmt.bps(b.disc_margin_bps) ?? <D />}</td> },
-  { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num",
+  { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
-  { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num",
+  { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
-  { key: "index_yield_pct", label: "YTM", sub: "БАЗА %", align: "num",
+  { key: "index_yield_pct", label: "YTM", sub: "БАЗА %", align: "num", w: 7,
     cell: (b) => <td className="num" key="index_yield_pct">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
 ];
 
@@ -177,7 +183,12 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
 
   return (
     <section className="table-wrap">
-      <table className="grid packed">
+      <table className="grid packed cols-fixed">
+        <colgroup>
+          <col className="col-star" />
+          {cols.map((c) => <col key={c.key} style={{ "--cw": (c.w || 8) + "ch" }} />)}
+          <col className="col-fill" />
+        </colgroup>
         <thead>
           <tr>
             <th className="star-col" aria-label="Watchlist" />

@@ -21,43 +21,43 @@ const mln = (v) => (v == null ? null : v >= 1e9 ? (v / 1e9).toFixed(1) + "млр
 
 // колонки: key, label, sub, доступ к значению, рендер ячейки
 const COLS = [
-  { key: "name", label: "INSTRUMENT", align: "left",
+  { key: "name", label: "INSTRUMENT", align: "left", w: 17,
     cell: (b) => (
       <td className="left" key="name">
         <span className={"fx-cls fx-" + b.cls}>{b.cls === "ofz" ? "ОФЗ" : "КОРП"}</span>
         {b.name}
       </td>
     ) },
-  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true,
+  { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", sep: true, w: 7,
     get: (b) => b.last_price_pct,
     cell: (b) => <td className={"num col-sep" + (b.price_stale ? " px-stale" : "")} key="p"
       title={b.price_stale ? "пред. закрытие — нет сделок сегодня" : undefined}>{fmt.pct(b.last_price_pct) ?? <D />}</td> },
-  { key: "ytm", label: "YTM", sub: "%", align: "num",
+  { key: "ytm", label: "YTM", sub: "%", align: "num", w: 7,
     get: (b) => b.ytm, cell: (b) => <td className="num" key="y">{b.ytm == null ? <D /> : fmt.pct(b.ytm)}</td> },
-  { key: "delta_ytm", label: "Δ YTM", sub: "D/D пп", align: "num",
+  { key: "delta_ytm", label: "Δ YTM", sub: "D/D пп", align: "num", w: 8,
     get: (b) => b.delta_ytm,
     cell: (b) => <td className="num" style={b.delta_ytm != null ? dmColor(-b.delta_ytm) : undefined} key="dy">{b.delta_ytm == null ? <D /> : (b.delta_ytm > 0 ? "+" : "") + fmt.num(b.delta_ytm, 2)}</td> },
-  { key: "cur_yield", label: "CUR Y", sub: "%", align: "num",
+  { key: "cur_yield", label: "CUR Y", sub: "%", align: "num", w: 7,
     get: (b) => b.cur_yield, cell: (b) => <td className="num" key="cy">{b.cur_yield == null ? <D /> : fmt.pct(b.cur_yield)}</td> },
-  { key: "g_spread_bps", label: "G-SPRD", sub: "vs ОФЗ", align: "num",
+  { key: "g_spread_bps", label: "G-SPRD", sub: "vs ОФЗ", align: "num", w: 8,
     get: (b) => b.g_spread_bps,
     cell: (b) => <td className="num" style={b.g_spread_bps != null ? dmColor(b.g_spread_bps) : undefined} key="g">{b.g_spread_bps == null ? <D /> : fmt.bps(b.g_spread_bps)}</td> },
-  { key: "z_spread_bps", label: "Z-SPRD", sub: "bps", align: "num",
+  { key: "z_spread_bps", label: "Z-SPRD", sub: "bps", align: "num", w: 8,
     get: (b) => b.z_spread_bps,
     cell: (b) => <td className="num" style={b.z_spread_bps != null ? dmColor(b.z_spread_bps) : undefined} key="z">{b.z_spread_bps == null ? <D /> : fmt.bps(b.z_spread_bps)}</td> },
-  { key: "mod_dur", label: "DUR", sub: "МОД, лет", align: "num",
+  { key: "mod_dur", label: "DUR", sub: "МОД, лет", align: "num", w: 9,
     get: (b) => b.mod_dur, cell: (b) => <td className="num" key="d">{b.mod_dur == null ? <D /> : fmt.num(b.mod_dur, 2)}</td> },
-  { key: "convexity", label: "CONV", sub: "выпукл.", align: "num",
+  { key: "convexity", label: "CONV", sub: "выпукл.", align: "num", w: 8,
     get: (b) => b.convexity, cell: (b) => <td className="num" key="cx">{b.convexity == null ? <D /> : fmt.num(b.convexity, 1)}</td> },
-  { key: "rating", label: "РЕЙТИНГ", sub: "", align: "num",
+  { key: "rating", label: "РЕЙТИНГ", sub: "", align: "num", w: 8,
     get: (b) => (b.rating ? RT.indexOf(b.rating) : 99),
     cell: (b) => <td className="num" key="r">{b.rating
       ? <span className="fx-rt" style={{ color: RTCOLOR[b.rating] }}>{b.rating}</span> : <D />}</td> },
-  { key: "coupon_pct", label: "COUPON", sub: "%", align: "num",
+  { key: "coupon_pct", label: "COUPON", sub: "%", align: "num", w: 7,
     get: (b) => b.coupon_pct, cell: (b) => <td className="num" key="c">{b.coupon_pct == null ? <D /> : fmt.pct(b.coupon_pct)}</td> },
-  { key: "maturity_date", label: "MATURITY", sub: "", align: "num",
+  { key: "maturity_date", label: "MATURITY", sub: "", align: "num", w: 10,
     get: (b) => b.maturity_date, cell: (b) => <td className="num" key="m">{b.maturity_date ? fmt.date(b.maturity_date) : <D />}</td> },
-  { key: "val_today", label: "ОБОРОТ", sub: "млн ₽", align: "num",
+  { key: "val_today", label: "ОБОРОТ", sub: "млн ₽", align: "num", w: 9,
     get: (b) => b.val_today, cell: (b) => <td className="num mut" key="v">{mln(b.val_today) ?? <D />}</td> },
 ];
 
@@ -175,7 +175,11 @@ export default function FixedModule({ onOpen }) {
           : q.error ? <div className="an-empty">ошибка загрузки</div>
           : !rows.length ? <div className="an-empty">нет данных (прогрев метрик — до минуты после старта)</div>
           : (
-            <table className="grid fx-grid packed">
+            <table className="grid fx-grid packed cols-fixed">
+              <colgroup>
+                {COLS.map((c) => <col key={c.key} style={{ "--cw": c.w + "ch" }} />)}
+                <col className="col-fill" />
+              </colgroup>
               <thead>
                 <tr>
                   {COLS.map((c) => (
