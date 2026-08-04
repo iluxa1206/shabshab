@@ -239,6 +239,15 @@ td.mut { color: var(--mut); }
   display: inline-flex; align-items: center; gap: 4px;
 }
 .chip-btn:hover { color: var(--fg); border-color: var(--fg); }
+/* Тач: чипы 25px высотой — мимо пальца. На pointer:coarse растим до ~44px, на
+   мыши оставляем плотную десктопную сетку (тулбар и так на две строки). */
+@media (pointer: coarse) {
+  .chip-btn { padding: 12px 14px; }
+  .search { padding: 12px 2px; }
+  .num-input, .date-input { padding: 11px 2px; }
+  .search-clear { padding: 10px 8px; }
+  .issuer-row { padding: 10px 6px; }
+}
 .chip-btn.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 /* подпись внутри группы фильтров (MAT / тире) */
 .fg-lbl { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; align-self: center; }

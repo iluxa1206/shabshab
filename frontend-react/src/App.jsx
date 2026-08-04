@@ -25,6 +25,12 @@ import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 // а не в общий бандл дашборда
 const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 
+// Фильтры живут в query string: вид дашборда можно кинуть ссылкой коллеге и он
+// переживает F5. Ключи короткие, мульти-значения — повторяющимися параметрами
+// (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "mf", "mt"];
+const initialParams = () => new URLSearchParams(window.location.search);
+
 function Dashboard() {
   const { user, onLogout } = useAuth();
   const [bonds, setBonds] = useState([]);
@@ -33,19 +39,22 @@ function Dashboard() {
   const [meta, setMeta] = useState({ calc_date: null, rates_date: null });
   const [live, setLive] = useState(false);
 
-  // три независимые группы фильтров (AND-пересечение; пустая группа = все)
-  const [onlyWatch, setOnlyWatch] = useState(false);
-  const [basesSel, setBasesSel] = useState([]);    // KEYRATE / RUONIA
-  const [ratingsSel, setRatingsSel] = useState([]); // AAA / AA / A / BBB / BELOW / NR
-  const [emittersSel, setEmittersSel] = useState([]); // имена эмитентов (мульти)
-  const [twoSided, setTwoSided] = useState(false);  // только двусторонние котировки
+  // три независимые группы фильтров (AND-пересечение; пустая группа = все).
+  // Стартовое значение — из URL (ссылка/F5), иначе из localStorage (последняя
+  // сессия) для тех фильтров, которые раньше и так persist'ились.
+  const [onlyWatch, setOnlyWatch] = useState(() => initialParams().get("watch") === "1");
+  const [basesSel, setBasesSel] = useState(() => initialParams().getAll("base"));    // KEYRATE / RUONIA
+  const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("rt")); // AAA / AA / A / BBB / BELOW / NR
+  const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("em")); // имена эмитентов (мульти)
+  const [twoSided, setTwoSided] = useState(() => initialParams().get("two") === "1");  // только двусторонние котировки
   // размер тикета, ₽ (0 = фильтр выключен): котировки пересчитываются в VWAP на
   // этот объём по лестнице стакана, строки без такой глубины уходят
-  const [volRub, setVolRub] = useState(() => Number(localStorage.getItem("volRub") || 0) || 0);
+  const [volRub, setVolRub] = useState(() => Number(initialParams().get("vol"))
+    || Number(localStorage.getItem("volRub") || 0) || 0);
   // окно погашения [от, до] — ISO-даты, пустая строка = граница не задана
-  const [matFrom, setMatFrom] = useState(() => localStorage.getItem("matFrom") || "");
-  const [matTo, setMatTo] = useState(() => localStorage.getItem("matTo") || "");
-  const [query, setQuery] = useState("");
+  const [matFrom, setMatFrom] = useState(() => initialParams().get("mf") || localStorage.getItem("matFrom") || "");
+  const [matTo, setMatTo] = useState(() => initialParams().get("mt") || localStorage.getItem("matTo") || "");
+  const [query, setQuery] = useState(() => initialParams().get("q") || "");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
 
@@ -83,6 +92,42 @@ function Dashboard() {
     } catch { return DEFAULT_COLS; }
   });
   const lastTriggerRef = useRef(null);
+  const searchRef = useRef(null);
+
+  // «/» — фокус в поиск (терминальная привычка). Игнорируем, когда юзер уже
+  // печатает в каком-нибудь поле, иначе слэш не набрать.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Состояние фильтров → query string. replace: true — фильтр не должен плодить
+  // записи в истории (иначе «назад» после набора «РЖД» жуёт шесть символов).
+  // Чужие параметры (?isin= у drawer) не трогаем: чистим только свои ключи.
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      FILTER_KEYS.forEach((k) => next.delete(k));
+      if (query) next.set("q", query);
+      if (onlyWatch) next.set("watch", "1");
+      basesSel.forEach((v) => next.append("base", v));
+      ratingsSel.forEach((v) => next.append("rt", v));
+      emittersSel.forEach((v) => next.append("em", v));
+      if (twoSided) next.set("two", "1");
+      if (volRub) next.set("vol", String(volRub));
+      if (matFrom) next.set("mf", matFrom);
+      if (matTo) next.set("mt", matTo);
+      return next;
+    }, { replace: true });
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volRub, matFrom, matTo, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("volRub", String(volRub)); }, [volRub]);
   useEffect(() => { localStorage.setItem("matFrom", matFrom); }, [matFrom]);
@@ -346,7 +391,7 @@ function Dashboard() {
         volRub={volRub} setVolRub={setVolRub}
         depthTs={depthQ.data?.ts} depthLoading={volRub > 0 && depthQ.isLoading}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
-        query={query} setQuery={setQuery}
+        query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
         showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}

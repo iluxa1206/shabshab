@@ -14,7 +14,7 @@ export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   volRub, setVolRub, depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
-  query, setQuery, watchCount, shown, total, showAnalytics, setShowAnalytics,
+  query, setQuery, searchRef, watchCount, shown, total, showAnalytics, setShowAnalytics,
   visibleCols, onToggleCol, onResetCols, onMoveCol,
   activeFilters, onResetFilters,
 }) {
@@ -27,14 +27,23 @@ export default function Toolbar({
       <span className="search-wrap">
         <IconSearch size={13} className="search-ico" />
         <input
+          ref={searchRef}
           className="search"
           type="text"
-          placeholder="ISIN / имя"
+          placeholder="ISIN / имя  ( / )"
+          title="Поиск по ISIN или названию. Хоткей: / — фокус, Esc — очистить"
           aria-label="Поиск по рынку — ISIN или название"
           autoComplete="off"
           spellCheck={false}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Esc в поиске — очистить и уйти из поля (попапы Esc ловят у себя)
+            if (e.key !== "Escape") return;
+            e.stopPropagation();
+            setQuery("");
+            e.currentTarget.blur();
+          }}
         />
         {query && <button className="search-clear" aria-label="Очистить" onClick={() => setQuery("")}>×</button>}
       </span>
