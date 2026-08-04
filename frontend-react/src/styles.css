@@ -240,8 +240,10 @@ td.mut { color: var(--mut); }
 }
 .chip-btn:hover { color: var(--fg); border-color: var(--fg); }
 .chip-btn.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-/* подпись внутри группы фильтров (ОБЪЁМ / ПОГАШ) */
+/* подпись внутри группы фильтров (MAT / тире) */
 .fg-lbl { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; align-self: center; }
+/* иконка-подпись группы (размер тикета) — тот же вес, что у .fg-lbl */
+.fg-ico { color: var(--mut); align-self: center; }
 /* числовой/датовый ввод в тулбаре — под стиль .search (подчёркивание, без рамки) */
 .num-input, .date-input {
   background: transparent; border: none; border-bottom: 1px solid var(--line-2); color: var(--fg);

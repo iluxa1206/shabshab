@@ -1,6 +1,6 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
-import { IconChart, IconSearch, IconX } from "./icons.jsx";
+import { IconChart, IconCoins, IconSearch, IconTwoWay, IconX } from "./icons.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
@@ -75,14 +75,15 @@ export default function Toolbar({
       {/* группа: ликвидность — только бумаги с обеими сторонами стакана */}
       <div className="fgroup">
         <button className={"chip-btn" + (twoSided ? " on" : "")} onClick={() => setTwoSided(!twoSided)}
-          title="Показывать только бумаги с двусторонней котировкой (есть и бид, и оффер)">
-          BID×OFFER
+          aria-label="Только двусторонние котировки"
+          title="BID×OFFER — показывать только бумаги с двусторонней котировкой (есть и бид, и оффер)">
+          <IconTwoWay size={13} />
         </button>
       </div>
 
       {/* группа: объём тикета — VWAP по стакану на эту сумму */}
       <div className="fgroup" title={volTitle}>
-        <span className="fg-lbl">ОБЪЁМ</span>
+        <IconCoins size={13} className="fg-ico" />
         {VOLS.map(([v, l]) => (
           <button key={v} className={"chip-btn" + (volRub === v ? " on" : "")}
             onClick={() => setVolRub(volRub === v ? 0 : v)}>{l}М</button>
