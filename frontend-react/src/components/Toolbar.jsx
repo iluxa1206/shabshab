@@ -50,8 +50,12 @@ export default function Toolbar({
           basesSel={basesSel} toggleBase={toggleBase} clearBases={clearBases}
           issuers={issuers || []} emittersSel={emittersSel || []}
           toggleEmitter={toggleEmitter} clearEmitters={clearEmitters}
-          activeCount={activeFilters} onResetAll={onResetFilters}
+          activeCount={activeFilters}
         />
+        <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}
+          title="Снять все фильтры: watchlist, база, рейтинг, эмитент, BID×OFFER, объём, погашение, поиск">
+          ✕ СБРОС{activeFilters ? ` (${activeFilters})` : ""}
+        </button>
       </div>
 
       {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет */}

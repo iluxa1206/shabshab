@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-// Кнопка «ФИЛЬТРЫ» → всплывающее окно: база (КС/RUONIA), эмитент, сброс всех фильтров.
+// Кнопка «ФИЛЬТРЫ» → всплывающее окно: база (КС/RUONIA) и эмитент.
 // Счётчик на кнопке — сколько фильтров активно ВСЕГО (не только тех, что внутри окна),
-// чтобы кнопка «сбросить всё» была честной подписью к тому, что она чистит.
+// в пару к кнопке сброса в тулбаре.
 export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
-  activeCount, onResetAll,
+  activeCount,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -70,12 +70,6 @@ export default function FiltersMenu({
               ))}
             </div>
           </div>
-
-          <button className="fp-reset" disabled={!activeCount}
-            onClick={() => { onResetAll(); setQ(""); }}
-            title="Снять все фильтры: watchlist, база, рейтинг, эмитент, BID×OFFER, объём, погашение, поиск">
-            СБРОСИТЬ ВСЕ ФИЛЬТРЫ{activeCount ? ` (${activeCount})` : ""}
-          </button>
         </div>
       )}
     </div>
