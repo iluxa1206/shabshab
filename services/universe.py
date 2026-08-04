@@ -84,7 +84,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                             accrued_override=accrued,
                                             periods=periods or None,
-                                            amorts=amorts, offers=offers)
+                                            amorts=amorts, offers=offers,
+                                            ruonia_curve=ruonia_curve)
             dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
             yoi = m.get("yield_over_index_bps")
             ytm, base_ytm = m.get("yield_xirr_pct"), m.get("index_yield_pct")

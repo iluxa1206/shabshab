@@ -78,8 +78,8 @@ export const COLS = [
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
-  { key: "index_yield_pct", label: "YTM", sub: "БАЗА %", align: "num", w: 7,
-    cell: (b) => <td className="num" key="index_yield_pct">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
+  { key: "index_yield_pct", label: "YTM", sub: "RUONIA %", align: "num", w: 7,
+    cell: (b) => <td className="num" key="index_yield_pct" title="доходность роллирования RUONIA до погашения — база Y-IDX (общая для КС и RUONIA бумаг)">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)

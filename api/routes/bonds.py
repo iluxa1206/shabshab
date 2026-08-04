@@ -197,6 +197,7 @@ async def get_bonds(
                     ref_obj, last_price_pct, curve, calc_date,
                     accrued_override=moex_snapshot.get(isin, {}).get("accrued"),
                     periods=schedules.get(isin),
+                    ruonia_curve=ruonia_curve,
                 )
                 dirty_price_rub = metrics.get("dirty_price_rub")
                 dm_bps = metrics.get("dm_bps")

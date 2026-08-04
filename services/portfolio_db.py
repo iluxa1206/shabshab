@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS spread_daily(
   g_spread_bps REAL,            -- фикс: g-спред
   z_bps REAL,                   -- z-спред/z-model
   ytm REAL,
-  y_idx REAL,                   -- флоатер: IRR−индекс, bps — ПЕРВИЧНАЯ метрика
+  y_idx REAL,                   -- флоатер: IRR − роллирование RUONIA, bps — ПЕРВИЧНАЯ метрика
   src TEXT,                     -- 'snap' вечерний снапшот | 'honest' as-of бэкфилл (NULL=легаси snap)
   engine_ver INTEGER,           -- версия as-of движка для honest-строк (см. backdate.HONEST_ENGINE_VERSION)
   PRIMARY KEY(isin, date)

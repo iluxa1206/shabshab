@@ -77,8 +77,9 @@ class BondValuation(BaseModel):
     disc_margin_bps: Optional[int] = None      # наш discount margin ≈ НРД discount_margin
     dm_label: Optional[str]
     yield_xirr_pct: Optional[float]
-    index_yield_pct: Optional[float]        # эфф. годовая доходность роллирования индекса (форвард)
-    yield_over_index_bps: Optional[int]     # IRR бумаги − доходность индекса, bps
+    index_yield_pct: Optional[float]        # эфф. годовая доходность роллирования RUONIA (форвард) —
+                                            # единая база и для КС-бумаг
+    yield_over_index_bps: Optional[int]     # IRR бумаги − доходность роллирования RUONIA, bps
     pricing_status: str
     warnings: List[str] = Field(default_factory=list)
     # ПОДСКАЗКА потребителю, какой горизонт показывать первым: "offer", если у
@@ -244,7 +245,7 @@ class BondListItem(BaseModel):
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
     delta_to_prev_close: Optional[float] = None # placeholder
     yield_xirr_pct: Optional[float] = None     # YTM бумаги (XIRR на проекции купонов по форварду), %
-    index_yield_pct: Optional[float] = None    # YTM роллирования базы (КС/RUONIA) на тот же срок, %
+    index_yield_pct: Optional[float] = None    # YTM роллирования RUONIA на тот же срок, % (база для всех флоатеров)
     disc_margin_bps: Optional[int] = None      # наш discount margin (Fabozzi)
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
@@ -352,7 +353,7 @@ class OrderbookLevel(BaseModel):
     yield_pct: Optional[float] = None
     sm_bps: Optional[int] = None
     dm_bps: Optional[int] = None       # флоатеры: дисконт-маржа (вспом.)
-    y_idx_bps: Optional[int] = None    # флоатеры: IRR−индекс — ПЕРВИЧНАЯ метрика
+    y_idx_bps: Optional[int] = None    # флоатеры: IRR − роллирование RUONIA — ПЕРВИЧНАЯ метрика
     g_spread_bps: Optional[int] = None # фиксы: g-спред к КБД
 
 class OrderbookSnapshot(BaseModel):

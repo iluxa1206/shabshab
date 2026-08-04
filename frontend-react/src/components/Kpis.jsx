@@ -20,7 +20,7 @@ const quantile = (arr, q) => {
 // Компактные KPI для нижнего статусбара (вместо верхнего блока-сетки).
 export default function KpisInline({ bonds }) {
   const k = useMemo(() => {
-    // Y-IDX (IRR − доходность индекса) — первичная метрика; DM — вспом.
+    // Y-IDX (IRR − доходность роллирования RUONIA) — первичная метрика; DM — вспом.
     const yis = bonds.map((x) => x.yield_over_index_bps).filter((v) => v != null);
     const avgYi = yis.length ? Math.round(yis.reduce((s, v) => s + v, 0) / yis.length) : null;
     const medYi = yis.length ? Math.round(median(yis)) : null;
@@ -60,8 +60,8 @@ export default function KpisInline({ bonds }) {
         <span className="kpi-cell-val neg">▼{k.nChg ? k.down : "—"}</span>
         {k.medChg != null && <span className="kpi-cell-sub">med {sgn(k.medChg, 2)}</span>}
       </span>
-      {cell("MED Y-IDX", k.medYi, "медианный Y-IDX (IRR − индекс), б.п.")}
-      {cell("AVG Y-IDX", k.avgYi, "средний Y-IDX (IRR − индекс), б.п.")}
+      {cell("MED Y-IDX", k.medYi, "медианный Y-IDX (IRR − роллирование RUONIA), б.п.")}
+      {cell("AVG Y-IDX", k.avgYi, "средний Y-IDX (IRR − роллирование RUONIA), б.п.")}
       {cell("Y-IDX P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс Y-IDX, б.п.")}
       {cell("MED DM", k.medDm, "медианный discount margin (вспом.), б.п.")}
     </>

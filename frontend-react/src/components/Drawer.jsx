@@ -124,7 +124,7 @@ function PastCalc({ isin }) {
           <div className="vc">
             <div className="vc-label">YTM (XIRR)</div>
             <div className="vc-val">{fmt.pct(m.yield_xirr_pct) ?? "—"}<span className="vc-u"> %</span></div>
-            <div className="vc-sub">индекс {fmt.pct(m.index_yield_pct) ?? "—"}%</div>
+            <div className="vc-sub">RUONIA-ролл {fmt.pct(m.index_yield_pct) ?? "—"}%</div>
           </div>
           <div className="vc">
             <div className="vc-label">DM (дисконтная)</div>

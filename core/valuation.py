@@ -1,5 +1,6 @@
 import logging
 import math
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import List, Optional
@@ -1150,56 +1151,108 @@ def implied_yield_pct(
     return y_effective * 100.0
 
 
-def index_rolling_yield_pct(
-    base: str,
+class _RuoniaCompoundPath:
+    """Путь роллирования RUONIA от даты start: капитализация ТОЛЬКО в рабочие дни,
+    внутри нерабочего окна — простое начисление по фиксингу последнего рабочего дня
+    (деньги, отданные в репо в пятницу, три дня работают по простой ставке).
+
+    Хранит по каждому фиксингу i: смещение дня days[i], накопленный рост cum[i]
+    (start → день фиксинга) и ставку rates[i]. Рост до произвольной даты внутри
+    окна — простым начислением от cum[i]. Путь строится лениво и кэшируется на
+    объекте кривой: горизонт до 15 лет = ~3900 фиксингов, а зовём мы его на каждую
+    бумагу универса (539) и на каждый уровень стакана.
+
+    Ставку берём НЕ каждый день, а на границах узлов кривой: daily_forward
+    кусочно-постоянен по сегментам (той же ступенью проецируются купоны), так что
+    ~15 вызовов вместо тысяч."""
+    __slots__ = ("curve", "start", "days", "cum", "rates", "_bounds", "_r", "_hi")
+
+    def __init__(self, curve: DiscountCurve, start: date):
+        self.curve = curve
+        self.start = start
+        self._bounds = [nd for nd, _ in getattr(curve, "nodes", []) or []]
+        self._r = self._hi = None
+        self.days = [0]
+        self.cum = [1.0]
+        self.rates = [self._rate_at(start)]
+
+    def _rate_at(self, d: date) -> float:
+        if self._hi is not None and d < self._hi:
+            return self._r
+        self._r = self.curve.daily_forward(d)
+        self._hi = next((nd for nd in self._bounds if nd > d), None)
+        return self._r
+
+    def _extend_to(self, n: int) -> None:
+        while self.days[-1] < n:
+            d0 = self.days[-1]
+            nxt = self.start + timedelta(days=d0 + 1)
+            while _is_settlement_day_off(nxt):
+                nxt += timedelta(days=1)
+            k = (nxt - self.start).days
+            self.cum.append(self.cum[-1] * (1.0 + self.rates[-1] * (k - d0) / 365.0))
+            self.days.append(k)
+            self.rates.append(self._rate_at(nxt))
+
+    def growth_to(self, target: date) -> float:
+        n = (target - self.start).days
+        if n <= 0:
+            return 1.0
+        self._extend_to(n)
+        i = bisect_right(self.days, n) - 1
+        return self.cum[i] * (1.0 + self.rates[i] * (n - self.days[i]) / 365.0)
+
+
+def _ruonia_path(curve: DiscountCurve, start: date) -> _RuoniaCompoundPath:
+    """Кэш пути на объекте кривой: кривые живут день (или пере-собираются на
+    прошлую дату), путь для одного start общий на весь универс."""
+    cache = getattr(curve, "_ru_paths", None)
+    if cache is None:
+        cache = {}
+        try:
+            curve._ru_paths = cache
+        except AttributeError:          # __slots__-кривая — считаем без кэша
+            return _RuoniaCompoundPath(curve, start)
+    p = cache.get(start)
+    if p is None:
+        p = cache[start] = _RuoniaCompoundPath(curve, start)
+    return p
+
+
+def ruonia_rolling_yield_pct(
     curve: DiscountCurve,
     calc_date: date,
     maturity: date,
 ) -> Optional[float]:
-    """Эффективная годовая доходность РОЛЛИРОВАНИЯ голого индекса по ожидаемым
-    будущим ставкам (форвардная кривая, СПФИ/OIS), calc_date → maturity.
+    """Эффективная годовая доходность РОЛЛИРОВАНИЯ RUONIA по ожидаемым будущим
+    ставкам (OIS-кривая), calc_date → maturity.
 
-    База сравнения (base leg) для «доходность бумаги − доходность индекса»:
-    считаем, во сколько вырастет рубль, если весь горизонт держать сам индекс с
-    реинвестом, по конвенции КАЖДОГО индекса:
-      RUONIA — ЕЖЕДНЕВНЫЙ компаундинг: рост = Π_дни (1+f_d/365).
-               curve.forward(RUONIA) уже отдаёт дневную-комп эквивалентную ставку
-               f, где (1+f/365)^days = DF(t1)/DF(t2), поэтому за весь горизонт
-               рост = (1+f/365)^D одним вызовом (телескопирование точное).
-      KEYRATE — ЕЖЕКВАРТАЛЬНЫЙ компаундинг: рост = Π_кварталы (1+f_q·τ_q),
-               f_q — simple ACT/365 форвард на квартал.
-    Итог обеих ветвей приводим к ЭФФЕКТИВНОЙ ГОДОВОЙ: рост^(365/D)−1 — та же
-    аннуализация, что у xirr бумаги ((1+y)^t), поэтому разность доходностей
-    (bps) корректна. Возвращает % годовых или None.
-    """
+    ЕДИНАЯ база сравнения (base leg) Y-IDX для ВСЕХ флоатеров — и КС, и RUONIA
+    (решение 2026-08-04): альтернатива держателю бумаги одна — раздавать деньги
+    o/n, а это RUONIA, независимо от того, к какому индексу привязан купон. Раньше
+    КС-бумаги сравнивались с квартальным роллированием КС, RUONIA-бумаги — с
+    дневным компаундингом RUONIA: два разных базиса, и Y-IDX двух бумаг был
+    несопоставим (разница конвенций сидела в цифре как ложный спред).
+
+    Конвенция роста — фактическая механика o/n-размещения: капитализация в
+    рабочие дни, нерабочее окно — простое начисление по фиксингу последнего
+    рабочего дня (пятничный фиксинг работает 3 дня простыми, без капитализации
+    внутри). Рабочие дни — календарь расчётов MOEX (_is_settlement_day_off);
+    расхождения с календарём ЦБ единичны и на эффективную годовую не влияют.
+
+    Итог приводим к ЭФФЕКТИВНОЙ ГОДОВОЙ: рост^(365/D)−1 — та же аннуализация,
+    что у XIRR бумаги ((1+y)^t), поэтому разность доходностей (bps) корректна.
+    Возвращает % годовых или None."""
     # горизонт от даты поставки (T+1 раб) — тот же якорь, что у XIRR бумаги,
     # иначе разность «бумага − индекс» несёт паразитный сдвиг на выходных
     start = settle_date(calc_date)
     D = (maturity - start).days
     if D <= 0:
         return None
-    tau_years = D / 365.0
-
-    if base == "RUONIA":
-        f = curve.forward(start, maturity)
-        growth = (1.0 + f / 365.0) ** D
-    elif base == "KEYRATE":
-        growth = 1.0
-        prev = start
-        while prev < maturity:
-            nxt = min(prev + timedelta(days=91), maturity)  # ≈ квартал
-            days = (nxt - prev).days
-            tau = days / 365.0
-            f_q = curve.forward(prev, nxt)
-            growth *= 1.0 + f_q * tau
-            prev = nxt
-    else:
-        return None
-
+    growth = _ruonia_path(curve, start).growth_to(maturity)
     if growth <= 0.0:
         return None
-    y_effective = math.pow(growth, 1.0 / tau_years) - 1.0
-    return y_effective * 100.0
+    return (math.pow(growth, 365.0 / D) - 1.0) * 100.0
 
 
 # -------------------------------------------------------------------------

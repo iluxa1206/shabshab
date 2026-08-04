@@ -279,6 +279,15 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         raise CalculationException(f"история {ref_obj.base} недоступна")
 
     curve, curve_mode = curve_asof(ref_obj.base, d, today_curve, hist_pairs)
+    # база Y-IDX для всех флоатеров — роллирование RUONIA, тоже as-of этой даты
+    if ref_obj.base == "RUONIA":
+        ru_curve_asof = curve
+    else:
+        _ru_hist = _index_provider("RUONIA", warnings, None)[1]
+        ru_curve_asof = (curve_asof("RUONIA", d, ruonia_curve, _ru_hist)[0]
+                         if (ruonia_curve is not None and _ru_hist) else None)
+        if ru_curve_asof is None:
+            warnings.append("RUONIA-кривая на дату не восстановлена — Y-IDX не посчитан")
 
     periods = schedules.get(isin) or schedules.get(secid)
     amorts = sched_full.get("amorts")
@@ -349,6 +358,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         "date": d,
         "ref_obj": ref_obj,
         "curve": curve,
+        "ruonia_curve": ru_curve_asof,
         "curve_mode": curve_mode,
         "accrued": float(accrued_asof),
         "close": hist_row.get("close") if hist_row else None,
@@ -438,6 +448,9 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     from services.market_data import MarketDataService
     _r, _k, _cd, _rd = await MarketDataService.get_curves()
     today_curve = _r if ref.base == "RUONIA" else _k
+    # база Y-IDX — роллирование RUONIA и для КС-бумаг: нужна RUONIA-кривая НА ТУ ЖЕ
+    # прошлую дату (сегодняшняя дала бы завтрашние ожидания во вчерашней цифре)
+    ru_hist = hist_pairs if ref.base == "RUONIA" else _index_provider("RUONIA", warnings, None)[1]
 
     points = []
     for r in rows:
@@ -447,6 +460,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             continue
         try:
             curve, mode = curve_asof(ref.base, d, today_curve, hist_pairs)
+            ru_curve = curve if ref.base == "RUONIA" else curve_asof("RUONIA", d, _r, ru_hist)[0]
             if r.get("facevalue"):
                 ref.face_value = float(r["facevalue"])
             accint = r.get("accint")
@@ -460,7 +474,8 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             px = (price_overrides or {}).get(r["date"], r["close"])
             m = calculate_valuation_metrics(
                 ref, px, curve, d, accrued_override=accint,
-                periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"])
+                periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
+                ruonia_curve=ru_curve)
             points.append({
                 "date": r["date"], "price": px,
                 "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
@@ -485,7 +500,10 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #   2 — 2026-08-03: НКД доначисляется до нерабочей даты, ОФЗ резолвятся в
 #       SECID/TQOB (были без фактических купонов), убран тихий фолбэк на
 #       сегодняшний НКД, цена дня падает на legalclose при отсутствии сделок
-HONEST_ENGINE_VERSION = 2
+#   3 — 2026-08-04: база Y-IDX — роллирование RUONIA для ВСЕХ флоатеров
+#       (КС-бумаги больше не сравниваются с квартальным роллированием КС),
+#       компаундинг по рабочим дням + простое начисление на нерабочих
+HONEST_ENGINE_VERSION = 3
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
@@ -531,6 +549,7 @@ def reprice_asof(ctx: dict, price: float) -> dict:
         ctx["ref_obj"], price, ctx["curve"], ctx["date"],
         accrued_override=ctx["accrued"], periods=ctx["periods"],
         amorts=ctx["amorts"], offers=ctx["offers"],
+        ruonia_curve=ctx.get("ruonia_curve"),
     )
     m["warnings"] = sorted(set((m.get("warnings") or []) + ctx["ctx_warnings"]))
     m["curve_mode"] = ctx["curve_mode"]

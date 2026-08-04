@@ -282,7 +282,7 @@ function WaterfallSection({ w, v, isin }) {
         <KV k="Δ (обязана ≈ 0)" v={fmt.signed(w.pv_gap_rub, 2) + " ₽"} />
         <KV k="YTM (XIRR)" v={fmt.pct(w.yield_pct) + " %"} />
         <KV k="SM / DM" v={`${fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"} / ${fmt.bps(v.disc_margin_bps) ?? "—"} bps`} />
-        <KV k="Y-IDX · спред" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
+        <KV k="RUONIA-ролл · Y-IDX" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
       </div>
       <div style={{ maxHeight: 380, overflow: "auto" }}>
         <table className="cf-table">

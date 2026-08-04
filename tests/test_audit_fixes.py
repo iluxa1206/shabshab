@@ -213,21 +213,60 @@ def test_spread_parse_comma(formula, bps):
     assert sp == bps
 
 
-# ── index rolling yield ───────────────────────────────────────────────────
-from core.valuation import index_rolling_yield_pct
+# ── ruonia rolling yield (единая база Y-IDX) ──────────────────────────────
+from core.valuation import ruonia_rolling_yield_pct
 
 
-def test_index_rolling_yield(keyrate_curve, ruonia_curve, calc_date):
+def test_ruonia_rolling_yield(ruonia_curve, calc_date):
     mat = date(calc_date.year + 3, calc_date.month, calc_date.day)
-    ks = index_rolling_yield_pct("KEYRATE", keyrate_curve, calc_date, mat)
-    ru = index_rolling_yield_pct("RUONIA", ruonia_curve, calc_date, mat)
-    # плоские 15% par-кривые → эффективная годовая ~15% в каждой конвенции
-    # (KEYRATE quarterly-simple и RUONIA daily-comp дают разный effective — это
-    # свойство бутстрапа «15%», не баг; проверяем лишь вменяемость диапазона).
-    assert 14.0 < ks < 17.0
-    assert 14.0 < ru < 17.5
+    ru = ruonia_rolling_yield_pct(ruonia_curve, calc_date, mat)
+    # плоская 15% par-кривая → эффективная годовая ~15% (компаундинг в рабочие дни
+    # даёт чуть меньше сплошного дневного, но заметно больше простой ставки)
+    assert 14.5 < ru < 17.0
+    f = ruonia_curve.forward(settle_date(calc_date), mat)
+    daily_comp = ((1.0 + f / 365.0) ** 365 - 1.0) * 100.0
+    assert ru < daily_comp, "рабочие дни капитализируются реже сплошного дневного"
     # погашение в прошлом → None
-    assert index_rolling_yield_pct("KEYRATE", keyrate_curve, mat, calc_date) is None
+    assert ruonia_rolling_yield_pct(ruonia_curve, mat, calc_date) is None
+
+
+def test_ruonia_weekend_is_simple_not_compounded(ruonia_curve, calc_date):
+    """Выходные не капитализируются: рост за пятницу→понедельник = простая ставка
+    за 3 дня, а не (1+r/365)^3. Разница мала, но она — суть конвенции."""
+    from core.valuation import _ruonia_path
+    start = settle_date(calc_date)
+    path = _ruonia_path(ruonia_curve, start)
+    horizon = start + timedelta(days=370)
+    g = path.growth_to(horizon)
+    # число фиксингов < числа календарных дней ровно на выходные/праздники
+    n_days = (horizon - start).days
+    n_fix = sum(1 for k in path.days if k <= n_days)
+    assert n_fix < n_days * 0.75, "капитализация идёт каждый календарный день"
+    r = ruonia_curve.daily_forward(start)
+    assert g < (1.0 + r / 365.0) ** n_days, "рост не должен превышать сплошной дневной комп"
+    assert g > 1.0 + r * n_days / 365.0, "рост должен превышать простую ставку за период"
+
+
+def test_yidx_base_is_ruonia_for_keyrate_bond(keyrate_curve, ruonia_curve, calc_date,
+                                              flat_index_15, monkeypatch):
+    """КС-бумага сравнивается с роллированием RUONIA: index_yield_pct равен
+    доходности RUONIA-ноги, а без переданной RUONIA-кривой Y-IDX не считается."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    import services.valuation as sv
+    bond = make_bond(margin_bps=150, accrued=0.0)
+    periods = quarterly_periods(settle_date(calc_date), bond.maturity_date)
+
+    m = sv.calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                       accrued_override=0.0, periods=periods,
+                                       ruonia_curve=ruonia_curve)
+    expect = ruonia_rolling_yield_pct(ruonia_curve, calc_date, bond.maturity_date)
+    assert m["index_yield_pct"] == pytest.approx(expect, abs=1e-4)
+
+    m2 = sv.calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                        accrued_override=0.0, periods=periods)
+    assert m2["yield_over_index_bps"] is None
+    assert any("RUONIA-кривая" in w for w in m2["warnings"])
 
 
 # ── duration_metrics ──────────────────────────────────────────────────────

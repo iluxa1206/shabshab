@@ -173,6 +173,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 ref_obj, last_price, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
                 amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
+                ruonia_curve=ruonia_curve,
             )
         except Exception as e:
             val_dict["pricing_status"] = "CALCULATION_ERROR"
@@ -184,6 +185,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 ref_obj, prev_close_pct, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
                 amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
+                ruonia_curve=ruonia_curve,
             )
             market_data["prev_close_dm_bps"] = prev_metrics.get("dm_bps")
         except Exception:
@@ -313,6 +315,7 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
         "isin": isin,
         "ref_obj": ref_obj,
         "curve": curve,
+        "ruonia_curve": ruonia_curve,   # база Y-IDX и для КС-бумаг
         "calc_date": calc_date,
         "accrued_live": accrued_live,
         "periods": schedules.get(isin),
@@ -333,6 +336,7 @@ def reprice_at_price(ctx: dict, price: float) -> dict:
         ctx["ref_obj"], price, ctx["curve"], ctx["calc_date"],
         accrued_override=ctx["accrued_live"], periods=ctx["periods"],
         amorts=ctx["amorts"], offers=ctx["offers"],
+        ruonia_curve=ctx.get("ruonia_curve"),
     )
 
 

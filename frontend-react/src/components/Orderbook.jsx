@@ -159,7 +159,7 @@ export default function Orderbook({ isin, kind, face, onClose }) {
                 <th>Объём</th>
                 {isFixed
                   ? <><th>YTM</th><th>G-спред</th></>
-                  : <><th title="IRR − доходность роллирования индекса; DM в подсказке уровня">Y-IDX</th><th>YTM</th></>}
+                  : <><th title="IRR − доходность роллирования RUONIA (единая база для КС и RUONIA бумаг); DM в подсказке уровня">Y-IDX</th><th>YTM</th></>}
               </tr>
             </thead>
             <tbody>

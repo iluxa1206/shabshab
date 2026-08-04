@@ -12,7 +12,7 @@ from core.valuation import (
     solve_discount_margin_bps,
     current_index_pct,
     FlatForwardCurve,
-    index_rolling_yield_pct,
+    ruonia_rolling_yield_pct,
 )
 
 import logging
@@ -58,10 +58,15 @@ def calculate_valuation_metrics(
     periods=None,
     amorts=None,
     offers=None,
+    ruonia_curve: DiscountCurve = None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
     accrued_override — НКД на calc_date из MOEX (приоритет над стейл-кэшем).
+    ruonia_curve — OIS-кривая RUONIA на ту же дату: база сравнения Y-IDX для ВСЕХ
+              флоатеров, включая КС-бумаги (см. ruonia_rolling_yield_pct). Для
+              RUONIA-бумаги совпадает с curve и может не передаваться; для
+              КС-бумаги без неё Y-IDX не считается (warning, не крэш).
     periods — реальное расписание купонов [(start,end,value),...] из MOEX;
               value (зафикс. рублёвая сумма купона) прокидывается в DM-cashflow,
               чтобы текущий/прошлый купон брался фактом, а не перепрогнозом.
@@ -178,16 +183,21 @@ def calculate_valuation_metrics(
         logger.warning(f"XIRR error for {bond.isin}: {e}")
         impl_yield = None
 
-    # ДОХОДНОСТЬ БУМАГИ vs ДОХОДНОСТЬ ИНДЕКСА (заменяет прежний spread_to_base_bps
-    # = разность двух XIRR, которая как нелинейная разность систематически врала
-    # off-par). Теперь base leg — эффективная годовая доходность роллирования
-    # самого индекса по ожидаемым форвардным ставкам (RUONIA daily-comp / КС
-    # quarterly-comp), а спред = IRR_бумаги − доходность_индекса.
-    try:
-        index_yield = index_rolling_yield_pct(bond.base, curve, calc_date, bond.maturity_date)
-    except Exception as e:
-        logger.warning(f"Index rolling-yield error for {bond.isin}: {e}")
-        index_yield = None
+    # ДОХОДНОСТЬ БУМАГИ vs ДОХОДНОСТЬ БАЗЫ. Base leg — эффективная годовая
+    # доходность роллирования RUONIA по OIS-кривой, ОДНА И ТА ЖЕ для КС- и
+    # RUONIA-бумаг (решение 2026-08-04): альтернатива держателю — размещать
+    # деньги o/n, а это RUONIA. Спред = IRR_бумаги − доходность_RUONIA.
+    _ru_curve = ruonia_curve if ruonia_curve is not None else (
+        curve if bond.base == "RUONIA" else None)
+    index_yield = None
+    if _ru_curve is None:
+        warnings.append("RUONIA-кривая не передана — Y-IDX не посчитан "
+                        "(база сравнения для всех флоатеров — роллирование RUONIA)")
+    else:
+        try:
+            index_yield = ruonia_rolling_yield_pct(_ru_curve, calc_date, bond.maturity_date)
+        except Exception as e:
+            logger.warning(f"RUONIA rolling-yield error for {bond.isin}: {e}")
 
     yield_over_index_bps = None
     if impl_yield is not None and index_yield is not None:
