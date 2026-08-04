@@ -57,7 +57,7 @@ export default function Toolbar({
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}
           aria-label="Сбросить все фильтры"
           title="Снять все фильтры: watchlist, база, рейтинг, эмитент, BID×OFFER, объём, погашение, поиск">
-          <IconX size={12} />{activeFilters ? String(activeFilters) : ""}
+          <IconX size={12} />
         </button>
       </div>
 
