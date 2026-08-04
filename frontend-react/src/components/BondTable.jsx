@@ -165,7 +165,27 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
 // Шапка: клик — сортировка, перетаскивание — перенос колонки. HTML5 dnd после
 // drop клик не генерит, так что сортировка от переноса не срабатывает.
 // Alt+←/→ с клавиатуры двигает колонку без мыши.
-function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey, overKey, setOverKey }) {
+function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey, overKey, setOverKey,
+                     onResizeCol, onResetColWidth }) {
+  // Тяга за правую границу заголовка. Ширину меряем у живого <th> (а не из
+  // COLS.w), поэтому тянется и колонка, которую ещё не трогали. Двойной клик по
+  // ручке — вернуть ширину по умолчанию.
+  const startResize = (e) => {
+    if (!onResizeCol) return;
+    e.preventDefault(); e.stopPropagation();
+    const th = e.currentTarget.parentElement;
+    const startX = e.clientX, startW = th.getBoundingClientRect().width;
+    const move = (ev) => onResizeCol(col.key, Math.max(48, Math.round(startW + ev.clientX - startX)));
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      document.body.classList.remove("col-resizing");
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    document.body.classList.add("col-resizing");
+  };
+
   const active = sort.key === col.key;
   const cls =
     (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
@@ -207,11 +227,18 @@ function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey
       }}
     >
       {col.label}{col.sub && <><br /><small>{col.sub}</small></>}
+      {onResizeCol && (
+        <span className="th-resize" role="presentation" draggable={false}
+          title="Потяни — ширина колонки; двойной клик — вернуть по умолчанию"
+          onMouseDown={startResize}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => { e.stopPropagation(); onResetColWidth?.(col.key); }} />
+      )}
     </th>
   );
 }
 
-export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol }) {
+export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth }) {
   // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),
   // а не порядок объявления COLS. useMemo — стабильная ссылка для memo(BondRow).
   const cols = useMemo(() => {
@@ -257,7 +284,10 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
       <table className="grid packed cols-fixed">
         <colgroup>
           <col className="col-star" />
-          {cols.map((c) => <col key={c.key} style={{ "--cw": (c.w || 8) + "ch" }} />)}
+          {/* натянутая мышью ширина (px) перебивает дефолтную из COLS.w */}
+          {cols.map((c) => <col key={c.key} style={colWidths[c.key]
+            ? { width: colWidths[c.key] + "px" }
+            : { "--cw": (c.w || 8) + "ch" }} />)}
           <col className="col-fill" />
         </colgroup>
         <thead>
@@ -265,7 +295,8 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
             <th className="star-col" aria-label="Watchlist" />
             {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
               onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
-              overKey={overKey} setOverKey={setOverKey} />)}
+              overKey={overKey} setOverKey={setOverKey}
+              onResizeCol={onResizeCol} onResetColWidth={onResetColWidth} />)}
             <th className="fill-col" aria-hidden="true" />
           </tr>
         </thead>

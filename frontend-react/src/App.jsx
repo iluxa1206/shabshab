@@ -91,7 +91,17 @@ function Dashboard() {
 
   const toggleCol = useCallback((key) => setVisibleCols((cs) =>
     cs.includes(key) ? cs.filter((k) => k !== key) : [...cs, key]), []);
-  const resetCols = useCallback(() => setVisibleCols(DEFAULT_COLS), []);
+  // ширины колонок, натянутые мышью: {key: px}. Пусто → дефолт из COLS.w
+  const [colWidths, setColWidths] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("colw") || "{}") || {}; } catch { return {}; }
+  });
+  useEffect(() => { localStorage.setItem("colw", JSON.stringify(colWidths)); }, [colWidths]);
+  const resizeCol = useCallback((key, px) => setColWidths((w) => ({ ...w, [key]: px })), []);
+  const resetColWidth = useCallback((key) => setColWidths((w) => {
+    const next = { ...w }; delete next[key]; return next;
+  }), []);
+  // «сброс» в меню столбцов возвращает и состав, и порядок, и ширины
+  const resetCols = useCallback(() => { setVisibleCols(DEFAULT_COLS); setColWidths({}); }, []);
   // Перенос колонки: from встаёт НА МЕСТО to (порядок visibleCols = порядок в
   // таблице). to может быть "+1"/"-1" — сдвиг на шаг (Alt+←/→ на заголовке).
   const moveCol = useCallback((from, to) => setVisibleCols((cs) => {
@@ -312,6 +322,9 @@ function Dashboard() {
         onRetry={loadBonds}
         visibleCols={visibleCols}
         onMoveCol={moveCol}
+        colWidths={colWidths}
+        onResizeCol={resizeCol}
+        onResetColWidth={resetColWidth}
       />
     </>
   );

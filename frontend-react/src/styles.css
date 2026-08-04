@@ -916,6 +916,17 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 /* перетаскивание заголовка таблицы: источник бледнеет, цель подсвечена слева */
 .grid thead th.th-drag { opacity: 0.4; }
 .grid thead th.th-over { box-shadow: inset 2px 0 0 var(--fg); }
+/* Ручка ширины: полоска у правой границы заголовка, видна на ховере колонки.
+   Абсолютное позиционирование считается от th — он уже sticky (см. .grid thead th). */
+.th-resize {
+  position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; z-index: 3;
+}
+.grid thead th:hover .th-resize { background: var(--line-2); }
+.th-resize:hover { background: var(--fg) !important; }
+/* во время тяги — курсор ресайза по всему окну и без выделения текста */
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
 
 /* --- Экран входа --- */
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
