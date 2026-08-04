@@ -1,3 +1,4 @@
+import calendar as _cal
 import logging
 import math
 from bisect import bisect_right
@@ -1164,8 +1165,26 @@ class _RuoniaCompoundPath:
 
     Ставку берём НЕ каждый день, а на границах узлов кривой: daily_forward
     кусочно-постоянен по сегментам (той же ступенью проецируются купоны), так что
-    ~15 вызовов вместо тысяч."""
+    ~15 вызовов вместо тысяч.
+
+    ДЕЛИТЕЛЬ — ACT/ACT: длина года берётся ФАКТИЧЕСКАЯ (366 в високосный), как в
+    официальном индексе ЦБ. На фиксированных 365 расчёт уезжал вверх ровно в
+    високосные годы (сверено с RuoniaSV на истории с 2010: расхождение копилось
+    только в 2012/2016/2020/2024, после ACT/ACT упало с 10.9 до 0.5 bps за 16
+    лет). Смещение зависело от доли високосных дней в горизонте — 0 bps до года
+    и до −1.4 bps на 3 годах, то есть искажало сравнение бумаг РАЗНЫХ сроков
+    между собой. Аннуализация остаётся 365-й (^(365/D)) — как у XIRR бумаги,
+    иначе сравнение двух ног станет асимметричным."""
     __slots__ = ("curve", "start", "days", "cum", "rates", "_bounds", "_r", "_hi")
+
+    def _year_frac(self, d0: int, n: int) -> float:
+        """Σ 1/длина_года(день) по n дням, начиная со смещения d0 от start.
+        Окна короткие (1–4 дня, длинные праздники до ~10), цикл дешёвый."""
+        acc, d = 0.0, self.start + timedelta(days=d0)
+        for _ in range(n):
+            acc += 1.0 / (366.0 if _cal.isleap(d.year) else 365.0)
+            d += timedelta(days=1)
+        return acc
 
     def __init__(self, curve: DiscountCurve, start: date):
         self.curve = curve
@@ -1190,7 +1209,7 @@ class _RuoniaCompoundPath:
             while _is_settlement_day_off(nxt):
                 nxt += timedelta(days=1)
             k = (nxt - self.start).days
-            self.cum.append(self.cum[-1] * (1.0 + self.rates[-1] * (k - d0) / 365.0))
+            self.cum.append(self.cum[-1] * (1.0 + self.rates[-1] * self._year_frac(d0, k - d0)))
             self.days.append(k)
             self.rates.append(self._rate_at(nxt))
 
@@ -1200,7 +1219,7 @@ class _RuoniaCompoundPath:
             return 1.0
         self._extend_to(n)
         i = bisect_right(self.days, n) - 1
-        return self.cum[i] * (1.0 + self.rates[i] * (n - self.days[i]) / 365.0)
+        return self.cum[i] * (1.0 + self.rates[i] * self._year_frac(self.days[i], n - self.days[i]))
 
 
 def _ruonia_path(curve: DiscountCurve, start: date) -> _RuoniaCompoundPath:

@@ -371,3 +371,30 @@ def test_accrue_index_all_empty_returns_none_end():
             _row("2026-08-10", "2026-08-10", None)]
     st = accrue_index(rows)
     assert st["end"] is None and st["seen"] is False
+
+
+def test_ruonia_base_leg_uses_actual_year_length():
+    """База Y-IDX делит на ФАКТИЧЕСКУЮ длину года (ACT/ACT, как индекс ЦБ):
+    горизонт через високосный год растёт медленнее, чем при фиксированных 365."""
+    from core.valuation import _RuoniaCompoundPath
+
+    class _Flat:                      # плоские 10% годовых, узлов нет
+        nodes = []
+        def daily_forward(self, d):
+            return 0.10
+
+    # окно ровно в високосном 2028-м vs то же число дней в обычном 2027-м
+    leap = _RuoniaCompoundPath(_Flat(), date(2028, 1, 3))
+    norm = _RuoniaCompoundPath(_Flat(), date(2027, 1, 4))
+    g_leap = leap.growth_to(date(2028, 1, 3) + timedelta(days=300))
+    g_norm = norm.growth_to(date(2027, 1, 4) + timedelta(days=300))
+    assert g_leap < g_norm, "в високосном году дневное начисление меньше"
+    # отношение приростов = 365/366 с точностью до капитализации
+    assert (g_leap - 1) / (g_norm - 1) == pytest.approx(365 / 366, abs=2e-4)
+
+    # день внутри невисокосного года — ровно ставка/365
+    p = _RuoniaCompoundPath(_Flat(), date(2027, 1, 4))       # пн
+    assert p.growth_to(date(2027, 1, 5)) - 1 == pytest.approx(0.10 / 365, abs=1e-12)
+    # тот же день в високосном — ставка/366
+    p2 = _RuoniaCompoundPath(_Flat(), date(2028, 1, 3))      # пн
+    assert p2.growth_to(date(2028, 1, 4)) - 1 == pytest.approx(0.10 / 366, abs=1e-12)
