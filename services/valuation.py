@@ -60,10 +60,17 @@ def calculate_valuation_metrics(
     offers=None,
     ruonia_curve: DiscountCurve = None,
     alt_prices=None,
+    accrued_basis: str = "settle",
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
-    accrued_override — НКД на calc_date из MOEX (приоритет над стейл-кэшем).
+    accrued_override — НКД из MOEX (приоритет над стейл-кэшем).
+    accrued_basis — НА КАКУЮ ДАТУ дан НКД (свой и в accrued_override, и в
+              bond.accrued_rub): "settle" — уже на дату поставки T+1 (блок
+              securities: ACCRUEDINT live-снапшота и isins_cache — так отдаёт
+              MOEX, доначислять НЕЛЬЗЯ), "calc" — на дату расчёта (блок history:
+              ACCINT прошлого дня в as-of движке, и НКД, посчитанный из графика
+              купонов на calc_date) — такой доначисляем до поставки сами.
     ruonia_curve — OIS-кривая RUONIA на ту же дату: база сравнения Y-IDX для ВСЕХ
               флоатеров, включая КС-бумаги (см. ruonia_rolling_yield_pct). Для
               RUONIA-бумаги совпадает с curve и может не передаваться; для
@@ -119,18 +126,30 @@ def calculate_valuation_metrics(
 
     # НКД НА ДАТУ ПОСТАВКИ. Покупатель платит на settle (T+1 раб) — туда же
     # якорятся XIRR/SM/DM (xirr_yield_pct, pv_cashflows_with_dm,
-    # solve_discount_margin_bps). Раньше НКД брался на calc_date: dirty был
-    # занижен на день-три накопления, и обе стороны сравнения жили на разных
-    # датах. accrue_to_settle заодно закрывает ex-coupon (купон в окне
-    # (calc, settle] уходит продавцу — НКД считается от начала нового периода):
-    # прежняя коррекция вычитала купон из НКД и давала слегка отрицательный НКД.
-    from core.valuation import settle_date as _sd_ex, accrue_to_settle as _ats
+    # solve_discount_margin_bps), поэтому и НКД в dirty обязан быть на settle.
+    #
+    # ОТКУДА НКД — РАЗНЫЕ КОНВЕНЦИИ (сверено с MOEX 2026-08-04):
+    #   • блок securities (ACCRUEDINT, live-снапшот и isins_cache) отдаёт НКД
+    #     УЖЕ НА ДАТУ ПОСТАВКИ — доначислять нечего (basis="settle");
+    #   • блок history (ACCINT на прошлую дату, as-of движок) отдаёт НКД НА ДАТУ
+    #     ТОРГОВ — его доначисляем сами (basis="calc").
+    # Пока basis не различался, live-ветка накидывала лишний день (три на
+    # пятницу, больше на праздники): dirty завышен, YTM/Y-IDX/SM/DM занижены.
+    # accrue_to_settle заодно закрывает ex-coupon (купон в окне (calc, settle]
+    # уходит продавцу — НКД считается от начала нового периода); у settle-НКД
+    # биржа это уже сделала сама.
+    from core.valuation import (settle_date as _sd_ex, accrue_to_settle as _ats,
+                                accrued_at as _acc_at)
     settle_dt = _sd_ex(calc_date)
-    accrued_calc_date = accrued
-    if accrued is not None:
+    if accrued is not None and accrued_basis == "calc":
+        accrued_calc_date = accrued
         accrued, _acc_note = _ats(accrued, calc_date, periods)
         if _acc_note:
             warnings.append(_acc_note)
+    else:
+        # НКД на calc_date — справочное поле карточки; из биржевого settle-НКД
+        # его не вычесть, считаем из графика (None, если купон не опубликован)
+        accrued_calc_date = _acc_at(periods, calc_date) if periods else None
 
     # T+1: амортизация в окне (calc, settle] — продавцу; цена котируется от остатка
     from core.valuation import face_for_pricing

@@ -69,8 +69,10 @@ class BondValuation(BaseModel):
     # НКД и дисконтирование — на settlement_date. Поля отдаются наружу, чтобы
     # калькулятор карточки показывал, из чего собран dirty.
     settlement_date: Optional[date] = None
-    accrued_settle_rub: Optional[float] = None   # НКД на дату поставки (в dirty)
-    accrued_calc_rub: Optional[float] = None     # НКД биржи на дату расчёта (справочно)
+    accrued_settle_rub: Optional[float] = None   # НКД на дату поставки (в dirty; live —
+                                                 # ровно биржевой ACCRUEDINT, он уже на T+1)
+    accrued_calc_rub: Optional[float] = None     # НКД на дату расчёта (справочно; live —
+                                                 # посчитан из графика купонов, не биржевой)
     pricing_face_rub: Optional[float] = None     # номинал, от которого котируется цена
     dm_bps: Optional[int]                       # = sm_bps (backward-compat)
     sm_bps: Optional[int] = None               # наш simple margin ≈ НРД simple_margin

@@ -475,7 +475,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             m = calculate_valuation_metrics(
                 ref, px, curve, d, accrued_override=accint,
                 periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
-                ruonia_curve=ru_curve)
+                ruonia_curve=ru_curve, accrued_basis="calc")
             points.append({
                 "date": r["date"], "price": px,
                 "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
@@ -550,6 +550,8 @@ def reprice_asof(ctx: dict, price: float) -> dict:
         accrued_override=ctx["accrued"], periods=ctx["periods"],
         amorts=ctx["amorts"], offers=ctx["offers"],
         ruonia_curve=ctx.get("ruonia_curve"),
+        # history-ACCINT (и фолбэк из графика) — НКД на дату торгов, не на поставку
+        accrued_basis="calc",
     )
     m["warnings"] = sorted(set((m.get("warnings") or []) + ctx["ctx_warnings"]))
     m["curve_mode"] = ctx["curve_mode"]

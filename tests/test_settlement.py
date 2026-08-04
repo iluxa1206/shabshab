@@ -98,8 +98,8 @@ def test_accrue_noop_without_schedule():
 # ── сквозная проверка метрик ────────────────────────────────────────────────
 
 def test_metrics_dirty_uses_settlement_accrued(keyrate_curve, calc_date, flat_index_15, monkeypatch):
-    """dirty = номинал·цена/100 + НКД НА ДАТУ ПОСТАВКИ, и это же значение
-    возвращается в accrued_settle_rub. Расчёт на calc_date остаётся справочным."""
+    """basis='calc' (НКД на дату торгов — history-ACCINT as-of движка): dirty =
+    номинал·цена/100 + НКД НА ДАТУ ПОСТАВКИ, доначисленный из переданного."""
     monkeypatch.setattr("services.valuation._index_provider",
                         lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
     bond = make_bond(margin_bps=150)
@@ -107,13 +107,38 @@ def test_metrics_dirty_uses_settlement_accrued(keyrate_curve, calc_date, flat_in
     acc_calc = accrued_at(periods, calc_date)
 
     m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
-                                    accrued_override=acc_calc, periods=periods)
+                                    accrued_override=acc_calc, periods=periods,
+                                    accrued_basis="calc")
 
     assert m["settlement_date"] == settle_date(calc_date)
     assert m["accrued_calc_rub"] == pytest.approx(acc_calc, abs=1e-4)
     assert m["accrued_settle_rub"] > m["accrued_calc_rub"], "НКД на поставку должен быть больше"
     assert m["dirty_price_rub"] == pytest.approx(
         dirty_price_rub(bond.face_value, 100.0, m["accrued_settle_rub"]), abs=1e-6)
+
+
+def test_metrics_settle_basis_is_not_accrued_twice(keyrate_curve, calc_date, flat_index_15,
+                                                   monkeypatch):
+    """basis='settle' (дефолт; биржевой ACCRUEDINT блока securities уже НА T+1):
+    НКД кладётся в dirty КАК ЕСТЬ. Раньше он доначислялся ещё раз — на пятницу и
+    праздники это 3-4 лишних дня, dirty завышался, YTM/Y-IDX/SM/DM занижались."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    acc_settle = accrued_at(periods, settle_date(calc_date))   # так отдаёт биржа
+
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=acc_settle, periods=periods)
+
+    assert m["accrued_settle_rub"] == pytest.approx(acc_settle, abs=1e-4), "НКД доначислен повторно"
+    assert m["dirty_price_rub"] == pytest.approx(
+        dirty_price_rub(bond.face_value, 100.0, acc_settle), abs=1e-6)
+    # справочный НКД на дату расчёта считается из графика и меньше поставочного
+    assert m["accrued_calc_rub"] == pytest.approx(accrued_at(periods, calc_date), abs=1e-4)
+    assert m["accrued_calc_rub"] < m["accrued_settle_rub"]
+    # и ни одного варнинга про доначисление
+    assert not any("доначислен" in w for w in m["warnings"])
 
 
 def test_metrics_par_identity_holds_at_settlement(keyrate_curve, calc_date, flat_index_15, monkeypatch):
