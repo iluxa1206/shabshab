@@ -3,6 +3,7 @@
 (accrued/curve/calc_date фиксированы) → НКД-пилы нет, серия = функция цены через
 сегодняшнюю модель. Оценка динамики, не точный историч. спред (кривая/срок
 менялись) — но для тренда достаточно. Без хранилища, on-demand."""
+import asyncio
 import re
 import logging
 from typing import Optional
@@ -100,7 +101,7 @@ async def spread_history(
             logger.warning(f"honest backfill {isin}: {e} — серия останется candle-оценкой")
 
     from services.spread_history import read_history, keep_trade_days
-    exact_rows = read_history(isin, days=days)
+    exact_rows = await asyncio.to_thread(read_history, isin, days=days)
     if from_date:
         # read_history режет по числу строк — календарную границу держим здесь,
         # иначе точная история могла бы уйти левее окна графика цены
@@ -194,11 +195,13 @@ async def hourly_bars(
                 try:
                     from services import trades_archive as ta
                     await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS), board=board)
-                    ta.enrich_bars_with_ticks(isin, frm=frm)
+                    # GROUP BY по тикам бумаги — синхронный SQLite: в event loop
+                    # он держал бы весь сервер на время агрегации
+                    await asyncio.to_thread(ta.enrich_bars_with_ticks, isin, frm=frm)
                 except Exception as e:
                     logger.warning("ticks %s: %s", isin, e)
 
-    rows = bars_svc.read_bars(isin, frm=frm)
+    rows = await asyncio.to_thread(bars_svc.read_bars, isin, frm=frm)
     if hours > 1:
         rows = bars_svc.resample(rows, hours)
     return {"isin": isin, "kind": kind, "hours": hours, "from": frm,
@@ -231,7 +234,8 @@ async def trades(
                 await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS), board=board)
             except Exception as e:
                 logger.warning("trades drain %s: %s", isin, e)
-    rows = ta.read_trades(isin, frm=frm, min_value=min_value, side=side, limit=limit)
+    rows = await asyncio.to_thread(ta.read_trades, isin, frm=frm, min_value=min_value,
+                                   side=side, limit=limit)
 
     def _vwap(rs):
         q = sum(r.get("qty") or 0 for r in rs)
@@ -246,7 +250,7 @@ async def trades(
             "eff_spread_bps": round((vb - vs) * 100, 1) if vb is not None and vs is not None else None,
             "volume": sum(r.get("qty") or 0 for r in rows),
             "value": sum(r.get("value") or 0 for r in rows),
-            "archive": ta.stats(isin), "trades": rows}
+            "archive": await asyncio.to_thread(ta.stats, isin), "trades": rows}
 
 
 _YIDX_BAND = (-1500, 3000)   # тот же бэнд, что у DM в аналитике: мусор стейл/тонких цен
@@ -279,11 +283,15 @@ async def yidx_aggregate(body: YidxAggBody):
     from services import instruments_registry
 
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
-    with _connect() as c:
-        rows = c.execute(
-            "SELECT isin, date, y_idx FROM spread_daily "
-            "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
-            "ORDER BY date", (cutoff,)).fetchall()
+
+    def _read_daily():
+        with _connect() as c:
+            return c.execute(
+                "SELECT isin, date, y_idx FROM spread_daily "
+                "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
+                "ORDER BY date", (cutoff,)).fetchall()
+
+    rows = await asyncio.to_thread(_read_daily)
     lo, hi = _YIDX_BAND
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
@@ -292,7 +300,7 @@ async def yidx_aggregate(body: YidxAggBody):
     if not rows:
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
 
-    uni = {u["isin"]: u for u in instruments_registry.universe_rows()}
+    uni = {u["isin"]: u for u in await asyncio.to_thread(instruments_registry.universe_rows)}
     buckets = {"AAA", "AA", "A", "BBB", "BB", "B"}
 
     def key_of(isin: str):

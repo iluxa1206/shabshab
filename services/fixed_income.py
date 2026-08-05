@@ -373,12 +373,17 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
         *(MarketDataService.fetch_bond_schedule_full(u.get("secid") or u["isin"]) for u in universe),
         return_exceptions=True)
     MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
-    out: Dict[str, dict] = {}
-    for u, full in zip(universe, fulls):
-        if isinstance(full, Exception):
-            full = {}
-        out[u["isin"]] = compute_fixed_row(u, full or {}, g_curve, calc_date)
-    return out
+
+    # ~700 бумаг чистого счёта — в поток, по той же причине, что и метрики
+    # флоатеров: в event loop это фриз всего сервера на каждом прогреве.
+    def _crunch() -> Dict[str, dict]:
+        out: Dict[str, dict] = {}
+        for u, full in zip(universe, fulls):
+            f = {} if isinstance(full, Exception) else (full or {})
+            out[u["isin"]] = compute_fixed_row(u, f, g_curve, calc_date)
+        return out
+
+    return await asyncio.to_thread(_crunch)
 
 
 _YTM_HIST_FILE = cache_path("fixed_ytm_history.json")

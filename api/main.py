@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 import uvicorn
 from fastapi import FastAPI, Request
 
@@ -24,22 +25,53 @@ from datetime import date, datetime, timedelta, timezone
 from services.market_data import MarketDataService
 from services import instruments_registry
 
+WS_PUSH_INTERVAL = 5        # такт пуша цен в торговые часы, сек
+WS_IDLE_INTERVAL = 60       # вне торговых часов — только перепроверка календаря
+WS_PRICE_HEARTBEAT = 60     # пуш неизменной цены не чаще раза в столько секунд
+
+
 async def ws_market_data_broadcaster():
-    """Background task to push updates to connected WS clients."""
+    """Пуш last-price подписчикам WS.
+
+    Только ISIN с ЖИВЫМИ подписчиками (active_market_isins) — раньше брались все
+    ключи карты, а опустевшие не удалялись: за аптайм список рос монотонно и
+    каждые 5с уходил в Alor запросом цен по бумагам, которые никто не смотрит.
+    Вне торговых часов не опрашиваем вовсе — цена не меняется (тот же гейт, что
+    у universe_price_poller / depth_poller / alerts_monitor).
+
+    ПУШИМ ТОЛЬКО ИЗМЕНЕНИЯ. Раньше такт слал цену безусловно, а фронт на каждый
+    пуш дёргал /reprice: 20 бумаг × 5с = 3.4 запроса/сек круглосуточно (6132 за
+    полчаса в проде) на пересчёт того же самого числа. Heartbeat раз в минуту
+    оставляем, чтобы клиент видел живой поток; новый подписчик получает
+    последнюю цену снапшотом при subscribe."""
+    last_push: dict[str, tuple[float, float]] = {}   # isin → (цена, monotonic)
     while True:
+        idle = True
         try:
-            # Only fetch for ISINs that actually have active market subscriptions
-            active_isins = list(ws.manager.market_subscriptions.keys())
-            if active_isins:
-                prices = await MarketDataService.fetch_last_prices(active_isins)
-                for isin in active_isins:
-                    if isin in prices:
-                        payload = {"last_price_pct": prices[isin]}
-                        await ws.manager.broadcast_market_data(isin, payload)
+            if _in_moex_trading_hours():
+                # такт держим коротким и без подписчиков: свежий подписчик должен
+                # получить цену через 5с, а не ждать длинный idle-такт (сети тут нет)
+                idle = False
+                active_isins = ws.manager.active_market_isins()
+                if active_isins:
+                    prices = await MarketDataService.fetch_last_prices(active_isins)
+                    now = time.monotonic()
+                    for isin in active_isins:
+                        px = prices.get(isin)
+                        if px is None:
+                            continue
+                        prev = last_push.get(isin)
+                        if prev and prev[0] == px and now - prev[1] < WS_PRICE_HEARTBEAT:
+                            continue
+                        last_push[isin] = (px, now)
+                        await ws.manager.broadcast_market_data(isin, {"last_price_pct": px})
+                    # отписались — снимаем и знак, иначе карта растёт за аптайм
+                    for gone in set(last_push) - set(active_isins):
+                        last_push.pop(gone, None)
         except Exception as e:
             logger.warning(f"WS Broadcaster error: {e}")
 
-        await asyncio.sleep(5)  # Fetch and broadcast every 5 seconds
+        await asyncio.sleep(WS_IDLE_INTERVAL if idle else WS_PUSH_INTERVAL)
 
 
 # Опрос Alor по всему юниверсу флоатеров (вне watchlist) — редко, чтобы держать

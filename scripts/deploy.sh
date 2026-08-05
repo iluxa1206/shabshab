@@ -58,6 +58,10 @@ ssh $SSH_OPTS "$SERVER" \
   "cd $REMOTE && docker compose -f docker-compose.prod.yml --env-file .env up -d --build"
 
 echo ">>> healthcheck"
-curl -s --max-time 15 "${CURL_OPTS[@]}" "$HEALTH_URL"
+# ${CURL_OPTS[@]} на пустом массиве под set -u — «unbound variable» в bash 3.2
+# (штатный /bin/bash macOS): деплой падал НА ПОСЛЕДНЕЙ строке, когда
+# DEPLOY_SSH_BIND не задан, хотя прод уже поднялся. Разворачиваем через ${x+"${x[@]}"}.
+# Первый ответ после рестарта идёт ~7с (холодные кэши) — таймаут с запасом.
+curl -s --max-time 30 ${CURL_OPTS[@]+"${CURL_OPTS[@]}"} "$HEALTH_URL"
 echo
 echo ">>> done: https://assetallocator.ru/desk/app/"

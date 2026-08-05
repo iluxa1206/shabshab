@@ -191,6 +191,10 @@ function Dashboard() {
       const items = r.items || [];
       setBonds(items);
       bondsRef.current = items;
+      // цены, под которые метрики уже посчитаны бэком: WS-тик с тем же числом
+      // не должен заказывать reprice (см. wsPxRef ниже)
+      wsPxRef.current = Object.fromEntries(
+        items.filter((b) => b.last_price_pct != null).map((b) => [b.isin, b.last_price_pct]));
       setStatus("ready");
       wsRef.current?.resubscribe();
     } catch (e) {
@@ -209,6 +213,11 @@ function Dashboard() {
     if (firstWatch.current) { firstWatch.current = false; return; }
     loadBonds();
   }, [watch, loadBonds]);
+
+  // Цена, под которую строка уже посчитана (из /api/bonds или прошлого reprice).
+  // Гвард против шторма: WS присылает last-price тактом, а не по изменению, и
+  // reprice того же числа — чистый холостой пересчёт на бэке.
+  const wsPxRef = useRef({});
 
   // debounced live-пересчёт производных строки под новую цену (WS тикает только
   // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model под введённой ценой.
@@ -247,6 +256,9 @@ function Dashboard() {
       setLive,
       (isin, price) => {
         if (price == null) return;
+        // цена не изменилась с прошлого расчёта — ни стейта, ни reprice
+        if (wsPxRef.current[isin] === price) return;
+        wsPxRef.current[isin] = price;
         setBonds((prev) =>
           prev.map((b) => {
             if (b.isin !== isin || b.last_price_pct === price) return b;

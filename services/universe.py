@@ -197,44 +197,52 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
     MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
     full_by = dict(zip(ids, fulls))
 
-    out: dict = {}
-    for isin in ids:
-        u = uni_by[isin]
-        snap = board.get(isin, {})
-        ref = build_universe_ref(u, isin, cache, secs)
-        out[isin] = enrich_bond(
-            u, ref, full_by.get(isin) or {},
-            last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
-            accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
-            bid=snap.get("bid"), ask=snap.get("ask"),
-            ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
-            exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
-        out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
-
-    # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
-    # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках
-    # (fulls, day-кэш), без доп. сети. Пишем только при расхождении; manual-locked
-    # строки upsert не трогает (coupon_period_days ∈ _MANUAL_FIELDS).
-    try:
-        from core.cashflow import coupon_period_from_coupons
+    # Дальше сети нет — только счёт по ~540 бумагам и запись в реестр. В event
+    # loop этот блок держал ядро десятками секунд каждые 10 минут (замер на
+    # проде: 33с непрерывного CPU), и всё это время сервер не отвечал никому.
+    # Уносим в поток: соединения SQLite открываются внутри вызовов, шаринга
+    # между потоками нет, запись прикрыта своим threading.Lock.
+    def _crunch() -> dict:
+        out: dict = {}
         for isin in ids:
-            cps = (full_by.get(isin) or {}).get("coupons") or []
-            cpd = coupon_period_from_coupons(
-                cps, issue_date=uni_by[isin].get("issue_date"), today=calc_date)
-            if not cpd or cpd <= 0:
-                continue
-            cur = instruments_registry.get(isin) or {}
-            # locked-строку upsert всё равно не тронет (coupon_period_days ∈
-            # _MANUAL_FIELDS) — не дёргаем БД вхолостую каждый цикл
-            if cur.get("manual_locked"):
-                continue
-            if cpd != cur.get("coupon_period_days"):
-                instruments_registry.upsert(
-                    {"isin": isin, "coupon_period_days": cpd},
-                    source="moex", mark_new=False, keep_source=True)
-    except Exception as e:
-        logger.warning(f"coupon_period backfill error: {e}")
-    return out
+            u = uni_by[isin]
+            snap = board.get(isin, {})
+            ref = build_universe_ref(u, isin, cache, secs)
+            out[isin] = enrich_bond(
+                u, ref, full_by.get(isin) or {},
+                last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
+                accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
+                bid=snap.get("bid"), ask=snap.get("ask"),
+                ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
+                exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
+            out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
+
+        # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
+        # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках
+        # (fulls, day-кэш), без доп. сети. Пишем только при расхождении; manual-locked
+        # строки upsert не трогает (coupon_period_days ∈ _MANUAL_FIELDS).
+        try:
+            from core.cashflow import coupon_period_from_coupons
+            for isin in ids:
+                cps = (full_by.get(isin) or {}).get("coupons") or []
+                cpd = coupon_period_from_coupons(
+                    cps, issue_date=uni_by[isin].get("issue_date"), today=calc_date)
+                if not cpd or cpd <= 0:
+                    continue
+                cur = instruments_registry.get(isin) or {}
+                # locked-строку upsert всё равно не тронет (coupon_period_days ∈
+                # _MANUAL_FIELDS) — не дёргаем БД вхолостую каждый цикл
+                if cur.get("manual_locked"):
+                    continue
+                if cpd != cur.get("coupon_period_days"):
+                    instruments_registry.upsert(
+                        {"isin": isin, "coupon_period_days": cpd},
+                        source="moex", mark_new=False, keep_source=True)
+        except Exception as e:
+            logger.warning(f"coupon_period backfill error: {e}")
+        return out
+
+    return await asyncio.to_thread(_crunch)
 
 
 async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
