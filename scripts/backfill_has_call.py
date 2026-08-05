@@ -56,6 +56,7 @@ from services.market_data import SCHEDULE_FULL_CACHE_FILE  # noqa: E402
 
 APPLY = os.environ.get("APPLY") == "1"
 LIST_ONLY = os.environ.get("LIST_ONLY") == "1"   # только показать кандидатов, без сети
+ALL = os.environ.get("ALL") == "1"               # весь универс, не только бумаги с офертой
 LIMIT = int(os.environ.get("LIMIT", "300"))
 DELAY = float(os.environ.get("DELAY", "0.7"))
 BIND = os.environ.get("BIND", "")   # en0 | IP — обход VPN-туннеля (см. шапку)
@@ -128,10 +129,16 @@ def _schedules() -> dict:
 
 
 def candidates() -> list[dict]:
+    """has_call IS NULL среди активных флоатеров. По умолчанию сужаем до бумаг с
+    будущей офертой (только у них маркер и рисуется); ALL=1 — весь универс, чтобы
+    закрыть флаг разом и не ждать квоту синка по 10 за прогон."""
     today = date.today()
+    rows = reg.list_call_unknown()
+    if ALL:
+        return rows
     sched_by = _schedules()
     out = []
-    for r in reg.list_call_unknown():
+    for r in rows:
         sched = sched_by.get(r["isin"])
         if not sched:
             continue
@@ -143,12 +150,13 @@ def candidates() -> list[dict]:
 
 async def main() -> None:
     cands = candidates()
-    print(f"кандидатов (has_call IS NULL + будущая оферта): {len(cands)}; "
+    scope = "весь универс" if ALL else "будущая оферта"
+    print(f"кандидатов (has_call IS NULL, {scope}): {len(cands)}; "
           f"берём {min(LIMIT, len(cands))}, apply={APPLY}", flush=True)
     if not cands or LIST_ONLY:
         for r in cands:
-            print(f"  {r['isin']}  {(r.get('short_name') or ''):<14} "
-                  f"оферта {r['offer_date']}  {r['offer_type']}")
+            off = f"оферта {r['offer_date']}  {r['offer_type']}" if r.get("offer_date") else ""
+            print(f"  {r['isin']}  {(r.get('short_name') or ''):<14} {off}")
         return
     import httpx
     from services.enrich_corpbonds import _UA
@@ -175,8 +183,8 @@ async def main() -> None:
                 continue
             stats["yes" if hc else "no"] += 1
             if hc:
-                print(f"  CALL  {isin} {r.get('short_name') or ''} "
-                      f"(оферта {r['offer_date']})", flush=True)
+                off = f" (оферта {r['offer_date']})" if r.get("offer_date") else ""
+                print(f"  CALL  {isin} {r.get('short_name') or ''}{off}", flush=True)
             if APPLY:
                 reg.set_has_call(isin, hc)
     print("итог:", stats)

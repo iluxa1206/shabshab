@@ -178,8 +178,14 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                 reg.set_has_call(isin, r["has_call"])
                 stats["call_flag"] = stats.get("call_flag", 0) + 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
-            # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели
-            if exotic in ("inverse", "cpi") or (r.get("is_floater") and base is None):
+            # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели.
+            # ВАЖНО: судим об экзотике ТОЛЬКО когда формула на странице была. После
+            # ослабления guard'а (см. fetch_corpbonds) сюда стали доходить карточки
+            # вообще без формулы; без этой проверки бумага с «Тип купона: Флоатер»
+            # и пустой формулой уезжала бы в EXOTIC и вылетала из универса.
+            has_formula = bool(r.get("formula_text"))
+            if exotic in ("inverse", "cpi") or (has_formula and r.get("is_floater")
+                                                and base is None):
                 if apply:
                     reg.set_exotic(isin, note=r.get("formula_text") or "")
                     reg.mark_enrich_attempt(isin, "exotic", parser_ver=PARSER_VERSION)
@@ -215,7 +221,14 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
 
 
 async def fetch_corpbonds(isin: str, client=None) -> Optional[dict]:
-    """Тянет и парсит corpbonds.ru/bond/{ISIN}. None при недоступности/не-облигации."""
+    """Тянет и парсит corpbonds.ru/bond/{ISIN}. None при недоступности/не-облигации.
+
+    Признак «страница настоящая» — сам ISIN плюс структурная строка карточки.
+    Раньше требовалась «Формула купона», но её corpbonds рисует ТОЛЬКО там, где
+    считает бумагу флоатером: наши KEYRATE-выпуски с «Тип купона: Фикс» (РОССИУМ)
+    отбраковывались целиком, вместе с has_call/амортизацией/рейтингом, которые на
+    странице есть. Теперь такие страницы парсятся; формулы в них нет, поэтому
+    base/margin не извлекутся — и вызывающий просто пометит исход 'nodata'."""
     import httpx
     url = _CB_URL.format(isin=isin)
     try:
@@ -224,9 +237,12 @@ async def fetch_corpbonds(isin: str, client=None) -> Optional[dict]:
                 resp = await c.get(url)
         else:
             resp = await client.get(url, headers=_UA, timeout=15)
-        if resp.status_code != 200 or "Формула купона" not in resp.text:
+        if resp.status_code != 200:
             return None
-        return parse_corpbonds_html(resp.text)
+        text = resp.text
+        if isin not in text or not ("Формула купона" in text or "Дата погашения" in text):
+            return None
+        return parse_corpbonds_html(text)
     except Exception as e:
         logger.debug("corpbonds fetch %s: %s", isin, e)
         return None

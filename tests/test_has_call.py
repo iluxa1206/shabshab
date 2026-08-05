@@ -93,3 +93,86 @@ def test_xlsx_template_excludes_has_call():
     from api.routes.instruments import _XLSX_COLS, _XLSX_EDITABLE
     assert "has_call" not in _XLSX_COLS
     assert "has_call" not in _XLSX_EDITABLE
+
+
+# ── guard fetch_corpbonds и защита ветки EXOTIC ──────────────────────────────
+
+class _Resp:
+    def __init__(self, text, status=200):
+        self.text, self.status_code = text, status
+
+
+class _Client:
+    """Отдаёт заранее заданный HTML вместо похода в сеть."""
+    def __init__(self, resp):
+        self._resp = resp
+
+    async def get(self, url, **kw):
+        return self._resp
+
+
+def _bond_page(isin, rows):
+    trs = "".join(f'<tr><td>{k}</td><td><p class="val">{v}</p></td></tr>'
+                  for k, v in rows)
+    return f"<html><table>{trs}</table></html>"
+
+
+@pytest.mark.asyncio
+async def test_guard_accepts_page_without_formula():
+    """Карточка без «Формула купона» (corpbonds считает бумагу фиксом) больше не
+    отбраковывается — has_call с неё нужен."""
+    from services.enrich_corpbonds import fetch_corpbonds
+    isin = "RU000A108LD8"
+    html = _bond_page(isin, [("ISIN", isin), ("Тип купона", "Фикс"),
+                             ("Дата погашения", "24.05.2034"),
+                             ("Наличие сall-опциона", "Да")])
+    r = await fetch_corpbonds(isin, client=_Client(_Resp(html)))
+    assert r is not None and r["has_call"] is True and r.get("base") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("html,status", [
+    ("<html>404 не найдено</html>", 200),          # не карточка облигации
+    ("<html><td>Дата погашения</td></html>", 200),  # структура есть, ISIN чужой
+    ("<html>что угодно</html>", 500),               # ошибка сервера
+])
+async def test_guard_rejects_non_bond(html, status):
+    from services.enrich_corpbonds import fetch_corpbonds
+    assert await fetch_corpbonds("RU000A108LD8",
+                                 client=_Client(_Resp(html, status))) is None
+
+
+@pytest.mark.asyncio
+async def test_no_formula_does_not_mark_exotic(reg, monkeypatch):
+    """Ослабленный guard пропускает карточки без формулы. Судить по ним об
+    экзотике нельзя: иначе «Тип купона: Флоатер» + пустая формула выкидывали бы
+    бумагу из универса (base='EXOTIC')."""
+    import services.enrich_corpbonds as ec
+
+    async def fake(isin, client=None):
+        return {"has_call": True, "is_floater": True, "base": None,
+                "margin_bps": None, "formula_text": None}
+    monkeypatch.setattr(ec, "fetch_corpbonds", fake)
+
+    res = await ec.enrich_registry(["RU000TEST001"], apply=True, delay=0)
+    assert res["stats"]["exotic"] == 0
+    row = next(r for r in reg.list_catalog() if r["isin"] == "RU000TEST001")
+    assert row["base"] == "KEYRATE"      # из универса не выкинули
+    assert row["has_call"] == 1          # флаг всё равно снят
+    assert reg.enrich_info("RU000TEST001")["result"] == "nodata"
+
+
+@pytest.mark.asyncio
+async def test_formula_still_marks_exotic(reg, monkeypatch):
+    """Старое поведение сохранено: формула ЕСТЬ, база из неё не выводится → EXOTIC."""
+    import services.enrich_corpbonds as ec
+
+    async def fake(isin, client=None):
+        return {"has_call": None, "is_floater": True, "base": None,
+                "margin_bps": None, "formula_text": "ИПЦ + 3%"}
+    monkeypatch.setattr(ec, "fetch_corpbonds", fake)
+
+    res = await ec.enrich_registry(["RU000TEST001"], apply=True, delay=0)
+    assert res["stats"]["exotic"] == 1
+    row = next(r for r in reg.list_catalog() if r["isin"] == "RU000TEST001")
+    assert row["base"] == "EXOTIC"
