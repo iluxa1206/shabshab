@@ -31,6 +31,9 @@ const COLS = [
   ["var_type", "Тип ставки"],
   ["coupon_text", "Формула"],
   ["rating", "Рейтинг"],
+  // Да/Нет/пусто=не скрейплено (рендер в Cell). Read-only: в xlsx-шаблон не
+  // выгружается — источник corpbonds, правка через форму (см. freeze-trap импорта).
+  ["has_call", "Call-опцион"],
   ["source", "Источник"],
 ];
 
@@ -56,6 +59,8 @@ function SpecBacktest({ r }) {
 
 function Cell({ col, val, row }) {
   if (col === "spec_backtest") return <SpecBacktest r={row} />;
+  // 0/1 из SQLite → Да/Нет; пусто = бумага ещё не скрейплена на corpbonds
+  if (col === "has_call" && val != null) return <>{val ? "Да" : "Нет"}</>;
   if (val === null || val === undefined || val === "") {
     return <span className={REQUIRED.has(col) ? "cat-miss cat-req" : "cat-miss"}>—</span>;
   }

@@ -358,6 +358,15 @@ td.px-stale { color: var(--mut); }
 .badge-thin { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--mut); border: 1px solid var(--line-2); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }
 
+/* Маркеры оферты перед датой погашения. p — пут из расписания MOEX (дата есть),
+   c — call-опцион эмитента из corpbonds (даты нет). Не взаимоисключающие: у
+   бумаги могут быть оба, тогда рисуется «pc». */
+.offer-mark { margin-right: 3px; font-size: 10px; font-weight: 700; cursor: help; }
+.offer-put { color: var(--accent); }
+/* серый, а не красный: --down/--up в этой таблице читаются как движение цены,
+   и колл-маркером их семантику размывать нельзя */
+.offer-call { color: var(--mut); }
+
 /* фильтр по эмитенту */
 .issuer-filter { position: relative; display: inline-block; }
 .issuer-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; width: 280px;
@@ -1289,3 +1298,29 @@ body.col-resizing * { cursor: col-resize !important; }
 .pay-date { font-weight: 700; font-size: 12px; }
 .pay-wday { color: var(--mut); font-size: 10px; text-transform: uppercase; }
 .pay-vol { color: var(--mut); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* --- Вкладка СДЕЛКИ: общерыночная лента --- */
+.tape-search { background: var(--bg); color: var(--fg); border: 1px solid var(--line-2);
+  padding: 4px 8px; font: inherit; font-size: 12px; width: 160px; }
+.tape-search:focus { outline: none; border-color: var(--fg); }
+.tape-sum { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+  margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.tape-kpi { display: inline-flex; align-items: baseline; gap: 6px; }
+.tape-k { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; }
+.tape-v { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tape-top { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.tape-top .chip-btn { font-size: 10.5px; }
+.tape-table tbody td { padding: 6px 16px; }
+.tape-table tbody td:nth-child(2) { position: static; box-shadow: none; }
+.tape-ts { color: var(--mut); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tape-name { font-weight: 600; white-space: nowrap; }
+.tape-rt, .tape-base { font-size: 9.5px; margin-left: 6px; color: var(--mut); }
+.tape-emitter { color: var(--mut); max-width: 240px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.tape-val { font-weight: 600; }
+.tape-side { font-size: 10.5px; white-space: nowrap; }
+.tape-buy { color: var(--up); }
+.tape-sell { color: var(--down); }
+.tape-more { display: flex; align-items: center; gap: 10px; padding: 12px 0;
+  font-size: 12px; color: var(--mut); }
+.tape-table tbody tr.tape-row-static { cursor: default; }

@@ -244,6 +244,8 @@ function Dashboard() {
   const liveTsRef = useRef({});
   // фолбэк-таймеры «движок не прислал производные» → одиночный reprice
   const repriceFallback = useRef({});
+  // буфер WS-патчей до флаша (коалесцирование пушей всего юниверса)
+  const patchBufRef = useRef({});
 
   // debounced live-пересчёт производных строки под новую цену (WS тикает только
   // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model под введённой ценой.
@@ -291,61 +293,89 @@ function Dashboard() {
       setLive,
       // Патч строки из push-потока Alor: {last_price_pct, bid, ask, bid_qty,
       // ask_qty, vwap_pct, vwap_volume} — приходит частями (котировка несёт
-      // верх стакана, сделка — цену и средневзвес), поэтому применяем то, что
-      // пришло, а не весь набор. Патч с metrics:true несёт производные
-      // (Y-IDX/DM/SM/dirty), пересчитанные движком бэка — тогда /reprice с
-      // фронта не нужен вовсе.
+      // верх стакана, сделка — цену и средневзвес). Патч с metrics:true несёт
+      // производные (Y-IDX/DM/SM/dirty), пересчитанные движком бэка — тогда
+      // /reprice с фронта не нужен вовсе.
+      //
+      // Пуши идут по ВСЕМ бумагам (wildcard) — применять каждый отдельным
+      // setBonds значит ререндерить таблицу на каждое сообщение. Копим патчи в
+      // буфере и мерджим одним проходом (флаш ниже, раз в 400мс).
       (isin, q) => {
-        const price = q.last_price_pct;
         liveTsRef.current[isin] = Date.now();
-        const priceNew = price != null && wsPxRef.current[isin] !== price;
-        if (priceNew) wsPxRef.current[isin] = price;
-        const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
-          "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
-          "delta_to_prev_close"];
-        setBonds((prev) =>
-          prev.map((b) => {
-            if (b.isin !== isin) return b;
-            const n = { ...b, _live: true };
-            if (q.bid != null) n.bid_price_pct = q.bid;
-            if (q.ask != null) n.ask_price_pct = q.ask;
-            if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
-            if (q.metrics) {
-              for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
-              n._mstale = false;   // производные свежие — строка не dim
-            }
-            if (priceNew) {
-              // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
-              // last − delta (инвариант дня) → delta_new = price − prev_close.
-              let delta = b.delta_to_prev_close;
-              if (delta != null && b.last_price_pct != null) {
-                const prevClose = b.last_price_pct - delta;
-                delta = Math.round((price - prevClose) * 10000) / 10000;
-              }
-              n.last_price_pct = price;
-              n.delta_to_prev_close = delta;
-              if (!q.metrics) n._mstale = true;   // производные приедут патчем движка
-            }
-            return n;
-          })
-        );
-        // reprice не заказываем: движок бэка пришлёт производные патчем в
-        // ближайший такт. Фолбэк — если патч не пришёл за 15с (движок лежит),
-        // строка остаётся dim и один reprice всё же уходит.
-        if (priceNew && !q.metrics) {
-          const t = repriceFallback.current;
-          if (t[isin]) clearTimeout(t[isin]);
-          t[isin] = setTimeout(() => {
-            delete t[isin];
-            const b = bondsRef.current.find((x) => x.isin === isin);
-            if (b && b._mstale) scheduleReprice(isin, wsPxRef.current[isin]);
-          }, 15000);
-        }
+        const buf = patchBufRef.current;
+        const prev = buf[isin];
+        buf[isin] = prev
+          ? { ...prev, ...q, metrics: prev.metrics || q.metrics }
+          : q;
       }
     );
     wsRef.current = ctrl;
+
+    // флаш буфера: все накопленные патчи одним setBonds
+    const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
+      "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
+      "delta_to_prev_close"];
+    const flushId = setInterval(() => {
+      const buf = patchBufRef.current;
+      const isins = Object.keys(buf);
+      if (!isins.length) return;
+      patchBufRef.current = {};
+      // priceNew решаем ДО мерджа: wsPxRef — цена, под которую строка посчитана
+      const priceNew = {};
+      for (const isin of isins) {
+        const price = buf[isin].last_price_pct;
+        if (price != null && wsPxRef.current[isin] !== price) {
+          wsPxRef.current[isin] = price;
+          priceNew[isin] = price;
+        }
+      }
+      setBonds((prev) =>
+        prev.map((b) => {
+          const q = buf[b.isin];
+          if (!q) return b;
+          const n = { ...b, _live: true };
+          if (q.bid != null) n.bid_price_pct = q.bid;
+          if (q.ask != null) n.ask_price_pct = q.ask;
+          if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
+          if (q.metrics) {
+            for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
+            n._mstale = false;   // производные свежие — строка не dim
+          }
+          const price = priceNew[b.isin];
+          if (price != null) {
+            // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
+            // last − delta (инвариант дня) → delta_new = price − prev_close.
+            let delta = b.delta_to_prev_close;
+            if (delta != null && b.last_price_pct != null) {
+              const prevClose = b.last_price_pct - delta;
+              delta = Math.round((price - prevClose) * 10000) / 10000;
+            }
+            n.last_price_pct = price;
+            n.delta_to_prev_close = delta;
+            if (!q.metrics) n._mstale = true;   // производные приедут патчем движка
+          }
+          return n;
+        })
+      );
+      // Фолбэк-reprice: движок молчит 15с → одна ходка. Только для избранного —
+      // на весь юниверс фолбэк при лежачем движке сам стал бы штормом.
+      const watchSet = new Set(paramsRef.current.watch || []);
+      for (const isin of isins) {
+        if (priceNew[isin] == null || buf[isin].metrics || !watchSet.has(isin)) continue;
+        const t = repriceFallback.current;
+        if (t[isin]) clearTimeout(t[isin]);
+        t[isin] = setTimeout(() => {
+          delete t[isin];
+          const b = bondsRef.current.find((x) => x.isin === isin);
+          if (b && b._mstale) scheduleReprice(isin, wsPxRef.current[isin]);
+        }, 15000);
+      }
+    }, 400);
+
     return () => {
       ctrl.close();
+      clearInterval(flushId);
+      patchBufRef.current = {};
       // гасим отложенные reprice-таймеры, иначе setBonds на размонтированном Dashboard
       const t = repriceTimers.current;
       Object.values(t).forEach(clearTimeout);
@@ -420,9 +450,11 @@ function Dashboard() {
   // лестницы стаканов по всему рынку — только когда фильтр по объёму включён.
   // Снимок на бэке обновляется раз в ~2 мин, чаще тянуть нечего.
   const volOn = volBid > 0 || volAsk > 0;
+  // бэк держит лестницы push-свежими (depth-пул universe_stream) — тянем чаще,
+  // чем при старом 120-секундном батч-снимке
   const depthQ = useQuery({
-    queryKey: ["depth"], queryFn: fetchDepth, refetchInterval: 60000,
-    enabled: volOn, staleTime: 30000,
+    queryKey: ["depth"], queryFn: fetchDepth, refetchInterval: 15000,
+    enabled: volOn, staleTime: 10000,
   });
   const depth = depthQ.data?.items;
 

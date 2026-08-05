@@ -149,9 +149,6 @@ export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?serie
 // и наш расчётный на тех же ставках — сверка нашей механики с эталоном.
 export const fetchRuoniaIndex = (days = 400) => request(`/api/curves/ruonia-index?days=${days}`);
 
-export const fetchFloaterYield = (isin) =>
-  request(`/api/curves/floater-yield?isin=${encodeURIComponent(isin)}`);
-
 export function fetchBonds({ withVal, universe, extra, signal }) {
   let url;
   if (universe) {
@@ -239,6 +236,22 @@ export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
   return request(u);
 };
 
+// Общерыночная лента сделок (вкладка СДЕЛКИ): тот же архив, но по всем бумагам.
+// Онлайн-дрейна тут нет — данные до последнего прогона часового демона.
+export const fetchMarketTape = ({ days = 1, minValue = 0, side, issuer, isin,
+                                  limit = 500 } = {}, signal) => {
+  const p = new URLSearchParams({ days, min_value: minValue, limit });
+  if (side) p.set("side", side);
+  // эмитенты — повторяющийся параметр; пустой массив не шлём (иначе бэк поймёт
+  // это как «фильтр задан, но ничего не подошло» и вернёт пустую ленту)
+  for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
+  if (isin) p.set("isin", isin);
+  return request(`/api/trades?${p}`, { signal });
+};
+
+export const fetchTapeIssuers = () =>
+  request("/api/trades/issuers").then((d) => d.issuers || []);
+
 export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
   let u = `/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`;
   if (board) u += `&board=${board}`;
@@ -278,38 +291,36 @@ export const createAlert = (body) => request("/api/alerts", { method: "POST", js
 export const updateAlert = (id, patch) => request(`/api/alerts/${id}`, { method: "PATCH", json: patch });
 export const deleteAlert = (id) => request(`/api/alerts/${id}`, { method: "DELETE" });
 
-// WebSocket live-цен. onPrice(isin, price). Возвращает {resubscribe, close}.
-// resubscribe шлёт diff: subscribe на новые ISIN, unsubscribe на убранные (без дублей).
+// Котировки всего рынка одним запросом (цена, верх стакана, средневзвес дня,
+// оборот) — тянутся тактом 5с для бумаг вне избранного. По избранному те же
+// поля приходят push'ем через WS и авторитетнее.
+export const fetchQuotes = (signal) => request("/api/bonds/quotes", { signal });
+
+// WebSocket live-котировок. onQuote(isin, data), где data — частичный патч
+// строки: {last_price_pct, bid, ask, bid_qty, ask_qty, vwap_pct, vwap_volume}.
+// Приходит push'ем от Alor по избранному: и котировка, и сделка двигают строку.
+// Возвращает {resubscribe, close}. resubscribe шлёт diff: subscribe на новые
+// ISIN, unsubscribe на убранные (без дублей).
 // Reconnect — экспоненциальный backoff 1с → 30с, сброс при успешном коннекте.
-export function connectMarketWs(getIsins, onStatus, onPrice) {
+export function connectMarketWs(getIsins, onStatus, onQuote) {
   const WS_URL =
     (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
   let ws = null;
   let closed = false;
   let reconnectTimer = null;
   let backoff = 1000;
-  let subscribed = new Set(); // ISIN, подписанные на текущем соединении
+  let subscribedAll = false;  // wildcard-подписка текущего соединения
 
   const send = (obj) => {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
   };
 
-  // diff желаемых подписок против фактических
+  // Вся таблица живая: одна wildcard-подписка вместо диффа списка избранного —
+  // бэк пушит патчи всех бумаг юниверса, фронт коалесцирует и мерджит.
   const sync = () => {
-    if (!ws || ws.readyState !== 1) return;
-    const want = new Set(getIsins());
-    for (const isin of want) {
-      if (!subscribed.has(isin)) {
-        send({ action: "subscribe", channel: "market", isin });
-        subscribed.add(isin);
-      }
-    }
-    for (const isin of [...subscribed]) {
-      if (!want.has(isin)) {
-        send({ action: "unsubscribe", channel: "market", isin });
-        subscribed.delete(isin);
-      }
-    }
+    if (!ws || ws.readyState !== 1 || subscribedAll) return;
+    send({ action: "subscribe", channel: "market", isin: "*" });
+    subscribedAll = true;
   };
 
   const scheduleReconnect = () => {
@@ -326,14 +337,14 @@ export function connectMarketWs(getIsins, onStatus, onPrice) {
       scheduleReconnect();
       return;
     }
-    ws.onopen = () => { onStatus(true); backoff = 1000; subscribed = new Set(); sync(); };
-    ws.onclose = () => { onStatus(false); subscribed = new Set(); scheduleReconnect(); };
+    ws.onopen = () => { onStatus(true); backoff = 1000; subscribedAll = false; sync(); };
+    ws.onclose = () => { onStatus(false); subscribedAll = false; scheduleReconnect(); };
     ws.onerror = () => onStatus(false);
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.channel === "market" && msg.isin && msg.data) {
-        onPrice(msg.isin, msg.data.last_price_pct);
+        onQuote(msg.isin, msg.data);
       }
     };
   };

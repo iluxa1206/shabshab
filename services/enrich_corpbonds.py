@@ -32,7 +32,10 @@ _CB_URL = "https://corpbonds.ru/bond/{isin}"
 # v3 — ИПЦ-линкеры (индекс потребительских цен) детектятся как exotic=cpi:
 # раньше «ставка рефинансирования» в хвосте формулы давала base=KEYRATE и бумага
 # прайсилась как КС-флоатер (Ситиматик: ошибка до 3пп на купоне).
-PARSER_VERSION = 3
+# v4 — снимаем «Наличие call-опциона» (has_call) в реестр: MOEX bondization
+# в offertype колл не различает, corpbonds единственный источник. Бумаги,
+# обойдённые v3, перечекиваются, чтобы флаг проставился.
+PARSER_VERSION = 4
 
 
 def _parse_formula(f: str) -> dict:
@@ -135,7 +138,13 @@ def parse_corpbonds_html(html: str) -> dict:
     offer = kv.get("Дата ближайшей оферты", "")
     out["has_offer"] = bool(offer) and offer not in ("Нет", "—", "")
     out["has_amort"] = kv.get("Наличие амортизации", "") == "Да"
-    out["has_call"] = kv.get("Наличие сall-опциона", kv.get("Наличие call-опциона", "")) == "Да"
+    # Трёхзначно: None — строки не было на странице (не знаем), True/False — знаем.
+    # Плоский `== "Да"` схлопывал «нет поля» в «колла нет» — для маркера c в таблице
+    # это разные вещи. Первый ключ с КИРИЛЛИЧЕСКОЙ 'с' — так на самом сайте.
+    _call = kv.get("Наличие сall-опциона")
+    if _call is None:
+        _call = kv.get("Наличие call-опциона")
+    out["has_call"] = None if _call is None else (_call.strip() == "Да")
     out["is_step"] = kv.get("Купон лесенкой", "") == "Да"
     out["is_subord"] = kv.get("Субординированная облигация", "") == "Да"
     out["rating_raw"] = (kv.get("Кредитный рейтинг") or "").strip() or None
@@ -162,6 +171,12 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                     reg.mark_enrich_attempt(isin, "not_found", parser_ver=PARSER_VERSION)
                 continue
             stats["fetched"] += 1
+            # call-опцион пишем ДО ветвления по базе/марже: флаг не зависит от того,
+            # распарсилась ли формула, и нужен в т.ч. экзотике. MOEX его не даёт —
+            # corpbonds единственный источник (маркер c у даты погашения).
+            if apply and r.get("has_call") is not None:
+                reg.set_has_call(isin, r["has_call"])
+                stats["call_flag"] = stats.get("call_flag", 0) + 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
             # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели
             if exotic in ("inverse", "cpi") or (r.get("is_floater") and base is None):

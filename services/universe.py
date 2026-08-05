@@ -13,6 +13,7 @@ from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
 )
 from services.valuation import calculate_valuation_metrics
+from core.valuation import next_offer_info
 from services.zspread import compute_z_bps
 from services import metrics
 from services import instruments_registry
@@ -82,6 +83,16 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     face_px = accrued_settle = yoi_slope = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
+    # Маркер оферты для таблицы (даты из MOEX bondization). offertype у MOEX
+    # колл не различает — на всём универсе только 'Оферта'/'Оферта (состоялось)'/
+    # 'Оферта/Погашение', поэтому kind тут практически всегда 'put'. Call приходит
+    # отдельным фактом из реестра (has_call, источник corpbonds) и БЕЗ даты, так
+    # что это независимый флаг, а не переклассификация этой даты: у бумаги могут
+    # быть и пут-оферта, и колл-опцион одновременно.
+    # put-горизонт из valuation приоритетен — он согласован с sm_to_offer.
+    # Считается и без цены/кривых — флаг справочный.
+    off_kind = None
+    _next_off = next_offer_info(offers, calc_date)
     # ±0.5пп вокруг расчётной цены — численная производная Y-IDX по цене (bps на
     # 1пп). Ею фронт переводит VWAP-цену тикета в Y-IDX, не гоняя reprice на 540
     # бумаг: Y-IDX(цена) на масштабе стакана (доли пп) практически линеен.
@@ -113,6 +124,10 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
         except Exception as e:
             logger.warning(f"valuation error {isin}: {e}")
+    if off_d is not None:
+        off_kind = "put"
+    elif _next_off is not None:
+        off_d, off_kind = _next_off[0], _next_off[2]
 
     next_cpn = None
     if periods:
@@ -164,7 +179,11 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             "next_coupon": next_cpn, "z_model": z_model,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
-            "horizon": hz, "offer_date": off_d, "sm_to_offer": sm_off, "dm_to_offer": dm_off}
+            # has_call сюда НЕ кладём: он статичный факт строки реестра, его
+            # читает _uni_item прямо из u — не плодим второй источник той же правды
+            # (эти метрики ещё и уходят в WS-патч, где место только цено-зависимым).
+            "horizon": hz, "offer_date": off_d, "offer_kind": off_kind,
+            "sm_to_offer": sm_off, "dm_to_offer": dm_off}
 
 
 async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> dict:
@@ -194,7 +213,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
     calc_date = cd or rd or date.today()
     # bondization (купоны+амортизации) — из day-кэша, MOEX только на прогреве
     fulls = await asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids))
-    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
+    await asyncio.to_thread(MarketDataService.flush_schedule_cache)   # дозапись хвоста дебаунс-кэша
     full_by = dict(zip(ids, fulls))
 
     # Дальше сети нет — только счёт по ~540 бумагам и запись в реестр. В event
@@ -216,6 +235,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
             out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
+            out[isin]["wap"] = snap.get("waprice")     # средневзвес дня, % (WAPRICE)
 
         # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
         # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках
@@ -242,7 +262,8 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             logger.warning(f"coupon_period backfill error: {e}")
         return out
 
-    return await asyncio.to_thread(_crunch)
+    from services.heavy import run_heavy
+    return await run_heavy(_crunch)
 
 
 async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:

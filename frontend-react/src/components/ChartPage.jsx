@@ -627,7 +627,7 @@ export default function ChartPage() {
           <>
             <b>{typeof legend.time === "string" ? fmt.date(legend.time)
               : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ")}</b>
-            {legend.o != null && <> · О {fmt.pct(legend.o)} М {fmt.pct(legend.h)} Н {fmt.pct(legend.l)} З {fmt.pct(legend.c)}</>}
+            {legend.o != null && <> · O {fmt.pct(legend.o)} H {fmt.pct(legend.h)} L {fmt.pct(legend.l)} C {fmt.pct(legend.c)}</>}
             {legend.o == null && legend.c != null && <> · цена {fmt.pct(legend.c)}</>}
             {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
             {legend.w != null && <> · ср.взвес {fmt.pct(legend.w)}</>}

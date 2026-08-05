@@ -99,3 +99,46 @@ def test_last_price_dropped_with_last_subscriber(mgr):
 
     asyncio.run(mgr.unsubscribe(ws1, "market", "RU000A100001"))
     assert mgr.last_market == {}               # иначе карта растёт за аптайм
+
+
+# ── wildcard market:* — вся таблица живая ────────────────────────────────────
+
+def test_firehose_receives_all_isins(mgr):
+    ws1, ws2 = _socks(mgr)
+    asyncio.run(mgr.subscribe(ws1, "market", "RU000A100001"))   # точечная
+    asyncio.run(mgr.subscribe(ws2, "market", "*"))              # wildcard
+    asyncio.run(mgr.broadcast_market_data("RU000A100001", {"last_price_pct": 99.5}))
+    asyncio.run(mgr.broadcast_market_data("RU000A100002", {"last_price_pct": 101.0}))
+    got = {(m["isin"], m["data"]["last_price_pct"]) for m in ws2.sent}
+    assert got == {("RU000A100001", 99.5), ("RU000A100002", 101.0)}
+    # точечный подписчик чужую бумагу не получает
+    assert all(m["isin"] == "RU000A100001" for m in ws1.sent if "isin" in m)
+
+
+def test_firehose_subscribe_sends_snapshot(mgr):
+    ws1, ws2 = _socks(mgr)
+    asyncio.run(mgr.subscribe(ws1, "market", "RU000A100001"))
+    asyncio.run(mgr.broadcast_market_data("RU000A100001", {"last_price_pct": 99.5}))
+    asyncio.run(mgr.subscribe(ws2, "market", "*"))
+    assert {"channel": "market", "isin": "RU000A100001",
+            "data": {"last_price_pct": 99.5}} in ws2.sent
+
+
+def test_broadcast_without_any_audience_is_noop(mgr):
+    asyncio.run(mgr.broadcast_market_data("RU000A100009", {"last_price_pct": 100.0}))
+    assert mgr.last_market == {}
+
+
+def test_disconnect_clears_firehose(mgr):
+    ws1 = _socks(mgr)[0]
+    asyncio.run(mgr.subscribe(ws1, "market", "*"))
+    assert ws1 in mgr.market_firehose
+    mgr.disconnect(ws1)
+    assert ws1 not in mgr.market_firehose
+
+
+def test_has_market_audience(mgr):
+    ws1 = _socks(mgr)[0]
+    assert not mgr.has_market_audience("RU000A100001")
+    asyncio.run(mgr.subscribe(ws1, "market", "*"))
+    assert mgr.has_market_audience("RU000A100001")   # wildcard = аудитория для всех

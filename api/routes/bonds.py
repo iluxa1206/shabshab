@@ -72,7 +72,7 @@ def _uni_item(u, name, mx, spread_dur):
         face_value_rub=mx.get("face_px"), accrued_rub=mx.get("accrued_settle"),
         y_idx_slope_bps_per_pct=mx.get("yoi_slope"),
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
-        val_today=mx.get("val_today"),
+        wap_price_pct=mx.get("wap"), val_today=mx.get("val_today"),
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
@@ -82,6 +82,7 @@ def _uni_item(u, name, mx, spread_dur):
         z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur,
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
+        offer_kind=mx.get("offer_kind"), has_call=u.get("has_call"),
         sm_to_offer_bps=mx.get("sm_to_offer"), disc_margin_to_offer_bps=mx.get("dm_to_offer"),
     )
 
@@ -271,6 +272,40 @@ async def get_payments_calendar(
     hi = date_to or date(lo.year + 1, lo.month, min(lo.day, 28))
     events = [e for e in data["events"] if lo <= e["date"] <= hi]
     return PaymentsCalendarResponse(calc_date=cd, date_from=lo, date_to=hi, events=events)
+
+
+@router.get("/quotes", tags=["Bonds"])
+async def get_quotes():
+    """Котировки всего рынка одним компактным ответом — фронт тянет их тактом 5с.
+
+    Отдаёт то, что двигается внутри дня: цену последней сделки, верх стакана,
+    средневзвес дня (WAPRICE биржи) и оборот. Всё остальное в строке таблицы
+    (расчётные метрики, справочник) живёт своим циклом и здесь не дублируется.
+
+    Источник — board-снапшот MOEX, который держит свежим quotes_poller; сюда
+    ходит только чтение кэша, сети на запрос нет. По избранному фронт получает
+    те же поля push'ем через WS, и они авторитетнее: приходят от Alor без
+    задержки биржевого снапшота.
+
+    ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
+    """
+    from services.market_data import market_cache
+    snap = await MarketDataService.fetch_board_snapshot()
+    # Y-IDX — из событийного движка (universe_stream): он пересчитывает метрики
+    # по факту сделки, поэтому спред у торгуемых бумаг здесь живой, а не
+    # 10-минутной давности поллера
+    um = market_cache.get("universe_metrics") or {}
+    items = []
+    for isin, v in snap.items():
+        if v.get("last") is None and v.get("bid") is None and v.get("ask") is None:
+            continue
+        it = {"isin": isin, "last": v.get("last"), "bid": v.get("bid"),
+              "ask": v.get("ask"), "wap": v.get("waprice"), "vol": v.get("vol")}
+        m = um.get(isin)
+        if m and m.get("yoi") is not None:
+            it["yoi"] = m["yoi"]
+        items.append(it)
+    return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 
 
 @router.get("/{isin}", response_model=BondDetailsResponse, tags=["Bonds"])

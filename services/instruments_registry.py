@@ -105,6 +105,12 @@ _MIGRATIONS = [
     # «Index_end/Index_start − 1» (ВЭБ.РФ, Роснефть, ОФЗ-ПК нового типа).
     # 1 — купон считается по накопленному индексу RUONIA, а не среднему.
     "ALTER TABLE instruments ADD COLUMN compounded INTEGER",
+    # Наличие call-опциона ЭМИТЕНТА (corpbonds «Наличие call-опциона»). Трёхзначное:
+    # NULL — не знаем (страница не скрейплена/поля не было), 0 — колла нет, 1 — есть.
+    # Нужно, потому что MOEX bondization в offertype колл НЕ различает: на всём
+    # универсе только 'Оферта' / 'Оферта (состоялось)' / 'Оферта/Погашение', т.е.
+    # даты оферт есть, а чья это опция — из MOEX не узнать.
+    "ALTER TABLE instruments ADD COLUMN has_call INTEGER",
 ]
 
 
@@ -141,7 +147,8 @@ def _ensure() -> None:
 _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
          "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
-         "cap_pct", "floor_pct", "coupon_text", "avg_window_days", "compounded")
+         "cap_pct", "floor_pct", "coupon_text", "avg_window_days", "compounded",
+         "has_call")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True,
@@ -332,6 +339,26 @@ def ratings_map(isins) -> Dict[str, str]:
     return out
 
 
+def labels_map(isins=None) -> Dict[str, dict]:
+    """{isin: {name, emitter, base, rating}} — подписи для списков, которые сами
+    считаются вне реестра (лента сделок). Без isins — весь реестр (сотни строк,
+    один запрос); со списком — только он."""
+    _ensure()
+    q = "SELECT isin, short_name, emitter_name, base, rating FROM instruments"
+    args: list = []
+    ids = [(i or "").strip() for i in (isins or []) if i]
+    if isins is not None:
+        if not ids:
+            return {}
+        if len(ids) <= 900:     # больше — упрёмся в лимит переменных SQLite,
+            q += f" WHERE isin IN ({','.join('?' * len(ids))})"   # проще взять всё
+            args = ids
+    with _conn() as c:
+        rows = c.execute(q, args).fetchall()
+    return {r["isin"]: {"name": r["short_name"] or r["isin"], "emitter": r["emitter_name"],
+                        "base": r["base"], "rating": r["rating"]} for r in rows}
+
+
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 
 
@@ -432,6 +459,8 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "emitter_name": r["emitter_name"],
             "coupon_period_days": r["coupon_period_days"],
             "coupons_per_year": r["coupons_per_year"],
+            # None = не знаем (corpbonds не скрейплен), True/False — знаем
+            "has_call": None if r["has_call"] is None else bool(r["has_call"]),
         })
     return out
 
@@ -533,6 +562,26 @@ def reclassify_fixed(isin: str) -> None:
                   "WHERE isin=? AND manual_locked=0", (_now(), isin))
 
 
+def set_has_call(isin: str, value: Optional[bool]) -> None:
+    """Флаг call-опциона эмитента из corpbonds. value=None — «не знаем», не пишем
+    (не затираем известное неизвестностью).
+
+    manual_locked НЕ уважаем сознательно: has_call — факт о бумаге, а не параметр
+    прайсинга (как rating, который upsert тоже правит на locked-строках). В проде
+    544 строки заморожены импортом xlsx (см. scripts/unfreeze_fixing_spec.py); если
+    гейтить флаг по manual_locked, у большинства бумаг он навсегда останется NULL.
+    Ручной оверрайд остаётся доступен через set_manual (has_call ∈ _COLS)."""
+    if value is None:
+        return
+    _ensure()
+    isin = (isin or "").strip()
+    if not isin:
+        return
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET has_call=?, updated_at=? WHERE isin=?",
+                  (1 if value else 0, _now(), isin))
+
+
 def set_margin_check(isin: str, diff_pp: Optional[float]) -> None:
     """Записать расхождение бэк-аута маржи (pp) от факта КС/RUONIA. |>1.5| → suspect."""
     _ensure()
@@ -584,6 +633,22 @@ def list_no_spec() -> list[dict]:
     return [dict(r) for r in rows if is_priceable(r)]
 
 
+def list_call_unknown() -> list[dict]:
+    """Активные флоатеры, у которых НЕ известен статус call-опциона (has_call IS NULL).
+    Цель corpbonds-обогащения ради маркера p/c у даты погашения: сам по себе
+    здоровый флоатер в очередь enrich не попадает (там только incomplete/suspect/
+    exotic/no_spec), поэтому без этого класса флаг остался бы пустым у всех.
+    Вызывающий сужает список до бумаг с БУДУЩЕЙ офертой (даты знает только
+    day-кэш bondization) — скрейпить весь универс ради флага смысла нет."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name FROM instruments "
+            "WHERE active=1 AND base IN ('KEYRATE','RUONIA') AND has_call IS NULL"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_exotic() -> list[dict]:
     """Активные бумаги, помеченные base='EXOTIC' (не manual_locked). Для периодической
     ПЕРЕПРОВЕРКИ corpbonds: детект экзотики раньше ошибался (напр. Σ-приклеенная база
@@ -602,7 +667,7 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
                  "coupon_mode", "avg_window_days", "compounded",
                  "br_fixing_lag", "br_coupon_mode",
-                 "cap_pct", "floor_pct", "coupon_text", "rating",
+                 "cap_pct", "floor_pct", "coupon_text", "rating", "has_call",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
                  "emitter_name", "active",
                  "spec_err_pp", "spec_verdict", "spec_n_coupons", "spec_checked_at")

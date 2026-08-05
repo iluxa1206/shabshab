@@ -140,7 +140,7 @@ async def build_payments_calendar() -> dict:
             MarketDataService.fetch_issue_sizes(),
             asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids)),
         )
-        MarketDataService.flush_schedule_cache()
+        await asyncio.to_thread(MarketDataService.flush_schedule_cache)
         full_by = dict(zip(ids, fulls))
 
         # индекс-провайдеры фиксинга начавшегося периода — один на базу

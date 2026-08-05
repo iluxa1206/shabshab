@@ -134,34 +134,40 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
         face_ref = None
     fallback_face = float(face_ref) if face_ref else _DEFAULT_FACE
 
-    memo: dict[float, dict] = {}
-    bars: list[dict] = []
-    for c in candles:
-        vol, val, begin = c.get("volume"), c.get("value"), c.get("begin")
-        if not begin:
-            continue
-        ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
-        face = _face_for(faces, ts[:10], fallback_face)
-        vwap = round(val / vol / face * 100, 4) if vol and val and face else c.get("close")
-        m = {}
-        if metrics_fn is not None and vwap is not None:
-            key = round(vwap, 3)
-            m = memo.get(key)
-            if m is None:
-                try:
-                    m = metrics_fn(key) or {}
-                except Exception:
-                    m = {}
-                memo[key] = m
-        bars.append({
-            "isin": isin, "ts": ts, "kind": kind,
-            "open": c.get("open"), "high": c.get("high"),
-            "low": c.get("low"), "close": c.get("close"),
-            "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
-            "y_idx_bps": m.get("y_idx_bps"), "dm_bps": m.get("dm_bps"),
-            "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
-        })
-    return bars
+    # reprice уровней — чистый CPU: в event loop он вставал бы на десятки мс на
+    # бумагу × весь обход демона (то самое «сайт периодически подвисает»)
+    def _crunch() -> list[dict]:
+        memo: dict[float, dict] = {}
+        bars: list[dict] = []
+        for c in candles:
+            vol, val, begin = c.get("volume"), c.get("value"), c.get("begin")
+            if not begin:
+                continue
+            ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
+            face = _face_for(faces, ts[:10], fallback_face)
+            vwap = round(val / vol / face * 100, 4) if vol and val and face else c.get("close")
+            m = {}
+            if metrics_fn is not None and vwap is not None:
+                key = round(vwap, 3)
+                m = memo.get(key)
+                if m is None:
+                    try:
+                        m = metrics_fn(key) or {}
+                    except Exception:
+                        m = {}
+                    memo[key] = m
+            bars.append({
+                "isin": isin, "ts": ts, "kind": kind,
+                "open": c.get("open"), "high": c.get("high"),
+                "low": c.get("low"), "close": c.get("close"),
+                "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
+                "y_idx_bps": m.get("y_idx_bps"), "dm_bps": m.get("dm_bps"),
+                "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
+            })
+        return bars
+
+    from services.heavy import run_heavy
+    return await run_heavy(_crunch)
 
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
@@ -186,9 +192,10 @@ def upsert_bars(bars: list[dict]) -> int:
 
 async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
                       board: Optional[str] = None) -> int:
-    """Строит и персистит бары окна. Идемпотентно."""
+    """Строит и персистит бары окна. Идемпотентно. Запись — в поток: SQLite
+    синхронный, а зовёт нас и демон, и роут."""
     bars = await build_bars(isin, days, kind, board)
-    return upsert_bars(bars)
+    return await asyncio.to_thread(upsert_bars, bars)
 
 
 def read_bars(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
@@ -251,13 +258,18 @@ def active_isins(days: int = 7) -> set:
 async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                            with_ticks: bool = True, concurrency: int = 4,
                            kinds: tuple = ("floater", "fixed"),
-                           progress_every: int = 50, full: bool = True) -> dict:
+                           progress_every: int = 50, full: bool = True,
+                           refetch_ticks: bool = False) -> dict:
     """Наливает бары (и тики) по всему юниверсу. Используется и часовым демоном
     (days=2..3, дозалив хвоста), и бэкфилл-скриптом (days=365, разовый прогон).
 
     full=False — только торгующиеся бумаги (есть бар за неделю): проход вместо
     ~33 минут занимает единицы минут. Полный проход нужен реже — им подхватываются
-    новые выпуски и вернувшаяся ликвидность."""
+    новые выпуски и вернувшаяся ликвидность.
+
+    refetch_ticks=True снимает водяной знак инкрементального дрейна и качает окно
+    сделок заново. Обычному проходу это не нужно (знак и так отдаёт всё новое) —
+    флаг для ремонта: если в архиве подозревается дыра."""
     targets = await universe_targets(kinds)
     if not full:
         act = active_isins()
@@ -276,8 +288,12 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                 stat["bars"] += await ensure_bars(isin, days=days, kind=kind)
                 if with_ticks:
                     from services import trades_archive as ta
-                    stat["ticks"] += await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS))
-                    ta.enrich_bars_with_ticks(
+                    stat["ticks"] += await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS),
+                                                    full=refetch_ticks)
+                    # GROUP BY по тикам бумаги — синхронный SQLite: в loop он
+                    # подвешивал сервер на каждый шаг часового обхода
+                    await asyncio.to_thread(
+                        ta.enrich_bars_with_ticks,
                         isin, frm=(date.today() - timedelta(days=days)).isoformat())
             except Exception as e:
                 stat["failed"] += 1

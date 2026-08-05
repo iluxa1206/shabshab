@@ -11,6 +11,7 @@ YTM — через xirr (эффективная годовая, ACT/365, как 
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import json
 import time
@@ -202,7 +203,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
     }, timeout=20)
     if resp is None or resp.status_code != 200:
         return []
-    data = resp.json()
+    data = (await asyncio.to_thread(resp.json))
     sec = data.get("securities", {})
     cols, rows = sec.get("columns", []), sec.get("data", [])
     g = lambda row, n: row[cols.index(n)] if n in cols else None
@@ -372,7 +373,7 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
     fulls = await asyncio.gather(
         *(MarketDataService.fetch_bond_schedule_full(u.get("secid") or u["isin"]) for u in universe),
         return_exceptions=True)
-    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
+    await asyncio.to_thread(MarketDataService.flush_schedule_cache)   # дозапись хвоста дебаунс-кэша
 
     # ~700 бумаг чистого счёта — в поток, по той же причине, что и метрики
     # флоатеров: в event loop это фриз всего сервера на каждом прогреве.
@@ -383,7 +384,8 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
             out[u["isin"]] = compute_fixed_row(u, f, g_curve, calc_date)
         return out
 
-    return await asyncio.to_thread(_crunch)
+    from services.heavy import run_heavy
+    return await run_heavy(_crunch)
 
 
 _YTM_HIST_FILE = cache_path("fixed_ytm_history.json")

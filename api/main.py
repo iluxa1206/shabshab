@@ -1,7 +1,16 @@
 import os
 import logging
+import sys
 import time
 import uvicorn
+
+# GIL-конвой: CPU-bound Python-поток (heavy-кранш: компаундинг RUONIA по дням,
+# reprice) на дефолтном switch-interval 5мс тут же перезахватывает GIL, и на
+# двухъядерном хосте event loop голодал СЕКУНДАМИ (стеки сторожа: coupon_calib.
+# _index_grow держал loop 13–17с, хотя крутился «в отдельном потоке»). Интервал
+# 1мс заставляет планировщик отдавать GIL loop'у на порядок чаще: лаги падают до
+# миллисекунд ценой ~1-2% CPU на переключения.
+sys.setswitchinterval(0.001)
 from fastapi import FastAPI, Request
 
 # Логи приложения (services/*, api/*) — в stdout с таймстампами; uvicorn настраивает
@@ -15,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -43,7 +52,13 @@ async def ws_market_data_broadcaster():
     пуш дёргал /reprice: 20 бумаг × 5с = 3.4 запроса/сек круглосуточно (6132 за
     полчаса в проде) на пересчёт того же самого числа. Heartbeat раз в минуту
     оставляем, чтобы клиент видел живой поток; новый подписчик получает
-    последнюю цену снапшотом при subscribe."""
+    последнюю цену снапшотом при subscribe.
+
+    В Alor отсюда НЕ ходим. Раньше каждый такт открывал одноразовый WS-сокет
+    (подписка на пачку, ждать до 4с, закрыть) — сокет каждые 5 секунд. Теперь
+    цены уже лежат в кэше: quotes_poller сеет его board-снапшотом MOEX тем же
+    тактом, а по избранному кэш обновляют live-пуши alor_ws (Alor и так
+    транслирует данные MOEX — источник один, дублировать канал незачем)."""
     last_push: dict[str, tuple[float, float]] = {}   # isin → (цена, monotonic)
     while True:
         idle = True
@@ -52,9 +67,15 @@ async def ws_market_data_broadcaster():
                 # такт держим коротким и без подписчиков: свежий подписчик должен
                 # получить цену через 5с, а не ждать длинный idle-такт (сети тут нет)
                 idle = False
-                active_isins = ws.manager.active_market_isins()
+                # бумаги с живым стримом Alor (избранное) пропускаем: по ним
+                # broadcast делает сам alor_ws на каждый пуш. Стрим упал — набор
+                # пуст, и такт автоматически снова закрывает их собой
+                from services.universe_stream import live_isins
+                streamed = live_isins()
+                active_isins = [i for i in ws.manager.active_market_isins()
+                                if i not in streamed]
                 if active_isins:
-                    prices = await MarketDataService.fetch_last_prices(active_isins)
+                    prices = MarketDataService.session_prices()
                     now = time.monotonic()
                     for isin in active_isins:
                         px = prices.get(isin)
@@ -79,7 +100,7 @@ async def ws_market_data_broadcaster():
 from services.paths import cache_path as _cache_path
 _ISINS_CACHE = _cache_path("isins_cache.json")
 UNIVERSE_POLL_INTERVAL = 600      # 10 минут
-UNIVERSE_POLL_CHUNK = 150         # ISIN за один WS-заход (меньше Alor WS-сессий: ~3 вместо 9)
+UNIVERSE_POLL_CHUNK = 150         # ISIN за один WS-заход батч-снимка стаканов (depth_poller)
 _MSK = timezone(timedelta(hours=3))
 
 def _in_moex_trading_hours() -> bool:
@@ -171,10 +192,11 @@ async def universe_price_poller():
             if _in_moex_trading_hours():
                 uni = await instruments_registry.fetch_floater_universe()
                 isins = [u["isin"] for u in uni if u.get("isin")]
-                for i in range(0, len(isins), UNIVERSE_POLL_CHUNK):
-                    await MarketDataService.fetch_last_prices(isins[i:i + UNIVERSE_POLL_CHUNK])
-                    await asyncio.sleep(1)  # мягкий rate-limit между чанками
-                # полные метрики после наполнения цен
+                # Цены НЕ опрашиваем: раньше здесь шёл Alor-свип чанками по 150
+                # (4 одноразовых WS-сессии, каждая ждала неликвид до 4с), но
+                # market_cache['last_prices'] уже держит свежим quotes_poller
+                # (board-снапшот MOEX тактом 5с) + live-пуши alor_ws — те же
+                # котировки без единой лишней сессии.
                 metrics = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if metrics:
                     market_cache["universe_metrics"] = metrics
@@ -197,6 +219,88 @@ async def universe_price_poller():
         except Exception as e:
             logger.warning(f"Universe poller error: {e}")
         await asyncio.sleep(UNIVERSE_POLL_INTERVAL)
+
+def _thread_stacks_brief() -> str:
+    """Верхушки стеков всех потоков, кроме своего — атрибуция «кто держал CPU»
+    в момент лага. Только наш код (пути с /app либо репо), по 3 кадра."""
+    import sys
+    import threading
+    me = threading.get_ident()
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = []
+    for tid, frame in sys._current_frames().items():
+        if tid == me:
+            continue
+        frames, f = [], frame
+        while f is not None and len(frames) < 3:
+            fn = f.f_code.co_filename
+            if "site-packages" not in fn and ("/app" in fn or "shabshab" in fn):
+                frames.append(f"{fn.rsplit('/', 1)[-1]}:{f.f_lineno}:{f.f_code.co_name}")
+            f = f.f_back
+        if frames:
+            out.append(f"[{names.get(tid, tid)}] " + " < ".join(frames))
+    return " | ".join(out) or "(стеков нашего кода нет — C-код/сеть)"
+
+
+async def loop_lag_watchdog():
+    """Сторож event loop: секундный такт, замер задержки пробуждения. Лаг
+    больше полсекунды = что-то синхронное держит ядро — пишем в лог, чтобы
+    «сайт подвисает» диагностировался строкой, а не гаданием. При большом лаге
+    печатаем стеки потоков — прямая атрибуция виновника."""
+    while True:
+        t = time.monotonic()
+        await asyncio.sleep(1.0)
+        lag = time.monotonic() - t - 1.0
+        if lag > 0.5:
+            logger.warning("event loop лаг %.2fс — ядро блокировано синхронной работой", lag)
+            if lag > 2.0:
+                try:
+                    logger.warning("потоки в момент лага: %s", _thread_stacks_brief())
+                except Exception:
+                    pass
+
+
+QUOTES_POLL_INTERVAL = float(os.getenv("QUOTES_POLL_INTERVAL", "5"))
+
+
+async def quotes_poller():
+    """Котировки всего рынка тактом 5с (торговые часы).
+
+    Board-снапшот MOEX — 3 запроса (TQCB/TQOB/TQRD) на ~540 бумаг разом, в
+    ответе LAST/BID/OFFER/WAPRICE/VALTODAY. Дешевле любого per-isin опроса, за
+    это и взят: избранное живёт push-стримом Alor, а рынок — вот этим тактом.
+
+    Поллер зовёт снапшот с force=True, поэтому TTL-кэш всегда свежий, и
+    остальные его потребители (метрики юниверса, карточки) ходят в готовое.
+
+    Он же сеет market_cache['last_prices'] — единый кэш цен, из которого живут
+    session_prices() (метрики юниверса, broadcaster). Раньше этот кэш наполнял
+    отдельный Alor-опрос (одноразовые WS-сессии чанками по 150); Alor ретранслирует
+    те же котировки MOEX, так что источник тут один и тот же, а сессий — ноль.
+    Бумаги живого стрима не трогаем: их цены в кэш пишет пул universe_stream
+    своим пушем, и он свежее снапшота."""
+    from services.market_data import market_cache
+    from services.universe_stream import live_isins
+    await asyncio.sleep(20)      # даём стартовому прогреву занять сеть первым
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                snap = await MarketDataService.fetch_board_snapshot(force=True)
+                if snap:
+                    now = time.time()
+                    streamed = live_isins()
+                    fresh = {i: v["last"] for i, v in snap.items()
+                             if v.get("last") is not None and i not in streamed}
+                    market_cache["last_prices"].update(fresh)
+                    market_cache["last_prices_ts"].update({i: now for i in fresh})
+                    market_cache["quotes_ts"] = now
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"quotes poller error: {e}")
+        await asyncio.sleep(QUOTES_POLL_INTERVAL if _in_moex_trading_hours()
+                            else WS_IDLE_INTERVAL)
+
 
 async def warmup_caches():
     """Прогрев дорогих на ХОЛОДНУЮ кэшей сразу при старте, чтобы ПЕРВЫЙ запрос
@@ -282,8 +386,10 @@ async def alerts_monitor():
     op порог + накопленный объём «на уровне/лучше») переводит active→fired.
     Батчит по (isin, kind): один снапшот + один reprice-контекст на выпуск."""
     from services import alerts as alerts_svc
+    from services.market_data import market_cache
     from services.orderbook_svc import build_metrics_fn
     from api.routes.orderbook import fetch_alor_orderbook_snapshot
+    OB_LIVE_FRESH = 15   # свежесть пуша пула, сек: старше — фолбэк на HTTP
     await asyncio.sleep(45)
     while True:
         try:
@@ -292,9 +398,17 @@ async def alerts_monitor():
                 groups: dict = {}
                 for a in active:
                     groups.setdefault((a["isin"], a.get("kind") or "floater"), []).append(a)
+                # алертные бумаги — в пул подписок alor_ws: стакан по ним течёт
+                # push'ем, и HTTP-снапшот ниже нужен только пока подписка
+                # раскачивается (или WS лежит)
+                market_cache["alert_isins"] = {isin for isin, _k in groups.keys()}
                 for (isin, kind), grp in groups.items():
                     try:
-                        snap = await fetch_alor_orderbook_snapshot(isin, 30)
+                        live = (market_cache.get("ob_live") or {}).get(isin)
+                        if live and time.time() - live["ts"] < OB_LIVE_FRESH:
+                            snap = live
+                        else:
+                            snap = await fetch_alor_orderbook_snapshot(isin, 30)
                         if not snap:
                             continue
                         metrics_fn, face = None, None
@@ -371,7 +485,12 @@ async def hourly_bars_worker():
             # выпуски и вернувшуюся ликвидность. Остальные часы — только бумаги,
             # по которым сделки реально идут (единицы минут).
             full = datetime.now(_MSK).hour % 6 == 0
-            stat = await bars_svc.refresh_universe(days=BARS_WORKER_DAYS, full=full)
+            # concurrency 2 (не 4): хост двухъядерный, и обход на полной
+            # параллельности насыщал CPU целиком — event loop просыпался с
+            # лагом до 2с, сайт «подвисал» на время наверстки. Обход станет
+            # дольше, но сервер остаётся отзывчивым — демону спешить некуда
+            stat = await bars_svc.refresh_universe(days=BARS_WORKER_DAYS, full=full,
+                                                   concurrency=2)
             logger.info("hourly bars (full=%s): %s", full, stat)
         except asyncio.CancelledError:
             raise
@@ -380,6 +499,36 @@ async def hourly_bars_worker():
         now = datetime.now(_MSK)
         nxt = (now + timedelta(hours=1)).replace(minute=7, second=0, microsecond=0)
         await asyncio.sleep(max(60.0, (nxt - now).total_seconds()))
+
+
+ARCHIVE_VACUUM_MIN_ROWS = int(os.getenv("ARCHIVE_VACUUM_MIN_ROWS", "200000"))
+
+
+async def archive_maintenance():
+    """Ночное обслуживание тикового архива: ретеншен + возврат места ОС.
+
+    Каждый день в 03:30 МСК (биржа закрыта, демон баров спит между часами).
+    Прун оставляет за сырым окном только крупные принты — см. ретеншен в
+    services/trades_archive. VACUUM зовём лишь после заметного удаления: он
+    переписывает файл целиком и требует свободного места в размер БД."""
+    from services import trades_archive as ta
+    while True:
+        now = datetime.now(_MSK)
+        target = now.replace(hour=3, minute=30, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (target - now).total_seconds()))
+        try:
+            res = await asyncio.to_thread(ta.prune)
+            logger.info("tick archive prune: %s", res)
+            if res.get("deleted", 0) >= ARCHIVE_VACUUM_MIN_ROWS:
+                vac = await asyncio.to_thread(ta.vacuum)
+                logger.info("tick archive vacuum: %s", vac)
+            logger.info("tick archive: %s", await asyncio.to_thread(ta.db_stats))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"archive maintenance error: {e}")
 
 
 DEPTH_POLL_INTERVAL = int(os.getenv("DEPTH_POLL_INTERVAL", "120"))   # снимок стаканов, сек
@@ -397,8 +546,14 @@ async def depth_poller():
             if _in_moex_trading_hours():
                 uni = await instruments_registry.fetch_floater_universe()
                 isins = [u["isin"] for u in uni if u.get("isin")]
-                n = await depth_svc.refresh_depth(isins, chunk=UNIVERSE_POLL_CHUNK)
-                logger.info("depth snapshot: %d/%d стаканов", n, len(isins))
+                # стаканы льются push'ем (depth-пул universe_stream) — HTTP-батч
+                # не нужен; поллер остаётся фолбэком на случай падения стрима
+                from services.universe_stream import depth_stream_covers
+                if depth_stream_covers(len(isins)):
+                    pass
+                else:
+                    n = await depth_svc.refresh_depth(isins, chunk=UNIVERSE_POLL_CHUNK)
+                    logger.info("depth snapshot (фолбэк): %d/%d стаканов", n, len(isins))
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -410,6 +565,19 @@ async def depth_poller():
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
     init_db()  # схема alerts/spread_daily/bar_hourly/trade_tick (идемпотентно)
+
+    async def _seed_tick_watermarks():
+        """Знак дрейна для архива, накопленного до инкрементального режима.
+        В фоне: GROUP BY по миллионам тиков не должен держать старт сервера."""
+        try:
+            from services import trades_archive as ta
+            n = await asyncio.to_thread(ta.seed_watermarks)
+            if n:
+                logger.info("tick drain watermarks seeded: %d", n)
+        except Exception as e:
+            logger.warning(f"watermark seed error: {e}")
+
+    seed = asyncio.create_task(_seed_tick_watermarks())
     warm = asyncio.create_task(warmup_caches())
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
@@ -420,7 +588,18 @@ async def lifespan(app: FastAPI):
     spread_snap = asyncio.create_task(spread_snapshotter())
     bars_worker = asyncio.create_task(hourly_bars_worker())
     depth_task = asyncio.create_task(depth_poller())
+    archive_task = asyncio.create_task(archive_maintenance())
+    quotes_task = asyncio.create_task(quotes_poller())
+    from services.universe_stream import universe_stream_pool, metrics_worker
+    pool_task = asyncio.create_task(universe_stream_pool())
+    engine_task = asyncio.create_task(metrics_worker())
+    lag_task = asyncio.create_task(loop_lag_watchdog())
     yield
+    quotes_task.cancel()
+    pool_task.cancel()
+    engine_task.cancel()
+    lag_task.cancel()
+    seed.cancel()
     warm.cancel()
     task.cancel()
     poller.cancel()
@@ -430,6 +609,7 @@ async def lifespan(app: FastAPI):
     spread_snap.cancel()
     bars_worker.cancel()
     depth_task.cancel()
+    archive_task.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
@@ -472,6 +652,7 @@ app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
 app.include_router(status.router, prefix="/api/status", dependencies=_gate)
 app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
 app.include_router(history.router, prefix="/api/history", dependencies=_gate)
+app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

@@ -52,7 +52,7 @@ function Chart({ candles, type, tf, syncDate, onHoverDate }) {
       syncPoint={syncPoint}
       onHoverPoint={(p) => onHoverDate?.(p ? p.t.slice(0, 10) : null)}
       tooltip={(p) => (
-        <>{tlabel(p.t, tf)} · О {fmt.pct(p.o)} М {fmt.pct(p.h)} Н {fmt.pct(p.l)} З {fmt.pct(p.c)}</>
+        <>{tlabel(p.t, tf)} · O {fmt.pct(p.o)} H {fmt.pct(p.h)} L {fmt.pct(p.l)} C {fmt.pct(p.c)}</>
       )}
     >
       {(s) => (isLine ? (

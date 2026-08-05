@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { IconAlert } from "./icons.jsx";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchCurvePlot, fetchKsPath, fetchFloaterYield, fetchRuoniaIndex } from "../api.js";
+import { fetchCurvePlot, fetchKsPath, fetchRuoniaIndex } from "../api.js";
 import { fmt } from "../format.js";
 import {
   extent, sqrtScale, linearScale, timeScale, linTicks, yearTicks,
@@ -12,13 +12,13 @@ import {
 
 // Вкладка кривых. Виды (URL /curves/:view):
 //  «Кривая» — par-котировки СПФИ + построенная кривая (spot/forward).
-//  «Путь КС» — рыночный форвард-путь ставки vs ручные сценарии ЦБ + факт
-//              (реплика листа «КС-прогноз» из 502_504.xlsm).
+//  «Путь ставки» — факт ЦБ + рыночный форвард (+ НРД Прил.3 / прогноз ЦБ для КС).
+//  «Индекс RUONIA» — официальный накопленный индекс ЦБ vs наш расчётный.
 // SVG без внешних либ, тема через CSS-переменные. 401 ловит глобальный onError QueryClient.
 export default function CurvesModule() {
   const navigate = useNavigate();
-  const { view: viewParam } = useParams(); // undefined | curve | kspath | floater | ruonia
-  const view = ["kspath", "floater", "ruonia"].includes(viewParam) ? viewParam : "curve";
+  const { view: viewParam } = useParams(); // undefined | curve | kspath | ruonia
+  const view = ["kspath", "ruonia"].includes(viewParam) ? viewParam : "curve";
   const setView = (v) => navigate(v === "curve" ? "/curves" : `/curves/${v}`);
   return (
     <div className="curves-wrap" style={{ padding: "14px 18px", color: "var(--fg)" }}>
@@ -28,16 +28,13 @@ export default function CurvesModule() {
             onClick={() => setView("curve")}>Кривая</button>
           <button className={"seg-btn" + (view === "kspath" ? " active" : "")}
             onClick={() => setView("kspath")}>Путь ставки</button>
-          <button className={"seg-btn" + (view === "floater" ? " active" : "")}
-            onClick={() => setView("floater")}>Флоатер YTM</button>
           <button className={"seg-btn" + (view === "ruonia" ? " active" : "")}
             onClick={() => setView("ruonia")}>Индекс RUONIA</button>
         </span>
       </div>
       {view === "curve" ? <CurveView />
         : view === "kspath" ? <KsPathView />
-        : view === "ruonia" ? <RuoniaIndexView />
-        : <FloaterScenariosView />}
+        : <RuoniaIndexView />}
     </div>
   );
 }
@@ -326,136 +323,6 @@ function KsPathChart({ points, calcDate }) {
     </div>
   );
 }
-
-// ── Флоатер / сценарии: YTM бумаги под рынок vs сценарии ЦБ (метод 502_504) ──
-function FloaterScenariosView() {
-  const [isin, setIsin] = useState("");
-  const [submitted, setSubmitted] = useState(""); // ISIN, по которому запущен расчёт
-  const q = useQuery({
-    queryKey: ["floaterYield", submitted],
-    queryFn: () => fetchFloaterYield(submitted),
-    enabled: !!submitted,
-  });
-  const data = q.data;
-  const status = !submitted ? "idle" : q.isPending || q.isFetching ? "loading" : q.isError ? "error" : "ready";
-  const err = q.error?.message || "";
-
-  const run = () => {
-    const v = isin.trim().toUpperCase();
-    if (!v) return;
-    setSubmitted(v);
-  };
-
-  return (
-    <>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-        <input className="search" style={{ width: 200 }} placeholder="ISIN (KEYRATE-флоатер)"
-          value={isin} onChange={(e) => setIsin(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && run()} />
-        <button className="btn" onClick={run}>Оценить</button>
-        {data && (
-          <span className="muted" style={{ fontSize: 11 }}>
-            {data.name} · спред {data.spread_bps} бп · цена {data.price_flat_pct} · КС {data.current_ks_pct}%
-          </span>
-        )}
-      </div>
-
-      <div className="muted" style={{ fontSize: 11, marginBottom: 12, maxWidth: 720 }}>
-        Купон = среднее рыночного пути КС (форвард СПФИ) по окну рефиксинга + спред
-        (метод листа Floater spread). YTM — XIRR по спроецированным потокам.
-      </div>
-
-      {status === "idle" && <div className="muted">Введи ISIN и нажми «Оценить».</div>}
-      {status === "loading" && <div className="skel skel-chart" role="status" aria-label="Считаю" />}
-      {status === "error" && <div style={{ color: "var(--neg)" }}>Ошибка: {err}</div>}
-      {status === "ready" && data && (
-        <>
-        {data.rate_series?.length > 0 && (
-          <div style={{ marginBottom: 18 }}>
-            <BondVsIndexChart series={data.rate_series} calcDate={data.calc_date} />
-            <Legend>
-              <LegendLine color="var(--fg)" label="Купон бумаги (индекс + спред)" />
-              <LegendLine color="var(--up)" label="Индекс КС (форвард СПФИ)" />
-            </Legend>
-            <div className="muted" style={{ fontSize: 11, marginTop: 4, maxWidth: 720 }}>
-              Зазор между линиями = спред выпуска ({data.spread_bps} бп). Индекс — среднее
-              рыночного пути КС по окну рефиксинга каждого купона.
-            </div>
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 32, flexWrap: "wrap", alignItems: "flex-start" }}>
-          <div>
-            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>YTM (рынок, СПФИ)</div>
-            <div style={{ fontSize: 30, fontWeight: 700, fontFamily: "var(--mono)", letterSpacing: "-0.02em" }}>
-              {data.ytm_pct != null ? `${data.ytm_pct.toFixed(2)}%` : "—"}
-            </div>
-          </div>
-
-          <div>
-            <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>Купоны (рынок), % от номинала</div>
-            <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
-              <tbody>
-                {data.coupons_market.map((c, i) => (
-                  <tr key={i} style={{ borderTop: "1px solid var(--line-2)" }}>
-                    <td style={{ padding: "3px 14px 3px 0", color: "var(--mut)" }}>{fmt.date(c.date)}</td>
-                    <td style={{ padding: "3px 0", textAlign: "right", fontFamily: "var(--mono)" }}>{c.amount_pct.toFixed(4)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        </>
-      )}
-    </>
-  );
-}
-
-// bond-vs-index: ступени ставки купона бумаги vs пути индекса КС по датам купонов
-function BondVsIndexChart({ series, calcDate }) {
-  const { ref, width: W, height: H, measured } = useChartSize({ height: 320, minWidth: 420 });
-  const L = 46, R = 16, T = 16, B = 40;
-  const g = useMemo(() => {
-    const pts = series.map((s) => ({ ...s, t: new Date(s.date).getTime() }));
-    const xs = pts.map((p) => p.t);
-    const xmin = Math.min(...xs, new Date(calcDate).getTime());
-    const xmax = Math.max(...xs);
-    const ys = pts.flatMap((p) => [p.base_pct, p.coupon_pct]);
-    const [ymin, ymax] = extent(ys, 0.15, 0.4);
-    const X = timeScale([xmin, xmax], [L, W - R]);
-    const Y = linearScale([ymin, ymax], [H - B, T]);
-    return { pts, X, Y, xmin, xmax, ymin, ymax };
-  }, [series, calcDate, W, H]);
-
-  const { pts, X, Y, ymin, ymax, xmin, xmax } = g;
-  const { hover, handlers } = useNearestHover({ viewW: W, points: pts, px: (p) => X(p.t) });
-  const step = (key) => stepPath(pts, (p) => X(p.t), (p) => Y(p[key]));
-
-  return (
-    <div style={{ position: "relative", height: H }} ref={ref}>
-      {measured && (
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="cf-svg" {...handlers}>
-        <GridY ticks={linTicks(ymin, ymax, 5)} y={Y} x1={L} x2={W - R} label={(v) => v.toFixed(1)} />
-        <XTicks ticks={yearTicks(xmin, xmax).filter((t) => t >= xmin && t <= xmax).map((t) => ({ x: X(t), label: new Date(t).getFullYear() }))}
-          y={H - B + 14} />
-        {/* купон бумаги (индекс + спред) */}
-        <path d={step("coupon_pct")} fill="none" stroke="var(--fg)" strokeWidth="2" />
-        {/* индекс КС */}
-        <path d={step("base_pct")} fill="none" stroke="var(--up)" strokeWidth="2" />
-        {hover && (
-          <line x1={X(hover.t)} y1={T} x2={X(hover.t)} y2={H - B} stroke="var(--mut)" strokeDasharray="1 2" />
-        )}
-      </svg>
-      )}
-      {hover && (
-        <Tooltip x={X(hover.t)} viewW={W} top={4} dy={0} padding="3px 7px">
-          {fmt.date(hover.date)} · купон {hover.coupon_pct}% · индекс {hover.base_pct}%
-        </Tooltip>
-      )}
-    </div>
-  );
-}
-
 
 // ── Индекс RUONIA ───────────────────────────────────────────────────────────
 // Дневная таблица: ставка ЦБ, ОФИЦИАЛЬНЫЙ накопленный индекс (SOAP RuoniaSV,

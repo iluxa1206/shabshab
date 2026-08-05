@@ -15,6 +15,9 @@ _SNAP_TTL = 120.0  # сек: prev/accrued MOEX кэшируем внутридн
 # при упавшем Alor кэш отдавал цену любой давности; потребители честно падают на
 # prev-close/НРД). 12ч покрывает ночь до утреннего прогрева поллером (~07:00 МСК).
 _PRICE_MAX_AGE = 12 * 3600.0
+# Порог «цена достаточно свежая, чтобы не ходить в Alor»: 3 такта quotes_poller.
+# Вне торговых часов кэш старше — fetch_last_prices идёт прежним путём.
+_LIVE_PRICE_FRESH = 15.0
 
 from core.rates import get_rates_curves, Quote
 from core.forwards import CurveBootstrapper, DiscountCurve, SheetForwardCurve
@@ -175,7 +178,7 @@ class MarketDataService:
                     params={"iss.meta": "off", "iss.only": "yearyields"}, timeout=10)
             if resp is None or resp.status_code != 200:
                 return cls._stale_gcurve("MOEX zcyc HTTP fail")
-            yy = resp.json().get("yearyields", {})
+            yy = (await asyncio.to_thread(resp.json)).get("yearyields", {})
             cols, data = yy.get("columns", []), yy.get("data", [])
             pi, vi = cols.index("period"), cols.index("value")
             pts = [(float(r[pi]), float(r[vi])) for r in data if r[pi] is not None and r[vi] is not None]
@@ -211,12 +214,22 @@ class MarketDataService:
 
     @classmethod
     async def fetch_last_prices(cls, isins: List[str]) -> Dict[str, float]:
+        # Кэш-шорткат: в торговые часы quotes_poller держит цены всего рынка
+        # свежими (board-снапшот 5с) + live-пуши alor_ws. Если всё запрошенное
+        # уже свежее — не открываем одноразовую WS-сессию Alor вовсе (раньше
+        # каждая карточка/аудит/страница списка платила сокетом с ожиданием
+        # до 4с). Промах по части бумаг — дотягиваем только промахнувшиеся.
+        fresh = cls.cached_prices(max_age_sec=_LIVE_PRICE_FRESH)
+        missing = [i for i in isins if i not in fresh]
+        if not missing:
+            return cls.cached_prices()
+
         access_token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
         if not access_token:
             return cls.cached_prices()
 
         try:
-            prices = await get_last_prices_dict(access_token, "MOEX", isins)
+            prices = await get_last_prices_dict(access_token, "MOEX", missing)
             now = time.time()
             market_cache["last_prices"].update(prices)
             market_cache["last_prices_ts"].update({i: now for i in prices})
@@ -273,7 +286,7 @@ class MarketDataService:
                     params={"iss.only": "securities", "iss.meta": "off",
                             "securities.columns": "SECID,ISIN,SHORTNAME", "limit": 10000},
                     timeout=20)
-            sec = resp.json().get("securities", {})
+            sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             ii, si = (cols.index("ISIN") if "ISIN" in cols else -1), (cols.index("SHORTNAME") if "SHORTNAME" in cols else -1)
             for row in rows:
@@ -318,7 +331,7 @@ class MarketDataService:
                     params={"iss.only": "securities", "iss.meta": "off",
                             "securities.columns": "SECID,ISIN,ISSUESIZE", "limit": 10000},
                     timeout=20)
-            sec = resp.json().get("securities", {})
+            sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             ii = cols.index("ISIN") if "ISIN" in cols else -1
             zi = cols.index("ISSUESIZE") if "ISSUESIZE" in cols else -1
@@ -428,7 +441,7 @@ class MarketDataService:
                     params={"q": isin, "iss.meta": "off", "limit": 10}, timeout=8)
             if resp is None or resp.status_code != 200:
                 return isin, None
-            sec = resp.json().get("securities", {})
+            sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             g = lambda r, n: r[cols.index(n)] if n in cols else None
             for r in rows:
@@ -453,6 +466,10 @@ class MarketDataService:
         (offerdate/offertype/price — тот же запрос bondization, бесплатно).
         Кэш память+диск с TTL на день (bondization стабилен внутри дня; критично для
         фонового расчёта метрик всего юниверса — иначе 453 запроса каждый цикл)."""
+        # первый доступ дня/после рестарта = json.load ~5 МБ с диска: синхронно
+        # в loop это давало лаг до 4.7с на старте — грузим в потоке
+        if cls._full_mem_date != _trading_day():
+            await asyncio.to_thread(cls._ensure_full_mem)
         cls._ensure_full_mem()
         if isin in cls._full_mem:
             return cls._full_mem[isin]
@@ -476,7 +493,7 @@ class MarketDataService:
                                 "limit": PAGE, "start": start}, timeout=10)
                     if resp is None or resp.status_code != 200:
                         break
-                    j = resp.json()
+                    j = (await asyncio.to_thread(resp.json))
                     cp = j.get("coupons", {})
                     ccols = cp.get("columns", [])
                     cg = lambda row, n: row[ccols.index(n)] if n in ccols else None
@@ -525,7 +542,9 @@ class MarketDataService:
         # кэшируем только успешную выборку (есть купоны) — пустой ответ MOEX не фиксируем
         if out.get("coupons"):
             cls._full_mem[isin] = out
-            cls._save_full_disk()
+            # дамп ~5 МБ JSON: дебаунс пишет раз в 60с, но и одна такая запись в
+            # event loop — сотни мс фриза; в поток
+            await asyncio.to_thread(cls._save_full_disk)
         return out
 
     _sec_cache: Dict[str, dict] = {}
@@ -573,7 +592,7 @@ class MarketDataService:
                 params={"q": isin, "iss.meta": "off", "limit": 10}, timeout=8)
             if resp is None or resp.status_code != 200:
                 return None
-            sec = resp.json().get("securities", {})
+            sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             if "secid" not in cols or "isin" not in cols:
                 return None
@@ -589,7 +608,7 @@ class MarketDataService:
                 resp = await _moex_get(client, url, timeout=8)
                 rows, cols, secid = [], [], isin
                 if resp is not None and resp.status_code == 200:
-                    sec = resp.json().get("securities", {})
+                    sec = (await asyncio.to_thread(resp.json)).get("securities", {})
                     cols, rows = sec.get("columns", []), sec.get("data", [])
                 if not rows:
                     secid = await _resolve_secid(client, isin)
@@ -601,7 +620,7 @@ class MarketDataService:
                         timeout=8)
                     if resp is None or resp.status_code != 200:
                         return
-                    sec = resp.json().get("securities", {})
+                    sec = (await asyncio.to_thread(resp.json)).get("securities", {})
                     cols, rows = sec.get("columns", []), sec.get("data", [])
                     if not rows:
                         return
@@ -679,7 +698,7 @@ class MarketDataService:
                         f"boards/{brd}/securities/{sec_id}.json", timeout=6)
 
                 resp = await _get(isin, "TQCB")
-                j = resp.json() if (resp is not None and resp.status_code == 200) else {}
+                j = (await asyncio.to_thread(resp.json)) if (resp is not None and resp.status_code == 200) else {}
                 sec = j.get("securities", {})
                 s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
                 if not s_rows:
@@ -689,7 +708,7 @@ class MarketDataService:
                     secid, brd = await cls.resolve_secid_board(isin)
                     if secid != isin or (brd and brd != "TQCB"):
                         resp = await _get(secid, brd or "TQOB")
-                        j = resp.json() if (resp is not None and resp.status_code == 200) else {}
+                        j = (await asyncio.to_thread(resp.json)) if (resp is not None and resp.status_code == 200) else {}
                         sec = j.get("securities", {})
                         s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
                 if not s_rows and not j:
@@ -749,7 +768,7 @@ class MarketDataService:
                     params={"iss.only": "description", "iss.meta": "off"}, timeout=8)
                 if resp is None or resp.status_code != 200:
                     return
-                desc = resp.json().get("description", {})
+                desc = (await asyncio.to_thread(resp.json)).get("description", {})
                 cols, rows = desc.get("columns", []), desc.get("data", [])
                 if "name" not in cols or "value" not in cols:
                     return
@@ -775,14 +794,20 @@ class MarketDataService:
     _SNAP_BOARDS = ("TQCB", "TQOB", "TQRD")
 
     @classmethod
-    async def fetch_board_snapshot(cls) -> Dict[str, dict]:
-        """{isin: {'prev','accrued','prev_date','last','vol','bid','ask'}} по бордам _SNAP_BOARDS одним
-        запросом на борд — для фонового расчёта метрик юниверса без 453 per-isin вызовов.
+    async def fetch_board_snapshot(cls, force: bool = False) -> Dict[str, dict]:
+        """{isin: {'prev','accrued','prev_date','last','vol','bid','ask','waprice'}} по бордам
+        _SNAP_BOARDS одним запросом на борд — для фонового расчёта метрик юниверса без 453
+        per-isin вызовов.
         `last` — цена сегодняшней сделки MOEX (LAST → LCURRENTPRICE → WAPRICE);
-        `prev` — PREVPRICE → PREVWAPRICE → PREVLEGALCLOSEPRICE (у неликвида без
-        вчерашних сделок PREVPRICE пуст). TTL 120с."""
+        `waprice` — средневзвешенная цена дня (по ней живёт колонка средневзвеса
+        у бумаг вне избранного: свой VWAP по тикам считается только для тех, на
+        кого подписан стрим); `prev` — PREVPRICE → PREVWAPRICE → PREVLEGALCLOSEPRICE
+        (у неликвида без вчерашних сделок PREVPRICE пуст). TTL 120с.
+
+        force=True обходит TTL — им живёт быстрый поллер котировок (такт 5с),
+        который держит кэш свежим для всех остальных потребителей."""
         now = time.time()
-        if cls._board_snap and now - cls._board_snap_ts < _SNAP_TTL:
+        if not force and cls._board_snap and now - cls._board_snap_ts < _SNAP_TTL:
             return cls._board_snap
         out: Dict[str, dict] = {}
         try:
@@ -797,7 +822,9 @@ class MarketDataService:
                         timeout=15)
                     if resp is None or resp.status_code != 200:
                         continue
-                    data = resp.json()
+                    # борд-JSON большой (тысячи бумаг × колонки), а такт — 5с:
+                    # синхронный parse в loop давал бы постоянный микро-статтер
+                    data = await asyncio.to_thread(resp.json)
                     sec = data.get("securities", {})
                     cols, rows = sec.get("columns", []), sec.get("data", [])
                     g = lambda row, n: row[cols.index(n)] if n in cols else None
@@ -806,6 +833,7 @@ class MarketDataService:
                     mcols, mrows = md.get("columns", []), md.get("data", [])
                     mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
                     last_by_secid: Dict[str, float] = {}
+                    wap_by_secid: Dict[str, float] = {}
                     vol_by_secid: Dict[str, float] = {}
                     bid_by_secid: Dict[str, float] = {}
                     ask_by_secid: Dict[str, float] = {}
@@ -820,11 +848,14 @@ class MarketDataService:
                             bid_by_secid[secid] = float(bd)
                         if ak is not None:
                             ask_by_secid[secid] = float(ak)
+                        wap = mg(mr, "WAPRICE")
+                        if wap is not None:
+                            wap_by_secid[secid] = float(wap)
                         px = mg(mr, "LAST")
                         if px is None:
                             px = mg(mr, "LCURRENTPRICE")
                         if px is None:
-                            px = mg(mr, "WAPRICE")
+                            px = wap
                         if px is not None:
                             last_by_secid[secid] = float(px)
                         vt = mg(mr, "VALTODAY")   # оборот сегодня, ₽
@@ -845,6 +876,7 @@ class MarketDataService:
                             "accrued": float(acc) if acc is not None else None,
                             "prev_date": g(row, "PREVDATE"),
                             "last": last_by_secid.get(g(row, "SECID")),
+                            "waprice": wap_by_secid.get(g(row, "SECID")),
                             "vol": vol_by_secid.get(g(row, "SECID")),
                             "bid": bid_by_secid.get(g(row, "SECID")),
                             "ask": ask_by_secid.get(g(row, "SECID")),
@@ -886,7 +918,7 @@ class MarketDataService:
                                        params={"interval": interval, "from": frm,
                                                "iss.reverse": "true"}, timeout=20)
             if resp is not None and resp.status_code == 200:
-                c = resp.json().get("candles", {})
+                c = (await asyncio.to_thread(resp.json)).get("candles", {})
                 cols, data = c.get("columns", []), c.get("data", [])
                 idx = {n: cols.index(n) for n in cols}
                 for row in data:
@@ -952,7 +984,7 @@ class MarketDataService:
                             "securities.columns": "ISIN,SHORTNAME,MATDATE,COUPONPERCENT,FACEVALUE"},
                     timeout=20)
             if resp is not None and resp.status_code == 200:
-                sec = resp.json().get("securities", {})
+                sec = (await asyncio.to_thread(resp.json)).get("securities", {})
                 cols, rows = sec.get("columns", []), sec.get("data", [])
                 idx = {c: cols.index(c) for c in cols}
                 for row in rows:
@@ -996,7 +1028,7 @@ class MarketDataService:
                     params={"iss.only": "description", "iss.meta": "off"}, timeout=10)
                 if resp is None or resp.status_code != 200:
                     return
-                desc = resp.json().get("description", {})
+                desc = (await asyncio.to_thread(resp.json)).get("description", {})
                 cols, rows = desc.get("columns", []), desc.get("data", [])
                 if "name" not in cols or "value" not in cols:
                     return
@@ -1091,7 +1123,7 @@ class MarketDataService:
                         timeout=8)
                     if resp is None or resp.status_code != 200:
                         break
-                    cp = resp.json().get("coupons", {})
+                    cp = (await asyncio.to_thread(resp.json)).get("coupons", {})
                     cols = cp.get("columns", [])
                     if "startdate" not in cols or "coupondate" not in cols:
                         break
@@ -1140,7 +1172,7 @@ class MarketDataService:
                     timeout=8)
             if resp is None or resp.status_code != 200:
                 return out
-            sec = resp.json().get("securities", {})
+            sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             g = lambda row, n: row[cols.index(n)] if n in cols else None
             seen = set()

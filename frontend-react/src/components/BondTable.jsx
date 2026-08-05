@@ -46,6 +46,27 @@ function qTitle(b, side) {
     + `; Y-IDX пересчитан на неё (линеаризация от верха стакана)`;
 }
 
+// Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
+// не взаимоисключающие: p — ближайшая будущая оферта из MOEX bondization (дата
+// известна, рынок прайсит бумагу к ней); c — call-опцион эмитента из corpbonds
+// (даты нет: MOEX в offertype колл не различает вовсе). У бумаги может быть и то,
+// и другое → рисуем «pc». has_call === false («колла нет») и null («не знаем»)
+// одинаково молчат: маркер утверждает наличие, а не отсутствие.
+function OfferMarks({ b }) {
+  const put = b.offer_kind === "put" && b.offer_date;
+  const call = b.has_call === true;
+  if (!put && !call) return null;
+  return (
+    <>
+      {put && <span className="offer-mark offer-put"
+        title={"оферта-пут " + fmt.date(b.offer_date)
+          + ": держатель может предъявить бумагу к выкупу, рынок прайсит к этой дате"}>p</span>}
+      {call && <span className="offer-mark offer-call"
+        title="call-опцион эмитента (corpbonds): эмитент вправе выкупить досрочно; дата не известна — MOEX колл в расписании не различает">c</span>}
+    </>
+  );
+}
+
 // Каждая колонка: key (для сортировки/видимости), label/sub (шапка), align (стили шапки),
 // cell(b) — полный <td>. Порядок = порядок в таблице.
 // sep: true — начало блока (портфель / наша модель) → вертикальный разделитель слева.
@@ -83,8 +104,11 @@ export const COLS = [
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
-  { key: "maturity_date", label: "MATURITY", w: 10,
-    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">{fmt.date(b.maturity_date) ?? <D />}</td> },
+  // w=13: дата 10 симв. + до двух маркеров оферты («pc») с отбивкой. Ширина по
+  // МАКСИМУМУ формата, иначе появление маркера у одной бумаги дёргает колонку.
+  { key: "maturity_date", label: "MATURITY", w: 13,
+    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">
+      <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}</td> },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → Y−IDX (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.

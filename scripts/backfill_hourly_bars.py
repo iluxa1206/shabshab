@@ -32,7 +32,7 @@ async def main(a) -> None:
     kinds = tuple(k.strip() for k in a.kinds.split(",") if k.strip())
     stat = await bars_svc.refresh_universe(
         days=a.days, limit=a.limit, with_ticks=not a.no_ticks,
-        concurrency=a.concurrency, kinds=kinds)
+        concurrency=a.concurrency, kinds=kinds, refetch_ticks=a.refetch_ticks)
     log.info("готово: %s", stat)
 
 
@@ -41,6 +41,9 @@ if __name__ == "__main__":
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--limit", type=int, default=None, help="первые N бумаг (отладка)")
     ap.add_argument("--no-ticks", action="store_true", help="только свечи, без Alor")
+    ap.add_argument("--refetch-ticks", action="store_true",
+                    help="игнорировать водяной знак дрейна и перекачать окно сделок "
+                         "заново (ремонт дыры; обычный прогон и так тянет всё новое)")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--kinds", default="floater,fixed", help="floater,fixed")
     asyncio.run(main(ap.parse_args()))

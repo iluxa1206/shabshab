@@ -262,6 +262,10 @@ class BondListItem(BaseModel):
     y_idx_slope_bps_per_pct: Optional[float] = None
     dirty_price_rub: Optional[float]
     dm_bps: Optional[int]
+    # средневзвешенная цена дня, % номинала. У избранного это НАШ VWAP по тикам
+    # Alor (тот же, что рисует слой «Средневзвес» на графике), приходит живым
+    # push'ем; у остальных — биржевой WAPRICE из board-снапшота MOEX.
+    wap_price_pct: Optional[float] = None
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
     delta_to_prev_close: Optional[float] = None # placeholder
     yield_xirr_pct: Optional[float] = None     # YTM бумаги (XIRR на проекции купонов по форварду), %
@@ -281,7 +285,15 @@ class BondListItem(BaseModel):
     # имеет будущую оферту, осмысленно вывести sm_to_offer_bps. Поля dm_bps /
     # disc_margin_bps этого объекта ВСЕГДА к погашению (см. BondValuation).
     preferred_horizon: str = "maturity"
+    # Маркер p/c у даты погашения в таблице. Два НЕЗАВИСИМЫХ факта из разных
+    # источников: offer_date/offer_kind — ближайшая будущая оферта из MOEX
+    # bondization (kind практически всегда 'put': MOEX в offertype колл не
+    # различает); has_call — есть ли у эмитента call-опцион, из corpbonds через
+    # реестр, БЕЗ даты. Могут быть оба сразу. has_call=None — не знаем (бумага
+    # ещё не скрейплена), False — колла нет.
     offer_date: Optional[date] = None
+    offer_kind: Optional[str] = None               # 'put' | 'call'
+    has_call: Optional[bool] = None
     sm_to_offer_bps: Optional[int] = None          # simple margin к оферте (yield-to-put)
     disc_margin_to_offer_bps: Optional[int] = None # discount margin к оферте
 

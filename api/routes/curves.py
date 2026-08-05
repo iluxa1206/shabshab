@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from fastapi import APIRouter, Query, HTTPException
-from typing import Optional, Literal
+from typing import Literal
 from datetime import date, timedelta
 
 logger = logging.getLogger(__name__)
@@ -13,90 +13,6 @@ from core.forwards import get_maturity_date
 from core.rates import tenor_to_days
 
 router = APIRouter()
-
-
-@router.get("/floater-yield", tags=["Curves"])
-async def floater_yield(isin: str = Query(..., description="ISIN KEYRATE-флоатера")):
-    """YTM/купоны флоатера по методу 502_504 (Floater spread): проекция купона =
-    среднее рыночного пути КС (форвард bootstrap-кривой IRS KEYRATE) по окну
-    рефиксинга + спред, XIRR. Пока только KEYRATE."""
-    from services import instruments_registry
-    from services.bonds import build_ref_external
-    from services.floater_model import make_ks_path, project_floater, floater_xirr_pct, actual_ks
-
-    _ruonia, keyrate_curve, calc_date, _rd = await MarketDataService.get_curves()
-    cd = calc_date or date.today()
-    uni = await instruments_registry.fetch_floater_universe()
-    u = next((x for x in uni if x.get("isin") == isin), None)
-    if u is None:
-        raise HTTPException(status_code=404, detail=f"{isin} не найден в юниверсе флоатеров")
-    base = "KEYRATE" if u.get("base_rate_type") == "KEYRATE" else u.get("base_rate_type")
-    if base != "KEYRATE":
-        raise HTTPException(status_code=400, detail="Фаза 1 — только KEYRATE-флоатеры")
-    if keyrate_curve is None:
-        raise HTTPException(status_code=503, detail="Кривая КС недоступна")
-
-    secs = await MarketDataService.fetch_moex_securities([isin])
-    full = await MarketDataService.fetch_bond_schedule_full(isin)
-    snap = (await MarketDataService.fetch_moex_snapshot([isin])).get(isin, {})
-    ref = build_ref_external(isin, secs.get(isin, {}),
-                             base="KEYRATE", spread_bps=u.get("spread_issue_bps") or 0)
-    spread_pct = (u.get("spread_issue_bps") or 0) / 10000.0
-
-    # будущие периоды (start,end) из расписания MOEX
-    periods = []
-    for c in full.get("coupons", []):
-        s, e = c.get("start"), c.get("end")
-        if s and e:
-            sd, ed = date.fromisoformat(s), date.fromisoformat(e)
-            if ed > cd:
-                periods.append((sd, ed))
-    if not periods:
-        raise HTTPException(status_code=422, detail="Нет будущих купонов")
-
-    price = snap.get("prev") or 100.0
-    accrued = snap.get("accrued") if snap.get("accrued") is not None else ref.accrued_rub
-    dirty_pct = price + (accrued or 0.0) / ref.face_value * 100.0
-    mat = ref.maturity_date
-
-    # спека фиксинга выпуска (manual > bondresearch > парсер > калибратор) —
-    # та же, что в прайсинге; раньше хардкод lag=7/окно-от-end расходился с ним
-    from services.ref_data import coupon_formula
-    try:
-        spec = coupon_formula(isin, coupons=full.get("coupons") or [],
-                              face=ref.face_value or 1000.0, calc_date=cd)
-    except Exception:
-        spec = None
-
-    path = make_ks_path(keyrate_curve, cd)
-    cfs_mkt = project_floater(periods, spread_pct, mat, path, cd, spec=spec)
-    y_mkt = floater_xirr_pct(cfs_mkt, dirty_pct, cd)
-
-    # bond-vs-index: по каждому будущему периоду — ставка индекса (по спеке
-    # фиксинга) и ставка купона бумаги (= индекс + спред). Зазор = carry.
-    from services.floater_model import period_base_avg
-    rate_series = []
-    for s, e in periods:
-        base = period_base_avg(path, s, e, spec)
-        rate_series.append({
-            "date": e.isoformat(),
-            "base_pct": round(base * 100.0, 4),
-            "coupon_pct": round((base + spread_pct) * 100.0, 4),
-        })
-
-    # actual_ks → cbr.ks_history: на холодном/протухшем кэше это 2 requests.get
-    # (таймауты 20+15с) — в потоке, не блокируем event loop (как в /ks-path)
-    cur_ks = await asyncio.to_thread(actual_ks, cd)
-
-    return {
-        "isin": isin, "name": u.get("name") or isin, "base": base,
-        "spread_bps": u.get("spread_issue_bps") or 0,
-        "calc_date": cd.isoformat(), "price_flat_pct": round(price, 4),
-        "current_ks_pct": round((cur_ks or 0) * 100, 2),
-        "ytm_pct": y_mkt,
-        "coupons_market": [{"date": d.isoformat(), "amount_pct": a} for d, a in cfs_mkt[:12]],
-        "rate_series": rate_series,
-    }
 
 
 @router.get("/ks-path", response_model=KsPathResponse, tags=["Curves"])

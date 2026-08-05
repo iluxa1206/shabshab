@@ -106,25 +106,13 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # горизонт оферты — от settle (как pricing), не от today; состоявшиеся оферты
     # отфильтрованы (не будущее событие). Показываем и call, и put, но вид (kind)
     # различаем: только put — гарантированный горизонт держателя (см. offer_kind).
-    from core.valuation import settle_date as _settle, offer_kind
+    from core.valuation import settle_date as _settle, next_offer_info
     _off_ref = _settle(calc_date) if calc_date else date.today()
-    next_offer = None       # (date, type_str, kind) ближайшей будущей оферты
-    try:
-        future_offers = []
-        for o in sched_full.get("offers", []):
-            typ = (o.get("type") or "").lower()
-            if "состоя" in typ or "исполн" in typ:
-                continue
-            if o.get("date") and date.fromisoformat(o["date"]) > _off_ref:
-                future_offers.append((date.fromisoformat(o["date"]), o.get("type"),
-                                      offer_kind(o.get("type"))))
-        if future_offers:
-            next_offer = min(future_offers, key=lambda x: x[0])
-            ref_dict["offer_date"] = next_offer[0]
-            ref_dict["offer_type"] = next_offer[1]
-            ref_dict["offer_kind"] = next_offer[2]
-    except (ValueError, TypeError):
-        pass
+    next_offer = next_offer_info(sched_full.get("offers"), _off_ref)
+    if next_offer:
+        ref_dict["offer_date"] = next_offer[0]
+        ref_dict["offer_type"] = next_offer[1]
+        ref_dict["offer_kind"] = next_offer[2]
 
     if not calc_date:
         calc_date = rates_date or date.today()

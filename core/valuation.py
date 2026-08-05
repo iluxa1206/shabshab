@@ -367,6 +367,29 @@ def offer_kind(type_str: Optional[str]) -> str:
     return "put"
 
 
+def next_offer_info(offers: Optional[List[dict]],
+                    settle: date) -> Optional[tuple]:
+    """Ближайшая БУДУЩАЯ оферта любого вида из MOEX bondization offers:
+    (date, type_str, kind∈{'put','call'}) или None. Состоявшиеся/исполненные
+    отфильтрованы — не будущее событие, даже если дата распарсилась в будущее.
+    В отличие от first_offer_date (горизонт оценки, только путы) — это
+    информационный флаг «у бумаги есть оферта», call тоже показываем."""
+    best = None
+    for o in offers or []:
+        typ = (o.get("type") or "").lower()
+        if "состоя" in typ or "исполн" in typ:
+            continue
+        d = o.get("date")
+        if isinstance(d, str):
+            try:
+                d = date.fromisoformat(d)
+            except ValueError:
+                continue
+        if isinstance(d, date) and d > settle and (best is None or d < best[0]):
+            best = (d, o.get("type"), offer_kind(typ))
+    return best
+
+
 def first_offer_date(offers: Optional[List[dict]], settle: date) -> Optional[date]:
     """Первая будущая оферта-ПУТ из MOEX bondization offers [{date,type,price},...].
     Для флоатера купонные value после оферты в bondization не определены и спред

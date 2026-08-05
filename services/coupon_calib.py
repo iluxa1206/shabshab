@@ -669,6 +669,70 @@ def _index_grow(frm: date, to: date, calc_date: date, fwd_pct, idx) -> float:
     return level
 
 
+# ── кэш пути роста индекса ───────────────────────────────────────────────────
+# _index_grow всегда стартует из last_off (последняя публикация индекса ЦБ) и
+# шагает по дням — на дальнем купоне это тысячи итераций, и они повторялись для
+# КАЖДОЙ границы КАЖДОГО купона КАЖДОЙ бумаги: стеки сторожа лагов показывали
+# этот цикл как главный пожиратель CPU (13-17с фризов на волне пересчёта).
+# Путь один и тот же для всех бумаг (fwd_pct — форвард ОДНОЙ кривой базы),
+# поэтому строим его один раз по дням и расширяем инкрементально по мере
+# надобности; запрос любой границы — O(1) словарный доступ.
+_GROW_PATH: dict = {"key": None, "levels": None, "state": None}
+
+
+def _grow_cache_key(frm: date, calc_date: date, fwd_pct, idx) -> tuple:
+    """Отпечаток всех входов пути. Кривая приходит замыканием (identity новый на
+    каждый вызов) — вместо неё сэмплы форварда на контрольных горизонтах:
+    пересборка кривой сдвигает сэмплы → ключ меняется → кэш сбрасывается.
+    Ряд фиксингов — (len, последняя дата, последняя ставка): дозаписи истории
+    ЦБ тоже инвалидируют."""
+    dts, rts = idx
+    probes = []
+    for off in (30, 365, 1460):
+        try:
+            v = fwd_pct(frm + timedelta(days=off))
+            probes.append(round(v, 8) if v is not None else None)
+        except Exception:
+            probes.append("err")
+    return (frm, calc_date, len(dts), dts[-1] if dts else None,
+            round(rts[-1], 8) if rts else None, tuple(probes))
+
+
+def _index_grow_cached(frm: date, to: date, calc_date: date, fwd_pct, idx) -> float:
+    """Тот же результат, что _index_grow(frm, to, …), но через общий дневной
+    путь: рекуррентность исполняется один раз, уровни всех промежуточных дней
+    запоминаются, повторные запросы — из словаря. Рекуррентность идентична
+    _index_grow построчно (это проверяет тест сверки)."""
+    import calendar as _cal
+    from core.valuation import _is_settlement_day_off as _off
+
+    key = _grow_cache_key(frm, calc_date, fwd_pct, idx)
+    if _GROW_PATH["key"] != key:
+        _GROW_PATH["key"] = key
+        _GROW_PATH["levels"] = {frm: 1.0}
+        _GROW_PATH["state"] = (frm, 1.0, 1.0,
+                               _rate_at(idx, frm) if _realized(idx, frm, calc_date)
+                               else fwd_pct(frm))
+
+    levels = _GROW_PATH["levels"]
+    got = levels.get(to)
+    if got is not None:
+        return got
+
+    cur, level, base, prev = _GROW_PATH["state"]
+    while cur < to:
+        cur += timedelta(days=1)
+        if prev is not None:
+            yb = 366.0 if _cal.isleap((cur - timedelta(days=1)).year) else 365.0
+            level += base * (prev / 100.0) / yb
+        if not _off(cur):
+            base = level
+        prev = (_rate_at(idx, cur) if _realized(idx, cur, calc_date) else fwd_pct(cur))
+        levels[cur] = level
+    _GROW_PATH["state"] = (cur, level, base, prev)
+    return levels[to]
+
+
 def compounded_index_bounds(spec: dict, start: date, end: date, calc_date: date,
                             fwd_pct, idx=None, lag: int = None, unit: str = None):
     """(Index(s−lag), Index(e−lag), ставка %) — уровни ОФИЦИАЛЬНОГО индекса RUONIA
@@ -719,12 +783,12 @@ def compounded_index_bounds(spec: dict, start: date, end: date, calc_date: date,
     if not i0:
         return none3
     if s0 > last_off:                        # окно целиком в будущем
-        i0 = _lvl(last_off) * _index_grow(last_off, s0, calc_date, fwd_pct, idx)
+        i0 = _lvl(last_off) * _index_grow_cached(last_off, s0, calc_date, fwd_pct, idx)
     if e0 <= last_off:                       # конец окна опубликован
         i1 = _lvl(e0)
     else:
         base_lvl = _lvl(last_off)
-        i1 = base_lvl * _index_grow(last_off, e0, calc_date, fwd_pct, idx)
+        i1 = base_lvl * _index_grow_cached(last_off, e0, calc_date, fwd_pct, idx)
     if not i0 or not i1:
         return none3
     return i0, i1, (i1 / i0 - 1.0) * 365.0 / days * 100.0

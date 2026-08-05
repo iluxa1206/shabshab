@@ -99,6 +99,19 @@ CREATE TABLE IF NOT EXISTS trade_tick(
 );
 CREATE INDEX IF NOT EXISTS ix_tick_isin_ts ON trade_tick(isin, ts);
 CREATE INDEX IF NOT EXISTS ix_tick_big ON trade_tick(isin, value);
+-- Общерыночная лента (вкладка СДЕЛКИ) ходит по времени БЕЗ isin: без этого
+-- индекса каждый запрос — фулскан миллионов строк с сортировкой.
+CREATE INDEX IF NOT EXISTS ix_tick_ts ON trade_tick(ts);
+
+-- Водяной знак инкрементального дрейна: до какого момента история сделок бумаги
+-- уже вычитана из Alor ЦЕЛИКОМ. Живёт ОТДЕЛЬНО от trade_tick, потому что
+-- ретеншен вычищает старые мелкие тики — вывести точку старта из самих тиков
+-- значило бы каждый раз качать заново всё, что только что удалили.
+CREATE TABLE IF NOT EXISTS tick_drain(
+  isin TEXT PRIMARY KEY,
+  last_ts TEXT NOT NULL,        -- 'YYYY-MM-DD HH:MM:SS' МСК, правая граница
+  updated_at TEXT NOT NULL
+);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;

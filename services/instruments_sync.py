@@ -152,7 +152,9 @@ async def sync_instruments() -> dict:
                    + reg.enrich_pending([e["isin"] for e in reg.list_exotic()],
                                         _CORPBONDS_QUOTA_EXOTIC, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending([n["isin"] for n in reg.list_no_spec()],
-                                        _CORPBONDS_QUOTA_NO_SPEC, parser_ver=PARSER_VERSION))
+                                        _CORPBONDS_QUOTA_NO_SPEC, parser_ver=PARSER_VERSION)
+                   + reg.enrich_pending(_call_unknown_with_offer(),
+                                        _CORPBONDS_QUOTA_CALL, parser_ver=PARSER_VERSION))
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
@@ -197,13 +199,33 @@ async def sync_instruments() -> dict:
 
 
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
-_MAX_CORPBONDS_PER_RUN = 60   # запросов к corpbonds.ru за прогон (внешний сайт)
+_MAX_CORPBONDS_PER_RUN = 70   # запросов к corpbonds.ru за прогон (внешний сайт)
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
 # большой incomplete не вытеснял остальные за срез
 _CORPBONDS_QUOTA_INCOMPLETE = 30
 _CORPBONDS_QUOTA_SUSPECT = 10
 _CORPBONDS_QUOTA_EXOTIC = 10
 _CORPBONDS_QUOTA_NO_SPEC = 10   # прайсуемые без текста формулы (дефолт-спека)
+# бумаги с будущей офертой и неизвестным has_call (маркер p/c). Класс идёт
+# ПОСЛЕДНИМ в срезе targets[:cap] — cap поднят с 60 до 70 под него, иначе
+# квота четырёх старших классов (ровно 60) съедала его целиком каждый прогон.
+_CORPBONDS_QUOTA_CALL = 10
+
+
+def _call_unknown_with_offer() -> list[str]:
+    """Кандидаты на выяснение call-опциона: has_call IS NULL И есть будущая оферта
+    в day-кэше bondization. Без сети (cached_schedule) — не прогретые расписания
+    просто не попадают в срез, доберутся следующим прогоном."""
+    from core.valuation import next_offer_info
+    from services import instruments_registry as reg
+    from services.market_data import MarketDataService
+    today = date.today()
+    out = []
+    for r in reg.list_call_unknown():
+        sched = MarketDataService.cached_schedule(r["isin"])
+        if sched and next_offer_info(sched.get("offers"), today):
+            out.append(r["isin"])
+    return out
 
 
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
@@ -277,7 +299,7 @@ async def discover_floaters(listing: dict | None = None,
             discovered += 1
         if delay:
             await asyncio.sleep(delay)
-    MarketDataService.flush_schedule_cache()   # дозапись хвоста дебаунс-кэша
+    await asyncio.to_thread(MarketDataService.flush_schedule_cache)   # дозапись хвоста дебаунс-кэша
     return discovered
 
 
