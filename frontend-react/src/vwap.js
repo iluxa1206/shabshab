@@ -57,24 +57,34 @@ export function yIdxAt(b, px, side) {
   return null;
 }
 
-// Строка таблицы + лестница → строка с котировками НА ОБЪЁМ vol (₽).
-// Возвращает null, если ни одна сторона не набирает объём (строку прячем: тикет
-// по ней не исполнить). Сторона, которая не набрала, гасится в прочерк.
-export function applyVolume(b, ladder, vol) {
+// Строка таблицы + лестница → строка с котировками НА ОБЪЁМ по сторонам.
+// volBid / volAsk — требуемые объёмы (₽) на биде и оффере, 0 = сторона не
+// фильтруется (её котировка остаётся верхом стакана). mode — как складывать
+// условия, когда заполнены ОБА поля: "and" — обе стороны должны набрать объём,
+// "or" — достаточно одной. Возвращает null, если условие не выполнено (строку
+// прячем: тикет не исполнить). Заполненная сторона, не набравшая объём, гаснет
+// в прочерк — в режиме "or" строка может остаться живой за счёт второй стороны.
+export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
+  const wantBid = volBid > 0, wantAsk = volAsk > 0;
+  if (!wantBid && !wantAsk) return b;
   if (!ladder) return null;
   const face = b.face_value_rub, acc = b.accrued_rub;
-  const bid = vwapFor(ladder.b, vol, face, acc);
-  const ask = vwapFor(ladder.a, vol, face, acc);
-  const okBid = bid && !bid.partial, okAsk = ask && !ask.partial;
-  if (!okBid && !okAsk) return null;
+  const bid = wantBid ? vwapFor(ladder.b, volBid, face, acc) : null;
+  const ask = wantAsk ? vwapFor(ladder.a, volAsk, face, acc) : null;
+  const okBid = !!bid && !bid.partial, okAsk = !!ask && !ask.partial;
+  const pass = wantBid && wantAsk
+    ? (mode === "or" ? okBid || okAsk : okBid && okAsk)
+    : (wantBid ? okBid : okAsk);
+  if (!pass) return null;
   return {
     ...b,
-    _vwap: vol,
+    _vwap_bid: okBid ? volBid : null,
+    _vwap_ask: okAsk ? volAsk : null,
     _vwap_bid_levels: okBid ? bid.levels : null,
     _vwap_ask_levels: okAsk ? ask.levels : null,
-    bid_price_pct: okBid ? Math.round(bid.px * 10000) / 10000 : null,
-    ask_price_pct: okAsk ? Math.round(ask.px * 10000) / 10000 : null,
-    y_idx_bid_bps: okBid ? yIdxAt(b, bid.px, "bid") : null,
-    y_idx_ask_bps: okAsk ? yIdxAt(b, ask.px, "ask") : null,
+    bid_price_pct: wantBid ? (okBid ? Math.round(bid.px * 10000) / 10000 : null) : b.bid_price_pct,
+    ask_price_pct: wantAsk ? (okAsk ? Math.round(ask.px * 10000) / 10000 : null) : b.ask_price_pct,
+    y_idx_bid_bps: wantBid ? (okBid ? yIdxAt(b, bid.px, "bid") : null) : b.y_idx_bid_bps,
+    y_idx_ask_bps: wantAsk ? (okAsk ? yIdxAt(b, ask.px, "ask") : null) : b.y_idx_ask_bps,
   };
 }

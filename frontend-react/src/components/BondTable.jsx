@@ -32,14 +32,15 @@ function Quote({ px, spread, title, vwap }) {
 }
 
 // Подпись ячейки котировки. Без фильтра по объёму — верх стакана MOEX; с ним —
-// VWAP набора тикета по лестнице Alor (b._vwap = размер тикета в ₽).
+// VWAP набора тикета по лестнице Alor (объём стороны в ₽ — b._vwap_bid/_vwap_ask).
 function qTitle(b, side) {
   const base = side === "bid"
     ? "лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)"
     : "лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)";
-  if (!b._vwap) return base;
+  const vol = side === "bid" ? b._vwap_bid : b._vwap_ask;
+  if (!vol) return base;
   const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
-  const mln = b._vwap / 1e6;
+  const mln = vol / 1e6;
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
     + `; Y-IDX пересчитан на неё (линеаризация от верха стакана)`;
@@ -90,16 +91,23 @@ export const COLS = [
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
   { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", sep: true, w: 8,
-    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap}
+    cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap_bid}
       title={qTitle(b, "bid")} /> },
   { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
-    cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap}
+    cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap_ask}
       title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — нет сделок сегодня / не в Alor-потоке" : undefined}>
       {fmt.pct(b.last_price_pct) ?? <D />}</td> },
+  // Средневзвес дня. У избранного — НАШ VWAP по тикам Alor (живой, тот же, что
+  // рисует слой «Средневзвес» на графике), у остальных — биржевой WAPRICE из
+  // снапшота MOEX. Отсюда и подпись в title: источники разные.
+  { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "CLN %", align: "num", w: 8,
+    cell: (b) => <td className="num" key="wap_price_pct"
+      title={b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня"}>
+      {fmt.pct(b.wap_price_pct) ?? <D />}</td> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;

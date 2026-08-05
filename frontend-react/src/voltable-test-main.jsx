@@ -48,8 +48,10 @@ const DEPTH = {
 };
 
 function Harness() {
-  const [volRub, setVolRub] = useState(1e6);
-  const [matFrom, setMatFrom] = useState("");
+  const [volBid, setVolBid] = useState(1e6);
+  const [volAsk, setVolAsk] = useState(0);
+  const [volMode, setVolMode] = useState("and");
+  const [matFrom, setMatFrom] = useState("");   // лет до погашения, строки инпута
   const [matTo, setMatTo] = useState("");
   const [twoSided, setTwoSided] = useState(false);
   const [query, setQuery] = useState("");
@@ -62,12 +64,16 @@ function Harness() {
 
   const rows = useMemo(() => {
     let out = ROWS.slice();
-    if (matFrom) out = out.filter((b) => b.maturity_date && b.maturity_date >= matFrom);
-    if (matTo) out = out.filter((b) => b.maturity_date && b.maturity_date <= matTo);
-    if (volRub > 0) out = out.map((b) => applyVolume(b, DEPTH[b.isin], volRub)).filter(Boolean);
+    const yearsToIso = (y) => new Date(Date.now() + y * 365.25 * 86400e3).toISOString().slice(0, 10);
+    const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
+    if (Number.isFinite(mFrom)) out = out.filter((b) => b.maturity_date && b.maturity_date >= yearsToIso(mFrom));
+    if (Number.isFinite(mTo)) out = out.filter((b) => b.maturity_date && b.maturity_date <= yearsToIso(mTo));
+    if (volBid > 0 || volAsk > 0) {
+      out = out.map((b) => applyVolume(b, DEPTH[b.isin], volBid, volAsk, volMode)).filter(Boolean);
+    }
     if (twoSided) out = out.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
     return out;
-  }, [volRub, matFrom, matTo, twoSided]);
+  }, [volBid, volAsk, volMode, matFrom, matTo, twoSided]);
 
   return (
     <>
@@ -78,10 +84,11 @@ function Harness() {
         issuers={ISSUERS} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
         activeFilters={(basesSel.length ? 1 : 0) + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0)
-          + (volRub > 0 ? 1 : 0) + (matFrom ? 1 : 0) + (matTo ? 1 : 0) + (query ? 1 : 0)}
-        onResetFilters={() => { setBasesSel([]); setEmittersSel([]); setTwoSided(false); setVolRub(0); setMatFrom(""); setMatTo(""); setQuery(""); }}
+          + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom ? 1 : 0) + (matTo ? 1 : 0) + (query ? 1 : 0)}
+        onResetFilters={() => { setBasesSel([]); setEmittersSel([]); setTwoSided(false); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo(""); setQuery(""); }}
         twoSided={twoSided} setTwoSided={setTwoSided}
-        volRub={volRub} setVolRub={setVolRub} depthTs={Date.now() / 1000} depthLoading={false}
+        volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
+        volMode={volMode} setVolMode={setVolMode} depthTs={Date.now() / 1000} depthLoading={false}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         query={query} setQuery={setQuery} watchCount={0}
         shown={rows.length} total={ROWS.length}

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
-import { fetchBonds, fetchDepth, fetchMeta, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { applyVolume } from "./vwap.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
@@ -21,6 +21,7 @@ import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
+import TradesTape from "./components/TradesTape.jsx";
 // lightweight-charts тянет ~180 kB — грузим только на самой странице графика,
 // а не в общий бандл дашборда
 const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
@@ -28,7 +29,18 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // Фильтры живут в query string: вид дашборда можно кинуть ссылкой коллеге и он
 // переживает F5. Ключи короткие, мульти-значения — повторяющимися параметрами
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "mf", "mt"];
+// vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
+// чтобы вычищать их из старых ссылок
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt"];
+// Такт котировок рынка (бумаги вне избранного). Избранное идёт push-стримом.
+const QUOTES_POLL_MS = 5000;
+// Пол частоты reprice на бумагу: в push-потоке цена ликвидной бумаги двигается
+// непрерывно, и без пола каждый тик заказывал бы пересчёт на бэке.
+const REPRICE_MIN_MS = 2000;
+// Сколько бумага считается «живой» после последнего WS-пуша. Пока живая —
+// снапшот MOEX её не трогает (push свежее). Замолчала (упёрлась в потолок
+// подписок Alor, стрим лёг, торгов нет) — снова обновляется тактом 5с.
+const LIVE_FRESH_MS = 15000;
 const initialParams = () => new URLSearchParams(window.location.search);
 
 function Dashboard() {
@@ -47,13 +59,18 @@ function Dashboard() {
   const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("rt")); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("em")); // имена эмитентов (мульти)
   const [twoSided, setTwoSided] = useState(() => initialParams().get("two") === "1");  // только двусторонние котировки
-  // размер тикета, ₽ (0 = фильтр выключен): котировки пересчитываются в VWAP на
-  // этот объём по лестнице стакана, строки без такой глубины уходят
-  const [volRub, setVolRub] = useState(() => Number(initialParams().get("vol"))
-    || Number(localStorage.getItem("volRub") || 0) || 0);
-  // окно погашения [от, до] — ISO-даты, пустая строка = граница не задана
-  const [matFrom, setMatFrom] = useState(() => initialParams().get("mf") || localStorage.getItem("matFrom") || "");
-  const [matTo, setMatTo] = useState(() => initialParams().get("mt") || localStorage.getItem("matTo") || "");
+  // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка стороны
+  // пересчитывается в VWAP на этот объём по лестнице стакана
+  const [volBid, setVolBid] = useState(() => Number(initialParams().get("vb"))
+    || Number(localStorage.getItem("volBidRub") || 0) || 0);
+  const [volAsk, setVolAsk] = useState(() => Number(initialParams().get("va"))
+    || Number(localStorage.getItem("volAskRub") || 0) || 0);
+  // связка условий bid/offer: "and" — обе стороны, "or" — хотя бы одна
+  const [volMode, setVolMode] = useState(() => (initialParams().get("vm")
+    || localStorage.getItem("volMode")) === "or" ? "or" : "and");
+  // окно погашения [от, до] в ЛЕТ до погашения (строки как в инпуте, "" = не задано)
+  const [matFrom, setMatFrom] = useState(() => initialParams().get("myf") || localStorage.getItem("matYrsFrom") || "");
+  const [matTo, setMatTo] = useState(() => initialParams().get("myt") || localStorage.getItem("matYrsTo") || "");
   const [query, setQuery] = useState(() => initialParams().get("q") || "");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
@@ -122,16 +139,20 @@ function Dashboard() {
       ratingsSel.forEach((v) => next.append("rt", v));
       emittersSel.forEach((v) => next.append("em", v));
       if (twoSided) next.set("two", "1");
-      if (volRub) next.set("vol", String(volRub));
-      if (matFrom) next.set("mf", matFrom);
-      if (matTo) next.set("mt", matTo);
+      if (volBid) next.set("vb", String(volBid));
+      if (volAsk) next.set("va", String(volAsk));
+      if (volMode === "or" && (volBid || volAsk)) next.set("vm", "or");
+      if (matFrom) next.set("myf", matFrom);
+      if (matTo) next.set("myt", matTo);
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volRub, matFrom, matTo, setSearchParams]);
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volBid, volAsk, volMode, matFrom, matTo, setSearchParams]);
 
-  useEffect(() => { localStorage.setItem("volRub", String(volRub)); }, [volRub]);
-  useEffect(() => { localStorage.setItem("matFrom", matFrom); }, [matFrom]);
-  useEffect(() => { localStorage.setItem("matTo", matTo); }, [matTo]);
+  useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
+  useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
+  useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
+  useEffect(() => { localStorage.setItem("matYrsFrom", matFrom); }, [matFrom]);
+  useEffect(() => { localStorage.setItem("matYrsTo", matTo); }, [matTo]);
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
@@ -218,15 +239,29 @@ function Dashboard() {
   // Гвард против шторма: WS присылает last-price тактом, а не по изменению, и
   // reprice того же числа — чистый холостой пересчёт на бэке.
   const wsPxRef = useRef({});
+  // isin → время последнего WS-пуша: им решается, чья цифра свежее (push или
+  // снапшот MOEX) при мердже котировок рынка
+  const liveTsRef = useRef({});
+  // фолбэк-таймеры «движок не прислал производные» → одиночный reprice
+  const repriceFallback = useRef({});
 
   // debounced live-пересчёт производных строки под новую цену (WS тикает только
   // цену). Reprice возвращает DM/SM/dirty/Y-IDX/z_model под введённой ценой.
+  //
+  // Дебаунс 500мс гасит серию тиков, но у ликвидной бумаги в push-потоке Alor
+  // цена может двигаться непрерывно — тогда каждые полсекунды улетал бы новый
+  // пересчёт. Пол в REPRICE_MIN_MS держит частоту на бумагу: последняя цена
+  // всё равно доедет, просто следующим окном.
   const repriceTimers = useRef({});
+  const repriceLastAt = useRef({});
   const scheduleReprice = useCallback((isin, price) => {
     const t = repriceTimers.current;
     if (t[isin]) clearTimeout(t[isin]);
+    const since = Date.now() - (repriceLastAt.current[isin] || 0);
+    const wait = Math.max(500, REPRICE_MIN_MS - since);
     t[isin] = setTimeout(async () => {
       delete t[isin];
+      repriceLastAt.current[isin] = Date.now();
       try {
         const r = await repriceBond(isin, price);
         setBonds((prev) =>
@@ -246,7 +281,7 @@ function Dashboard() {
           })
         );
       } catch { /* 401 → глобальный logout; прочее — строка остаётся dim */ }
-    }, 500);
+    }, wait);
   }, []);
 
   // WS once
@@ -254,26 +289,58 @@ function Dashboard() {
     const ctrl = connectMarketWs(
       () => subIsinsRef.current,
       setLive,
-      (isin, price) => {
-        if (price == null) return;
-        // цена не изменилась с прошлого расчёта — ни стейта, ни reprice
-        if (wsPxRef.current[isin] === price) return;
-        wsPxRef.current[isin] = price;
+      // Патч строки из push-потока Alor: {last_price_pct, bid, ask, bid_qty,
+      // ask_qty, vwap_pct, vwap_volume} — приходит частями (котировка несёт
+      // верх стакана, сделка — цену и средневзвес), поэтому применяем то, что
+      // пришло, а не весь набор. Патч с metrics:true несёт производные
+      // (Y-IDX/DM/SM/dirty), пересчитанные движком бэка — тогда /reprice с
+      // фронта не нужен вовсе.
+      (isin, q) => {
+        const price = q.last_price_pct;
+        liveTsRef.current[isin] = Date.now();
+        const priceNew = price != null && wsPxRef.current[isin] !== price;
+        if (priceNew) wsPxRef.current[isin] = price;
+        const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
+          "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
+          "delta_to_prev_close"];
         setBonds((prev) =>
           prev.map((b) => {
-            if (b.isin !== isin || b.last_price_pct === price) return b;
-            // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
-            // last − delta (инвариант дня) → delta_new = price − prev_close.
-            let delta = b.delta_to_prev_close;
-            if (delta != null && b.last_price_pct != null) {
-              const prevClose = b.last_price_pct - delta;
-              delta = Math.round((price - prevClose) * 10000) / 10000;
+            if (b.isin !== isin) return b;
+            const n = { ...b, _live: true };
+            if (q.bid != null) n.bid_price_pct = q.bid;
+            if (q.ask != null) n.ask_price_pct = q.ask;
+            if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
+            if (q.metrics) {
+              for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
+              n._mstale = false;   // производные свежие — строка не dim
             }
-            // DM/SM/z/dirty/Y-IDX — от прошлого расчёта → dim до reprice
-            return { ...b, last_price_pct: price, delta_to_prev_close: delta, _mstale: true };
+            if (priceNew) {
+              // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
+              // last − delta (инвариант дня) → delta_new = price − prev_close.
+              let delta = b.delta_to_prev_close;
+              if (delta != null && b.last_price_pct != null) {
+                const prevClose = b.last_price_pct - delta;
+                delta = Math.round((price - prevClose) * 10000) / 10000;
+              }
+              n.last_price_pct = price;
+              n.delta_to_prev_close = delta;
+              if (!q.metrics) n._mstale = true;   // производные приедут патчем движка
+            }
+            return n;
           })
         );
-        scheduleReprice(isin, price);
+        // reprice не заказываем: движок бэка пришлёт производные патчем в
+        // ближайший такт. Фолбэк — если патч не пришёл за 15с (движок лежит),
+        // строка остаётся dim и один reprice всё же уходит.
+        if (priceNew && !q.metrics) {
+          const t = repriceFallback.current;
+          if (t[isin]) clearTimeout(t[isin]);
+          t[isin] = setTimeout(() => {
+            delete t[isin];
+            const b = bondsRef.current.find((x) => x.isin === isin);
+            if (b && b._mstale) scheduleReprice(isin, wsPxRef.current[isin]);
+          }, 15000);
+        }
       }
     );
     wsRef.current = ctrl;
@@ -283,14 +350,79 @@ function Dashboard() {
       const t = repriceTimers.current;
       Object.values(t).forEach(clearTimeout);
       repriceTimers.current = {};
+      Object.values(repriceFallback.current).forEach(clearTimeout);
+      repriceFallback.current = {};
     };
   }, [scheduleReprice]);
 
+  // Котировки всего рынка тактом 5с: цена, верх стакана, средневзвес дня,
+  // оборот. Избранное сюда не мерджим — по нему те же поля приходят push'ем
+  // через WS, и снапшот MOEX только откатывал бы их назад.
+  //
+  // Расчётные метрики (Y-IDX/DM/SM) здесь НЕ пересчитываются: 540 reprice
+  // каждые 5 секунд — ровно тот шторм, который убран в 9fc8980. Их обновляет
+  // своим циклом бэкенд, поэтому у неизбранных бумаг спред может отставать от
+  // цены на такт поллера юниверса.
+  const quotesQ = useQuery({
+    queryKey: ["quotes"], queryFn: ({ signal }) => fetchQuotes(signal),
+    refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS - 1000,
+  });
+  useEffect(() => {
+    const items = quotesQ.data?.items;
+    if (!items?.length) return;
+    const byIsin = new Map(items.map((q) => [q.isin, q]));
+    // «на стриме» = реально пушилось только что, а не «есть в избранном»:
+    // сверх потолка подписок Alor бумага остаётся в избранном, но живёт
+    // снапшотом, и по списку избранного мы бы её потеряли совсем
+    const now = Date.now();
+    const streamed = new Set(
+      Object.entries(liveTsRef.current)
+        .filter(([, ts]) => now - ts < LIVE_FRESH_MS)
+        .map(([isin]) => isin));
+    setBonds((prev) => {
+      let touched = false;
+      const next = prev.map((b) => {
+        if (streamed.has(b.isin)) return b;
+        const q = byIsin.get(b.isin);
+        if (!q) return b;
+        const same = (q.last == null || q.last === b.last_price_pct)
+          && (q.bid == null || q.bid === b.bid_price_pct)
+          && (q.ask == null || q.ask === b.ask_price_pct)
+          && (q.wap == null || q.wap === b.wap_price_pct)
+          && (q.vol == null || q.vol === b.val_today)
+          && (q.yoi == null || q.yoi === b.yield_over_index_bps);
+        if (same) return b;              // без изменений — не трогаем ссылку
+        touched = true;
+        // снимаем метку live: дальше в строке цифры снапшота, и подпись
+        // «наш VWAP по сделкам» на них была бы неправдой
+        const n = { ...b, _live: false };
+        if (q.last != null) {
+          // CHG держим согласованным с новой ценой (prev_close — инвариант дня)
+          if (b.delta_to_prev_close != null && b.last_price_pct != null) {
+            const prevClose = b.last_price_pct - b.delta_to_prev_close;
+            n.delta_to_prev_close = Math.round((q.last - prevClose) * 10000) / 10000;
+          }
+          n.last_price_pct = q.last;
+        }
+        if (q.bid != null) n.bid_price_pct = q.bid;
+        if (q.ask != null) n.ask_price_pct = q.ask;
+        if (q.wap != null) n.wap_price_pct = q.wap;
+        if (q.vol != null) n.val_today = q.vol;
+        // Y-IDX от событийного движка: спред торгуемой бумаги обновляется по
+        // факту сделки, а не раз в 10 минут поллером
+        if (q.yoi != null) n.yield_over_index_bps = q.yoi;
+        return n;
+      });
+      return touched ? next : prev;      // ничего не поменялось — без ререндера
+    });
+  }, [quotesQ.data]);
+
   // лестницы стаканов по всему рынку — только когда фильтр по объёму включён.
   // Снимок на бэке обновляется раз в ~2 мин, чаще тянуть нечего.
+  const volOn = volBid > 0 || volAsk > 0;
   const depthQ = useQuery({
     queryKey: ["depth"], queryFn: fetchDepth, refetchInterval: 60000,
-    enabled: volRub > 0, staleTime: 30000,
+    enabled: volOn, staleTime: 30000,
   });
   const depth = depthQ.data?.items;
 
@@ -306,17 +438,26 @@ function Dashboard() {
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
-    // окно погашения: строки без даты погашения (перп/дыра в справочнике) при
-    // заданной границе прячем — иначе они молча пролезают в любой срок
-    if (matFrom) rows = rows.filter((b) => b.maturity_date && b.maturity_date >= matFrom);
-    if (matTo) rows = rows.filter((b) => b.maturity_date && b.maturity_date <= matTo);
-    // ФИЛЬТР ПО ОБЪЁМУ. Котировка строки становится VWAP на тикет volRub ₽ по
-    // лестнице стакана, Y-IDX — спред к этой цене. Строка, где НИ ОДНА сторона не
-    // набирает объём, уходит: тикет по ней не исполнить. Сторона, которой не
-    // хватило глубины, гаснет в прочерк (вторую можно торговать). Нужны обе —
-    // добирается чипом BID×OFFER, он применяется следующим.
-    if (volRub > 0 && depth) {
-      rows = rows.map((b) => applyVolume(b, depth[b.isin], volRub)).filter(Boolean);
+    // окно погашения в ЛЕТ до погашения: границы переводим в даты-отсечки и
+    // сравниваем ISO-строки. Строки без даты погашения (перп/дыра в справочнике)
+    // при заданной границе прячем — иначе они молча пролезают в любой срок
+    const yearsToIso = (y) => new Date(Date.now() + y * 365.25 * 86400e3).toISOString().slice(0, 10);
+    const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
+    if (Number.isFinite(mFrom)) {
+      const cut = yearsToIso(mFrom);
+      rows = rows.filter((b) => b.maturity_date && b.maturity_date >= cut);
+    }
+    if (Number.isFinite(mTo)) {
+      const cut = yearsToIso(mTo);
+      rows = rows.filter((b) => b.maturity_date && b.maturity_date <= cut);
+    }
+    // ФИЛЬТР ПО ОБЪЁМУ. Котировка заполненной стороны становится VWAP на её тикет
+    // по лестнице стакана, Y-IDX — спред к этой цене. volMode решает судьбу строки,
+    // когда заполнены оба поля: "and" — обе стороны обязаны набрать объём, "or" —
+    // достаточно одной (не набравшая гаснет в прочерк). Чип BID×OFFER применяется
+    // следующим и может дополнительно потребовать обе стороны.
+    if (volOn && depth) {
+      rows = rows.map((b) => applyVolume(b, depth[b.isin], volBid, volAsk, volMode)).filter(Boolean);
     }
     if (twoSided) rows = rows.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
     const q = query.trim().toLowerCase();
@@ -337,7 +478,7 @@ function Dashboard() {
     });
     return rows;
   }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch,
-      matFrom, matTo, volRub, depth]);
+      matFrom, matTo, volOn, volBid, volAsk, volMode, depth]);
 
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
@@ -383,10 +524,10 @@ function Dashboard() {
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
     + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (query !== "" ? 1 : 0)
-    + (volRub > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0);
+    + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
-    setTwoSided(false); setQuery(""); setVolRub(0); setMatFrom(""); setMatTo("");
+    setTwoSided(false); setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
   }, []);
 
   const floatersView = (
@@ -400,8 +541,9 @@ function Dashboard() {
         clearEmitters={() => setEmittersSel([])}
         activeFilters={activeFilters} onResetFilters={resetFilters}
         twoSided={twoSided} setTwoSided={setTwoSided}
-        volRub={volRub} setVolRub={setVolRub}
-        depthTs={depthQ.data?.ts} depthLoading={volRub > 0 && depthQ.isLoading}
+        volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
+        volMode={volMode} setVolMode={setVolMode}
+        depthTs={depthQ.data?.ts} depthLoading={volOn && depthQ.isLoading}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
@@ -447,6 +589,7 @@ function Dashboard() {
         <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/euro" element={<EuroStub />} />
+        <Route path="/trades" element={<TradesTape />} />
         <Route path="/payments" element={<PaymentsCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />

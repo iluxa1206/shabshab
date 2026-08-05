@@ -1,27 +1,31 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
-import { IconChart, IconCoins, IconSearch, IconTwoWay, IconX } from "./icons.jsx";
+import { IconChart, IconCoins, IconLink, IconSearch, IconTwoWay, IconUnlink, IconX } from "./icons.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
   ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
 ];
 
-// пресеты размера тикета, ₽ (подписи в млн — как их называет трейдер)
-const VOLS = [[1e6, "1"], [5e6, "5"], [10e6, "10"]];
-
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
-  volRub, setVolRub, depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
+  volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
+  depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   query, setQuery, searchRef, watchCount, shown, total, showAnalytics, setShowAnalytics,
   visibleCols, onToggleCol, onResetCols, onMoveCol,
   activeFilters, onResetFilters,
 }) {
-  const volTitle = "Размер тикета: BID/OFFER пересчитываются в средневзвешенную цену "
-    + "набора этой суммы по лестнице стакана (деньги грязные: кол-во × (номинал × цена% + НКД)), "
-    + "спред — к этой цене. Бумаги, где столько не набирается ни на одной стороне, скрыты."
+  const volTitle = "Размер тикета по сторонам, млн ₽: заполненная сторона пересчитывается "
+    + "в средневзвешенную цену набора этой суммы по лестнице стакана (деньги грязные: "
+    + "кол-во × (номинал × цена% + НКД)), спред — к этой цене. Цепочка между полями: "
+    + "целая — «И» (обе стороны должны набрать объём), разорванная — «ИЛИ» (достаточно одной)."
     + (depthTs ? `\nСнимок стаканов: ${new Date(depthTs * 1000).toLocaleTimeString("ru-RU")}` : "");
+  // млн (строка инпута) ↔ ₽ (состояние)
+  const mlnToRub = (s) => {
+    const v = parseFloat(s);
+    return Number.isFinite(v) && v > 0 ? Math.round(v * 1e6) : 0;
+  };
   return (
     <section className="toolbar">
       <span className="search-wrap">
@@ -90,30 +94,37 @@ export default function Toolbar({
         </button>
       </div>
 
-      {/* группа: объём тикета — VWAP по стакану на эту сумму */}
+      {/* группа: объём тикета по сторонам — VWAP по стакану на эти суммы */}
       <div className="fgroup" title={volTitle}>
         <IconCoins size={13} className="fg-ico" />
-        {VOLS.map(([v, l]) => (
-          <button key={v} className={"chip-btn" + (volRub === v ? " on" : "")}
-            onClick={() => setVolRub(volRub === v ? 0 : v)}>{l}М</button>
-        ))}
-        <input className="num-input" type="number" min="0" step="0.5" placeholder="млн"
-          aria-label="Размер тикета, млн ₽"
-          value={volRub ? String(volRub / 1e6) : ""}
-          onChange={(e) => {
-            const v = parseFloat(e.target.value);
-            setVolRub(Number.isFinite(v) && v > 0 ? Math.round(v * 1e6) : 0);
-          }} />
+        <input className="num-input" type="number" min="0" step="0.5" placeholder="bid"
+          aria-label="Размер тикета на биде, млн ₽"
+          value={volBid ? String(volBid / 1e6) : ""}
+          onChange={(e) => setVolBid(mlnToRub(e.target.value))} />
+        <button className={"chip-btn" + (volMode === "and" ? " on" : "")}
+          aria-label="Связка условий bid/offer"
+          title={volMode === "and"
+            ? "И — обе стороны должны набрать свой объём (клик → ИЛИ)"
+            : "ИЛИ — достаточно одной стороны (клик → И)"}
+          onClick={() => setVolMode(volMode === "and" ? "or" : "and")}>
+          {volMode === "and" ? <IconLink size={13} /> : <IconUnlink size={13} />}
+        </button>
+        <input className="num-input" type="number" min="0" step="0.5" placeholder="offer"
+          aria-label="Размер тикета на оффере, млн ₽"
+          value={volAsk ? String(volAsk / 1e6) : ""}
+          onChange={(e) => setVolAsk(mlnToRub(e.target.value))} />
         {depthLoading && <span className="fg-lbl">…</span>}
       </div>
 
-      {/* группа: окно погашения */}
-      <div className="fgroup" title="Погашение в интервале [от, до]. Бумаги без даты погашения при заданной границе скрыты.">
-        <span className="fg-lbl">MAT</span>
-        <input className="date-input" type="date" value={matFrom} aria-label="Погашение от"
+      {/* группа: окно погашения в годах */}
+      <div className="fgroup" title="Лет до погашения в интервале [от, до]. Бумаги без даты погашения при заданной границе скрыты.">
+        <span className="fg-lbl">MAT, Y</span>
+        <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
+          aria-label="Лет до погашения — от" value={matFrom}
           onChange={(e) => setMatFrom(e.target.value)} />
         <span className="fg-lbl">—</span>
-        <input className="date-input" type="date" value={matTo} aria-label="Погашение до"
+        <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
+          aria-label="Лет до погашения — до" value={matTo}
           onChange={(e) => setMatTo(e.target.value)} />
         {(matFrom || matTo) && (
           <button className="chip-btn" title="Сбросить окно погашения"
