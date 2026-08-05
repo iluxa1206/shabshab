@@ -1,6 +1,6 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
-import { IconChart, IconCoins, IconLink, IconSearch, IconTwoWay, IconUnlink, IconX } from "./icons.jsx";
+import { IconCoins, IconLink, IconSearch, IconTwoWay, IconUnlink, IconX } from "./icons.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
 
 const RATINGS = [
@@ -12,14 +12,17 @@ export default function Toolbar({
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
-  query, setQuery, searchRef, watchCount, shown, total, showAnalytics, setShowAnalytics,
+  query, setQuery, searchRef, watchCount, shown, total,
   visibleCols, onToggleCol, onResetCols, onMoveCol,
   activeFilters, onResetFilters,
 }) {
   const volTitle = "Размер тикета по сторонам, млн ₽: заполненная сторона пересчитывается "
     + "в средневзвешенную цену набора этой суммы по лестнице стакана (деньги грязные: "
     + "кол-во × (номинал × цена% + НКД)), спред — к этой цене. Цепочка между полями: "
-    + "целая — «И» (обе стороны должны набрать объём), разорванная — «ИЛИ» (достаточно одной)."
+    + "целая — «И» (обе стороны должны набрать объём), разорванная — «ИЛИ» (достаточно одной). "
+    + "Допуск 10%: сторона считается набравшей объём, если стакан даёт ≥90% запрошенного "
+    + "(заявка «100 000 бумаг по 98» — это ~98 млн ₽ грязными, и по строгому порогу «100 млн» "
+    + "она бы вылетела)."
     + (depthTs ? `\nСнимок стаканов: ${new Date(depthTs * 1000).toLocaleTimeString("ru-RU")}` : "");
   // млн (строка инпута) ↔ ₽ (состояние)
   const mlnToRub = (s) => {
@@ -130,14 +133,6 @@ export default function Toolbar({
           <button className="chip-btn" title="Сбросить окно погашения"
             onClick={() => { setMatFrom(""); setMatTo(""); }}>×</button>
         )}
-      </div>
-
-      <div className="fgroup">
-        <button className={"chip-btn" + (showAnalytics ? " on" : "")}
-          onClick={() => setShowAnalytics(!showAnalytics)}
-          aria-label="Аналитика" title="Аналитика — кросс-секция рынка">
-          <IconChart size={13} />
-        </button>
       </div>
 
       {/* группа: столбцы */}

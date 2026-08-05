@@ -92,7 +92,6 @@ function Harness() {
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         query={query} setQuery={setQuery} watchCount={0}
         shown={rows.length} total={ROWS.length}
-        showAnalytics={false} setShowAnalytics={() => {}}
         visibleCols={DEFAULT_COLS} onToggleCol={() => {}} onResetCols={() => {}} onMoveCol={() => {}}
       />
       <BondTable rows={rows} status="ready" sort={sort}

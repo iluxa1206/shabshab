@@ -57,6 +57,19 @@ export function yIdxAt(b, px, side) {
   return null;
 }
 
+// Допуск по объёму: набранное принимается за требуемое, если добрали ≥90%
+// запрошенного. Заявка «100 000 бумаг по 98» даёт ~98 млн ₽ грязными и по
+// строгому порогу «100 млн» вылетала бы, хотя это ровно тот тикет, который
+// трейдер искал. Округление цены/номинала/НКД тут же — в пределах допуска.
+export const VOL_TOL = 0.9;
+
+// Набрала ли сторона объём с учётом допуска. Полный набор — всегда да; частичный
+// — да, если добрали ≥ VOL_TOL×требуемого (VWAP тогда по всей книге).
+function passes(v, want) {
+  if (!v) return false;
+  return !v.partial || v.money >= want * VOL_TOL;
+}
+
 // Строка таблицы + лестница → строка с котировками НА ОБЪЁМ по сторонам.
 // volBid / volAsk — требуемые объёмы (₽) на биде и оффере, 0 = сторона не
 // фильтруется (её котировка остаётся верхом стакана). mode — как складывать
@@ -71,15 +84,17 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
   const face = b.face_value_rub, acc = b.accrued_rub;
   const bid = wantBid ? vwapFor(ladder.b, volBid, face, acc) : null;
   const ask = wantAsk ? vwapFor(ladder.a, volAsk, face, acc) : null;
-  const okBid = !!bid && !bid.partial, okAsk = !!ask && !ask.partial;
+  const okBid = passes(bid, volBid), okAsk = passes(ask, volAsk);
   const pass = wantBid && wantAsk
     ? (mode === "or" ? okBid || okAsk : okBid && okAsk)
     : (wantBid ? okBid : okAsk);
   if (!pass) return null;
   return {
     ...b,
-    _vwap_bid: okBid ? volBid : null,
-    _vwap_ask: okAsk ? volAsk : null,
+    // в подпись кладём ФАКТИЧЕСКИ набранные деньги (при частичном наборе в
+    // пределах допуска они меньше запрошенных) — VWAP посчитан именно по ним
+    _vwap_bid: okBid ? bid.money : null,
+    _vwap_ask: okAsk ? ask.money : null,
     _vwap_bid_levels: okBid ? bid.levels : null,
     _vwap_ask_levels: okAsk ? ask.levels : null,
     bid_price_pct: wantBid ? (okBid ? Math.round(bid.px * 10000) / 10000 : null) : b.bid_price_pct,

@@ -3,7 +3,10 @@ export const fmt = {
   pct: (v, d = 2) => (v == null ? null : v.toFixed(d).replace(".", ",")),
   num: (v, d = 2) =>
     v == null ? null : v.toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d }),
-  bps: (v) => (v == null ? null : (v > 0 ? "+" : "") + Math.round(v)),
+  // Спреды в bps: знак «+» НЕ рисуем — положительных подавляющее большинство,
+  // сотня плюсов в колонке шумит и не несёт информации. Знак несут цвет
+  // (dmColor: up/down) и минус у отрицательных.
+  bps: (v) => (v == null ? null : String(Math.round(v))),
   date: (s) => (s == null ? null : s.split("-").reverse().join(".")),
   signed: (v, d = 2) => (v == null ? null : (v > 0 ? "+" : "") + v.toFixed(d).replace(".", ",")),
   // срок в годах: <1г в месяцах, иначе годы

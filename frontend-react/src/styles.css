@@ -339,11 +339,11 @@ td.mut { color: var(--mut); }
 .bond-formula { color: var(--mut); font-size: 12px; }
 /* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
    ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */
-.cf { display: inline-flex; align-items: baseline; }
-.cf-base { width: 3ch; }
-.cf-op { width: 2ch; text-align: center; }
-.cf-mrg { width: 7ch; text-align: right; }
-.cf-cpy { width: 5ch; text-align: right; color: var(--mut-2); }
+.cf { display: inline-flex; align-items: baseline; gap: 0.4ch; }
+.cf-base { width: 2ch; }
+.cf-op { width: 1ch; text-align: center; }
+.cf-mrg { width: 6ch; text-align: right; }
+.cf-cpy { width: 4ch; text-align: right; color: var(--mut-2); }
 .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; padding: 2px 7px; border: 1px solid var(--line-2); color: var(--fg); }
 .dm-chip { font-weight: 700; }
 /* производная метрика устарела: цена тикнула по WS, расчёт ещё под старой ценой.
@@ -1052,6 +1052,12 @@ body.col-resizing * { cursor: col-resize !important; }
 
 /* ===== Модуль «Фонды» ===== */
 .module-seg { margin-left: 18px; }
+/* инструменты раздела в шапке (Аналитика): вид как у таба навигации, но это
+   переключатель окна над таблицей, а не маршрут — потому в своей рамке */
+.menubar-tools { display: inline-flex; align-items: center; margin-left: 18px; }
+.tool-btn { display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line-2); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
+.tool-btn.active { border-color: var(--fg); }
 .module-seg .seg-btn { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
 
 .fund-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; align-content: start; }

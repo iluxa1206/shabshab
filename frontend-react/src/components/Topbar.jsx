@@ -54,7 +54,10 @@ function Clock() {
 
 const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 
-export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSettings }) {
+// extra — слот для инструментов раздела в самой верхней панели (сейчас там живёт
+// «Аналитика» флоатеров): панель фильтров ниже — про отбор строк, а окна поверх
+// таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
+export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSettings, extra }) {
   const type = currentType(useLocation().pathname);
   let sub = SUBNAV[type] || [];
   // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
@@ -73,6 +76,7 @@ export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSe
             ))}
           </span>
         )}
+        {extra && <span className="menubar-tools">{extra}</span>}
       </div>
       <div className="topbar-right">
         <span className="meta-chip">

@@ -40,7 +40,7 @@ function qTitle(b, side) {
   const vol = side === "bid" ? b._vwap_bid : b._vwap_ask;
   if (!vol) return base;
   const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
-  const mln = vol / 1e6;
+  const mln = fmt.num(vol / 1e6, 1);
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
     + `; Y-IDX пересчитан на неё (линеаризация от верха стакана)`;
@@ -96,7 +96,7 @@ export const COLS = [
   { key: "base_rate_type", label: "BASE", w: 6,
     cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}
       title={b.base_rate_type}>{baseLabel(b.base_rate_type)}</span></td> },
-  { key: "formula", label: "FORMULA", align: "left", w: 17,
+  { key: "formula", label: "FORMULA", align: "left", w: 15,
     cell: (b) => <td className="left bond-formula" key="formula">
       <CouponFormula base={b.base_rate_type} spreadBps={b.spread_issue_bps}
         couponsPerYear={b.coupons_per_year} formula={b.formula} /></td> },

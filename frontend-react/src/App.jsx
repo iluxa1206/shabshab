@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { applyVolume } from "./vwap.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
@@ -8,6 +8,7 @@ import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
 import Catalog from "./components/Catalog.jsx";
 import Topbar from "./components/Topbar.jsx";
+import { IconChart } from "./components/icons.jsx";
 import Toolbar from "./components/Toolbar.jsx";
 import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
@@ -547,6 +548,7 @@ function Dashboard() {
   }, [setSearchParams]);
 
   const navigate = useNavigate();
+  const onFloaters = useLocation().pathname.startsWith("/floaters");
   // из агрегатов эмитента → фильтр «Флоатеры» по этому эмитенту
   const pickIssuer = useCallback((name) => {
     setEmittersSel([name]);
@@ -580,7 +582,6 @@ function Dashboard() {
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
-        showAnalytics={showAnalytics} setShowAnalytics={setShowAnalytics}
         visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
       />
       {showAnalytics && <AnalyticsPanel rows={filtered} />}
@@ -613,6 +614,14 @@ function Dashboard() {
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
+        extra={onFloaters && (
+          <button className={"seg-btn tool-btn" + (showAnalytics ? " active" : "")}
+            onClick={() => setShowAnalytics(!showAnalytics)}
+            aria-pressed={showAnalytics}
+            title="Аналитика — кросс-секция рынка над таблицей">
+            <IconChart size={12} /> Аналитика
+          </button>
+        )}
       />
       <Routes>
         <Route path="/" element={<Navigate to="/floaters" replace />} />
