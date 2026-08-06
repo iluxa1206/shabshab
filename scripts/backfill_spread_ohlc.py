@@ -92,19 +92,31 @@ async def main(a) -> None:
         targets = targets[:a.limit]
 
     log.info("бумаг к пересчёту: %d", len(targets))
-    ok = failed = rows_total = 0
-    for n, (isin, kind) in enumerate(targets, 1):
-        try:
-            rows, done = await fill_one(isin, kind, a.days)
-            rows_total += done
-            ok += 1
-            if n % 25 == 0 or a.verbose:
-                log.info("[%d/%d] %s: %d/%d баров", n, len(targets), isin, done, rows)
-        except Exception as e:
-            failed += 1
-            log.warning("%s: %s: %s", isin, type(e).__name__, e)
+    # Узкое место — не reprice (пара секунд CPU на бумагу), а сборка модели:
+    # реестр, купоны, кривая. Она ждёт ввода-вывода, поэтому бумаги идут
+    # параллельно; сам счёт всё равно сериализован через run_heavy.
+    sem = asyncio.Semaphore(max(1, a.concurrency))
+    state = {"ok": 0, "failed": 0, "rows": 0, "seen": 0}
+
+    async def one(isin: str, kind: str) -> None:
+        async with sem:
+            try:
+                rows, done = await fill_one(isin, kind, a.days)
+                state["rows"] += done
+                state["ok"] += 1
+                if a.verbose:
+                    log.info("%s: %d/%d баров", isin, done, rows)
+            except Exception as e:
+                state["failed"] += 1
+                log.warning("%s: %s: %s", isin, type(e).__name__, e)
+            state["seen"] += 1
+            if state["seen"] % 25 == 0:
+                log.info("[%d/%d] баров со спредом по ценам: %d",
+                         state["seen"], len(targets), state["rows"])
+
+    await asyncio.gather(*(one(i, k) for i, k in targets))
     log.info("готово: бумаг %d, ошибок %d, баров со спредом по ценам %d",
-             ok, failed, rows_total)
+             state["ok"], state["failed"], state["rows"])
 
 
 if __name__ == "__main__":
@@ -113,5 +125,7 @@ if __name__ == "__main__":
     ap.add_argument("--isin", help="конкретные ISIN через запятую")
     ap.add_argument("--kind", default="floater", help="kind для --isin (floater | fixed)")
     ap.add_argument("--limit", type=int, default=None, help="первые N бумаг (отладка)")
+    ap.add_argument("--concurrency", type=int, default=4,
+                    help="бумаг параллельно (сборка модели ждёт ввода-вывода)")
     ap.add_argument("-v", "--verbose", action="store_true")
     asyncio.run(main(ap.parse_args()))
