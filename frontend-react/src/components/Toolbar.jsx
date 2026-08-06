@@ -12,6 +12,7 @@ export default function Toolbar({
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
+  spreadFrom, setSpreadFrom, spreadTo, setSpreadTo,
   query, setQuery, searchRef, watchCount, shown, total,
   visibleCols, onToggleCol, onResetCols, onMoveCol,
   activeFilters, onResetFilters,
@@ -38,7 +39,9 @@ export default function Toolbar({
           className="search"
           type="text"
           placeholder="ISIN / имя  ( / )"
-          title="Поиск по ISIN или названию. Хоткей: / — фокус, Esc — очистить"
+          title={"Умный поиск: слова запроса ищутся по ISIN, имени, эмитенту и формуле в любом порядке "
+            + "и с допуском опечатки. «РЖД 3» покажет все похожие выпуски (2Р3, 3Р2, 1Р-03R).\n"
+            + "Хоткей: / — фокус, Esc — очистить"}
           aria-label="Поиск по рынку — ISIN или название"
           autoComplete="off"
           spellCheck={false}
@@ -132,6 +135,22 @@ export default function Toolbar({
         {(matFrom || matTo) && (
           <button className="chip-btn" title="Сбросить окно погашения"
             onClick={() => { setMatFrom(""); setMatTo(""); }}>×</button>
+        )}
+      </div>
+
+      {/* группа: окно спреда Y-IDX, bps */}
+      <div className="fgroup" title="Спред Y-IDX в интервале [от, до], bps. Границы применяются к тому же числу, что в колонке Y-IDX (с учётом фильтра по объёму). Бумаги без посчитанного спреда при заданной границе скрыты.">
+        <span className="fg-lbl">Y-IDX</span>
+        <input className="num-input" type="number" step="10" placeholder="от"
+          aria-label="Спред Y-IDX — от, bps" value={spreadFrom}
+          onChange={(e) => setSpreadFrom(e.target.value)} />
+        <span className="fg-lbl">—</span>
+        <input className="num-input" type="number" step="10" placeholder="до"
+          aria-label="Спред Y-IDX — до, bps" value={spreadTo}
+          onChange={(e) => setSpreadTo(e.target.value)} />
+        {(spreadFrom || spreadTo) && (
+          <button className="chip-btn" title="Сбросить окно спреда"
+            onClick={() => { setSpreadFrom(""); setSpreadTo(""); }}>×</button>
         )}
       </div>
 

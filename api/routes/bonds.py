@@ -404,3 +404,18 @@ async def reprice_bond_valuation(
     from services.bond_details import reprice_bond
     metrics = await reprice_bond(isin, price, cache)
     return RepriceResponse(**metrics)
+
+
+@router.get("/{isin}/price_from_spread", response_model=RepriceResponse, tags=["Bonds"])
+async def price_from_spread(
+    isin: str = Path(...),
+    y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой спред Y-IDX, bps"),
+):
+    """Обратная задача калькулятора: спред Y-IDX → чистая цена и все метрики под
+    ней. Бисекция по цене на тёплом контексте (без сетевых вызовов внутри цикла).
+    Цена возвращается в clean_price_pct."""
+    isin = _require_isin(isin)
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
+    from services.bond_details import solve_price_for_yidx
+    metrics = await solve_price_for_yidx(isin, y_idx, cache)
+    return RepriceResponse(**metrics)

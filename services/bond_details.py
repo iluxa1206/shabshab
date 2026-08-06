@@ -360,3 +360,54 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     out = dict(reprice_at_price(ctx, price))
     out.update(_reprice_z(ctx, price))
     return out
+
+
+# Границы поиска цены при инверсии спреда. Ниже 1% — уже не облигация, выше 300%
+# котировок не бывает; за пределами отрезка спред заведомо вне разумного.
+_SOLVE_LO, _SOLVE_HI = 1.0, 300.0
+
+
+async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict:
+    """Обратная задача калькулятора: спред Y-IDX → чистая цена + все метрики под
+    ней. Y-IDX монотонно убывает по цене (дороже бумага — ниже доходность, значит
+    и спред к базе), поэтому берётся бисекция по цене на ТЁПЛОМ ctx: каждая
+    итерация — reprice_at_price без единого сетевого вызова.
+
+    Возвращает метрики reprice_bond плюс clean_price_pct найденной цены."""
+    ctx = await load_reprice_ctx(isin, cache)
+
+    def yidx(p: float):
+        m = reprice_at_price(ctx, p)
+        return m.get("yield_over_index_bps"), m
+
+    lo, hi = _SOLVE_LO, _SOLVE_HI
+    y_lo, _ = yidx(lo)      # максимальный спред (дешёвая бумага)
+    y_hi, _ = yidx(hi)      # минимальный спред (дорогая бумага)
+    if y_lo is None or y_hi is None:
+        raise CalculationException("Spread is not computable for this bond", {"isin": isin})
+    if not (y_hi <= y_idx_bps <= y_lo):
+        raise CalculationException(
+            f"Spread {y_idx_bps:.0f} bps unreachable: range {y_hi:.0f}..{y_lo:.0f} bps",
+            {"isin": isin, "y_idx_min_bps": y_hi, "y_idx_max_bps": y_lo})
+
+    # 40 делений отрезка 1..300 → точность по цене ~3e-10; выходим раньше, как
+    # только цена стабилизировалась на 1e-6 % (глубже котировок всё равно нет)
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        y, _ = yidx(mid)
+        if y is None:
+            raise CalculationException("Spread is not computable at probe price", {"isin": isin})
+        if y > y_idx_bps:
+            lo = mid        # спред слишком велик → цена должна быть выше
+        else:
+            hi = mid
+        if hi - lo < 1e-6:
+            break
+
+    # финальный прогон на ОКРУГЛЁННОЙ цене: в карточку уходит ровно та цена,
+    # которая встанет в поле ввода, и метрики под ней сходятся один в один
+    price = round((lo + hi) / 2, 4)
+    out = dict(reprice_at_price(ctx, price))
+    out.update(_reprice_z(ctx, price))
+    out["clean_price_pct"] = price
+    return out

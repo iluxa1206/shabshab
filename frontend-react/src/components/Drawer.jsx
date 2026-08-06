@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { baseLabel, couponsPerYear, fmt, dmColor } from "../format.js";
 import CouponFormula from "./CouponFormula.jsx";
-import { fetchBondDetails, fetchFixedDetails, repriceBond, fetchRepricePast, UnauthorizedError, cbondsUrl, APP_BASENAME } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetchRepricePast, UnauthorizedError, cbondsUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
@@ -234,9 +234,20 @@ function Content({ d, charts }) {
 
   // Калькулятор цены: пользователь вводит чистую цену → бэк пересчитывает все
   // метрики оценки под неё. Пусто → показываем рыночную (baseVal).
+  // Второй вход — спред Y-IDX: обратная задача, бэк подбирает цену под спред,
+  // цена подставляется в левое поле, карточка считается под неё.
   const [priceInput, setPriceInput] = useState("");
+  const [spreadInput, setSpreadInput] = useState("");
   const [repriced, setRepriced] = useState(null);
-  useEffect(() => { setPriceInput(""); setRepriced(null); }, [r.isin]);
+  const [spreadErr, setSpreadErr] = useState("");
+  // цена, подставленная решателем спреда: по ней эффект цены пропускает свой
+  // (лишний и идентичный) запрос reprice
+  const solvedPriceRef = useRef(null);
+  const resetCalc = () => {
+    setPriceInput(""); setSpreadInput(""); setRepriced(null); setSpreadErr("");
+    solvedPriceRef.current = null;
+  };
+  useEffect(() => { resetCalc(); }, [r.isin]);
 
   // guard от гонки: поздний ответ по бумаге A не должен красить открытую бумагу B.
   // Также клеймим только результат ПОСЛЕДНЕГО запроса (быстрый ввод → out-of-order).
@@ -253,14 +264,48 @@ function Content({ d, charts }) {
   });
   const mutate = repriceMut.mutate;
 
+  // Решатель спреда: bps → цена (бисекция на бэке). Цена уезжает в левое поле,
+  // метрики ответа — те же, что дал бы reprice по этой цене.
+  const spreadMut = useMutation({
+    mutationFn: ({ isin, y }) => priceFromSpread(isin, y),
+    onSuccess: (data, { isin, seq }) => {
+      if (isin !== isinRef.current || seq !== seqRef.current) return;
+      setSpreadErr("");
+      setRepriced(data);
+      const px = data.clean_price_pct;
+      if (px != null) {
+        solvedPriceRef.current = String(px);
+        setPriceInput(String(px));
+      }
+    },
+    onError: (e, { isin, seq }) => {
+      if (isin !== isinRef.current || seq !== seqRef.current) return;
+      if (e instanceof UnauthorizedError) return;
+      setRepriced(null);
+      setSpreadErr(e?.message || "спред недостижим");
+    },
+  });
+  const solveSpread = spreadMut.mutate;
+
   useEffect(() => {
     const raw = priceInput.trim().replace(",", ".");
+    // цену подставил решатель спреда — метрики уже пришли с ним, не дублируем запрос
+    if (raw && raw === solvedPriceRef.current) return;
     if (!raw) { setRepriced(null); return; }
     const p = parseFloat(raw);
     if (!Number.isFinite(p) || p <= 0 || p > 1000) return;
     const t = setTimeout(() => mutate({ isin: r.isin, p, seq: ++seqRef.current }), 350);
     return () => clearTimeout(t);
   }, [priceInput, r.isin, mutate]);
+
+  useEffect(() => {
+    const raw = spreadInput.trim().replace(",", ".");
+    if (!raw) { setSpreadErr(""); return; }
+    const y = parseFloat(raw);
+    if (!Number.isFinite(y) || y < -5000 || y > 20000) return;
+    const t = setTimeout(() => solveSpread({ isin: r.isin, y, seq: ++seqRef.current }), 400);
+    return () => clearTimeout(t);
+  }, [spreadInput, r.isin, solveSpread]);
 
   const isRepriced = repriced != null;
   const v = repriced || baseVal;
@@ -287,18 +332,35 @@ function Content({ d, charts }) {
             inputMode="decimal"
             placeholder={fmt.pct(baseVal.clean_price_pct) ?? "цена"}
             value={priceInput}
-            onChange={(e) => setPriceInput(e.target.value)}
+            onChange={(e) => {
+              // ручная правка цены отвязывает поле спреда: его число относилось
+              // к прежней цене и врало бы
+              setSpreadInput(""); setSpreadErr(""); solvedPriceRef.current = null;
+              setPriceInput(e.target.value);
+            }}
           />
           <span className="pc-unit">%</span>
         </div>
+        <div className="pc-input-wrap" title="Целевой спред Y-IDX: бэк подбирает чистую цену под него, цена встаёт в поле слева">
+          <input
+            id="pc-spread"
+            className="pc-input pc-input-bps"
+            inputMode="decimal"
+            placeholder={fmt.bps(baseVal.yield_over_index_bps) ?? "спред"}
+            value={spreadInput}
+            onChange={(e) => setSpreadInput(e.target.value)}
+          />
+          <span className="pc-unit">bps</span>
+        </div>
         {isRepriced && (
-          <button className="pc-reset" onClick={() => { setPriceInput(""); setRepriced(null); }}>
+          <button className="pc-reset" onClick={resetCalc}>
             ↺ рынок {fmt.pct(baseVal.clean_price_pct)}%
           </button>
         )}
         <span className="pc-status">
-          {repriceMut.isPending ? "пересчёт…"
-            : isRepriced ? "под введённую цену"
+          {repriceMut.isPending || spreadMut.isPending ? "пересчёт…"
+            : spreadErr ? spreadErr
+            : isRepriced ? (spreadInput ? "цена подобрана под спред" : "под введённую цену")
             : "рыночная цена"}
         </span>
       </div>

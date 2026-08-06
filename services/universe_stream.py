@@ -97,6 +97,10 @@ _METRIC_FIELDS = {
     "yoi": "yield_over_index_bps", "dm": "dm_bps", "disc_dm": "disc_margin_bps",
     "z_model": "z_model_bps", "ytm": "yield_xirr_pct", "base_ytm": "index_yield_pct",
     "dirty": "dirty_price_rub", "delta": "delta_to_prev_close",
+    # Y-IDX верха стакана — те же числа, что в /api/bonds. Уходят в патч ВМЕСТЕ
+    # с ценами сторон (ниже): фронт двигает спред стороны наклоном на каждом
+    # тике, а здесь приходит точное значение и перекрывает линеаризацию.
+    "yoi_bid": "y_idx_bid_bps", "yoi_ask": "y_idx_ask_bps",
 }
 
 
@@ -106,6 +110,11 @@ def _metrics_patch(row: dict) -> dict:
     out = {_METRIC_FIELDS[k]: row[k] for k in _METRIC_FIELDS if row.get(k) is not None}
     if out:
         out["metrics"] = True     # маркер «производные посчитаны» для фронта
+        # цены сторон — из ЭТОГО же расчёта, иначе спред стороны лёг бы на цену
+        # из другого тика (рассинхрон «цена 99,00 / Y-IDX от 99,28»)
+        for k in ("bid", "ask"):
+            if row.get(k) is not None:
+                out[k] = row[k]
     return out
 
 

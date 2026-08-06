@@ -282,6 +282,11 @@ export const repriceFixed = (isin, price, signal) =>
 export const repriceBond = (isin, price, signal) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });
 
+// Обратная задача: целевой спред Y-IDX (bps) → чистая цена + метрики под ней
+// (clean_price_pct — найденная цена)
+export const priceFromSpread = (isin, yIdx, signal) =>
+  request(`/api/bonds/${encodeURIComponent(isin)}/price_from_spread?y_idx=${encodeURIComponent(yIdx)}`, { signal });
+
 // Стакан выпуска (Alor snapshot): bids/asks с per-level SM/DM/YTM (тот же расчёт,
 // что калькулятор карточки, батчем по уровням). full=true — все уровни лестницы.
 export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater" } = {}, signal) =>

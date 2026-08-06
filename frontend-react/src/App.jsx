@@ -2,7 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
-import { applyVolume } from "./vwap.js";
+import { applyVolume, yIdxAt } from "./vwap.js";
+import { makeBondFilter } from "./search.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
@@ -32,7 +33,7 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st"];
 // Такт котировок рынка (бумаги вне избранного). Избранное идёт push-стримом.
 const QUOTES_POLL_MS = 5000;
 // Пол частоты reprice на бумагу: в push-потоке цена ликвидной бумаги двигается
@@ -43,6 +44,26 @@ const REPRICE_MIN_MS = 2000;
 // подписок Alor, стрим лёг, торгов нет) — снова обновляется тактом 5с.
 const LIVE_FRESH_MS = 15000;
 const initialParams = () => new URLSearchParams(window.location.search);
+
+// Новая цена стороны в строку вместе с её Y-IDX. Спред стороны считает бэк своим
+// тактом (событийный движок / поллер юниверса), а цена верха стакана приезжает
+// каждым тиком — поэтому цену без сдвига Y-IDX класть нельзя: строка покажет
+// свежий бид/оффер со спредом от прежней цены. Сдвиг — тем же наклоном dY/dP,
+// которым фронт считает Y-IDX VWAP-цены тикета; якорь берётся из ДОпатченной
+// строки, т.е. пара «цена → спред» остаётся согласованной.
+// Авторитетные числа бэка (патч метрик, полный refetch) мерджатся ПОСЛЕ и
+// перекрывают эту линеаризацию.
+function applySideQuote(b, n, side, px) {
+  if (px == null || px === b[side === "bid" ? "bid_price_pct" : "ask_price_pct"]) return;
+  const y = yIdxAt(b, px, side);
+  if (side === "bid") {
+    n.bid_price_pct = px;
+    if (y != null) n.y_idx_bid_bps = y;
+  } else {
+    n.ask_price_pct = px;
+    if (y != null) n.y_idx_ask_bps = y;
+  }
+}
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -72,6 +93,11 @@ function Dashboard() {
   // окно погашения [от, до] в ЛЕТ до погашения (строки как в инпуте, "" = не задано)
   const [matFrom, setMatFrom] = useState(() => initialParams().get("myf") || localStorage.getItem("matYrsFrom") || "");
   const [matTo, setMatTo] = useState(() => initialParams().get("myt") || localStorage.getItem("matYrsTo") || "");
+  // окно спреда Y-IDX [от, до] в bps (строки как в инпуте, "" = не задано).
+  // Бумаги без посчитанного спреда при заданной границе скрыты — иначе строки
+  // с прочерком молча пролезали бы в любой диапазон
+  const [spreadFrom, setSpreadFrom] = useState(() => initialParams().get("sf") || localStorage.getItem("spreadFrom") || "");
+  const [spreadTo, setSpreadTo] = useState(() => initialParams().get("st") || localStorage.getItem("spreadTo") || "");
   const [query, setQuery] = useState(() => initialParams().get("q") || "");
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
@@ -145,15 +171,20 @@ function Dashboard() {
       if (volMode === "or" && (volBid || volAsk)) next.set("vm", "or");
       if (matFrom) next.set("myf", matFrom);
       if (matTo) next.set("myt", matTo);
+      if (spreadFrom) next.set("sf", spreadFrom);
+      if (spreadTo) next.set("st", spreadTo);
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volBid, volAsk, volMode, matFrom, matTo, setSearchParams]);
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volBid, volAsk, volMode,
+      matFrom, matTo, spreadFrom, spreadTo, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
   useEffect(() => { localStorage.setItem("matYrsFrom", matFrom); }, [matFrom]);
   useEffect(() => { localStorage.setItem("matYrsTo", matTo); }, [matTo]);
+  useEffect(() => { localStorage.setItem("spreadFrom", spreadFrom); }, [spreadFrom]);
+  useEffect(() => { localStorage.setItem("spreadTo", spreadTo); }, [spreadTo]);
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
@@ -315,7 +346,7 @@ function Dashboard() {
     // флаш буфера: все накопленные патчи одним setBonds
     const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
       "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
-      "delta_to_prev_close"];
+      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps"];
     const flushId = setInterval(() => {
       const buf = patchBufRef.current;
       const isins = Object.keys(buf);
@@ -335,8 +366,11 @@ function Dashboard() {
           const q = buf[b.isin];
           if (!q) return b;
           const n = { ...b, _live: true };
-          if (q.bid != null) n.bid_price_pct = q.bid;
-          if (q.ask != null) n.ask_price_pct = q.ask;
+          // цена стороны и её Y-IDX ходят ПАРОЙ: цена приезжает каждым тиком, а
+          // спред считает бэк своим тактом — без сдвига наклоном строка показывала
+          // бы свежую цену со спредом от прежнего верха стакана.
+          applySideQuote(b, n, "bid", q.bid);
+          applySideQuote(b, n, "ask", q.ask);
           if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
           if (q.metrics) {
             for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
@@ -435,8 +469,8 @@ function Dashboard() {
           }
           n.last_price_pct = q.last;
         }
-        if (q.bid != null) n.bid_price_pct = q.bid;
-        if (q.ask != null) n.ask_price_pct = q.ask;
+        applySideQuote(b, n, "bid", q.bid);
+        applySideQuote(b, n, "ask", q.ask);
         if (q.wap != null) n.wap_price_pct = q.wap;
         if (q.vol != null) n.val_today = q.vol;
         // Y-IDX от событийного движка: спред торгуемой бумаги обновляется по
@@ -493,12 +527,20 @@ function Dashboard() {
       rows = rows.map((b) => applyVolume(b, depth[b.isin], volBid, volAsk, volMode)).filter(Boolean);
     }
     if (twoSided) rows = rows.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
-    const q = query.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((b) =>
-        (b.isin + " " + b.short_name + " " + b.formula).toLowerCase().includes(q)
-      );
+    // окно спреда Y-IDX, bps — считается ПОСЛЕ фильтра по объёму: там спред
+    // строки уже пересчитан к VWAP-цене тикета, и границы применяются к тому же
+    // числу, что видно в таблице
+    const sFrom = parseFloat(spreadFrom), sTo = parseFloat(spreadTo);
+    if (Number.isFinite(sFrom)) {
+      rows = rows.filter((b) => b.yield_over_index_bps != null && b.yield_over_index_bps >= sFrom);
     }
+    if (Number.isFinite(sTo)) {
+      rows = rows.filter((b) => b.yield_over_index_bps != null && b.yield_over_index_bps <= sTo);
+    }
+    // умный поиск: токены запроса ищутся по имени/эмитенту/ISIN с допуском
+    // опечатки — «РЖД 3» вытаскивает все похожие выпуски эмитента
+    const match = makeBondFilter(query);
+    if (match) rows = rows.filter(match);
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
     rows.sort((a, b) => {
@@ -511,7 +553,7 @@ function Dashboard() {
     });
     return rows;
   }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch,
-      matFrom, matTo, volOn, volBid, volAsk, volMode, depth]);
+      matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
 
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
@@ -558,10 +600,12 @@ function Dashboard() {
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
     + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (query !== "" ? 1 : 0)
-    + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0);
+    + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
+    + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
     setTwoSided(false); setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
+    setSpreadFrom(""); setSpreadTo("");
   }, []);
 
   const floatersView = (
@@ -579,6 +623,8 @@ function Dashboard() {
         volMode={volMode} setVolMode={setVolMode}
         depthTs={depthQ.data?.ts} depthLoading={volOn && depthQ.isLoading}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
+        spreadFrom={spreadFrom} setSpreadFrom={setSpreadFrom}
+        spreadTo={spreadTo} setSpreadTo={setSpreadTo}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={filtered.length} total={bonds.length}
