@@ -129,6 +129,16 @@ const spreadKindOf = (bars) =>
   (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
 const SPREAD_LABEL = { y: "Y-IDX", g: "G-спред" };
 
+// Спред по ценам бара (бэкенд считает его тем же reprice, что и по vwap).
+// Спред обратен цене, поэтому «максимум спреда» — это y по МИНИМАЛЬНОЙ цене:
+// сравниваем значения, а не полагаемся на имена полей.
+const barSpreadOHLC = (b) => {
+  const o = b.y_open_bps, c = b.y_close_bps;
+  const all = [o, b.y_high_bps, b.y_low_bps, c].filter((x) => x != null);
+  if (all.length < 2 || o == null || c == null) return null;
+  return { o, c, h: Math.max(...all), l: Math.min(...all) };
+};
+
 function layerPoints(bars, tf) {
   if (!bars?.length) return [];
   if (tf === "5m" || tf === "1h") {
@@ -139,8 +149,13 @@ function layerPoints(bars, tf) {
     const vals = bars.map((b) => b.value || 0).filter((v) => v > 0).sort((a, b) => a - b);
     const med = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
     const min = Math.max(Y_OHLC_MIN_HOUR_VALUE, med * Y_OHLC_MIN_HOUR_SHARE);
-    return bars.map((b) => ({ ...b, time: toTime(b.ts, "1h"), y_idx_bps: barSpread(b),
-                              thin: (b.value || 0) < min }));
+    return bars.map((b) => {
+      const s = barSpreadOHLC(b);
+      // на часовой сетке свеча спреда — сам бар: у часа есть свои O/H/L/C цены
+      return { ...b, time: toTime(b.ts, "1h"), y_idx_bps: barSpread(b),
+               y_o: s?.o ?? null, y_h: s?.h ?? null, y_l: s?.l ?? null, y_c: s?.c ?? null,
+               thin: (b.value || 0) < min };
+    });
   }
   const by = new Map();
   for (const b of [...bars].sort((x, y) => (x.ts < y.ts ? -1 : 1))) {
@@ -153,7 +168,9 @@ function layerPoints(bars, tf) {
     const y = barSpread(b);
     if (y != null && b.volume) {
       a.yNum += y * b.volume; a.yDen += b.volume;
-      a.hours.push({ y, v: b.volume });
+      // ohlc — спред по ценам самого часа (может не быть у старых баров,
+      // налитых до появления полей: тогда останется прежняя склейка по vwap)
+      a.hours.push({ y, v: b.volume, ohlc: barSpreadOHLC(b) });
     }
     if (b.buy_volume) { a.bq += b.buy_volume; a.bv += (b.buy_vwap || 0) * b.buy_volume; }
     if (b.sell_volume) { a.sq += b.sell_volume; a.sv += (b.sell_vwap || 0) * b.sell_volume; }
@@ -166,20 +183,38 @@ function layerPoints(bars, tf) {
     const hh = a.hours.filter((x) => x.v >= min);
     const src = hh.length ? hh : a.hours;
     const wavg = a.yDen ? a.yNum / a.yDen : null;
-    // тонкий день — плоская свеча по средневзвесу
-    const ys = a.val >= Y_OHLC_MIN_DAY_VALUE ? src.map((x) => x.y)
-      : (wavg != null ? [wavg] : []);
+    const thin = a.val < Y_OHLC_MIN_DAY_VALUE;
+
+    // Дневная свеча спреда: open — по цене открытия первого часа, close — по
+    // цене закрытия последнего, экстремумы — по всем ценам всех часов. Каждый
+    // час даёт 4 точки, поэтому свеча полноценна даже в день с одной торговой
+    // сессией. Часы без ohlc (старые бары) вносят одну точку по vwap.
+    let cndl = null;
+    if (thin) {
+      cndl = wavg != null ? { o: wavg, c: wavg, h: wavg, l: wavg } : null;
+    } else {
+      const withOhlc = src.filter((x) => x.ohlc);
+      const pts = src.flatMap((x) => (x.ohlc ? [x.ohlc.o, x.ohlc.h, x.ohlc.l, x.ohlc.c] : [x.y]));
+      if (pts.length) {
+        cndl = {
+          o: withOhlc.length ? withOhlc[0].ohlc.o : src[0].y,
+          c: withOhlc.length ? withOhlc[withOhlc.length - 1].ohlc.c : src[src.length - 1].y,
+          h: Math.max(...pts),
+          l: Math.min(...pts),
+        };
+      }
+    }
     return {
       time: a.time,
       vwap_pct: a.vol ? a.val / a.vol / a.face * 100 : null,
       volume: a.vol,
       value: a.val,
-      thin: a.val < Y_OHLC_MIN_DAY_VALUE,
+      thin,
       y_idx_bps: wavg,
-      y_o: ys.length ? ys[0] : null,
-      y_c: ys.length ? ys[ys.length - 1] : null,
-      y_h: ys.length ? Math.max(...ys) : null,
-      y_l: ys.length ? Math.min(...ys) : null,
+      y_o: cndl?.o ?? null,
+      y_c: cndl?.c ?? null,
+      y_h: cndl?.h ?? null,
+      y_l: cndl?.l ?? null,
       buy_vwap: a.bq ? a.bv / a.bq : null,
       sell_vwap: a.sq ? a.sv / a.sq : null,
     };
@@ -677,6 +712,7 @@ export default function ChartPage() {
         y: yd ? (yd.value ?? yd.close) : null,
         yClose: !!(yd && (yd.value == null || s.yhi)),
         yAvg: pt?.value,
+        yo: yd?.open ?? pt?.o,
         yh: yd?.high ?? val(s.yhi), yl: yd?.low ?? val(s.ylo),
         w: val(s.vwap), b: val(s.buy), sl: val(s.sell),
       });
@@ -837,7 +873,7 @@ export default function ChartPage() {
             {/* всё про спред одной группой: иначе «ср.взвес» цены и «ср.взвес»
                 спреда стоят рядом в строке и читаются как одно и то же */}
             {legend.y != null && (legend.yClose
-              ? <> · {sLabel} bps: закр. {Math.round(legend.y)}
+              ? <> · {sLabel} bps:{legend.yo != null && <> откр. {Math.round(legend.yo)} ·</>} закр. {Math.round(legend.y)}
                   {legend.yAvg != null && <> · ср. {Math.round(legend.yAvg)}</>}
                   {legend.yh != null && legend.yl != null && legend.yh !== legend.yl &&
                     <> · день {Math.round(legend.yl)} … {Math.round(legend.yh)}</>}</>
@@ -875,7 +911,7 @@ export default function ChartPage() {
                 : " · спред по цене закрытия (дневной снапшот)")}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}
             {spreadPaneOn && hasYidx && !spreadOHLC && (smode === "candles" || smode === "hlc") &&
-              ` · ${smode === "hlc" ? "HLC" : "свечи"} спреда только на дневном масштабе (нужен разброс внутри дня)`}
+              ` · ${smode === "hlc" ? "HLC" : "свечи"} спреда нет: в архиве только спред по средневзвесу (бары до пересчёта)`}
             {!spreadPaneOn && " · панель спреда выключена"}
             {on("big") && !bigTrades.length &&
               ` · сделок крупнее ${bigMln} млн ₽ в архиве нет (глубина тиков ~30 дней)`}
@@ -932,10 +968,16 @@ function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX" }) {
           stroke={theme.fg} strokeWidth="1" strokeDasharray="3 2" />
         <text x={w - padR + 6} y={yLast + 3} fontSize="10" fill={theme.fg}
           fontFamily="var(--mono)">{n0(dist.last)}</text>
-        <text x={w - padR + 6} y={y(dist.hi) + 8} fontSize="9" fill={theme.mut}
-          fontFamily="var(--mono)">{n0(dist.hi)}</text>
-        <text x={w - padR + 6} y={y(dist.lo)} fontSize="9" fill={theme.mut}
-          fontFamily="var(--mono)">{n0(dist.lo)}</text>
+        {/* границы прячем, когда они налезают на подпись текущего: на узком
+            диапазоне (несколько наблюдений) три числа сливались в кашу */}
+        {Math.abs(y(dist.hi) + 8 - yLast) > 11 && (
+          <text x={w - padR + 6} y={y(dist.hi) + 8} fontSize="9" fill={theme.mut}
+            fontFamily="var(--mono)">{n0(dist.hi)}</text>
+        )}
+        {Math.abs(y(dist.lo) - yLast) > 11 && (
+          <text x={w - padR + 6} y={y(dist.lo)} fontSize="9" fill={theme.mut}
+            fontFamily="var(--mono)">{n0(dist.lo)}</text>
+        )}
       </svg>
     </div>
   );

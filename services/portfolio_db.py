@@ -77,6 +77,13 @@ CREATE TABLE IF NOT EXISTS bar_hourly(
   dm_bps REAL,
   g_spread_bps REAL,            -- фикс
   ytm REAL,
+  -- Спред по КАЖДОЙ цене бара (тот же reprice, что y_idx_bps, но от open/high/
+  -- low/close). Нужен, чтобы свеча спреда была полноценной: раньше OHLC собирался
+  -- из vwap соседних часов, и в день с одной-двумя торговавшими часами свеча
+  -- вырождалась в палку. Спред обратен цене: y_high — спред по МАКСИМАЛЬНОЙ цене
+  -- (то есть минимальный спред дня), поэтому экстремумы берутся max/min по всем
+  -- четырём, а не по именам полей.
+  y_open_bps REAL, y_high_bps REAL, y_low_bps REAL, y_close_bps REAL,
   trades INTEGER,               -- число сделок в часе (из тиков)
   buy_volume REAL, sell_volume REAL, buy_vwap REAL, sell_vwap REAL,
   src TEXT,                     -- 'candle' | 'ticks'
@@ -120,6 +127,10 @@ _MIGRATIONS = [
     "ALTER TABLE spread_daily ADD COLUMN y_idx REAL",
     "ALTER TABLE spread_daily ADD COLUMN src TEXT",
     "ALTER TABLE spread_daily ADD COLUMN engine_ver INTEGER",
+    "ALTER TABLE bar_hourly ADD COLUMN y_open_bps REAL",
+    "ALTER TABLE bar_hourly ADD COLUMN y_high_bps REAL",
+    "ALTER TABLE bar_hourly ADD COLUMN y_low_bps REAL",
+    "ALTER TABLE bar_hourly ADD COLUMN y_close_bps REAL",
 ]
 
 

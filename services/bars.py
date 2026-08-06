@@ -6,6 +6,11 @@
 Номинал берётся из дневной истории (FACEVALUE), иначе амортизируемые бумаги
 дали бы съехавший процент.
 
+Спред считается не только по vwap, но и по каждой цене бара (y_open/high/low/
+close_bps) — иначе свеча спреда на графике собиралась из vwap соседних часов и в
+день с одним-двумя торговавшими часами вырождалась в палку. Спред обратен цене:
+y_high_bps — спред по МАКСИМАЛЬНОЙ цене, то есть минимальный спред бара.
+
 Спред считается reprice'ом vwap через ТЕКУЩУЮ модель бумаги (build_metrics_fn) —
 как и candle-оценка в /history/{isin}/spread: кривая/НКД/срок сегодняшние, поэтому
 уровень серии — оценка, а форма (движение внутри дня/недели) честная. Точный
@@ -146,9 +151,14 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
             ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
             face = _face_for(faces, ts[:10], fallback_face)
             vwap = round(val / vol / face * 100, 4) if vol and val and face else c.get("close")
-            m = {}
-            if metrics_fn is not None and vwap is not None:
-                key = round(vwap, 3)
+
+            def _metrics(price) -> dict:
+                """Спред по одной цене. memo — по округлённой цене: внутри дня
+                open/high/low/close часов повторяются, и 4 точки на бар почти не
+                добавляют счёта поверх прежней одной."""
+                if metrics_fn is None or price is None:
+                    return {}
+                key = round(float(price), 3)
                 m = memo.get(key)
                 if m is None:
                     try:
@@ -156,13 +166,23 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                     except Exception:
                         m = {}
                     memo[key] = m
+                return m
+
+            m = _metrics(vwap)
+            # спред по каждой цене бара: без них свеча спреда собиралась из vwap
+            # соседних часов и в малоликвидный день вырождалась в одну-две точки
+            spread_key = "g_spread_bps" if kind == "fixed" else "y_idx_bps"
+            o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
             bars.append({
                 "isin": isin, "ts": ts, "kind": kind,
-                "open": c.get("open"), "high": c.get("high"),
-                "low": c.get("low"), "close": c.get("close"),
+                "open": o, "high": h, "low": l, "close": cl,
                 "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
                 "y_idx_bps": m.get("y_idx_bps"), "dm_bps": m.get("dm_bps"),
                 "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
+                "y_open_bps": _metrics(o).get(spread_key),
+                "y_high_bps": _metrics(h).get(spread_key),
+                "y_low_bps": _metrics(l).get(spread_key),
+                "y_close_bps": _metrics(cl).get(spread_key),
             })
         return bars
 
@@ -171,7 +191,8 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
-         "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm")
+         "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",
+         "y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps")
 
 
 def upsert_bars(bars: list[dict]) -> int:
@@ -334,6 +355,16 @@ def resample(bars: list[dict], hours: int) -> list[dict]:
             num = sum((b[k] or 0) * (b["volume"] or 0) for b in bucket if b.get(k) is not None)
             den = sum((b["volume"] or 0) for b in bucket if b.get(k) is not None)
             agg[k] = round(num / den, 2) if den else None
+        # спред по ценам бара склеивается как сам бар: open первого, close
+        # последнего, экстремумы — по всем четырём полям (спред обратен цене,
+        # поэтому y_high это минимальный спред, а не максимальный)
+        agg["y_open_bps"] = bucket[0].get("y_open_bps")
+        agg["y_close_bps"] = bucket[-1].get("y_close_bps")
+        ys = [b[k] for b in bucket
+              for k in ("y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps")
+              if b.get(k) is not None]
+        agg["y_high_bps"] = min(ys) if ys else None   # по максимальной цене
+        agg["y_low_bps"] = max(ys) if ys else None    # по минимальной цене
         out.append(agg)
 
     cur_key = None
