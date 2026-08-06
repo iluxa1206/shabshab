@@ -316,8 +316,15 @@ async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] =
 
 def read_trades(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
                 min_value: float = 0, side: Optional[str] = None,
-                limit: int = 2000) -> list[dict]:
-    """Сделки по возрастанию времени. min_value — порог в рублях (крупные)."""
+                limit: int = 2000, order: str = "ts") -> list[dict]:
+    """Сделки по возрастанию времени. min_value — порог в рублях (крупные).
+
+    order='ts' — срез последних limit сделок; order='value' — limit САМЫХ крупных
+    за окно. Второе нужно ленте крупных принтов: с сортировкой по времени лимит
+    молча съедал всю дальнюю половину окна (у ликвидной бумаги 5000+ сделок
+    ≥1 млн ₽ за месяц при limit=400), и маркеры обрывались на середине графика.
+    Возвращается всегда по возрастанию времени.
+    """
     q = "SELECT * FROM trade_tick WHERE isin=?"
     args: list = [isin]
     if frm:
@@ -332,11 +339,31 @@ def read_trades(isin: str, frm: Optional[str] = None, till: Optional[str] = None
     if side in ("buy", "sell"):
         q += " AND side = ?"
         args.append(side)
-    q += " ORDER BY ts DESC LIMIT ?"
+    q += (" ORDER BY value DESC LIMIT ?" if order == "value" else " ORDER BY ts DESC LIMIT ?")
     args.append(limit)
     with _connect() as c:
         rows = c.execute(q, args).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    out = [dict(r) for r in rows]
+    out.sort(key=lambda r: r.get("ts") or "")
+    return out
+
+
+def count_trades(isin: str, frm: Optional[str] = None, min_value: float = 0,
+                 side: Optional[str] = None) -> int:
+    """Сколько сделок подходит под фильтр — чтобы клиент видел усечение лимитом."""
+    q = "SELECT COUNT(*) FROM trade_tick WHERE isin=?"
+    args: list = [isin]
+    if frm:
+        q += " AND ts >= ?"
+        args.append(frm)
+    if min_value:
+        q += " AND value >= ?"
+        args.append(min_value)
+    if side in ("buy", "sell"):
+        q += " AND side = ?"
+        args.append(side)
+    with _connect() as c:
+        return int(c.execute(q, args).fetchone()[0])
 
 
 def _tape_where(frm: Optional[str], till: Optional[str], min_value: float,

@@ -533,7 +533,24 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-legend { font: 11px var(--mono); color: var(--fg); height: 16px; line-height: 16px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cp-legend-hint { color: var(--mut-2); }
-.cp-chart { width: 100%; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+/* график + панель распределения справа (RVD-раскладка) */
+.cp-row { display: flex; gap: 8px; align-items: stretch; }
+.cp-chart { flex: 1 1 auto; min-width: 0; height: 100%;
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.cp-dist { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 4px;
+  overflow: hidden; display: flex; flex-direction: column; }
+.cp-dist-head { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--mut-2); padding: 6px 8px 4px; border-bottom: 1px solid var(--line-2); }
+.cp-dist-sum { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
+  border-bottom: 1px solid var(--line-2); }
+.cp-dist-row { display: flex; justify-content: space-between; gap: 8px;
+  font: 10px var(--mono); color: var(--mut); }
+.cp-dist-row b { color: var(--fg); font-weight: 600; }
+.cp-dist-row b.hi { color: var(--accent); font-weight: 700; }
+.cp-dist-row b.up { color: var(--up); }
+.cp-dist-row b.down { color: var(--down); }
+.cp-dist-empty { font: 10px var(--mono); color: var(--mut-2); padding: 8px; }
+@media (max-width: 900px) { .cp-dist { display: none; } }
 /* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
 .cp-brush { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
   overflow: hidden; outline-offset: 2px; }
@@ -730,6 +747,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; outline: none; }
 .pc-input:focus { border-color: var(--accent); }
 .pc-unit { position: absolute; right: 9px; font-size: 12px; color: var(--mut); pointer-events: none; }
+/* поле спреда: суффикс «bps» шире «%», иначе число заезжает под него */
+.pc-input-bps { padding-right: 40px; }
 .pc-reset { font-size: 11px; color: var(--accent); background: none; border: none; cursor: pointer; padding: 2px 4px; font-family: var(--mono); }
 .pc-reset:hover { text-decoration: underline; }
 .pc-status { font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }

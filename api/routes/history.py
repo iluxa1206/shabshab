@@ -215,6 +215,8 @@ async def trades(
     min_value: float = Query(0, ge=0, description="порог в рублях — фильтр крупных"),
     side: str = Query(None, description="buy | sell (агрессор)"),
     limit: int = Query(500, ge=1, le=5000),
+    order: str = Query("ts", pattern="^(ts|value)$",
+                       description="ts — последние по времени, value — самые крупные за окно"),
     refresh: bool = Query(True),
     board: str = Query(None),
 ):
@@ -235,7 +237,10 @@ async def trades(
             except Exception as e:
                 logger.warning("trades drain %s: %s", isin, e)
     rows = await asyncio.to_thread(ta.read_trades, isin, frm=frm, min_value=min_value,
-                                   side=side, limit=limit)
+                                   side=side, limit=limit, order=order)
+    # сколько сделок под фильтр вообще подходит: без этого клиент не отличает
+    # «столько и было» от «лимит срезал остальное»
+    total = await asyncio.to_thread(ta.count_trades, isin, frm, min_value, side)
 
     def _vwap(rs):
         q = sum(r.get("qty") or 0 for r in rs)
@@ -245,6 +250,7 @@ async def trades(
     sells = [r for r in rows if r.get("side") == "sell"]
     vb, vs = _vwap(buys), _vwap(sells)
     return {"isin": isin, "from": frm, "min_value": min_value, "n": len(rows),
+            "total": total, "truncated": total > len(rows), "order": order,
             "vwap_pct": _vwap(rows), "buy_vwap": vb, "sell_vwap": vs,
             # эффективный спред по агрессору, б.п. цены (100 б.п. = 1 п.п. цены)
             "eff_spread_bps": round((vb - vs) * 100, 1) if vb is not None and vs is not None else None,
