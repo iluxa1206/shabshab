@@ -362,9 +362,12 @@ async def reprice_bond(isin: str, price: float, cache: dict) -> dict:
     return out
 
 
-# Границы поиска цены при инверсии спреда. Ниже 1% — уже не облигация, выше 300%
-# котировок не бывает; за пределами отрезка спред заведомо вне разумного.
-_SOLVE_LO, _SOLVE_HI = 1.0, 300.0
+# Разбег поиска цены при инверсии спреда: от 20% (глубокий дефолтный уровень) до
+# 200% номинала. Шире смысла нет — и по краям расчёт всё равно отдаёт None:
+# санити-фильтр valuation гасит спред вне [_SANE_BPS], а на слишком высокой цене
+# срабатывает guard «номинальный убыток».
+_SOLVE_LO, _SOLVE_HI = 20.0, 200.0
+_SOLVE_STEP = 0.9   # шаг расширения скобки от старта (×/÷ по цене)
 
 
 async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict:
@@ -373,36 +376,63 @@ async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict
     и спред к базе), поэтому берётся бисекция по цене на ТЁПЛОМ ctx: каждая
     итерация — reprice_at_price без единого сетевого вызова.
 
+    Скобка ищется расширением от 100% номинала, а не сразу по краям диапазона:
+    на экстремальных ценах valuation отдаёт спред None (санити-фильтр / guard
+    номинального убытка), и «пустой» край не годится в границу бисекции.
+
     Возвращает метрики reprice_bond плюс clean_price_pct найденной цены."""
     ctx = await load_reprice_ctx(isin, cache)
 
     def yidx(p: float):
-        m = reprice_at_price(ctx, p)
-        return m.get("yield_over_index_bps"), m
+        return reprice_at_price(ctx, p).get("yield_over_index_bps")
 
-    lo, hi = _SOLVE_LO, _SOLVE_HI
-    y_lo, _ = yidx(lo)      # максимальный спред (дешёвая бумага)
-    y_hi, _ = yidx(hi)      # минимальный спред (дорогая бумага)
-    if y_lo is None or y_hi is None:
+    lo = hi = 100.0
+    y_lo = y_hi = yidx(lo)
+    if y_lo is None:
         raise CalculationException("Spread is not computable for this bond", {"isin": isin})
+
+    # Расширение скобки. Наткнулись на None (цена вышла за область, где спред
+    # осмыслен) — не бросаем расширение, а уполовиниваем шаг и подходим к границе
+    # ближе: иначе грубый шаг в 10% объявлял бы недостижимым спред, который живёт
+    # в паре процентов от текущей цены.
+    def expand(p0, y0, down: bool):
+        p, y = p0, y0
+        step = _SOLVE_STEP if down else 1.0 / _SOLVE_STEP
+        limit = _SOLVE_LO if down else _SOLVE_HI
+        while (y < y_idx_bps if down else y > y_idx_bps):
+            if (p <= limit if down else p >= limit) or abs(step - 1.0) < 1e-3:
+                break
+            nxt = max(p * step, limit) if down else min(p * step, limit)
+            v = yidx(nxt)
+            if v is None:
+                step = 1.0 + (step - 1.0) / 2   # к границе вычислимости мельче
+                continue
+            p, y = nxt, v
+        return p, y
+
+    # вниз по цене — вверх по спреду (нужно, если целевой спред больше текущего)
+    lo, y_lo = expand(lo, y_lo, down=True)
+    # вверх по цене — вниз по спреду
+    hi, y_hi = expand(hi, y_hi, down=False)
+
     if not (y_hi <= y_idx_bps <= y_lo):
         raise CalculationException(
             f"Spread {y_idx_bps:.0f} bps unreachable: range {y_hi:.0f}..{y_lo:.0f} bps",
             {"isin": isin, "y_idx_min_bps": y_hi, "y_idx_max_bps": y_lo})
 
-    # 40 делений отрезка 1..300 → точность по цене ~3e-10; выходим раньше, как
-    # только цена стабилизировалась на 1e-6 % (глубже котировок всё равно нет)
-    for _ in range(40):
+    # бисекция внутри скобки; выходим, как только цена стабилизировалась на
+    # 1e-6 % (глубже котировок всё равно нет)
+    for _ in range(60):
+        if hi - lo < 1e-6:
+            break
         mid = (lo + hi) / 2
-        y, _ = yidx(mid)
+        y = yidx(mid)
         if y is None:
             raise CalculationException("Spread is not computable at probe price", {"isin": isin})
         if y > y_idx_bps:
             lo = mid        # спред слишком велик → цена должна быть выше
         else:
             hi = mid
-        if hi - lo < 1e-6:
-            break
 
     # финальный прогон на ОКРУГЛЁННОЙ цене: в карточку уходит ровно та цена,
     # которая встанет в поле ввода, и метрики под ней сходятся один в один
