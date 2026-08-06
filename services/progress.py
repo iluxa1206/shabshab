@@ -37,13 +37,18 @@ def _now() -> str:
     return datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _exec(sql: str, args: tuple = ()) -> None:
-    """Прогресс — вспомогательная телеметрия: его сбой не должен ронять задачу."""
+def _exec(sql: str, args: tuple = ()) -> bool:
+    """Прогресс — вспомогательная телеметрия: его сбой не должен ронять задачу.
+    Возвращает, удалась ли запись: при 'database is locked' счётчик нельзя
+    считать записанным, иначе шаги теряются насовсем (обход баров показывал
+    567 из 1186 при том, что прошёл весь список)."""
     try:
         with _lock, _connect() as c:
             c.execute(sql, args)
+        return True
     except Exception as e:
         logger.debug("progress %s: %s", type(e).__name__, e)
+        return False
 
 
 def start(key: str, label: str, total: Optional[int] = None,
@@ -70,12 +75,12 @@ def advance(key: str, n: int = 1, detail: Optional[str] = None,
         return
     _last_write[key] = now
     inc = _pending.pop(key, 0) + n
-    if detail is None:
-        _exec("UPDATE job_progress SET done=done+?, updated_at=? WHERE key=?",
-              (inc, _now(), key))
-    else:
-        _exec("UPDATE job_progress SET done=done+?, detail=?, updated_at=? WHERE key=?",
-              (inc, detail, _now(), key))
+    ok = (_exec("UPDATE job_progress SET done=done+?, updated_at=? WHERE key=?",
+                (inc, _now(), key)) if detail is None else
+          _exec("UPDATE job_progress SET done=done+?, detail=?, updated_at=? WHERE key=?",
+                (inc, detail, _now(), key)))
+    if not ok:
+        _pending[key] = _pending.get(key, 0) + inc   # запишем со следующим шагом
 
 
 _pending: dict[str, int] = {}
@@ -98,12 +103,24 @@ def set_total(key: str, total: int) -> None:
 
 
 def finish(key: str, detail: Optional[str] = None, error: Optional[str] = None) -> None:
-    """Закрыть задачу: state=done либо failed (при error)."""
+    """Закрыть задачу: state=done либо failed (при error).
+
+    Успешно завершённая задача доводится до total: несколько шагов могло
+    потеряться на блокировках базы, а «done» с недобором читается как «оборвалось
+    на середине».
+    """
     inc = _pending.pop(key, 0)
     _last_write.pop(key, None)
-    _exec("UPDATE job_progress SET done=done+?, state=?, detail=COALESCE(?,detail), "
-          "updated_at=?, finished_at=? WHERE key=?",
-          (inc, "failed" if error else "done", error or detail, _now(), _now(), key))
+    state = "failed" if error else "done"
+    for attempt in range(3):
+        ok = _exec(
+            "UPDATE job_progress SET done=CASE WHEN ?='done' AND total IS NOT NULL "
+            "THEN total ELSE done+? END, state=?, detail=COALESCE(?,detail), "
+            "updated_at=?, finished_at=? WHERE key=?",
+            (state, inc, state, error or detail, _now(), _now(), key))
+        if ok:
+            return
+        time.sleep(0.2 * (attempt + 1))   # финал важнее шага: не теряем состояние
 
 
 def snapshot() -> list[dict]:
