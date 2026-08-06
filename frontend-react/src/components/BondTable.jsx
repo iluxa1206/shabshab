@@ -140,6 +140,18 @@ export const COLS = [
     } },
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num", w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
+  // ── ликвидность: оборот сегодня и средний дневной за месяц ──
+  // Обе колонки в млн ₽. VOL — VALTODAY снапшота MOEX (обновляется тактом
+  // котировок), ADV — Σ денег архива часовых баров за 30 дней / число торговых
+  // дней рынка. Разные источники, поэтому подписи разведены.
+  { key: "val_today", label: "VOL", sub: "СЕГОДНЯ, М₽", align: "num", grp: true, w: 9,
+    cell: (b) => <td className="num" key="val_today"
+      title="оборот сегодня, ₽ (VALTODAY MOEX)">{fmt.mln(b.val_today) ?? <D />}</td> },
+  { key: "adv_1m_rub", label: "ADV", sub: "1М, М₽", align: "num", w: 8,
+    cell: (b) => <td className="num" key="adv_1m_rub"
+      title={"средний дневной оборот за 30 дней, ₽ — Σ денег архива часовых баров / "
+        + "число торговых дней рынка (не дней, когда торговалась эта бумага)"}>
+      {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,

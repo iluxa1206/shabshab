@@ -267,6 +267,9 @@ class BondListItem(BaseModel):
     # push'ем; у остальных — биржевой WAPRICE из board-снапшота MOEX.
     wap_price_pct: Optional[float] = None
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
+    # средний ДНЕВНОЙ оборот за 30 дней, ₽ — из архива часовых баров (см.
+    # services.bars.adv_map): Σ денег окна / число торговых дней рынка
+    adv_1m_rub: Optional[float] = None
     delta_to_prev_close: Optional[float] = None # placeholder
     yield_xirr_pct: Optional[float] = None     # YTM бумаги (XIRR на проекции купонов по форварду), %
     index_yield_pct: Optional[float] = None    # YTM роллирования RUONIA на тот же срок, % (база для всех флоатеров)

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import logging
@@ -52,7 +53,7 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
     return await _cum(uni, isins, _cache_path("isins_cache.json"))
 
 
-def _uni_item(u, name, mx, spread_dur):
+def _uni_item(u, name, mx, spread_dur, adv=None):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond)
     + spread duration (кросс-секция)."""
     base = u.get("base_rate_type", "UNKNOWN")
@@ -72,7 +73,7 @@ def _uni_item(u, name, mx, spread_dur):
         face_value_rub=mx.get("face_px"), accrued_rub=mx.get("accrued_settle"),
         y_idx_slope_bps_per_pct=mx.get("yoi_slope"),
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
-        wap_price_pct=mx.get("wap"), val_today=mx.get("val_today"),
+        wap_price_pct=mx.get("wap"), val_today=mx.get("val_today"), adv_1m_rub=adv,
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), price_implausible=mx.get("implausible") or False,
@@ -103,6 +104,14 @@ async def _universe_bonds(extra_list, cache, limit, offset):
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
     watch_metrics = await universe_svc.compute_watch_metrics(watch_rows, cache) if watch_rows else {}
+    # средний дневной оборот за месяц: один запрос по всему рынку, в памяти на
+    # 15 минут (SQLite синхронный — читаем в потоке, не в event loop)
+    from services import bars as bars_svc
+    try:
+        adv = await asyncio.to_thread(bars_svc.adv_map, 30)
+    except Exception as e:
+        logger.warning("adv_map failed: %s", e)
+        adv = {}
 
     items = []
     for u in uni:
@@ -111,7 +120,7 @@ async def _universe_bonds(extra_list, cache, limit, offset):
         mx = watch_metrics.get(isin) or uni_metrics.get(isin)
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
-        items.append(_uni_item(u, name, mx, spread_dur.get(isin)))
+        items.append(_uni_item(u, name, mx, spread_dur.get(isin), adv.get(isin)))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 
 

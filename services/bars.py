@@ -265,6 +265,47 @@ async def universe_targets(kinds: tuple = ("floater", "fixed")) -> list[tuple[st
     return [(i, k) for i, k in out if not (i in seen or seen.add(i))]
 
 
+# ADV (средний дневной оборот) считается по всему рынку одним запросом и живёт
+# в памяти: архив баров дописывается раз в час, а /api/bonds зовётся каждым
+# рефрешем таблицы — пересчитывать на каждый вызов незачем.
+_ADV_TTL_SEC = 900.0
+_adv_cache: dict = {"key": None, "at": 0.0, "map": {}}
+
+
+def adv_map(days: int = 30, kind: Optional[str] = None) -> dict:
+    """ISIN → средний ДНЕВНОЙ оборот за окно, ₽ (из архива часовых баров).
+
+    Знаменатель — число ТОРГОВЫХ дней РЫНКА в окне (даты, где есть хоть один
+    бар по любой бумаге), а не дней, когда торговалась эта бумага: иначе
+    неликвид с одной сделкой в месяц показывал бы оборот на уровне ОФЗ.
+    Деньги — `value` бара (руб. без НКД, из свечей ISS), поэтому число
+    сопоставимо с VALTODAY дня по порядку, но не обязано совпадать копейка
+    в копейку."""
+    import time
+    key = (days, kind)
+    now = time.monotonic()
+    if _adv_cache["key"] == key and now - _adv_cache["at"] < _ADV_TTL_SEC:
+        return _adv_cache["map"]
+
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    q_sum = "SELECT isin, SUM(value) v FROM bar_hourly WHERE ts >= ?"
+    q_days = "SELECT COUNT(DISTINCT substr(ts,1,10)) d FROM bar_hourly WHERE ts >= ?"
+    args: list = [cutoff]
+    if kind:
+        q_sum += " AND kind = ?"
+        q_days += " AND kind = ?"
+        args.append(kind)
+    q_sum += " GROUP BY isin"
+    with _connect() as c:
+        rows = c.execute(q_sum, args).fetchall()
+        d = c.execute(q_days, args).fetchone()
+    tdays = (d["d"] if d else 0) or 0
+    out = {r["isin"]: r["v"] / tdays for r in rows
+           if r["v"] is not None} if tdays else {}
+    _adv_cache.update(key=key, at=now, map=out)
+    return out
+
+
 def active_isins(days: int = 7) -> set:
     """Бумаги, у которых за последние `days` дней есть хоть один бар — то есть
     по ним реально идут сделки. Остальные (погашенные, неторгуемые остатки
@@ -280,7 +321,9 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                            with_ticks: bool = True, concurrency: int = 4,
                            kinds: tuple = ("floater", "fixed"),
                            progress_every: int = 50, full: bool = True,
-                           refetch_ticks: bool = False) -> dict:
+                           refetch_ticks: bool = False,
+                           progress_key: str = "bars_refresh",
+                           progress_label: Optional[str] = None) -> dict:
     """Наливает бары (и тики) по всему юниверсу. Используется и часовым демоном
     (days=2..3, дозалив хвоста), и бэкфилл-скриптом (days=365, разовый прогон).
 
@@ -302,6 +345,11 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
     stat = {"papers": len(targets), "bars": 0, "ticks": 0, "failed": 0}
     done = 0
 
+    from services import progress
+    progress.start(progress_key, progress_label or "Налив часовых баров",
+                   total=len(targets),
+                   detail=f"окно {days} дн · {'весь юниверс' if full else 'только торгующиеся'}")
+
     async def one(isin: str, kind: str):
         nonlocal done
         async with sem:
@@ -320,11 +368,18 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                 stat["failed"] += 1
                 logger.warning("refresh %s: %s", isin, e)
             done += 1
+            progress.advance(progress_key,
+                             detail=f"строк {stat['bars']} · тиков {stat['ticks']}"
+                                    + (f" · ошибок {stat['failed']}" if stat["failed"] else ""))
             if progress_every and done % progress_every == 0:
                 logger.info("бары %d/%d · строк %d · тиков %d · ошибок %d",
                             done, len(targets), stat["bars"], stat["ticks"], stat["failed"])
 
-    await asyncio.gather(*(one(i, k) for i, k in targets))
+    try:
+        await asyncio.gather(*(one(i, k) for i, k in targets))
+    finally:
+        progress.finish(progress_key,
+                        detail=f"строк {stat['bars']} · тиков {stat['ticks']} · ошибок {stat['failed']}")
     return stat
 
 
