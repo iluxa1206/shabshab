@@ -571,7 +571,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* --- Страница СТАТУС --- */
-.status-page { padding: 20px 24px; max-width: 1100px; }
+/* flex:1 + min-height:0 + overflow-y — как у .table-wrap и .issuer-agg:
+   #app = height:100vh; overflow:hidden, поэтому страница скроллится сама,
+   иначе карточки ниже сгиба просто обрезались */
+.status-page { padding: 20px 24px; max-width: 1100px;
+  flex: 1; min-height: 0; overflow-y: auto; }
 .st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .st-card { border: 1px solid var(--line); padding: 16px 18px; }
 .st-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
