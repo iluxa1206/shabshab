@@ -350,16 +350,22 @@ async def get_coupon_day_rates(isin: str = Path(...)):
 async def get_bond_candles(
     isin: str = Path(...),
     tf: Literal["5m", "1h", "1d", "1w"] = Query("1d", description="Таймфрейм свечи"),
-    board: str = Query("TQCB", description="Борд MOEX (TQCB корп / TQOB ОФЗ)"),
-    secid: Optional[str] = Query(None, description="SECID (для ОФЗ ≠ ISIN)"),
+    board: Optional[str] = Query(None, description="Борд MOEX (TQCB/TQOB/TQRD…); пусто — резолв по ISIN"),
+    secid: Optional[str] = Query(None, description="SECID (для ОФЗ ≠ ISIN); пусто — резолв по ISIN"),
 ):
-    """OHLCV-свечи MOEX для графика карточки. 5m — агрегация 1-мин. Для ОФЗ
-    передавать board=TQOB и secid (SU26…), т.к. по ISIN candles не резолвятся."""
+    """OHLCV-свечи MOEX для графика. 5m — агрегация 1-мин.
+
+    Без secid/board тикер и борд резолвятся по ISIN (как в history/bars):
+    прибитый TQCB отдавал по ОФЗ (SU26…@TQOB) и риск-сектору (TQRD) ПУСТУЮ
+    серию — полноэкранный график этих бумаг стоял без свечей."""
     isin = _require_isin(isin)
-    sec = secid or isin
-    if not _SECID_RE.fullmatch(sec) or board not in ("TQCB", "TQOB"):
+    if not secid or not board:
+        from services.backdate import resolve_market
+        rsec, rboard = await resolve_market(isin, board)
+        secid, board = secid or rsec, board or rboard
+    if not _SECID_RE.fullmatch(secid) or not re.fullmatch(r"[A-Z0-9]{4}", board):
         raise HTTPException(status_code=400, detail="bad secid/board")
-    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(sec, tf, board)}
+    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(secid, tf, board)}
 
 
 

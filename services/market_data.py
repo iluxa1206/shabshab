@@ -911,26 +911,35 @@ class MarketDataService:
         raw: List[dict] = []
         try:
             async with httpx.AsyncClient() as client:
-                # iss.reverse=true → MOEX отдаёт СВЕЖИЕ свечи первыми; при лимите
-                # страницы 500 так гарантированно получаем последние (до сегодня),
-                # а не обрезанный старый хвост. Сортируем по времени ниже.
-                resp = await _moex_get(client, url,
-                                       params={"interval": interval, "from": frm,
-                                               "iss.reverse": "true"}, timeout=20)
-            if resp is not None and resp.status_code == 200:
-                c = (await asyncio.to_thread(resp.json)).get("candles", {})
-                cols, data = c.get("columns", []), c.get("data", [])
-                idx = {n: cols.index(n) for n in cols}
-                for row in data:
-                    try:
-                        raw.append({
-                            "t": row[idx["begin"]],
-                            "o": float(row[idx["open"]]), "h": float(row[idx["high"]]),
-                            "l": float(row[idx["low"]]), "c": float(row[idx["close"]]),
-                            "v": float(row[idx["volume"]] or 0),
-                        })
-                    except (KeyError, TypeError, ValueError):
-                        continue
+                # iss.reverse=true → СВЕЖИЕ свечи первыми (проверено на живом ISS),
+                # страница 500 строк. Одной страницы мало: 1ч×45д ≈ 630 баров,
+                # 5м(1-мин)×4д ≈ 2500 — без пагинации старый хвост окна молча
+                # отрезался. Листаем start= до конца окна; потолок страниц —
+                # предохранитель от бесконечного цикла на кривом ответе.
+                start = 0
+                for _page in range(40):
+                    resp = await _moex_get(client, url,
+                                           params={"interval": interval, "from": frm,
+                                                   "iss.reverse": "true", "start": start},
+                                           timeout=20)
+                    if resp is None or resp.status_code != 200:
+                        break
+                    c = (await asyncio.to_thread(resp.json)).get("candles", {})
+                    cols, data = c.get("columns", []), c.get("data", [])
+                    idx = {n: cols.index(n) for n in cols}
+                    for row in data:
+                        try:
+                            raw.append({
+                                "t": row[idx["begin"]],
+                                "o": float(row[idx["open"]]), "h": float(row[idx["high"]]),
+                                "l": float(row[idx["low"]]), "c": float(row[idx["close"]]),
+                                "v": float(row[idx["volume"]] or 0),
+                            })
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                    if len(data) < 500:
+                        break
+                    start += len(data)
         except Exception as e:
             logger.warning(f"candles error {security} tf={tf}: {e}")
             return []
