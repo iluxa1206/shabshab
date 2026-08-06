@@ -67,9 +67,12 @@ async def fill_one(isin: str, kind: str, days: int | None) -> tuple[int, int]:
 
         from services.heavy import run_heavy
         upd = await run_heavy(_crunch)
+        # метрика по vwap пишется в СВОЮ колонку: у фикса это g_spread_bps.
+        # Жёсткий y_idx_bps засунул бы g-спред в поле флоатера, и фронт (он
+        # различает тип бумаги по непустому y_idx_bps) подписал бы G-спред как Y-IDX.
         con.executemany(
-            "UPDATE bar_hourly SET y_open_bps=?, y_high_bps=?, y_low_bps=?, "
-            "y_close_bps=?, y_idx_bps=? WHERE isin=? AND ts=?", upd)
+            f"UPDATE bar_hourly SET y_open_bps=?, y_high_bps=?, y_low_bps=?, "
+            f"y_close_bps=?, {key}=? WHERE isin=? AND ts=?", upd)
         con.commit()
         return len(rows), sum(1 for u in upd if u[0] is not None)
     finally:
