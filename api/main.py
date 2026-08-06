@@ -308,14 +308,23 @@ async def warmup_caches():
     Тяжёлое: cbr._refresh (~1.2с — 2 сетевых запроса к cbr.ru за историей КС/RUONIA)
     и bootstrap кривых. Идёт конкурентно, старт сервера не блокирует; поллер
     отдельно (он спит 30с и греет ещё и цены Alor + метрики юниверса)."""
+    from services import progress
+    # шагов ровно столько, сколько await'ов ниже: страница СТАТУС показывает,
+    # на чём именно стоит прогрев после рестарта
+    progress.start("warmup", "Прогрев кэшей после старта", total=6,
+                   detail="ставки ЦБ")
     try:
         from services import cbr
         from services.market_data import MarketDataService, market_cache
         from services.universe import compute_universe_metrics
         await asyncio.to_thread(cbr.ks_history)      # триггерит _refresh (сеть)
+        progress.advance("warmup", detail="история RUONIA", force=True)
         await asyncio.to_thread(cbr.ruonia_history)
+        progress.advance("warmup", detail="кривые RUONIA/KEYRATE", force=True)
         await MarketDataService.get_curves()          # bootstrap RUONIA/KEYRATE
+        progress.advance("warmup", detail="z-спред контекст (g-curve)", force=True)
         await MarketDataService.get_zspread_ctx()      # ExpCurve + g-curve
+        progress.advance("warmup", detail="метрики флоатеров", force=True)
         # Метрики юниверса (dm/z/carry) — сразу на prev-close, НЕ дожидаясь медленного
         # прогрева live-цен Alor поллером (30с сон + чанки по 4с WS-таймаута = ~60с
         # пустых метрик после рестарта). Поллер потом уточнит их live-ценами.
@@ -326,9 +335,12 @@ async def warmup_caches():
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if m:
                     market_cache["universe_metrics"] = m
+        progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
+        progress.finish("warmup", detail="кэши готовы")
     except Exception as e:
         logger.warning(f"warmup error: {e}")
+        progress.finish("warmup", error=f"{type(e).__name__}: {e}")
 
 
 async def daily_prewarm():

@@ -150,8 +150,16 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
         return 0
     n = 0
     misses = 0
+    # дрейн идёт порциями по cap за цикл поллера — на странице СТАТУС видно,
+    # что рейтинги прямо сейчас доезжают, и сколько бумаг осталось в очереди
+    from services import progress
+    left = sum(1 for i in isins if not rated.get(i) and not _fresh(cache.get(i)))
+    progress.start("ratings_drain", "Дозагрузка рейтингов (corpbonds/smart-lab)",
+                   total=len(todo), detail=f"в очереди всего {left}")
     async with httpx.AsyncClient(headers=_UA, timeout=15) as client:
-        for isin in todo:
+        for idx, isin in enumerate(todo):
+            progress.set_done("ratings_drain", idx,
+                              detail=f"{isin} · найдено {n} · промахов {misses}")
             try:
                 r = await fetch_corpbonds(isin, client=client)
             except Exception:
@@ -190,5 +198,6 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
                 except Exception:
                     pass
     _save()
+    progress.finish("ratings_drain", detail=f"найдено {n} · промахов {misses} из {len(todo)}")
     logger.info("ratings refresh: +%d rated, %d miss (todo %d)", n, misses, len(todo))
     return n

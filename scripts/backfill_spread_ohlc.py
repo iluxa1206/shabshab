@@ -92,6 +92,12 @@ async def main(a) -> None:
         targets = targets[:a.limit]
 
     log.info("бумаг к пересчёту: %d", len(targets))
+    # прогресс виден на странице СТАТУС: скрипт живёт отдельным процессом,
+    # и без общей таблицы про него из API ничего не узнать
+    from services import progress
+    progress.start("backfill_spread_ohlc", "Пересчёт спреда по ценам бара",
+                   total=len(targets),
+                   detail=f"глубина {a.days} дн" if a.days else "вся история")
     # Узкое место — не reprice (пара секунд CPU на бумагу), а сборка модели:
     # реестр, купоны, кривая. Она ждёт ввода-вывода, поэтому бумаги идут
     # параллельно; сам счёт всё равно сериализован через run_heavy.
@@ -110,11 +116,18 @@ async def main(a) -> None:
                 state["failed"] += 1
                 log.warning("%s: %s: %s", isin, type(e).__name__, e)
             state["seen"] += 1
+            progress.advance("backfill_spread_ohlc",
+                             detail=f"баров {state['rows']}"
+                                    + (f" · ошибок {state['failed']}" if state["failed"] else ""))
             if state["seen"] % 25 == 0:
                 log.info("[%d/%d] баров со спредом по ценам: %d",
                          state["seen"], len(targets), state["rows"])
 
-    await asyncio.gather(*(one(i, k) for i, k in targets))
+    try:
+        await asyncio.gather(*(one(i, k) for i, k in targets))
+    finally:
+        progress.finish("backfill_spread_ohlc",
+                        detail=f"бумаг {state['ok']} · ошибок {state['failed']} · баров {state['rows']}")
     log.info("готово: бумаг %d, ошибок %d, баров со спредом по ценам %d",
              state["ok"], state["failed"], state["rows"])
 

@@ -46,7 +46,7 @@ def _bars_stat() -> dict:
 
 @router.get("", tags=["Status"])
 async def get_status():
-    from services import instruments_registry as reg, ratings, fixed_income as fi
+    from services import instruments_registry as reg, ratings, fixed_income as fi, progress
     from auth import get_access_token, REFRESH_TOKEN
 
     # универсы
@@ -119,6 +119,9 @@ async def get_status():
              "hint": f"сделок {bars_stat['ticks']} · с {bars_stat['ticks_from'] or '—'} "
                      f"(у брокера глубина ~30 дней, дальше только наш архив)"},
         ],
+        # что грузится ПРЯМО СЕЙЧАС: обход баров, прогрев после рестарта, дрейн
+        # рейтингов, разовые бэкфилл-скрипты (см. services/progress.py)
+        "jobs": progress.snapshot(),
         # очереди реестра: несходящаяся очередь копится и стареет — здесь это видно
         # числом (n растёт, oldest_days растёт = голодание corpbonds-обогащения)
         "registry_queues": reg.queue_stats(),

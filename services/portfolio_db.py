@@ -91,6 +91,20 @@ CREATE TABLE IF NOT EXISTS bar_hourly(
 );
 CREATE INDEX IF NOT EXISTS ix_bar_isin ON bar_hourly(isin, ts);
 
+-- Прогресс фоновых задач (см. services/progress.py). В базе, а не в памяти:
+-- бэкфиллы запускаются отдельным процессом и иначе не были бы видны, плюс после
+-- рестарта видно, что задача оборвалась, а не молча исчезла.
+CREATE TABLE IF NOT EXISTS job_progress(
+  key TEXT PRIMARY KEY,         -- 'bars_refresh', 'warmup', …
+  label TEXT NOT NULL,          -- человекочитаемое имя для страницы СТАТУС
+  done INTEGER DEFAULT 0,
+  total INTEGER,                -- NULL — задача без известного объёма
+  state TEXT,                   -- running | done | failed
+  detail TEXT,
+  started_at TEXT, updated_at TEXT, finished_at TEXT,
+  pid INTEGER                   -- чей процесс: API или разовый скрипт
+);
+
 -- Тиковый архив сделок (Alor alltrades). Копится вперёд: у брокера глубина
 -- ~30 календарных дней, дальше история существует только у нас.
 CREATE TABLE IF NOT EXISTS trade_tick(

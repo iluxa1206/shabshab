@@ -594,6 +594,25 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .st-bar-fill.full { background: var(--up); } .st-bar-fill.part { background: var(--rt-bbb); } .st-bar-fill.low { background: var(--down); }
 .st-bar-num { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--mut); white-space: nowrap; }
 .st-bar-num b { color: var(--fg); }
+/* фоновые загрузки: карточка на всю ширину сетки — полос бывает несколько */
+.st-card-wide { grid-column: 1 / -1; }
+.st-job + .st-job { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.st-job-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.st-job-name { font-size: 12px; font-weight: 600; }
+.st-job-state { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.st-job-state.run { color: var(--accent); }
+.st-job-state.done { color: var(--up); }
+.st-job-state.fail, .st-job-state.stale { color: var(--down); }
+.st-bar-fill.run { background: var(--accent); }
+.st-bar-fill.done { background: var(--up); }
+.st-bar-fill.fail, .st-bar-fill.stale { background: var(--down); }
+/* объём заранее неизвестен — полоса бежит, а не врёт процентом */
+.st-bar-fill.indet { width: 35%; background: var(--accent); animation: st-run 1.4s ease-in-out infinite; }
+@keyframes st-run { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .st-bar-fill.indet { animation: none; margin-left: 0; } }
+.st-job-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.st-job-detail { font-size: 10px; color: var(--mut-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-job-time { font-size: 10px; color: var(--mut-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .st-drain { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; margin-bottom: 6px; }
 .st-drain b { font-size: 15px; }
 .st-ts { width: 100%; border-collapse: collapse; }

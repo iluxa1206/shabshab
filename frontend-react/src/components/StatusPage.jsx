@@ -17,8 +17,64 @@ function Bar({ n, total, pct }) {
   );
 }
 
+// «2 мин 30 с» — время на прогресс-баре читается взглядом, секунды в тысячах не
+const dur = (sec) => {
+  if (sec == null) return null;
+  if (sec < 60) return `${Math.round(sec)} с`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m} мин${sec % 60 >= 30 ? " 30 с" : ""}`;
+  return `${Math.floor(m / 60)} ч ${m % 60} мин`;
+};
+
+const JOB_STATE = {
+  running: ["идёт", "run"],
+  done: ["готово", "done"],
+  failed: ["ошибка", "fail"],
+  stale: ["оборвалась", "stale"],
+};
+
+// Полоса фоновой задачи: доля выполнения, остаток времени, что именно грузится.
+// Задача без известного объёма (total=null) показывает бегущую полосу.
+function JobBar({ job }) {
+  const [word, cls] = JOB_STATE[job.state] || ["—", ""];
+  const pct = job.pct;
+  return (
+    <div className="st-job">
+      <div className="st-job-head">
+        <span className="st-job-name">{job.label}</span>
+        <span className={"st-job-state " + cls}>{word}</span>
+      </div>
+      <div className="st-bar-wrap">
+        <div className="st-bar-track">
+          {pct != null
+            ? <div className={"st-bar-fill " + (job.state === "running" ? "run" : cls)}
+                style={{ width: pct + "%" }} />
+            : <div className={"st-bar-fill indet " + cls} />}
+        </div>
+        <span className="st-bar-num">
+          {job.total ? <>{fmt.num(job.done, 0)} / {fmt.num(job.total, 0)} <b>{pct}%</b></>
+                     : <>{fmt.num(job.done, 0)} шт</>}
+        </span>
+      </div>
+      <div className="st-job-foot">
+        {job.detail && <span className="st-job-detail">{job.detail}</span>}
+        <span className="st-job-time">
+          {job.state === "running" && job.eta_sec != null && <>осталось ~{dur(job.eta_sec)} · </>}
+          идёт {dur(job.elapsed_sec)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function StatusPage() {
-  const q = useQuery({ queryKey: ["status"], queryFn: fetchStatus, refetchInterval: 15000 });
+  // пока что-то грузится — опрашиваем чаще, чтобы полосы двигались на глазах
+  const q = useQuery({
+    queryKey: ["status"],
+    queryFn: fetchStatus,
+    refetchInterval: (query) =>
+      (query.state.data?.jobs || []).some((j) => j.state === "running") ? 5000 : 15000,
+  });
   const d = q.data;
 
   if (q.isPending) return <section className="status-page"><div className="an-empty">загрузка…</div></section>;
@@ -54,6 +110,25 @@ export default function StatusPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        {/* Фоновые задачи: то, что грузится ПРЯМО СЕЙЧАС. Карточку держим на
+            месте и когда задач нет — иначе сетка прыгает на каждом опросе. */}
+        <div className="st-card st-card-wide">
+          <div className="st-title">
+            Фоновые загрузки
+            <span className="st-sub">
+              {(d.jobs || []).filter((j) => j.state === "running").length
+                ? `идёт ${(d.jobs || []).filter((j) => j.state === "running").length}`
+                : "сейчас ничего не грузится"}
+            </span>
+          </div>
+          {(d.jobs || []).length
+            ? (d.jobs || []).map((j) => <JobBar key={j.key} job={j} />)
+            : <div className="st-data-hint">
+                Здесь появляются прогрев после рестарта, часовой обход баров,
+                дрейн рейтингов и разовые бэкфиллы. Завершённые видны 30 минут.
+              </div>}
         </div>
 
         {d.registry_queues && (
@@ -102,7 +177,11 @@ export default function StatusPage() {
           <div className="st-data-hint">Тяжёлый прогрев расписаний — ежедневно в 09:00 МСК (готово к 10:00).</div>
         </div>
       </div>
-      <div className="st-foot">{q.isFetching ? "обновление…" : "автообновление · 15с"}</div>
+      <div className="st-foot">
+        {q.isFetching ? "обновление…"
+          : (d.jobs || []).some((j) => j.state === "running")
+            ? "автообновление · 5с (идут загрузки)" : "автообновление · 15с"}
+      </div>
     </section>
   );
 }
