@@ -435,8 +435,10 @@ async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict
             hi = mid
 
     # финальный прогон на ОКРУГЛЁННОЙ цене: в карточку уходит ровно та цена,
-    # которая встанет в поле ввода, и метрики под ней сходятся один в один
-    price = round((lo + hi) / 2, 4)
+    # которая встанет в поле ввода, и метрики под ней сходятся один в один.
+    # Два знака — шаг котировки на рынке; спред ответа из-за округления отходит
+    # от заказанного на единицы bps, но цифры карточки честны для этой цены
+    price = round((lo + hi) / 2, 2)
     out = dict(reprice_at_price(ctx, price))
     out.update(_reprice_z(ctx, price))
     out["clean_price_pct"] = price
