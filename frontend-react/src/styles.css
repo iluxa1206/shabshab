@@ -1372,3 +1372,22 @@ body.col-resizing * { cursor: col-resize !important; }
 .tape-more { display: flex; align-items: center; gap: 10px; padding: 12px 0;
   font-size: 12px; color: var(--mut); }
 .tape-table tbody tr.tape-row-static { cursor: default; }
+
+/* ── КАЛЬКУЛЯТОР кастомной облигации ── */
+.calc-page { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 24px;
+  max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box;
+  flex: 1; min-height: 0; overflow-y: auto; }
+.calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px 14px; align-items: end; }
+.calc-f { display: flex; flex-direction: column; gap: 4px; }
+.calc-k { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--mut-2); }
+.calc-f input, .calc-f select { font: 12px var(--mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; width: 100%; box-sizing: border-box; }
+.calc-f input:focus-visible, .calc-f select:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.calc-go { align-self: end; padding: 7px 18px; font-weight: 700; }
+.calc-err { margin-top: 8px; font: 11px var(--mono); color: var(--down); }
+.calc-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 16px; }
+.calc-m { display: flex; flex-direction: column; gap: 3px; }
+.calc-m-v { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.calc-table-wrap { max-height: 320px; overflow: auto; }
+.calc-row-mine td { font-weight: 700; background: var(--line-2); }

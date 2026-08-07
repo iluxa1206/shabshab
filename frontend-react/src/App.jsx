@@ -18,6 +18,7 @@ import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import IssuerAggregates from "./components/IssuerAggregates.jsx";
 import FixedModule from "./components/FixedModule.jsx";
+import CalcModule from "./components/CalcModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
@@ -675,6 +676,7 @@ function Dashboard() {
         <Route path="/issuers" element={<IssuerAggregates bonds={bonds} onPickIssuer={pickIssuer} />} />
         <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
+        <Route path="/calc" element={<CalcModule />} />
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/trades" element={<TradesTape />} />
         <Route path="/payments" element={<PaymentsCalendar />} />

@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -665,6 +665,7 @@ app.include_router(status.router, prefix="/api/status", dependencies=_gate)
 app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
 app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
+app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 
 # --- Frontend (static dashboard) ---

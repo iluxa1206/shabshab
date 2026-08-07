@@ -274,6 +274,14 @@ export const fetchPaymentsCalendar = ({ from, to } = {}) => {
 export const fetchFixed = () => request("/api/fixed");
 export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 
+// Калькулятор кастомной облигации: метрики по введённым параметрам (купон/
+// частота/погашение/цена/номинал), кривая и calc_date — как у вкладки ФИКСЫ.
+export const calcCustomBond = ({ coupon, freq, maturity, price, face }, signal) => {
+  const p = new URLSearchParams({ coupon_pct: coupon, freq, maturity, price });
+  if (face) p.set("face", face);
+  return request(`/api/calc/custom?${p}`, { signal });
+};
+
 // Калькулятор карточки фикса: YTM/g-спред/z-спред/дюрация/dirty под произвольную цену.
 export const repriceFixed = (isin, price, signal) =>
   request(`/api/fixed/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });
