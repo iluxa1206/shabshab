@@ -69,6 +69,91 @@ def _accrued(schedule: dict, settle: date, calc_date: date) -> float:
     return value * (settle - prev).days / days
 
 
+@router.get("/custom_floater", tags=["Calc"])
+async def calc_custom_floater(
+    base: str = Query(..., description="База: KEYRATE | RUONIA"),
+    spread_bps: float = Query(..., ge=-1000, le=10000, description="Спред к базе, bps"),
+    freq: int = Query(..., description="Выплат в год: 1/2/4/12"),
+    maturity: str = Query(..., description="Дата погашения, ISO"),
+    price: float = Query(..., gt=0, le=1000, description="Чистая цена, % от номинала"),
+    face: float = Query(1000.0, gt=0, description="Номинал"),
+):
+    """Метрики кастомного ФЛОАТЕРА (база + спред): Y-IDX/SM/DM/YTM тем же
+    прод-путём, что строки таблицы флоатеров (calculate_valuation_metrics).
+    Сетка купонов якорится на погашение (first_coupon_date=None → шаг назад),
+    будущие купоны — по форвардной кривой базы; НКД — линейно из первого
+    купонного потока текущего периода."""
+    base = base.strip().upper()
+    if base not in ("KEYRATE", "RUONIA"):
+        raise HTTPException(status_code=400, detail="base must be KEYRATE or RUONIA")
+    if freq not in _FREQS:
+        raise HTTPException(status_code=400, detail="freq must be 1, 2, 4 or 12")
+    try:
+        mat = date.fromisoformat(maturity)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad maturity date")
+
+    from core.valuation import (BondRefData, build_cashflows_with_spread,
+                                settle_date)
+    from services.valuation import calculate_valuation_metrics
+    ruonia_curve, keyrate_curve, cd, rd = await MarketDataService.get_curves()
+    calc_date = cd or rd or date.today()
+    if mat <= calc_date + timedelta(days=7):
+        raise HTTPException(status_code=400, detail="maturity too close: nothing to discount")
+    curve = ruonia_curve if base == "RUONIA" else keyrate_curve
+    if curve is None:
+        raise HTTPException(status_code=503, detail=f"{base} curve unavailable")
+
+    ref = BondRefData(
+        isin="CUSTOM", base=base, spread_issue_bps=int(round(spread_bps)),
+        face_value=face, accrued_rub=0.0, maturity_date=mat,
+        first_coupon_date=None, coupons_per_year=freq,
+    )
+    try:
+        cfs = build_cashflows_with_spread(ref, curve, calc_date, ref.spread_issue_bps)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # НКД: линейно внутри текущего купонного периода из того же потока,
+    # которым бумага прайсится (базис settle — доначислять уже не нужно)
+    settle = settle_date(calc_date)
+    accrued = 0.0
+    for cf in cfs:
+        if (cf.type == "COUPON" and cf.period_start and cf.period_end
+                and cf.period_start <= settle < cf.period_end):
+            days = (cf.period_end - cf.period_start).days or 1
+            accrued = cf.amount_rub * (settle - cf.period_start).days / days
+            break
+    ref.accrued_rub = accrued
+
+    m = calculate_valuation_metrics(ref, price, curve, calc_date,
+                                    ruonia_curve=ruonia_curve)
+
+    cashflow = [{"date": cf.pay_date.isoformat(),
+                 "type": "COUPON" if cf.type == "COUPON" else "MATURITY",
+                 "amount": round(cf.amount_rub, 2),
+                 "rate_pct": round(cf.coupon_rate_pct, 2) if cf.coupon_rate_pct is not None else None}
+                for cf in cfs if cf.pay_date > settle]
+    cashflow.sort(key=lambda x: (x["date"], x["type"] == "COUPON"))
+
+    return {
+        "params": {"base": base, "spread_bps": ref.spread_issue_bps, "freq": freq,
+                   "maturity": mat.isoformat(), "price_pct": price, "face": face},
+        "metrics": {
+            "y_idx_bps": m.get("yield_over_index_bps"),
+            "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
+            "yield_xirr_pct": m.get("yield_xirr_pct"),
+            "index_yield_pct": m.get("index_yield_pct"),
+            "accrued_rub": round(accrued, 2),
+            "dirty_rub": round(m["dirty_price_rub"], 2) if m.get("dirty_price_rub") else None,
+            "pricing_status": m.get("pricing_status"),
+        },
+        "warnings": m.get("warnings") or [],
+        "cashflow": cashflow,
+        "calc_date": calc_date.isoformat(),
+    }
+
+
 @router.get("/custom", tags=["Calc"])
 async def calc_custom(
     coupon_pct: float = Query(..., ge=0, le=100, description="Ставка купона, % годовых"),

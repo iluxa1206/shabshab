@@ -282,6 +282,14 @@ export const calcCustomBond = ({ coupon, freq, maturity, price, face }, signal) 
   return request(`/api/calc/custom?${p}`, { signal });
 };
 
+// Калькулятор кастомного флоатера: Y-IDX/SM/DM по базе+спреду тем же прод-путём,
+// что строки таблицы флоатеров.
+export const calcCustomFloater = ({ base, spread, freq, maturity, price, face }, signal) => {
+  const p = new URLSearchParams({ base, spread_bps: spread, freq, maturity, price });
+  if (face) p.set("face", face);
+  return request(`/api/calc/custom_floater?${p}`, { signal });
+};
+
 // Калькулятор карточки фикса: YTM/g-спред/z-спред/дюрация/dirty под произвольную цену.
 export const repriceFixed = (isin, price, signal) =>
   request(`/api/fixed/${encodeURIComponent(isin)}/reprice?price=${encodeURIComponent(price)}`, { signal });

@@ -677,6 +677,7 @@ function Dashboard() {
         <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/calc" element={<CalcModule />} />
+        <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/trades" element={<TradesTape />} />
         <Route path="/payments" element={<PaymentsCalendar />} />

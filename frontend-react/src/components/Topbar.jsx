@@ -12,13 +12,14 @@ const TYPES = [
 ];
 const SUBNAV = {
   floaters: [["/floaters", "Список"], ["/issuers", "Эмитенты"], ["/trades", "Сделки"],
-             ["/payments", "Выплаты"], ["/curves", "Кривые"]],
+             ["/payments", "Выплаты"], ["/curves", "Кривые"], ["/calc/float", "Калькулятор"]],
   fixed: [["/fixed", "Список"], ["/calc", "Калькулятор"]],
   euro: [],
   status: [],
 };
 const currentType = (p) =>
-  p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed" : p.startsWith("/euro") ? "euro"
+  p.startsWith("/calc/float") ? "floaters"
+    : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed" : p.startsWith("/euro") ? "euro"
     : p.startsWith("/status") ? "status" : "floaters";
 
 function TypeMenu({ type }) {
