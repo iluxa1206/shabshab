@@ -20,10 +20,11 @@ def clean_db():
 def _market():
     uni = [
         {"isin": "RU000A0000A1", "name": "Газпром 1", "rating": "AA",
-         "emitter_name": "Газпром капитал"},
+         "emitter_name": "Газпром капитал", "maturity_date": "2029-08-11"},
         {"isin": "RU000A0000B2", "name": "Мелкий БО", "rating": "BBB",
-         "emitter_name": "Мелкая контора"},
-        {"isin": "RU000A0000C3", "name": "ВЭБ 3", "rating": "AAA", "emitter_name": "ВЭБ.РФ"},
+         "emitter_name": "Мелкая контора", "maturity_date": "2027-02-10"},
+        {"isin": "RU000A0000C3", "name": "ВЭБ 3", "rating": "AAA",
+         "emitter_name": "ВЭБ.РФ", "maturity_date": "2031-08-11"},
     ]
     metrics = {
         "RU000A0000A1": {"yoi_ask": 280.0, "yoi_bid": 300.0, "ask": 100.2, "bid": 99.9, "face_px": 1000.0},
@@ -145,3 +146,78 @@ def test_run_cycle_pushes_to_owner(monkeypatch):
     asyncio.run(signals.run_cycle())
     assert [s for s in sent if s[0] == USER] == []
     signals.delete(USER, f["id"])
+
+
+# --- суборды и срок до погашения ---
+
+def test_is_subord_by_name():
+    assert core.is_subord({"name": "ВТБСУБ1-12"})
+    assert core.is_subord({"name": "ВТБСУБТ1Р2"})
+    assert core.is_subord({"name": "Банк Т1"})
+    assert core.is_subord({"name": "Перп выпуск"})
+    # обычные бумаги не должны ловиться: Т1 внутри слова/номера — не маркер
+    assert not core.is_subord({"name": "Газпром капитал БО-002P-08"})
+    assert not core.is_subord({"name": "МТС 2Р-11"})
+    assert not core.is_subord({"name": "ИКС5Фин3P4"})
+    assert not core.is_subord({"name": ""})
+
+
+def test_hide_subord_filters():
+    from datetime import date as _d
+    uni, metrics, depth = _market()
+    uni.append({"isin": "RU000A0000S9", "name": "ВТБСУБ1-12", "rating": "AAA",
+                "emitter_name": "Банк ВТБ ПАО", "maturity_date": "2027-03-29"})
+    metrics["RU000A0000S9"] = {"yoi_ask": 9000.0, "yoi_bid": 9200.0, "ask": 68.5,
+                               "bid": 68.0, "face_px": 1000.0}
+    today = _d(2026, 8, 11)
+
+    p = core.normalize_params({"spread_min": 150})
+    assert "RU000A0000S9" in [m["isin"] for m in core.evaluate(p, uni, metrics, depth, today)]
+
+    p2 = core.normalize_params({"spread_min": 150, "hide_subord": True})
+    got = [m["isin"] for m in core.evaluate(p2, uni, metrics, depth, today)]
+    assert "RU000A0000S9" not in got and "RU000A0000A1" in got
+
+
+def test_years_range_filters():
+    from datetime import date as _d
+    uni, metrics, depth = _market()
+    today = _d(2026, 8, 11)
+
+    # A1 ~3 года, B2 ~0.5, C3 ~5
+    p = core.normalize_params({"spread_min": 100, "years_max": 1})
+    assert [m["isin"] for m in core.evaluate(p, uni, metrics, depth, today)] == ["RU000A0000B2"]
+
+    p2 = core.normalize_params({"spread_min": 100, "years_min": 4})
+    assert [m["isin"] for m in core.evaluate(p2, uni, metrics, depth, today)] == ["RU000A0000C3"]
+
+    p3 = core.normalize_params({"spread_min": 100, "years_min": 1, "years_max": 4})
+    assert [m["isin"] for m in core.evaluate(p3, uni, metrics, depth, today)] == ["RU000A0000A1"]
+
+    # срок возвращается в матче
+    m = core.evaluate(p3, uni, metrics, depth, today)[0]
+    assert 2.9 < m["years"] < 3.1
+
+
+def test_years_without_maturity_excluded():
+    from datetime import date as _d
+    uni, metrics, depth = _market()
+    uni.append({"isin": "RU000A0000P8", "name": "Бессрочный", "rating": "AAA",
+                "emitter_name": "Кто-то", "maturity_date": None})
+    metrics["RU000A0000P8"] = {"yoi_ask": 500.0, "yoi_bid": 520.0, "ask": 90.0,
+                               "bid": 89.0, "face_px": 1000.0}
+    today = _d(2026, 8, 11)
+
+    # без ограничения срока бумага видна
+    p = core.normalize_params({"spread_min": 100})
+    assert "RU000A0000P8" in [m["isin"] for m in core.evaluate(p, uni, metrics, depth, today)]
+    # с ограничением — нет: срок неизвестен, «до 2 лет» её пустить не может
+    p2 = core.normalize_params({"spread_min": 100, "years_max": 2})
+    assert "RU000A0000P8" not in [m["isin"] for m in core.evaluate(p2, uni, metrics, depth, today)]
+
+
+def test_years_range_validation():
+    with pytest.raises(core.FilterError):
+        core.normalize_params({"spread_min": 100, "years_min": 5, "years_max": 2})
+    with pytest.raises(core.FilterError):
+        core.normalize_params({"spread_min": 100, "years_min": -1})

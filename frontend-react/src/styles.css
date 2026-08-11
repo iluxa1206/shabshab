@@ -1530,3 +1530,7 @@ body.col-resizing * { cursor: col-resize !important; }
   .sig-wrap { grid-template-columns: minmax(0, 1fr); }
   .sig-feed-col { border-left: 0; border-top: 1px solid var(--line); }
 }
+.sig-check-line { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
+                  cursor: pointer; }
+.sig-note { font-size: 11px; color: var(--mut); line-height: 1.45; margin-top: 5px;
+            max-width: 62ch; }

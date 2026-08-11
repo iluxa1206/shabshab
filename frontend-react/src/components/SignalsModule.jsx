@@ -30,12 +30,17 @@ function describe(p) {
   if (p.emitters?.length)
     who.push(p.emitters.length === 1 ? p.emitters[0] : p.emitters.length + " эмитентов");
   if (p.isins?.length) who.push(p.isins.length + " бумаг");
-  const scope = who.length ? who.join(" или ") : "весь рынок";
+  let scope = who.length ? who.join(" или ") : "весь рынок";
+  if (p.hide_subord) scope += ", без субордов";
   let range;
   if (p.spread_min != null && p.spread_max != null) range = `${p.spread_min}–${p.spread_max} бп`;
   else if (p.spread_min != null) range = `от ${p.spread_min} бп`;
   else range = `до ${p.spread_max} бп`;
-  return { scope, range };
+  let years = null;
+  if (p.years_min != null && p.years_max != null) years = `${p.years_min}–${p.years_max} л`;
+  else if (p.years_min != null) years = `от ${p.years_min} л`;
+  else if (p.years_max != null) years = `до ${p.years_max} л`;
+  return { scope, range, years };
 }
 
 /** Пикер с накоплением выбранного в чипы (эмитенты, отдельные бумаги). */
@@ -112,6 +117,9 @@ function FilterForm({ onSubmit, busy }) {
   const [smin, setSmin] = useState("");
   const [smax, setSmax] = useState("");
   const [minMoney, setMinMoney] = useState("");
+  const [ymin, setYmin] = useState("");
+  const [ymax, setYmax] = useState("");
+  const [hideSub, setHideSub] = useState(false);
   const [cooldown, setCooldown] = useState(60);
   const [sound, setSound] = useState(true);
   const [desktop, setDesktop] = useState(true);
@@ -123,7 +131,10 @@ function FilterForm({ onSubmit, busy }) {
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     min_money_rub: minMoney === "" ? null : Number(minMoney),
-  }), [ratings, emitters, isins, side, smin, smax, minMoney]);
+    years_min: ymin === "" ? null : Number(ymin),
+    years_max: ymax === "" ? null : Number(ymax),
+    hide_subord: hideSub,
+  }), [ratings, emitters, isins, side, smin, smax, minMoney, ymin, ymax, hideSub]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
@@ -151,7 +162,8 @@ function FilterForm({ onSubmit, busy }) {
     try {
       await onSubmit({ name: name.trim(), params, cooldown_min: cooldown, sound, desktop });
       setName(""); setRatings([]); setEmitters([]); setIsins([]);
-      setSmin(""); setSmax(""); setMinMoney(""); setPreview(null);
+      setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
+      setHideSub(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -188,6 +200,18 @@ function FilterForm({ onSubmit, busy }) {
         keyOf={(r) => r.isin} labelOf={(r) => r.name}
         subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
 
+      <div className="sig-field">
+        <label className="sig-check-line">
+          <input type="checkbox" checked={hideSub}
+            onChange={(e) => setHideSub(e.target.checked)} />
+          <span>Прятать суборды</span>
+        </label>
+        <div className="sig-note">
+          Определяем по названию (СУБ, Т1, перп) — отдельного признака в реестре нет.
+          Такие выпуски дают широчайший спред из-за риска списания и иначе занимают весь верх.
+        </div>
+      </div>
+
       <div className="sig-section">Условия</div>
 
       <div className="sig-row">
@@ -218,6 +242,18 @@ function FilterForm({ onSubmit, busy }) {
             value={minMoney} onChange={(e) => setMinMoney(e.target.value)} />
         </div>
         <div className="sig-field">
+          <label className="sig-label">Срок до погашения, лет</label>
+          <div className="sig-row tight">
+            <input className="sig-input num" type="number" step="any" placeholder="от"
+              value={ymin} onChange={(e) => setYmin(e.target.value)} />
+            <input className="sig-input num" type="number" step="any" placeholder="до"
+              value={ymax} onChange={(e) => setYmax(e.target.value)} />
+          </div>
+        </div>
+      </div>
+
+      <div className="sig-row">
+        <div className="sig-field">
           <label className="sig-label">Повторять не чаще</label>
           <div className="sig-seg">
             {COOLDOWNS.map(([v, t]) => (
@@ -243,7 +279,8 @@ function FilterForm({ onSubmit, busy }) {
           {!preview.ready ? "Метрики ещё прогреваются — превью будет через минуту."
             : preview.total === 0 ? "Сейчас под условия не попадает ни одна бумага."
             : <>Сейчас под условия попадает <b>{preview.total}</b>:{" "}
-                {preview.matches.slice(0, 4).map((m) => m.name).join(", ")}
+                {preview.matches.slice(0, 4).map((m) =>
+                  m.name + (m.years != null ? ` (${fmt.num(m.years, 1)} л)` : "")).join(", ")}
                 {preview.total > 4 && ` и ещё ${preview.total - 4}`}</>}
         </div>
       )}
@@ -270,6 +307,7 @@ function FilterRow({ f, onToggle, onDelete }) {
           <span className={f.params.side === "ask" ? "pos" : "neg"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
           {" · Y-IDX "}{d.range}
+          {d.years ? ` · срок ${d.years}` : ""}
           {f.params.min_money_rub ? ` · от ${money(f.params.min_money_rub)} ₽` : ""}
           {" · пауза "}{cdLabel(f.cooldown_min)}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}

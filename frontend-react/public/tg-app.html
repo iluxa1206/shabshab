@@ -289,12 +289,17 @@
     if (p.emitters && p.emitters.length)
       who.push(p.emitters.length === 1 ? p.emitters[0] : p.emitters.length + " эмитентов");
     if (p.isins && p.isins.length) who.push(p.isins.length + " ISIN");
-    const scope = who.length ? who.join(" или ") : "весь рынок";
+    let scope = who.length ? who.join(" или ") : "весь рынок";
+    if (p.hide_subord) scope += ", без субордов";
     let range;
     if (p.spread_min != null && p.spread_max != null) range = `${p.spread_min}–${p.spread_max} бп`;
     else if (p.spread_min != null) range = `от ${p.spread_min} бп`;
     else range = `до ${p.spread_max} бп`;
-    const m = p.min_money_rub ? ` · от ${money(p.min_money_rub)} ₽ в стакане` : "";
+    let years = "";
+    if (p.years_min != null && p.years_max != null) years = ` · срок ${p.years_min}–${p.years_max} л`;
+    else if (p.years_min != null) years = ` · срок от ${p.years_min} л`;
+    else if (p.years_max != null) years = ` · срок до ${p.years_max} л`;
+    const m = (p.min_money_rub ? ` · от ${money(p.min_money_rub)} ₽ в стакане` : "") + years;
     return { scope, range, m };
   }
 
@@ -405,7 +410,8 @@
               placeholder="ISIN или название" />
               <div class="suggest" id="isuggest" hidden></div></div>
             <div class="chips" id="ichips" style="margin-top:6px"></div></label>
-          <div class="hint">Условия объединяются по «или»: подойдёт бумага, попавшая хотя бы в один список. Ничего не выбрано — смотрим весь рынок.</div>
+          <label class="check"><input type="checkbox" id="fsub" /><span>Прятать суборды</span></label>
+          <div class="hint">Условия объединяются по «или»: подойдёт бумага, попавшая хотя бы в один список. Ничего не выбрано — смотрим весь рынок. Суборды определяем по названию (СУБ, Т1, перп) — признака в реестре нет.</div>
         </fieldset>
 
         <fieldset>
@@ -422,6 +428,11 @@
             </div></label>
           <label class="f" for="fmoney"><span>Денег в стакане на этой стороне, ₽</span>
             <input id="fmoney" type="number" inputmode="numeric" step="any" placeholder="0 — не важно" /></label>
+          <label class="f"><span>Срок до погашения, лет</span>
+            <div class="frow">
+              <input id="fymin" type="number" inputmode="decimal" step="any" placeholder="от" />
+              <input id="fymax" type="number" inputmode="decimal" step="any" placeholder="до" />
+            </div></label>
           <label class="f"><span>Повторять не чаще</span>
             <div class="seg" id="f-cd">${COOLDOWNS.map(([v, t], i) =>
               `<button type="button" data-v="${v}" aria-pressed="${i === 1}">${t}</button>`).join("")}</div></label>
@@ -624,6 +635,9 @@
             spread_min: isFinite(lo) ? lo : null,
             spread_max: isFinite(hi) ? hi : null,
             min_money_rub: parseFloat($("fmoney").value) || null,
+            years_min: $("fymin").value === "" ? null : parseFloat($("fymin").value),
+            years_max: $("fymax").value === "" ? null : parseFloat($("fymax").value),
+            hide_subord: $("fsub").checked,
           } }) });
         haptic("success"); load();
       } catch (e) {

@@ -22,6 +22,9 @@ class SignalParams(BaseModel):
     spread_min: Optional[float] = None  # Y-IDX, бп
     spread_max: Optional[float] = None
     min_money_rub: Optional[float] = None
+    years_min: Optional[float] = None   # срок до погашения, лет
+    years_max: Optional[float] = None
+    hide_subord: bool = False           # прятать суборды
 
 
 class SignalCreate(BaseModel):
