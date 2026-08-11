@@ -269,6 +269,14 @@ def unpriced(limit: int = 400) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def unpriced_count() -> int:
+    """Сколько сделок ещё без посчитанного спреда — по этому счётчику демон
+    решает, держать ли рабочий темп вне торговых часов."""
+    with _connect() as c:
+        return int(c.execute(
+            "SELECT COUNT(*) FROM block_trade WHERE metrics_at IS NULL").fetchone()[0])
+
+
 def save_metrics(vals: list[tuple]) -> int:
     """[(y_idx, dm, trade_id)] → в базу. metrics_at ставится всегда, даже когда
     спред посчитать нечем (фикс, бумага вне реестра): иначе такие строки

@@ -610,15 +610,26 @@ async def block_trades_worker():
                     sent = await bt.notify_blocks()
                     if sent:
                         logger.info("block trades: %d уведомлений", sent)
-            elif now.hour == 1 and backfilled_on != now.date():
-                # ночью, когда дневная история ISS уже опубликована
-                backfilled_on = now.date()
-                logger.info("block trades backfill: %s", await bt.backfill())
+            else:
+                # Вне торгов новых сделок нет, но хвост без спреда добиваем:
+                # за такт считается лишь потолок флоатеров, и вечерний наплыв
+                # иначе ждал бы утра. Своих сделок расчёт не создаёт — просто
+                # доходит до конца очереди и дальше возвращает 0.
+                left = await bt.price_new_trades()
+                if left:
+                    logger.info("block trades: спред досчитан по %d сделкам", left)
+                if now.hour == 1 and backfilled_on != now.date():
+                    # ночью, когда дневная история ISS уже опубликована
+                    backfilled_on = now.date()
+                    logger.info("block trades backfill: %s", await bt.backfill())
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(f"block trades worker error: {e}")
-        await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else 600)
+        # вне торгов такт редкий, но пока есть неоценённый хвост — держим
+        # рабочий темп, иначе вечерний наплыв досчитывался бы часами
+        idle = 60 if await asyncio.to_thread(bt.unpriced_count) else 600
+        await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else idle)
 
 
 ARCHIVE_VACUUM_MIN_ROWS = int(os.getenv("ARCHIVE_VACUUM_MIN_ROWS", "200000"))
