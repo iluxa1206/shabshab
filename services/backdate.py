@@ -364,7 +364,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         ru_curve_asof = (curve_asof("RUONIA", d, ruonia_curve, _ru_hist)[0]
                          if (ruonia_curve is not None and _ru_hist) else None)
         if ru_curve_asof is None:
-            warnings.append("RUONIA-кривая на дату не восстановлена — Y-IDX не посчитан")
+            warnings.append("RUONIA-кривая на дату не восстановлена — R-spread не посчитан")
 
     periods = schedules.get(isin) or schedules.get(secid)
     amorts = sched_full.get("amorts")

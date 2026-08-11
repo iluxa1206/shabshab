@@ -214,7 +214,7 @@ def calculate_valuation_metrics(
         curve if bond.base == "RUONIA" else None)
     index_yield = None
     if _ru_curve is None:
-        warnings.append("RUONIA-кривая не передана — Y-IDX не посчитан "
+        warnings.append("RUONIA-кривая не передана — R-spread не посчитан "
                         "(база сравнения для всех флоатеров — роллирование RUONIA)")
     else:
         try:

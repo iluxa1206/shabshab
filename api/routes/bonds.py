@@ -424,7 +424,7 @@ async def reprice_bond_valuation(
 @router.get("/{isin}/price_from_spread", response_model=RepriceResponse, tags=["Bonds"])
 async def price_from_spread(
     isin: str = Path(...),
-    y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой спред Y-IDX, bps"),
+    y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой R-spread, bps"),
 ):
     """Обратная задача калькулятора: спред Y-IDX → чистая цена и все метрики под
     ней. Бисекция по цене на тёплом контексте (без сетевых вызовов внутри цикла).

@@ -130,15 +130,15 @@ export const COLS = [
   { key: "maturity_date", label: "MATURITY", w: 13,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">
       <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}</td> },
-  // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → Y−IDX (первичная) → SM → DM → Z) ──
+  // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → R-spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
-  { key: "y_idx_bid_bps", label: "BID", sub: "% / Y−IDX", align: "num", sep: true, w: 8,
+  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 8,
     cell: (b) => <Quote key="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap_bid}
       title={qTitle(b, "bid")} /> },
-  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / Y−IDX", align: "num", w: 8,
+  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 8,
     cell: (b) => <Quote key="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap_ask}
       title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
@@ -173,7 +173,7 @@ export const COLS = [
       title={"средний дневной оборот за 30 дней, ₽ — Σ денег архива часовых баров / "
         + "число торговых дней рынка (не дней, когда торговалась эта бумага)"}>
       {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
-  { key: "yield_over_index_bps", label: "Y−IDX", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
+  { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
