@@ -1,16 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchMarketTape, fetchTapeIssuers } from "../api.js";
+import { fetchMarketTape, fetchTapeBoards, fetchBlockDays, fetchTapeIssuers } from "../api.js";
 import { fmt, baseLabel, ratingColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 
-// Вкладка СДЕЛКИ — общерыночная лента обезличенных сделок из тикового архива.
-// Данные наливает часовой демон, поэтому хвост ленты отстаёт максимум на прогон:
-// «данные до …» в шапке показывает реальную свежесть, не время открытия страницы.
+// Вкладка СДЕЛКИ — единая лента рынка.
+//
+// Под капотом два архива, но для пользователя это одна лента (склейка по
+// TRADENO и её правила — services/tape):
+//   • тиковый архив Alor: все безадресные сделки любого размера, но только по
+//     нашему юниверсу;
+//   • крупные сделки всего рынка из ISS: от 1 млн ₽, зато включая адресные
+//     режимы — РПС, РПС с ЦК, размещения, выкупы, которых в стакане нет вообще.
+// Отсюда несимметричность фильтров: «все» суммы существуют только по юниверсу,
+// а адресные сделки — по всему рынку.
+//
+// Режим «дневные РПС» — отдельная таблица: поштучных адресных сделок за прошлые
+// сессии ISS не отдаёт, за те дни есть только агрегат бумага/борд/день. Поэтому
+// глубже старта сбора лента поштучно пуста, а дневная — нет.
 
-const WINDOWS = [[1, "сегодня"], [3, "3д"], [7, "7д"], [30, "30д"]];
-const THRESHOLDS = [[0, "все"], [1e6, "1 млн"], [1e7, "10 млн"], [5e7, "50 млн"]];
-const SIDES = [[null, "все"], ["buy", "покупка"], ["sell", "продажа"]];
+const WINDOWS = [[1, "сегодня"], [3, "3д"], [7, "7д"], [30, "30д"], [90, "90д"]];
+// 0 = без порога: мельче 1 млн ₽ сделки есть только по юниверсу (тик-архив)
+const THRESHOLDS = [[0, "все"], [1e6, "1 млн"], [5e6, "5 млн"], [1e7, "10 млн"],
+                    [5e7, "50 млн"], [1e8, "100 млн"]];
+const MARKETS = [[null, "все режимы"], ["bonds", "безадресные"], ["ndm", "адресные (РПС)"]];
+const SIDES = [[null, "любая"], ["buy", "покупка"], ["sell", "продажа"]];
+// охват: лента шире нашего юниверса, поэтому «весь рынок» — дефолт, а срез по
+// типу купона (флоатеры/фиксы) считает бэк по базе из справочников
+const SCOPES = [["market", "весь рынок"], ["universe", "наш юниверс"],
+                ["float", "флоатеры"], ["fixed", "фиксы"]];
 const LIMITS = [500, 2000, 5000];
 
 const money = (v) => {
@@ -21,7 +39,6 @@ const money = (v) => {
   if (a >= 1e3) return fmt.num(v / 1e3, 0) + " тыс";
   return fmt.num(v, 0);
 };
-// '2026-08-04 12:07:59' → '12:07:59' сегодня, иначе '04.08 12:07'
 const ts = (s, today) => {
   if (!s) return "—";
   const [d, t] = s.split(" ");
@@ -31,7 +48,8 @@ const ts = (s, today) => {
 function SideTag({ side }) {
   if (side !== "buy" && side !== "sell") return <span className="tape-side">—</span>;
   const buy = side === "buy";
-  return <span className={"tape-side " + (buy ? "tape-buy" : "tape-sell")}>{buy ? "покупка" : "продажа"}</span>;
+  return <span className={"tape-side " + (buy ? "tape-buy" : "tape-sell")}>
+    {buy ? "покупка" : "продажа"}</span>;
 }
 
 export default function TradesTape() {
@@ -39,19 +57,26 @@ export default function TradesTape() {
   const [days, setDays] = useState(1);
   const [minValue, setMinValue] = useState(1e6);
   const [side, setSide] = useState(null);
-  const [limit, setLimit] = useState(LIMITS[0]);
+  const [market, setMarket] = useState(null);
+  const [boards, setBoards] = useState([]);       // фильтр по конкретным режимам
   const [emitters, setEmitters] = useState([]);
-  const [pin, setPin] = useState(null);         // одна бумага (клик по топу оборота)
+  const [scope, setScope] = useState("market");
+  const [limit, setLimit] = useState(LIMITS[0]);
+  const [pin, setPin] = useState(null);
   const [q, setQ] = useState("");
+  const [view, setView] = useState("trades");     // trades | days
   const [data, setData] = useState(null);
+  const [dayData, setDayData] = useState(null);
   const [status, setStatus] = useState("loading");
   const [errMsg, setErrMsg] = useState("");
   const [issuers, setIssuers] = useState([]);
-  const [tick, setTick] = useState(0);          // ручное обновление
+  const [boardOpts, setBoardOpts] = useState([]);
+  const [tick, setTick] = useState(0);
   const abort = useRef(null);
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
+    fetchTapeBoards(90).then(setBoardOpts).catch(() => setBoardOpts([]));
   }, []);
 
   useEffect(() => {
@@ -59,11 +84,16 @@ export default function TradesTape() {
     const ac = new AbortController();
     abort.current = ac;
     setStatus("loading");
-    fetchMarketTape({ days, minValue, side, issuer: emitters, isin: pin, limit }, ac.signal)
-      .then((d) => { setData(d); setStatus("ready"); })
+    const req = view === "days"
+      ? fetchBlockDays({ isin: pin, days, minValue: minValue || 1e6 }, ac.signal)
+        .then((d) => { setDayData(d); })
+      : fetchMarketTape({ days, minValue, side, market, board: boards, issuer: emitters,
+                          isin: pin, scope, limit }, ac.signal)
+        .then((d) => { setData(d); });
+    req.then(() => setStatus("ready"))
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [days, minValue, side, limit, emitters, pin, tick]);
+  }, [days, minValue, side, market, boards, emitters, pin, scope, limit, view, tick]);
 
   const today = useMemo(() => {
     const d = new Date();
@@ -71,29 +101,41 @@ export default function TradesTape() {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }, [tick]);
 
-  const rows = useMemo(() => {
+  const match = (r) => {
     const s = q.trim().toLowerCase();
-    const all = data?.trades || [];
-    return s ? all.filter((r) => (r.name || "").toLowerCase().includes(s)
-                              || r.isin.toLowerCase().includes(s)
-                              || (r.emitter || "").toLowerCase().includes(s)) : all;
-  }, [data, q]);
+    if (!s) return true;
+    return (r.name || "").toLowerCase().includes(s) || r.isin.toLowerCase().includes(s)
+        || (r.emitter || "").toLowerCase().includes(s);
+  };
+  const rows = useMemo(() => (data?.trades || []).filter(match), [data, q]);
+  const dayRows = useMemo(() => (dayData?.rows || []).filter(match), [dayData, q]);
 
   const sum = data?.summary || {};
-  const toggleEmitter = (name) =>
-    setEmitters((a) => (a.includes(name) ? a.filter((x) => x !== name) : [...a, name]));
+  const byM = sum.by_market || {};
+  const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+  // опции режимов сужаем выбранным рынком — иначе в списке безадресных бордов
+  // висят РПС-борды, которые при market=bonds ничего не найдут
+  const shownBoards = boardOpts.filter((b) => !market || b.market === market);
 
   return (
     <div className="issuer-agg tape-page">
       <div className="ia-head">
         <h2 className="ia-title">Лента сделок</h2>
         <span className="ia-hint">
-          обезличенные сделки по всему юниверсу: цена, объём, рублёвая сумма и агрессор
-          (сторона, которая забрала заявку). Архив наливается часовым демоном
-          {sum.archive_till && <> · данные до {ts(sum.archive_till, today)} {sum.archive_till.slice(0, 10) !== today && `(${fmt.date(sum.archive_till.slice(0, 10))})`}</>}
-          {days > 30 && <> · глубже 35 дней в архиве остаются только сделки от 1 млн ₽</>}
+          сделки по всему рынку облигаций: безадресные режимы и адресные — РПС,
+          РПС с ЦК, размещения, выкупы (блок в адресном режиме в стакане не виден
+          вообще). Крупняк от 1 млн ₽ — по всему рынку, мельче — по нашему юниверсу
+          {sum.archive_till && <> · данные до {ts(sum.archive_till, today)}</>}
         </span>
         <div className="ia-filters">
+          <span className="seg" role="tablist" aria-label="Вид">
+            <button className={"seg-btn" + (view === "trades" ? " active" : "")}
+              onClick={() => setView("trades")}>поштучно</button>
+            <button className={"seg-btn" + (view === "days" ? " active" : "")}
+              onClick={() => setView("days")} title="дневные обороты адресных режимов из ISS">
+              дневные РПС
+            </button>
+          </span>
           <span className="ia-flabel">Окно</span>
           <span className="seg" role="tablist" aria-label="Окно">
             {WINDOWS.map(([d, label]) => (
@@ -108,36 +150,74 @@ export default function TradesTape() {
                 onClick={() => setMinValue(v)}>{label}</button>
             ))}
           </span>
-          <span className="seg" role="tablist" aria-label="Сторона">
-            {SIDES.map(([v, label]) => (
-              <button key={label} className={"seg-btn" + (side === v ? " active" : "")}
-                onClick={() => setSide(v)}>{label}</button>
-            ))}
-          </span>
+          {view === "trades" && (
+            <span className="seg" role="tablist" aria-label="Режим">
+              {MARKETS.map(([v, label]) => (
+                <button key={label} className={"seg-btn" + (market === v ? " active" : "")}
+                  onClick={() => { setMarket(v); setBoards([]); }}>{label}</button>
+              ))}
+            </span>
+          )}
+          {view === "trades" && (
+            <span className="seg" role="tablist" aria-label="Сторона">
+              {SIDES.map(([v, label]) => (
+                <button key={label} className={"seg-btn" + (side === v ? " active" : "")}
+                  onClick={() => setSide(v)}
+                  title="агрессор — сторона, забравшая заявку; у адресных сделок его нет">
+                  {label}</button>
+              ))}
+            </span>
+          )}
+          {view === "trades" && (
+            <span className="seg" role="tablist" aria-label="Охват">
+              {SCOPES.map(([v, label]) => (
+                <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
+                  onClick={() => setScope(v)}
+                  title={v === "market" ? "все облигации MOEX, шире нашего юниверса"
+                    : v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
+                    : v === "fixed" ? "только фиксы из нашего универса"
+                    : "флоатеры + фиксы нашего универса"}>{label}</button>
+              ))}
+            </span>
+          )}
           <IssuerFilter issuers={issuers} selected={emitters}
-            onToggle={toggleEmitter} onClear={() => setEmitters([])} />
+            onToggle={(n) => setEmitters((a) => toggle(a, n))} onClear={() => setEmitters([])} />
           <input className="tape-search" placeholder="бумага / ISIN…" value={q}
             onChange={(e) => setQ(e.target.value)} />
           <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>
         </div>
+        {view === "trades" && shownBoards.length > 0 && (
+          <div className="ia-filters blk-boards">
+            <span className="ia-flabel">Режимы</span>
+            {shownBoards.slice(0, 12).map((b) => (
+              <button key={b.board} className={"chip-btn" + (boards.includes(b.board) ? " on" : "")}
+                title={`${b.board} · ${b.n} сделок · ${money(b.value)} ₽`}
+                onClick={() => setBoards((a) => toggle(a, b.board))}>{b.title}</button>
+            ))}
+            {boards.length > 0 && (
+              <button className="btn" onClick={() => setBoards([])}>сбросить</button>
+            )}
+          </div>
+        )}
       </div>
 
       {status === "error" && <div className="ia-empty">ошибка: {errMsg}</div>}
-      {status === "loading" && !data && <div className="ia-empty">читаю архив сделок…</div>}
+      {status === "loading" && !data && !dayData && <div className="ia-empty">читаю архив сделок…</div>}
 
-      {data && (
+      {view === "trades" && data && (
         <>
           <div className="tape-sum">
             <span className="tape-kpi"><span className="tape-k">СДЕЛОК</span><span className="tape-v">{fmt.num(sum.n, 0)}</span></span>
             <span className="tape-kpi"><span className="tape-k">ОБОРОТ</span><span className="tape-v">{money(sum.value)} ₽</span></span>
             <span className="tape-kpi"><span className="tape-k">ПОКУПКИ</span><span className="tape-v tape-buy">{money(sum.buy_value)} ₽</span></span>
             <span className="tape-kpi"><span className="tape-k">ПРОДАЖИ</span><span className="tape-v tape-sell">{money(sum.sell_value)} ₽</span></span>
-            {(sum.issuers_top || []).length > 0 && (
+            <span className="tape-kpi"><span className="tape-k">АДРЕСНЫЕ</span><span className="tape-v">{money(byM.ndm?.value)} ₽</span></span>
+            {(sum.top || []).length > 0 && (
               <span className="tape-top">
                 <span className="tape-k">ТОП ОБОРОТА</span>
-                {(sum.issuers_top || []).slice(0, 5).map((t) => (
+                {(sum.top || []).slice(0, 5).map((t) => (
                   <button key={t.isin} className={"chip-btn" + (pin === t.isin ? " on" : "")}
-                    title={`${t.emitter || ""} · ${t.n} сделок`}
+                    title={`${t.emitter || t.isin} · ${t.n} сделок`}
                     onClick={() => setPin((p) => (p === t.isin ? null : t.isin))}>
                     {t.name} {money(t.value)}
                   </button>
@@ -153,34 +233,45 @@ export default function TradesTape() {
                   <th className="left">ВРЕМЯ</th>
                   <th className="left">БУМАГА</th>
                   <th className="left">ЭМИТЕНТ</th>
+                  <th className="left">РЕЖИМ</th>
                   <th>ЦЕНА, %</th>
                   <th>ОБЪЁМ, шт</th>
-                  <th>СУММА, ₽</th>
+                  <th>СУММА</th>
                   <th className="left">СТОРОНА</th>
+                  <th>ДОХ-ТЬ, %</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  // график выпуска построен вокруг флоатера (Y-IDX, спред-слои);
-                  // для фиксов/ОФЗ он пустой — такие строки не ведут никуда
+                  // график выпуска построен вокруг флоатера — для фиксов/ОФЗ и
+                  // бумаг вне юниверса он пустой, такие строки никуда не ведут
                   const clickable = r.base === "KEYRATE" || r.base === "RUONIA";
                   return (
-                  <tr key={r.isin + "/" + r.trade_id}
-                    className={clickable ? "" : "tape-row-static"}
-                    onClick={clickable ? () => nav(`/chart/${r.isin}`) : undefined}
-                    title={`${r.isin} · ${r.ts}`}>
-                    <td className="left tape-ts">{ts(r.ts, today)}</td>
-                    <td className="left tape-name">
-                      {r.name}
-                      {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
-                      {r.base && <span className="tape-base">{r.base === "FIXED" ? "фикс" : baseLabel(r.base)}</span>}
-                    </td>
-                    <td className="left tape-emitter">{r.emitter || "—"}</td>
-                    <td className="num">{fmt.pct(r.price)}</td>
-                    <td className="num">{fmt.num(r.qty, 0)}</td>
-                    <td className="num tape-val">{money(r.value)}</td>
-                    <td className="left"><SideTag side={r.side} /></td>
-                  </tr>
+                    <tr key={r.trade_id}
+                      className={(clickable ? "" : "tape-row-static ")
+                                 + (r.negotiated ? "blk-ndm" : "")}
+                      onClick={clickable ? () => nav(`/chart/${r.isin}`) : undefined}
+                      title={`${r.isin} · ${r.ts} · ${r.board}`}>
+                      <td className="left tape-ts">{ts(r.ts, today)}</td>
+                      <td className="left tape-name">
+                        {r.name}
+                        {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
+                        {r.base && <span className="tape-base">{r.base === "FIXED" ? "фикс" : baseLabel(r.base)}</span>}
+                      </td>
+                      <td className="left tape-emitter">{r.emitter || "—"}</td>
+                      <td className="left blk-board">
+                        <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}>
+                          {r.board_title || r.board}
+                        </span>
+                      </td>
+                      <td className="num">{fmt.pct(r.price)}</td>
+                      <td className="num">{fmt.num(r.qty, 0)}</td>
+                      <td className="num tape-val">
+                        {money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : " ₽"}
+                      </td>
+                      <td className="left"><SideTag side={r.side} /></td>
+                      <td className="num">{r.yld != null ? fmt.num(r.yld, 2) : "—"}</td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -196,6 +287,51 @@ export default function TradesTape() {
               ))}
             </div>
           )}
+        </>
+      )}
+
+      {view === "days" && dayData && (
+        <>
+          <div className="tape-sum">
+            <span className="ia-hint">
+              дневные обороты адресных режимов из ISS: поштучных РПС-сделок за прошлые
+              сессии биржа не отдаёт, поэтому за дни до запуска сбора это единственный
+              след блока — бумага, режим, оборот и средневзвешенная цена дня
+            </span>
+          </div>
+          <div className="ia-table-wrap">
+            <table className="grid tape-table">
+              <thead>
+                <tr>
+                  <th className="left">ДАТА</th>
+                  <th className="left">БУМАГА</th>
+                  <th className="left">ЭМИТЕНТ</th>
+                  <th className="left">РЕЖИМ</th>
+                  <th>СДЕЛОК</th>
+                  <th>СРЕДНЕВЗВЕС, %</th>
+                  <th>ОБЪЁМ, шт</th>
+                  <th>ОБОРОТ, ₽</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dayRows.map((r) => (
+                  <tr key={r.isin + r.date + r.board} title={r.isin}>
+                    <td className="left tape-ts">{fmt.date(r.date)}</td>
+                    <td className="left tape-name">{r.name}</td>
+                    <td className="left tape-emitter">{r.emitter || "—"}</td>
+                    <td className="left blk-board">
+                      <span className="blk-tag blk-tag-ndm">{r.board_title || r.board}</span>
+                    </td>
+                    <td className="num">{fmt.num(r.numtrades, 0)}</td>
+                    <td className="num">{r.waprice != null ? fmt.pct(r.waprice) : "—"}</td>
+                    <td className="num">{fmt.num(r.volume, 0)}</td>
+                    <td className="num tape-val">{money(r.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {dayRows.length === 0 && status === "ready" && <div className="ia-empty">нет дневных оборотов под фильтром</div>}
+          </div>
         </>
       )}
     </div>

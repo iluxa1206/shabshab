@@ -238,12 +238,19 @@ export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
   return request(u);
 };
 
-// Общерыночная лента сделок (вкладка СДЕЛКИ): тот же архив, но по всем бумагам.
-// Онлайн-дрейна тут нет — данные до последнего прогона часового демона.
-export const fetchMarketTape = ({ days = 1, minValue = 0, side, issuer, isin,
-                                  limit = 500 } = {}, signal) => {
-  const p = new URLSearchParams({ days, min_value: minValue, limit });
+// Общерыночная лента сделок (вкладка СДЕЛКИ). Бэк склеивает два архива —
+// тики Alor (всё по юниверсу) и крупные сделки всего рынка из ISS (включая
+// адресные режимы) — по TRADENO, так что дублей нет. Онлайн-дрейна тут нет:
+// данные до последнего прогона фоновых демонов.
+// scope: market (весь рынок) | universe (флоатеры+фиксы) | float | fixed
+// market: bonds (безадресные) | ndm (адресные, РПС)
+export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
+                                  issuer, isin, scope = "market", limit = 500 } = {},
+                                signal) => {
+  const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   if (side) p.set("side", side);
+  if (market) p.set("market", market);
+  for (const b of [].concat(board || [])) if (b) p.append("board", b);
   // эмитенты — повторяющийся параметр; пустой массив не шлём (иначе бэк поймёт
   // это как «фильтр задан, но ничего не подошло» и вернёт пустую ленту)
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
@@ -254,23 +261,12 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, issuer, isin,
 export const fetchTapeIssuers = () =>
   request("/api/trades/issuers").then((d) => d.issuers || []);
 
-// --- Крупные сделки (вкладка КРУПНЫЕ) ---
+export const fetchTapeBoards = (days = 30) =>
+  request(`/api/trades/boards?days=${days}`).then((d) => d.boards || []);
+
+// --- Крупные сделки (слой РПС на карточке выпуска) ---
 // Лента по ВСЕМУ рынку облигаций, включая адресные режимы (РПС/размещения),
 // которых нет в обезличенном тик-архиве. Источник — ISS, см. services/block_trades.
-// scope: market (весь рынок) | universe (флоатеры+фиксы) | float | fixed
-export const fetchBlocks = ({ days = 1, minValue = 0, market, board, issuer, isin,
-                              side, scope = "market", limit = 500 } = {}, signal) => {
-  const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
-  if (market) p.set("market", market);
-  for (const b of [].concat(board || [])) if (b) p.append("board", b);
-  for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
-  if (isin) p.set("isin", isin);
-  if (side) p.set("side", side);
-  return request(`/api/blocks?${p}`, { signal });
-};
-
-export const fetchBlockBoards = (days = 30) =>
-  request(`/api/blocks/boards?days=${days}`).then((d) => d.boards || []);
 
 // крупные сделки одной бумаги + её дневные РПС-обороты (карточка выпуска)
 export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500 } = {}, signal) =>
