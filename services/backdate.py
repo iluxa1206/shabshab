@@ -552,8 +552,12 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     # пустая серия — скорее сбой MOEX/сети, чем «дат нет»: не сносим, дождёмся
     if untrusted and series["points"]:
         from services.spread_history import drop_untrusted
-        leftover = untrusted - {p["date"] for p in series["points"]}
-        n += drop_untrusted(isin, leftover)
+        # покрытой считается дата с ХОТЬ ОДНОЙ метрикой: точка с y_idx=dm=None
+        # (солвер споткнулся, напр. день выплаты купона) строку не перезаписывает
+        # и без этого фильтра оставляла бы легаси-мусор жить вечно
+        covered = {p["date"] for p in series["points"]
+                   if p.get("y_idx_bps") is not None or p.get("dm_bps") is not None}
+        n += drop_untrusted(isin, untrusted - covered)
     _backfill_done[(isin, board)] = (_date.today(), days)
     return n + dropped
 
