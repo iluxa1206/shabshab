@@ -524,10 +524,19 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
         logger.info("honest %s: снесено %d строк старого движка → пересчёт", isin, dropped)
     existing = {r["date"]: r for r in read_history(isin, days=days + 10)
                 if (r.get("kind") or "floater") == "floater"}
+    # Доверенные источники — вечерний снапшот ('snap', живой движок в свой день)
+    # и honest-бэкфилл текущей версии. Строки БЕЗ src — легаси candle-est
+    # (scripts/backfill_yidx_history.py: цена дня × модель на день прогона):
+    # их y_idx/dm недоверенные, пересчитываются честно на их же цене.
+    _trusted = lambda r: r.get("src") in ("snap", "honest")
+    untrusted = {d for d, r in existing.items() if not _trusted(r)}
     overrides = {d: r["price_pct"] for d, r in existing.items()
-                 if r.get("y_idx") is None and r.get("price_pct") is not None}
-    # окно уже покрыто строками с y_idx и дыр-легаси нет → тяжёлый пересчёт не нужен
-    have = sum(1 for r in existing.values() if r.get("y_idx") is not None)
+                 if r.get("price_pct") is not None
+                 and (d in untrusted or r.get("y_idx") is None)}
+    # окно уже покрыто доверенными строками с y_idx и дыр-легаси нет →
+    # тяжёлый пересчёт не нужен
+    have = sum(1 for d, r in existing.items()
+               if _trusted(r) and r.get("y_idx") is not None)
     if not overrides and have >= days:
         _backfill_done[(isin, board)] = (_date.today(), days)
         return 0
@@ -535,7 +544,8 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
                                         price_overrides=overrides or None)
     missing_or_null = [p for p in series["points"]
                        if p["date"] not in existing or p["date"] in overrides]
-    n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION)
+    n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION,
+                       retrust_dates=untrusted)
          if missing_or_null else 0)
     _backfill_done[(isin, board)] = (_date.today(), days)
     return n + dropped

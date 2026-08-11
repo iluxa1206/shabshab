@@ -91,18 +91,28 @@ def drop_stale_honest(isin: str, engine_ver: int) -> int:
 
 
 def upsert_honest(isin: str, points: list, existing_dates: set,
-                  engine_ver: int = 0) -> int:
+                  engine_ver: int = 0, retrust_dates: Optional[set] = None) -> int:
     """Персистит честный бэкфилл: INSERT точек для дат без строки (src='honest');
     для существующих строк (вечерние снапшоты) НИЧЕГО не перезаписывает, кроме
     y_idx, если он NULL (легаси-строки до появления колонки — пересчитаны на их
     же цене, см. backdate.ensure_honest_backfill). Прошлое не меняется —
     идемпотентно. engine_ver штампуется на вставляемые строки, чтобы следующий
-    фикс движка мог их инвалидировать (drop_stale_honest)."""
-    ins, upd = [], []
+    фикс движка мог их инвалидировать (drop_stale_honest).
+
+    retrust_dates — даты НЕДОВЕРЕННЫХ строк (легаси candle-est бэкфилл без src:
+    y_idx/dm там — историческая цена × модель НА ДЕНЬ ПРОГОНА скрипта, у бумаг
+    близко к погашению это сотни bps мусора). Такие строки перезаписываются
+    честным расчётом на их же цене целиком (y_idx/dm/ytm) и перештамповываются
+    src='honest' + engine_ver, чтобы дальше жить по правилам honest-строк."""
+    retrust = retrust_dates or set()
+    ins, upd, rew = [], [], []
     for p in points:
         if p.get("y_idx_bps") is None and p.get("dm_bps") is None:
             continue
-        if p["date"] in existing_dates:
+        if p["date"] in retrust:
+            rew.append((p.get("y_idx_bps"), p.get("dm_bps"), p.get("ytm"),
+                        engine_ver, isin, p["date"]))
+        elif p["date"] in existing_dates:
             upd.append((p.get("y_idx_bps"), isin, p["date"]))
         else:
             ins.append((isin, p["date"], "floater", p.get("price"), p.get("dm_bps"),
@@ -116,4 +126,8 @@ def upsert_honest(isin: str, points: list, existing_dates: set,
             c.executemany(
                 "UPDATE spread_daily SET y_idx=? WHERE isin=? AND date=? AND y_idx IS NULL",
                 upd)
-    return len(ins) + len(upd)
+        if rew:
+            c.executemany(
+                "UPDATE spread_daily SET y_idx=?, dm_bps=?, ytm=?, src='honest', "
+                "engine_ver=? WHERE isin=? AND date=?", rew)
+    return len(ins) + len(upd) + len(rew)
