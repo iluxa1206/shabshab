@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Алерты</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #0e1420);
+    --bg2: var(--tg-theme-secondary-bg-color, #141c2c);
+    --text: var(--tg-theme-text-color, #dee4ee);
+    --hint: var(--tg-theme-hint-color, #808c9e);
+    --link: var(--tg-theme-link-color, #6ab0f3);
+    --btn: var(--tg-theme-button-color, #2ea6ff);
+    --btn-text: var(--tg-theme-button-text-color, #fff);
+    --red: #e5484d; --green: #46a758; --yellow: #facc15;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, Roboto, "Segoe UI", sans-serif;
+         padding: 12px 12px 40px; }
+  h1 { font-size: 17px; margin: 4px 0 12px; display: flex;
+       justify-content: space-between; align-items: center; }
+  .muted-toggle { font-size: 13px; color: var(--hint); cursor: pointer;
+                  border: 1px solid var(--hint); border-radius: 14px; padding: 3px 10px; }
+  .muted-toggle.on { color: var(--yellow); border-color: var(--yellow); }
+  .card { background: var(--bg2); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .card .row1 { display: flex; justify-content: space-between; align-items: baseline; }
+  .card .name { font-weight: 600; font-size: 14px; }
+  .card .isin { color: var(--hint); font-size: 12px; }
+  .card .cond { margin-top: 4px; font-size: 14px; }
+  .card .cond .buy { color: var(--green); } .card .cond .sell { color: var(--red); }
+  .card .meta { color: var(--hint); font-size: 12px; margin-top: 2px; }
+  .card .actions { margin-top: 6px; display: flex; gap: 14px; }
+  .card .actions a { color: var(--link); font-size: 13px; text-decoration: none; cursor: pointer; }
+  .card .actions a.danger { color: var(--red); }
+  .badge { font-size: 11px; border-radius: 8px; padding: 1px 7px; }
+  .badge.active { background: rgba(70,167,88,.18); color: var(--green); }
+  .badge.fired { background: rgba(250,204,21,.15); color: var(--yellow); }
+  form { background: var(--bg2); border-radius: 10px; padding: 12px; margin-top: 16px; }
+  form h2 { font-size: 14px; margin-bottom: 10px; }
+  .frow { display: flex; gap: 8px; margin-bottom: 8px; }
+  .frow > * { flex: 1; min-width: 0; }
+  input, select, textarea {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid rgba(128,140,158,.35); border-radius: 8px;
+    padding: 9px 10px; font-size: 15px; }
+  input:focus, select:focus { outline: none; border-color: var(--btn); }
+  button { width: 100%; background: var(--btn); color: var(--btn-text); border: 0;
+           border-radius: 9px; padding: 11px; font-size: 15px; font-weight: 600;
+           margin-top: 4px; cursor: pointer; }
+  button:disabled { opacity: .5; }
+  #picker { position: relative; }
+  #suggest { position: absolute; left: 0; right: 0; top: 100%; z-index: 5;
+             background: var(--bg2); border: 1px solid rgba(128,140,158,.35);
+             border-radius: 8px; margin-top: 2px; max-height: 220px; overflow-y: auto; }
+  #suggest div { padding: 8px 10px; cursor: pointer; font-size: 13px; }
+  #suggest div:active { background: rgba(128,140,158,.2); }
+  #suggest .s-isin { color: var(--hint); font-size: 11px; }
+  .note { color: var(--hint); font-size: 12px; margin-top: 6px; }
+  #err { color: var(--red); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  .center { text-align: center; color: var(--hint); padding: 40px 10px; }
+</style>
+</head>
+<body>
+<div id="app" class="center">Загрузка…</div>
+<script>
+(function () {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const initData = tg && tg.initData;
+  // прод: /desk/app/tg-app.html → /desk/api/tg; локальный FastAPI: /app/tg-app.html
+  // → /api/tg; vite dev: /tg-app.html → /api/tg (проксируется на :8000)
+  const API = location.pathname.replace(/\/(app\/)?[^/]*$/, "") + "/api/tg";
+  const $ = (id) => document.getElementById(id);
+  const app = $("app");
+  if (tg) { tg.ready(); tg.expand(); }
+
+  if (!initData) {
+    app.innerHTML = "Открой эту страницу из Telegram-бота (кнопка «Алерты»).";
+    return;
+  }
+
+  const METRICS = { yidx: "Y-IDX", dm: "DM", ytm: "YTM", price: "цена", gspread: "G-спред" };
+  const UNITS = { yidx: " бп", dm: " бп", ytm: "%", price: "", gspread: " бп" };
+  let muted = false;
+
+  async function api(path, opts = {}) {
+    const r = await fetch(API + path, Object.assign({}, opts, {
+      headers: Object.assign({ "Authorization": "tma " + initData,
+                               "Content-Type": "application/json" }, opts.headers || {}),
+    }));
+    if (!r.ok) {
+      let d = ""; try { d = (await r.json()).detail || ""; } catch (e) {}
+      throw new Error(d || ("HTTP " + r.status));
+    }
+    return r.json();
+  }
+
+  function fmtVol(a) {
+    if (!a.min_volume) return "";
+    const v = a.min_volume >= 1e6 ? (a.min_volume / 1e6) + " млн" : a.min_volume.toLocaleString("ru");
+    return " · vol ≥ " + v + (a.volume_unit === "rub" ? " ₽" : " шт");
+  }
+
+  function alertCard(a) {
+    const badge = a.status === "active" ? '<span class="badge active">активен</span>'
+      : a.status === "fired" ? '<span class="badge fired">сработал</span>' : "";
+    const fired = a.status === "fired" && a.fired_price
+      ? `<div class="meta">сработал @ ${a.fired_price}${a.fired_volume ? ", " + a.fired_volume.toLocaleString("ru") + " шт" : ""}</div>` : "";
+    return `<div class="card" data-id="${a.id}">
+      <div class="row1"><span class="name">${a.name || a.isin}</span>${badge}</div>
+      <div class="isin">${a.isin}${a.kind === "fixed" ? " · фикс" : ""}</div>
+      <div class="cond"><span class="${a.side}">${a.side === "buy" ? "покупка" : "продажа"}</span>
+        · ${METRICS[a.metric] || a.metric} ${a.op === ">=" ? "≥" : "≤"} ${a.threshold}${UNITS[a.metric] || ""}${fmtVol(a)}</div>
+      ${fired}
+      <div class="actions">
+        ${a.status === "fired" ? '<a data-act="rearm">взвести снова</a>' : ""}
+        <a data-act="del" class="danger">удалить</a>
+      </div></div>`;
+  }
+
+  async function render() {
+    let me, list;
+    try {
+      [me, list] = await Promise.all([api("/me"), api("/alerts")]);
+    } catch (e) {
+      app.innerHTML = "Ошибка: " + e.message +
+        (e.message.indexOf("Доступ") >= 0 ? "" : "<br>Попробуй переоткрыть Mini App.");
+      app.className = "center";
+      return;
+    }
+    muted = me.muted;
+    const names = {};   // подтянуть имена бумаг одним заходом поиска не выйдет — рисуем isin
+    app.className = "";
+    app.innerHTML = `
+      <h1>Алерты по стакану
+        <span class="muted-toggle ${muted ? "on" : ""}" id="mute">${muted ? "🔇 mute" : "🔔 on"}</span></h1>
+      <div id="list">${list.alerts.map(alertCard).join("") || '<div class="center">Пока пусто</div>'}</div>
+      <form id="f">
+        <h2>Новый алерт</h2>
+        <div id="picker">
+          <input id="q" placeholder="ISIN или название бумаги" autocomplete="off" />
+          <div id="suggest" hidden></div>
+        </div>
+        <div class="frow">
+          <select id="side"><option value="buy">покупка (asks)</option><option value="sell">продажа (bids)</option></select>
+          <select id="kind"><option value="floater">флоатер</option><option value="fixed">фикс</option></select>
+        </div>
+        <div class="frow">
+          <select id="metric"><option value="yidx">Y-IDX</option><option value="dm">DM</option>
+            <option value="ytm">YTM</option><option value="price">цена</option><option value="gspread">G-спред</option></select>
+          <select id="op"><option value=">=">≥</option><option value="<=">≤</option></select>
+          <input id="thr" type="number" step="any" placeholder="порог" required />
+        </div>
+        <div class="frow">
+          <input id="vol" type="number" step="any" placeholder="мин. объём (0 = любой)" />
+          <select id="unit"><option value="rub">₽</option><option value="bonds">шт</option></select>
+        </div>
+        <input id="note" placeholder="заметка (необязательно)" />
+        <button type="submit">Создать</button>
+        <div id="err"></div>
+        <div class="note">Сработавший алерт придёт сюда картинкой стакана и встанет на паузу до повторного взвода.</div>
+      </form>`;
+
+    $("mute").onclick = async () => {
+      try { muted = (await api("/mute", { method: "POST", body: JSON.stringify({ muted: !muted }) })).muted; } catch (e) {}
+      const el = $("mute");
+      el.className = "muted-toggle " + (muted ? "on" : "");
+      el.textContent = muted ? "🔇 mute" : "🔔 on";
+    };
+
+    $("list").onclick = async (ev) => {
+      const act = ev.target.getAttribute && ev.target.getAttribute("data-act");
+      if (!act) return;
+      const id = ev.target.closest(".card").getAttribute("data-id");
+      try {
+        if (act === "del") {
+          if (tg && tg.showConfirm) {
+            tg.showConfirm("Удалить алерт #" + id + "?", async (ok) => {
+              if (ok) { await api("/alerts/" + id, { method: "DELETE" }); render(); }
+            });
+            return;
+          }
+          await api("/alerts/" + id, { method: "DELETE" });
+        } else if (act === "rearm") {
+          await api("/alerts/" + id, { method: "PATCH", body: JSON.stringify({}) });
+        }
+        render();
+      } catch (e) { alert(e.message); }
+    };
+
+    // пикер ISIN
+    let chosen = null, timer = null;
+    const q = $("q"), sug = $("suggest");
+    q.oninput = () => {
+      chosen = null;
+      clearTimeout(timer);
+      const v = q.value.trim();
+      if (/^[A-Za-z]{2}[A-Za-z0-9]{10}$/.test(v)) { chosen = { isin: v.toUpperCase() }; sug.hidden = true; return; }
+      if (v.length < 2) { sug.hidden = true; return; }
+      timer = setTimeout(async () => {
+        try {
+          const res = (await api("/search?q=" + encodeURIComponent(v))).results;
+          sug.innerHTML = res.map(r =>
+            `<div data-isin="${r.isin}" data-name="${r.name}"><b>${r.name}</b> ${r.rating ? "· " + r.rating : ""}<br><span class="s-isin">${r.isin} · ${r.base || ""}</span></div>`).join("");
+          sug.hidden = !res.length;
+        } catch (e) { sug.hidden = true; }
+      }, 250);
+    };
+    sug.onclick = (ev) => {
+      const d = ev.target.closest("div[data-isin]");
+      if (!d) return;
+      chosen = { isin: d.getAttribute("data-isin"), name: d.getAttribute("data-name") };
+      q.value = chosen.name + " (" + chosen.isin + ")";
+      sug.hidden = true;
+    };
+
+    $("f").onsubmit = async (ev) => {
+      ev.preventDefault();
+      $("err").textContent = "";
+      const isin = chosen ? chosen.isin : q.value.trim().toUpperCase();
+      if (!/^[A-Z]{2}[A-Z0-9]{10}$/.test(isin)) { $("err").textContent = "Выбери бумагу из списка или введи ISIN."; return; }
+      const body = {
+        isin: isin, side: $("side").value, kind: $("kind").value,
+        metric: $("metric").value, op: $("op").value,
+        threshold: parseFloat($("thr").value),
+        min_volume: parseFloat($("vol").value) || 0,
+        volume_unit: $("unit").value, note: $("note").value || null,
+      };
+      try {
+        await api("/alerts", { method: "POST", body: JSON.stringify(body) });
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        render();
+      } catch (e) { $("err").textContent = e.message; }
+    };
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

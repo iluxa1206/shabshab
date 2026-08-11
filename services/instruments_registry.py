@@ -320,6 +320,23 @@ def get(isin: str) -> Optional[dict]:
         return dict(r) if r else None
 
 
+def search(q: str, limit: int = 10) -> list[dict]:
+    """Поиск бумаги по подстроке ISIN/имени/эмитента (пикер Mini App).
+    → [{isin, name, base, rating}]."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    _ensure()
+    like = f"%{q}%"
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, emitter_name, base, rating FROM instruments "
+            "WHERE isin LIKE ? OR short_name LIKE ? OR emitter_name LIKE ? "
+            "ORDER BY short_name LIMIT ?", (like, like, like, int(limit))).fetchall()
+    return [{"isin": r["isin"], "name": r["short_name"] or r["isin"],
+             "base": r["base"], "rating": r["rating"]} for r in rows]
+
+
 def ratings_map(isins) -> Dict[str, str]:
     """{isin: rating} для списка ОДНИМ запросом (батч вместо get() в цикле —
     _conn() открывает соединение + PRAGMA на каждый вызов, в цикле по 700 бумаг

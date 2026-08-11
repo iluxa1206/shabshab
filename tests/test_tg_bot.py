@@ -89,3 +89,107 @@ def test_render_empty_sides():
     png = render_orderbook(isin="RU000A10AU99", name=None, kind="fixed",
                            bids=[], asks=_levels(100.2, 3, 0.05))
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# --- фаза 2: initData + REST Mini App ---
+
+import os
+import time as _time
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from services.tg_webapp import InitDataError, sign_init_data, validate_init_data
+
+
+def _init_data(uid=424242, age=0):
+    return sign_init_data({
+        "auth_date": int(_time.time()) - age,
+        "query_id": "AAtest",
+        "user": '{"id": %d, "username": "tester", "first_name": "T"}' % uid,
+    })
+
+
+def test_initdata_roundtrip():
+    u = validate_init_data(_init_data())
+    assert u["tg_user_id"] == 424242 and u["username"] == "tester"
+
+
+def test_initdata_tampered():
+    good = _init_data()
+    bad = good.replace("tester", "hacker")
+    with pytest.raises(InitDataError):
+        validate_init_data(bad)
+
+
+def test_initdata_stale():
+    with pytest.raises(InitDataError):
+        validate_init_data(_init_data(age=25 * 3600))
+
+
+def test_initdata_wrong_token():
+    forged = sign_init_data(
+        {"auth_date": int(_time.time()), "user": '{"id": 1}'},
+        token="1234:WRONG")
+    with pytest.raises(InitDataError):
+        validate_init_data(forged)
+
+
+@pytest.fixture()
+def tg_client():
+    from services import portfolio_db
+    from api.routes import tg as tg_route
+    portfolio_db.init_db()
+    app = FastAPI()
+    app.include_router(tg_route.router, prefix="/api/tg")
+    from services import tg_users as tgu
+    tgu.upsert(424242, 424242, "tester")   # зарегистрирован → allowlist пуст, но пускаем
+    yield TestClient(app)
+    from services.portfolio_db import _connect, _lock
+    with _lock, _connect() as c:
+        c.execute("DELETE FROM tg_users WHERE tg_user_id IN (424242, 555)")
+        c.execute("DELETE FROM alerts WHERE user_email LIKE 'tg:%'")
+
+
+def _h(uid=424242):
+    return {"Authorization": "tma " + _init_data(uid)}
+
+
+def test_rest_requires_auth(tg_client):
+    assert tg_client.get("/api/tg/alerts").status_code == 401
+    assert tg_client.get("/api/tg/alerts",
+                         headers={"Authorization": "tma garbage"}).status_code == 401
+
+
+def test_rest_forbids_stranger(tg_client):
+    assert tg_client.get("/api/tg/alerts", headers=_h(uid=555)).status_code == 403
+
+
+def test_rest_crud_and_rearm(tg_client):
+    body = {"isin": "RU000A10AU99", "side": "buy", "metric": "yidx",
+            "op": ">=", "threshold": 250, "min_volume": 1e6, "volume_unit": "rub"}
+    a = tg_client.post("/api/tg/alerts", json=body, headers=_h()).json()
+    assert a["user_email"] == "tg:424242" and a["status"] == "active"
+
+    rows = tg_client.get("/api/tg/alerts", headers=_h()).json()["alerts"]
+    assert len(rows) == 1
+
+    # имитируем срабатывание → ре-арм пустым PATCH
+    from services import alerts as alerts_svc
+    alerts_svc.mark_fired(a["id"], 100.15, 1200)
+    r = tg_client.patch(f"/api/tg/alerts/{a['id']}", json={}, headers=_h())
+    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert r.json()["fired_at"] is None
+
+    assert tg_client.post("/api/tg/mute", json={"muted": True},
+                          headers=_h()).json()["muted"] is True
+    assert tg_client.get("/api/tg/me", headers=_h()).json()["muted"] is True
+
+    assert tg_client.delete(f"/api/tg/alerts/{a['id']}", headers=_h()).status_code == 200
+    assert tg_client.delete(f"/api/tg/alerts/{a['id']}", headers=_h()).status_code == 404
+
+
+def test_rest_search(tg_client):
+    r = tg_client.get("/api/tg/search?q=ОФЗ", headers=_h())
+    assert r.status_code == 200
+    assert isinstance(r.json()["results"], list)

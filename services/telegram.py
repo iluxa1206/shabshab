@@ -59,12 +59,15 @@ async def call(method: str, payload: Optional[dict] = None,
 
 async def send_message(chat_id: int, text: str, *,
                        parse_mode: Optional[str] = "HTML",
-                       disable_notification: bool = False) -> Optional[dict]:
+                       disable_notification: bool = False,
+                       reply_markup: Optional[dict] = None) -> Optional[dict]:
     payload = {"chat_id": chat_id, "text": text,
                "disable_notification": disable_notification,
                "link_preview_options": {"is_disabled": True}}
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     return await call("sendMessage", payload)
 
 

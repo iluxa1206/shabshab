@@ -9,12 +9,28 @@ user_email 'tg:<tg_user_id>' (см. services/tg_users.py).
 import logging
 import os
 import re
-from fastapi import APIRouter, Header, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request
+from pydantic import BaseModel
 
 from services import alerts, telegram, tg_users
+from services.tg_webapp import InitDataError, validate_init_data
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _webapp_url() -> Optional[str]:
+    return os.getenv("TG_WEBAPP_URL") or None
+
+
+def _webapp_markup() -> Optional[dict]:
+    url = _webapp_url()
+    if not url:
+        return None
+    return {"inline_keyboard": [[{"text": "⚙️ Настройка алертов",
+                                  "web_app": {"url": url}}]]}
 
 _METRICS = "price|ytm|dm|yidx|gspread"
 _ALERT_RE = re.compile(
@@ -49,8 +65,10 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
 
     if text.startswith("/start"):
         tg_users.upsert(uid, chat_id, username)
-        return ("Флоатер-деск на связи. Алерты по стакану придут сюда "
-                "картинкой.\n\n" + _HELP)
+        await telegram.send_message(
+            chat_id, "Флоатер-деск на связи. Алерты по стакану придут сюда "
+            "картинкой.\n\n" + _HELP, reply_markup=_webapp_markup())
+        return ""
 
     if text.startswith("/help"):
         return _HELP
@@ -135,3 +153,108 @@ async def tg_webhook(request: Request,
     if reply:
         await telegram.send_message(chat_id, reply)
     return {"ok": True}
+
+
+# --- REST для Mini App (фаза 2). Auth — подписанный initData в заголовке
+# Authorization: tma <initData>; per-request, серверной сессии нет. ---
+
+async def require_tg(authorization: str = Header(default="")) -> dict:
+    if not authorization.startswith("tma "):
+        raise HTTPException(status_code=401, detail="Нет initData")
+    try:
+        user = validate_init_data(authorization[4:])
+    except InitDataError as e:
+        raise HTTPException(status_code=401, detail=f"initData: {e}")
+    if not tg_users.is_allowed(user["tg_user_id"]):
+        raise HTTPException(status_code=403, detail="Доступ закрыт")
+    return user
+
+
+class TgAlertCreate(BaseModel):
+    isin: str
+    side: str                    # buy | sell
+    metric: str                  # price | ytm | dm | yidx | gspread
+    op: str                      # '<=' | '>='
+    threshold: float
+    min_volume: float = 0.0
+    volume_unit: str = "bonds"   # bonds | rub
+    kind: str = "floater"
+    note: Optional[str] = None
+
+
+class TgAlertPatch(BaseModel):
+    side: Optional[str] = None
+    metric: Optional[str] = None
+    op: Optional[str] = None
+    threshold: Optional[float] = None
+    min_volume: Optional[float] = None
+    volume_unit: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.get("/me", tags=["TG"])
+async def tg_me(user: dict = Depends(require_tg)):
+    row = tg_users.get(user["tg_user_id"]) or {}
+    return {"tg_user_id": user["tg_user_id"], "username": user.get("username"),
+            "muted": bool(row.get("muted")), "registered": bool(row)}
+
+
+@router.get("/alerts", tags=["TG"])
+async def tg_list_alerts(user: dict = Depends(require_tg)):
+    rows = alerts.list_for_user(tg_users.email_for(user["tg_user_id"]))
+    try:
+        from services import instruments_registry
+        labels = instruments_registry.labels_map([a["isin"] for a in rows])
+        for a in rows:
+            a["name"] = (labels.get(a["isin"]) or {}).get("name")
+    except Exception:
+        pass
+    return {"alerts": rows}
+
+
+@router.post("/alerts", tags=["TG"])
+async def tg_create_alert(body: TgAlertCreate, user: dict = Depends(require_tg)):
+    try:
+        return alerts.create(
+            tg_users.email_for(user["tg_user_id"]), isin=body.isin, side=body.side,
+            metric=body.metric, op=body.op, threshold=body.threshold,
+            min_volume=body.min_volume, volume_unit=body.volume_unit,
+            kind=body.kind, note=body.note)
+    except alerts.AlertError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/alerts/{aid}", tags=["TG"])
+async def tg_patch_alert(body: TgAlertPatch, aid: int = Path(...),
+                         user: dict = Depends(require_tg)):
+    try:
+        a = alerts.update(tg_users.email_for(user["tg_user_id"]), aid,
+                          **body.model_dump(exclude_none=True))
+    except alerts.AlertError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if a is None:
+        raise HTTPException(status_code=404, detail="Алерт не найден")
+    return a
+
+
+@router.delete("/alerts/{aid}", tags=["TG"])
+async def tg_delete_alert(aid: int = Path(...), user: dict = Depends(require_tg)):
+    if not alerts.delete(tg_users.email_for(user["tg_user_id"]), aid):
+        raise HTTPException(status_code=404, detail="Алерт не найден")
+    return {"ok": True}
+
+
+class MuteBody(BaseModel):
+    muted: bool
+
+
+@router.post("/mute", tags=["TG"])
+async def tg_mute(body: MuteBody, user: dict = Depends(require_tg)):
+    tg_users.set_muted(user["tg_user_id"], body.muted)
+    return {"muted": body.muted}
+
+
+@router.get("/search", tags=["TG"])
+async def tg_search(q: str = "", user: dict = Depends(require_tg)):
+    from services import instruments_registry
+    return {"results": instruments_registry.search(q, limit=10)}

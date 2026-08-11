@@ -23,6 +23,12 @@ async def main() -> None:
     print("setWebhook:", res)
     info = await telegram.call("getWebhookInfo")
     print("getWebhookInfo:", info)
+    webapp = os.getenv("TG_WEBAPP_URL")
+    if webapp:
+        res = await telegram.call("setChatMenuButton", {
+            "menu_button": {"type": "web_app", "text": "Алерты",
+                            "web_app": {"url": webapp}}})
+        print("setChatMenuButton:", res)
 
 
 if __name__ == "__main__":

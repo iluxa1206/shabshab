@@ -97,10 +97,11 @@ def update(user_email: str, aid: int, **fields) -> Optional[dict]:
                 sets[numk] = float(sets[numk])
             except (TypeError, ValueError):
                 raise AlertError(f"{numk} должно быть числом")
-    cols = ", ".join(f"{k}=?" for k in sets)
+    # пустой sets — чистый ре-арм (PATCH {} по сработавшему)
+    cols = "".join(f"{k}=?, " for k in sets)
     with _lock, _connect() as c:
         c.execute(
-            f"UPDATE alerts SET {cols}, status='active', fired_at=NULL, "
+            f"UPDATE alerts SET {cols}status='active', fired_at=NULL, "
             f"fired_price=NULL, fired_volume=NULL WHERE id=? AND user_email=?",
             (*sets.values(), aid, user_email))
     return get(aid)
