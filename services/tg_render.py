@@ -106,7 +106,7 @@ def render_orderbook(*, isin: str, name: Optional[str], kind: str,
         cols = [("YTM %", lambda lv: _fmt(lv.get("yield_pct"))),
                 ("G-спр", lambda lv: _fmt(lv.get("g_spread_bps"), 0))]
     else:
-        cols = [("Y-IDX", lambda lv: _fmt(lv.get("y_idx_bps"), 0)),
+        cols = [("R-spread", lambda lv: _fmt(lv.get("y_idx_bps"), 0)),
                 ("DM", lambda lv: _fmt(lv.get("dm_bps"), 0))]
     x_m1, x_m2, x_px, x_q, x_bar = _PAD, 120, 250, 400, 500
     bar_w = _W - x_bar - _PAD

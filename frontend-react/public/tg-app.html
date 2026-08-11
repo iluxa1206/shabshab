@@ -229,7 +229,7 @@
     warn: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></svg>',
   };
 
-  const METRICS = { yidx: "Y-IDX", dm: "DM", ytm: "YTM", price: "цена", gspread: "G-спред" };
+  const METRICS = { yidx: "R-spread", dm: "DM", ytm: "YTM", price: "цена", gspread: "G-спред" };
   const UNITS = { yidx: " бп", dm: " бп", ytm: "%", price: "", gspread: " бп" };
   const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
   const COOLDOWNS = [[60, "1 ч"], [240, "4 ч"], [480, "8 ч"], [1440, "1 день"]];
@@ -319,7 +319,7 @@
                     : '<span class="badge off">выкл</span>'}
       </div>
       <div class="cond num"><span class="side ${f.params.side}">${f.params.side === "ask" ? "оффер" : "бид"}</span>
-        <span>Y-IDX ${s.range}${s.m}</span></div>
+        <span>R-spread ${s.range}${s.m}</span></div>
       <div class="meta">повтор не чаще, чем раз в ${cd ? cd[1] : f.cooldown_min + " мин"}</div>
       <div class="card-actions">
         <button data-fact="toggle">${ICON.power}${f.enabled ? "Выключить" : "Включить"}</button>
@@ -365,7 +365,7 @@
         <label class="f"><span>Метрика и порог</span>
           <div class="row">
             <div class="seg" id="a-metric" style="flex:2">
-              <button type="button" data-v="yidx" aria-pressed="true">Y-IDX</button>
+              <button type="button" data-v="yidx" aria-pressed="true">R-spread</button>
               <button type="button" data-v="dm" aria-pressed="false">DM</button>
               <button type="button" data-v="price" aria-pressed="false">Цена</button>
             </div>
@@ -426,7 +426,7 @@
               <button type="button" data-v="ask" aria-pressed="true">Оффер</button>
               <button type="button" data-v="bid" aria-pressed="false">Бид</button>
             </div></label>
-          <label class="f"><span>Диапазон Y-IDX, бп</span>
+          <label class="f"><span>Диапазон R-spread, бп</span>
             <div class="row">
               <input id="fmin" type="number" inputmode="numeric" step="any" placeholder="от" />
               <input id="fmax" type="number" inputmode="numeric" step="any" placeholder="до" />
@@ -633,7 +633,7 @@
       if (!name) { err.innerHTML = ICON.warn + "<span>Дай фильтру название.</span>"; return; }
       const lo = parseFloat($("fmin").value), hi = parseFloat($("fmax").value);
       if (!isFinite(lo) && !isFinite(hi)) {
-        err.innerHTML = ICON.warn + "<span>Задай хотя бы одну границу диапазона Y-IDX.</span>"; return;
+        err.innerHTML = ICON.warn + "<span>Задай хотя бы одну границу диапазона R-spread.</span>"; return;
       }
       const btn = $("ff").querySelector(".submit");
       btn.disabled = true; btn.textContent = "Создаём…";

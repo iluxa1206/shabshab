@@ -141,14 +141,14 @@ export default function Toolbar({
       </div>
 
       {/* группа: окно спреда Y-IDX, bps */}
-      <div className="fgroup" title="Спред Y-IDX в интервале [от, до], bps. Границы применяются к тому же числу, что в колонке Y-IDX (с учётом фильтра по объёму). Бумаги без посчитанного спреда при заданной границе скрыты.">
-        <span className="fg-lbl">Y-IDX</span>
+      <div className="fgroup" title="R-spread в интервале [от, до], bps. Границы применяются к тому же числу, что в колонке R-spread (с учётом фильтра по объёму). Бумаги без посчитанного спреда при заданной границе скрыты.">
+        <span className="fg-lbl">R-spread</span>
         <input className="num-input" type="number" step="10" placeholder="от"
-          aria-label="Спред Y-IDX — от, bps" value={spreadFrom}
+          aria-label="R-spread — от, bps" value={spreadFrom}
           onChange={(e) => setSpreadFrom(e.target.value)} />
         <span className="fg-lbl">—</span>
         <input className="num-input" type="number" step="10" placeholder="до"
-          aria-label="Спред Y-IDX — до, bps" value={spreadTo}
+          aria-label="R-spread — до, bps" value={spreadTo}
           onChange={(e) => setSpreadTo(e.target.value)} />
         {(spreadFrom || spreadTo) && (
           <button className="chip-btn" title="Сбросить окно спреда"

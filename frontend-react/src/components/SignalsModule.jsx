@@ -175,7 +175,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     setErr("");
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
     if (smin === "" && smax === "" && minMoney === "") {
-      setErr("Задай диапазон Y-IDX или объём — иначе условий нет"); return; }
+      setErr("Задай диапазон R-spread или объём — иначе условий нет"); return; }
     try {
       await onSubmit({ name: name.trim(), params, change_pct: changePct, sound, desktop });
       if (edit) return;      // правка закрывает форму снаружи
@@ -248,7 +248,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           </div>
         </div>
         <div className="sig-field">
-          <label className="sig-label">Диапазон Y-IDX, бп</label>
+          <label className="sig-label">Диапазон R-spread, бп</label>
           <div className="sig-row tight">
             <input className="sig-input num" type="number" placeholder="от" value={smin}
               onChange={(e) => setSmin(e.target.value)} />
@@ -346,7 +346,7 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
         <div className="sig-rc-cond num">
           <span className={f.params.side === "ask" ? "pos" : "neg"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
-          {d.range ? ` · Y-IDX ${d.range}` : ""}
+          {d.range ? ` · R-spread ${d.range}` : ""}
           {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}

@@ -55,15 +55,15 @@ function Quote({ px, spread, title, vwap }) {
 // VWAP набора тикета по лестнице Alor (объём стороны в ₽ — b._vwap_bid/_vwap_ask).
 function qTitle(b, side) {
   const base = side === "bid"
-    ? "лучшая заявка на покупку (MOEX BID): чистая цена и Y-IDX по ней (продажа в бид)"
-    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и Y-IDX по ней (покупка с оффера)";
+    ? "лучшая заявка на покупку (MOEX BID): чистая цена и R-spread по ней (продажа в бид)"
+    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и R-spread по ней (покупка с оффера)";
   const vol = side === "bid" ? b._vwap_bid : b._vwap_ask;
   if (!vol) return base;
   const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
   const mln = fmt.num(vol / 1e6, 1);
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
-    + `; Y-IDX пересчитан на неё (линеаризация от верха стакана)`;
+    + `; R-spread пересчитан на неё (линеаризация от верха стакана)`;
 }
 
 // Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
@@ -184,7 +184,7 @@ export const COLS = [
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
   { key: "index_yield_pct", label: "YTM", sub: "RUONIA %", align: "num", w: 7,
-    cell: (b) => <td className="num" key="index_yield_pct" title="доходность роллирования RUONIA до погашения — база Y-IDX (общая для КС и RUONIA бумаг)">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
+    cell: (b) => <td className="num" key="index_yield_pct" title="доходность роллирования RUONIA до погашения — база R-spread (общая для КС и RUONIA бумаг)">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)

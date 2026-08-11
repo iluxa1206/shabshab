@@ -5,7 +5,7 @@ import { fetchAlerts, createAlert, updateAlert, deleteAlert, UnauthorizedError }
 
 // метрики по типу бумаги (флоатер: DM; фикс: G-спред)
 const METRICS = {
-  floater: [["price", "Цена %"], ["yidx", "Y-IDX bps"], ["dm", "DM bps"], ["ytm", "YTM %"]],
+  floater: [["price", "Цена %"], ["yidx", "R-spread bps"], ["dm", "DM bps"], ["ytm", "YTM %"]],
   fixed: [["price", "Цена %"], ["ytm", "YTM %"], ["gspread", "G-спред bps"]],
 };
 // сторона: buy хочет дешевле (цена вниз / маржа-доходность вверх), sell наоборот

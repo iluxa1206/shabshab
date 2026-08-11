@@ -62,7 +62,7 @@ def test_caption_contents():
              "threshold": 250.0, "side": "buy", "note": "тест"}
     cap = _caption(alert, 1000.0, {"price": 100.15, "volume": 1200}, "Тест-бонд")
     assert "Тест-бонд" in cap and "#3" in cap
-    assert "Y-IDX" in cap and "250" in cap
+    assert "R-spread" in cap and "250" in cap
     assert "млн ₽" in cap    # 1200 * 1000 * 100.15/100 ≈ 1.2 млн
 
 

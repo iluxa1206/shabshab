@@ -91,7 +91,7 @@ function ScatterYidx({ rows, focus, onPick, height }) {
   const [ymin, ymax] = padDomain(pts.map((p) => p.y));
   const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.iss === focus.key : p.r === focus.key);
   return (
-    <MeasuredSvg height={height} label="Y-IDX vs spread duration">
+    <MeasuredSvg height={height} label="R-spread vs spread duration">
       {({ W, H, bind }) => {
         const sx = linearScale([xmin, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
@@ -115,7 +115,7 @@ function ScatterYidx({ rows, focus, onPick, height }) {
             })}
             <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
             <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>Y-IDX, bps</text>
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>R-spread, bps</text>
           </>
         );
       }}
@@ -139,7 +139,7 @@ function ScatterIssuer({ rows, focus, onPick, height }) {
   const [ymin, ymax] = padDomain(pts.map((p) => p.y));
   const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.name === focus.key : p.r === focus.key);
   return (
-    <MeasuredSvg height={height} label="Y-IDX vs spread duration по эмитентам">
+    <MeasuredSvg height={height} label="R-spread vs spread duration по эмитентам">
       {({ W, H, bind }) => {
         const sx = linearScale([xmin, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
@@ -163,7 +163,7 @@ function ScatterIssuer({ rows, focus, onPick, height }) {
             })}
             <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
             <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>Y-IDX, bps</text>
+              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>R-spread, bps</text>
           </>
         );
       }}
@@ -234,10 +234,10 @@ function IssuerDetail({ rows, issuer, onClear }) {
       {bonds.map((b) => {
         const z = yval(b);
         const shown = z != null && b.spread_dur_yrs != null;
-        const why = b.yield_over_index_bps == null ? "нет Y-IDX (нет цены)" : z == null ? "Y-IDX вне бэнда" : "нет дюрации";
+        const why = b.yield_over_index_bps == null ? "нет R-spread (нет цены)" : z == null ? "R-spread вне бэнда" : "нет дюрации";
         return (
           <span key={b.isin} className={"an-sel-chip" + (shown ? "" : " off")}
-            title={shown ? `${b.short_name}: Y-IDX ${Math.round(z)} bps · ${fmt.yrs(b.spread_dur_yrs)}` : `${b.short_name}: не на графике — ${why}`}>
+            title={shown ? `${b.short_name}: R-spread ${Math.round(z)} bps · ${fmt.yrs(b.spread_dur_yrs)}` : `${b.short_name}: не на графике — ${why}`}>
             {b.short_name}{shown ? ` ${Math.round(z)}` : " ✕"}
           </span>
         );
@@ -258,7 +258,7 @@ function RatingDist({ rows, focus, onPick, rowH }) {
     }
     return BUCKETS.filter((k) => g[k]?.length).map((k) => ({ key: k, label: k, arr: g[k], color: BCOLOR[k] }));
   }, [rows]);
-  return <BoxRows entries={entries} label="распределение Y-IDX по рейтингам"
+  return <BoxRows entries={entries} label="распределение R-spread по рейтингам"
     kind="rating" focus={focus} onPick={onPick} rowH={rowH} />;
 }
 
@@ -275,11 +275,11 @@ function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH }) {
       arr.push({ key: String(k), label: trunc(String(k)), arr: zs, color: BCOLOR[modalBucket(bonds)], md: median(zs) });
     }
     arr.sort((a, b) => b.md - a.md);
-    const note = arr.length > cap ? `+${arr.length - cap} эмитентов ниже по Y-IDX скрыто` : null;
+    const note = arr.length > cap ? `+${arr.length - cap} эмитентов ниже по R-spread скрыто` : null;
     return { entries: arr.slice(0, cap), note };
   }, [rows, cap]);
-  if (!entries.length) return <div className="an-empty">нет эмитентов с валидным Y-IDX</div>;
-  return <BoxRows entries={entries} note={note} label="распределение Y-IDX по эмитентам"
+  if (!entries.length) return <div className="an-empty">нет эмитентов с валидным R-spread</div>;
+  return <BoxRows entries={entries} note={note} label="распределение R-spread по эмитентам"
     kind="issuer" focus={focus} onPick={onPick} rowH={rowH} />;
 }
 
@@ -342,7 +342,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
   return (
     <>
       <ChartFrame
-        height={height} pad={YH_PAD} label="динамика Y-IDX"
+        height={height} pad={YH_PAD} label="динамика R-spread"
         data={idxPts} build={build} px={(p, s) => s.sx(p.i)}
         tooltip={(p) => {
           // компактный тултип: при активном фильтре — только его линия,
@@ -366,7 +366,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
         }}
         overlay={(s, g) => (
           <text x={g.x0 - 38} y={g.y1 + 4} className="an-axis-lbl"
-            transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>Y-IDX, bps</text>
+            transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>R-spread, bps</text>
         )}
       >
         {(s) => series.map((ser, gi) => {
@@ -523,7 +523,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
 
   return (
     <section className={"analytics" + (full ? " has-full" : "")}>
-      <AnCard title="Y-IDX vs SPREAD DURATION" ctl={aggCtl} {...fullBtn("scatter")}
+      <AnCard title="R-spread vs SPREAD DURATION" ctl={aggCtl} {...fullBtn("scatter")}
         hint={byIss ? "точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
                     : "точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
         {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} />
@@ -532,7 +532,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
         <RatingLegend />
       </AnCard>
 
-      <AnCard title={byIss ? "Y-IDX по ЭМИТЕНТАМ" : "Y-IDX по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
+      <AnCard title={byIss ? "R-spread по ЭМИТЕНТАМ" : "R-spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
         hint="линия p25–p75 · точка = медиана · (n) · клик = фильтр">
         {byIss
           ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH} />
@@ -540,7 +540,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
         <RatingLegend />
       </AnCard>
 
-      <AnCard title="Y-IDX ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
+      <AnCard title="R-spread ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
         hint={byIss ? "медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
                     : "медиана по рейтинг-бакетам · клик по линии = фильтр"}>
         <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}

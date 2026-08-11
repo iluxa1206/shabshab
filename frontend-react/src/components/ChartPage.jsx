@@ -40,7 +40,7 @@ const BRUSH_H = 54;   // высота полосы-обзора под граф�
 // Данные слоёв — свой архив (bar_hourly / trade_tick), а не свечи MOEX:
 // средневзвешенная цена часа, стороны сделок по агрессору и крупные принты.
 const LAYERS = [
-  ["vwap", "Средневзвес", "VWAP часа (свой архив) + Y-IDX по нему на внутридневном масштабе"],
+  ["vwap", "Средневзвес", "VWAP часа (свой архив) + R-spread по нему на внутридневном масштабе"],
   ["sides", "Покупки/продажи", "VWAP по агрессору: buy и sell отдельными линиями"],
   ["big", "Крупные сделки", "Маркеры отдельных сделок крупнее порога"],
   ["rps", "РПС/блоки", "Адресные сделки (РПС, РПС с ЦК, размещения, выкупы) — "
@@ -129,7 +129,7 @@ const Y_OHLC_MIN_HOUR_SHARE = 0.2;  // и не меньше доли от мед
 const barSpread = (b) => (b.y_idx_bps != null ? b.y_idx_bps : b.g_spread_bps);
 const spreadKindOf = (bars) =>
   (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
-const SPREAD_LABEL = { y: "Y-IDX", g: "G-спред" };
+const SPREAD_LABEL = { y: "R-spread", g: "G-спред" };
 
 // Спред по ценам бара (бэкенд считает его тем же reprice, что и по vwap).
 // Спред обратен цене, поэтому «максимум спреда» — это y по МИНИМАЛЬНОЙ цене:
@@ -856,7 +856,7 @@ export default function ChartPage() {
           {row?.emitter_name && stat("эмитент", row.emitter_name)}
           {stat("формула", r ? `${baseLabel(r.base_rate_type)} + ${r.spread_bps}` : null)}
           {stat("цена", m?.last_price_pct != null ? fmt.pct(m.last_price_pct) + "%" : null)}
-          {stat("Y-IDX", v?.yield_over_index_bps != null ? v.yield_over_index_bps + " bps" : null, "hi")}
+          {stat("R-spread", v?.yield_over_index_bps != null ? v.yield_over_index_bps + " bps" : null, "hi")}
           {stat("DM", v?.disc_margin_bps != null ? v.disc_margin_bps + " bps" : null)}
           {stat("SM", v?.sm_bps != null ? v.sm_bps + " bps" : null)}
           {stat("спред-дюр.", f?.spread_duration_yrs != null ? fmt.yrs(f.spread_duration_yrs) : null)}
@@ -1037,7 +1037,7 @@ export default function ChartPage() {
 // глазом видно, в какой части своего диапазона сидит текущий уровень.
 const SUMMARY_H = 150;
 
-function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX", geom = null }) {
+function SpreadDist({ dist, theme, height, skipped = 0, label = "R-spread", geom = null }) {
   if (!dist || !theme) {
     return <div className="cp-dist"><div className="cp-dist-empty">мало точек спреда</div></div>;
   }

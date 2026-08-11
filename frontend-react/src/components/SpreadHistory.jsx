@@ -19,7 +19,7 @@ export default function SpreadHistory({ isin, kind, secid, board, days: daysProp
   const days = daysProp ?? daysState;
   const isFixed = kind === "fixed";
   const key = isFixed ? "g_spread_bps" : "y_idx_bps";
-  const label = isFixed ? "G-спред" : "Y-IDX";
+  const label = isFixed ? "G-спред" : "R-spread";
 
   const q = useQuery({
     queryKey: ["spread-hist", isin, kind, from || days],

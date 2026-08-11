@@ -209,7 +209,7 @@ export function DayRatesModal({ isin, onClose }) {
               маржа {d.spec?.margin_bps != null ? "+" + d.spec.margin_bps + " bps" : "—"}
               {d.spec?.cap_pct != null && <> · кэп {d.spec.cap_pct}%</>}
               {d.spec?.floor_pct != null && <> · пол {d.spec.floor_pct}%</>}
-              {" · Close/Y-IDX — из spread_daily (та же серия, что график «Динамика DM»): сверка с историческим калькулятором спредов"}
+              {" · Close/R-spread — из spread_daily (та же серия, что график «Динамика DM»): сверка с историческим калькулятором спредов"}
             </div>
             <div className="daymodal-body">
               <table className="cf-table">
@@ -217,7 +217,7 @@ export function DayRatesModal({ isin, onClose }) {
                   <tr>
                     <th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th>
                     <th title="расчётный индекс базы: старт 1.0 в начале периода, фиксинг дня даёт прирост следующего; капитализация по рабочим дням, выходные простыми">Индекс</th>
-                    <th className="left">Источник</th><th>Close %</th><th>Y-IDX</th>
+                    <th className="left">Источник</th><th>Close %</th><th>R-spread</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -286,7 +286,7 @@ function WaterfallSection({ w, v, isin }) {
         <KV k="Δ (обязана ≈ 0)" v={fmt.signed(w.pv_gap_rub, 2) + " ₽"} />
         <KV k="YTM (XIRR)" v={fmt.pct(w.yield_pct) + " %"} />
         <KV k="SM / DM" v={`${fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"} / ${fmt.bps(v.disc_margin_bps) ?? "—"} bps`} />
-        <KV k="RUONIA-ролл · Y-IDX" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
+        <KV k="RUONIA-ролл · R-spread" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
       </div>
       <div style={{ maxHeight: 380, overflow: "auto" }}>
         <table className="cf-table">

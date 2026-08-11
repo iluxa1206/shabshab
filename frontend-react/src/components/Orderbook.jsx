@@ -199,7 +199,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
                 <th>Объём</th>
                 {isFixed
                   ? <><th>YTM</th><th>G-спред</th></>
-                  : <><th title="IRR − доходность роллирования RUONIA (единая база для КС и RUONIA бумаг); DM в подсказке уровня">Y-IDX</th><th>YTM</th></>}
+                  : <><th title="IRR − доходность роллирования RUONIA (единая база для КС и RUONIA бумаг); DM в подсказке уровня">R-spread</th><th>YTM</th></>}
               </tr>
             </thead>
             <tbody>
@@ -218,7 +218,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
       <OrderbookAlerts isin={isin} kind={isFixed ? "fixed" : "floater"}
         prefill={armPrefill} onConsumed={() => setArmPrefill(null)} />
-      <div className="ob-note">{isFixed ? "YTM/G-спред" : "Y-IDX/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
+      <div className="ob-note">{isFixed ? "YTM/G-спред" : "R-spread/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
     </div>
   );
 }

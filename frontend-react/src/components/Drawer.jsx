@@ -33,7 +33,7 @@ export function ValCards({ v, priceDate, calc = false }) {
   return (
     <div className={"val-cards val-cards-6" + (calc ? " val-cards-calc" : "")}>
       <div className="vc">
-        <div className="vc-label">Y-IDX</div>
+        <div className="vc-label">R-spread</div>
         <div className="vc-val" style={{ color: dmColor(v.yield_over_index_bps).color }}>
           {fmt.bps(v.yield_over_index_bps) ?? "—"}{u("bps")}</div>
         <div className="vc-sub">спред: YTM − база</div>
@@ -223,7 +223,7 @@ function ChartsBody({ isin, period, setPeriod, onClose }) {
       </div>
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={isin} periodDays={period} syncDate={hoverDate} onHoverDate={setHoverDate} />
-      <div className="section-title">Динамика Y-IDX</div>
+      <div className="section-title">Динамика R-spread</div>
       <SpreadHistory isin={isin} kind="floater" board="TQCB" from={isoBack(period)}
         syncDate={hoverDate} onHoverDate={setHoverDate} />
     </div>
@@ -343,7 +343,7 @@ function Content({ d, charts }) {
           />
           <span className="pc-unit">%</span>
         </div>
-        <div className="pc-input-wrap" title="Целевой спред Y-IDX: бэк подбирает чистую цену под него, цена встаёт в поле слева">
+        <div className="pc-input-wrap" title="Целевой R-spread: бэк подбирает чистую цену под него, цена встаёт в поле слева">
           <input
             id="pc-spread"
             className="pc-input pc-input-bps"

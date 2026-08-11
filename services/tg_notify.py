@@ -18,7 +18,7 @@ _queue: "asyncio.Queue[dict]" = asyncio.Queue(maxsize=200)
 
 _MSK = timezone(timedelta(hours=3))
 _METRIC_LABEL = {"price": "цена", "ytm": "YTM", "dm": "DM",
-                 "yidx": "Y-IDX", "gspread": "G-спред"}
+                 "yidx": "R-spread", "gspread": "G-спред"}
 _METRIC_UNIT = {"price": "", "ytm": "%", "dm": " бп", "yidx": " бп", "gspread": " бп"}
 
 

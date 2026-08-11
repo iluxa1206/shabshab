@@ -46,9 +46,9 @@ export default function KpisInline({ bonds }) {
     <>
       {cell("RUONIA", k.ru, "бумаг с базой RUONIA")}
       {cell("КС", k.kr, "бумаг с базой KEYRATE")}
-      {cell("MED Y-IDX", k.medYi, "медианный Y-IDX (IRR − роллирование RUONIA), б.п.")}
-      {cell("AVG Y-IDX", k.avgYi, "средний Y-IDX (IRR − роллирование RUONIA), б.п.")}
-      {cell("P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс Y-IDX, б.п.", "sec")}
+      {cell("MED R-spread", k.medYi, "медианный R-spread (IRR − роллирование RUONIA), б.п.")}
+      {cell("AVG R-spread", k.avgYi, "средний R-spread (IRR − роллирование RUONIA), б.п.")}
+      {cell("P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс R-spread, б.п.", "sec")}
       {cell("MED DM", k.medDm, "медианный discount margin (вспом.), б.п.", "sec")}
     </>
   );
