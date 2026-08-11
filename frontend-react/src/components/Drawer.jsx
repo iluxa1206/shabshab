@@ -503,15 +503,10 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
             exit={{ x: reduce ? 0 : 30, opacity: 0 }}
             transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
           >
+            {/* шапка в две строки: сверху ряд кнопок, под ним название и ISIN —
+                длинные имена выпусков больше не жмут кнопки и не режутся */}
             <div className="drawer-head">
-              <div className="dh-title">
-                <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
-                <span className="mono muted">
-                  {isin}
-                  <a className="cat-ext" title="страница выпуска на cbonds"
-                    href={cbondsUrl(isin, data?.reference?.cbonds_id)}
-                    target="_blank" rel="noopener noreferrer">↗</a>
-                </span>
+              <div className="dh-actions">
                 <button
                   className={"btn ob-toggle" + (showOb ? " on" : "")}
                   onClick={() => setShowOb((v) => !v)}
@@ -546,8 +541,17 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                     title="Паспорт бумаги: провенанс данных, бэктест спеки фиксинга, развёртка PV"
                   >ПАСПОРТ</button>
                 )}
+                <button ref={closeRef} className="btn ob-toggle dh-close" onClick={onClose}>ЗАКРЫТЬ</button>
               </div>
-              <button ref={closeRef} className="btn ob-toggle" onClick={onClose}>ЗАКРЫТЬ</button>
+              <div className="dh-title">
+                <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
+                <span className="mono muted">
+                  {isin}
+                  <a className="cat-ext" title="страница выпуска на cbonds"
+                    href={cbondsUrl(isin, data?.reference?.cbonds_id)}
+                    target="_blank" rel="noopener noreferrer">↗</a>
+                </span>
+              </div>
             </div>
             <div className="drawer-body">
               {err ? <div className="warn-box">Ошибка: {err}</div>
