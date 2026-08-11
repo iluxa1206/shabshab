@@ -459,10 +459,15 @@ def boards_seen(days: int = 30) -> list[dict]:
 
 # ────────────────────────── уведомления о блоках ──────────────────────────
 #
-# Порог уведомления НАМНОГО выше порога записи: за день по рынку ~500 сделок
-# ≥1 млн ₽ — колокольчик от такого потока стал бы шумом. В ленту КРУПНЫЕ
-# пишется всё, звонит только по-настоящему крупное.
+# Порог уведомления НАМНОГО выше порога записи: за день по рынку ~2500 сделок
+# ≥1 млн ₽ — колокольчик от такого потока стал бы шумом. В ленту пишется всё,
+# звонит только по-настоящему крупное.
 BLOCK_ALERT_MIN_RUB = float(os.getenv("BLOCK_ALERT_MIN_RUB", "100000000"))
+# Звоним ТОЛЬКО по флоатерам: десктоп про них, блок в фиксе (а это почти весь
+# крупняк рынка — ОФЗ-ПД) в колокольчике только мешает. В ленте фиксы видны,
+# если явно переключить охват на весь рынок.
+BLOCK_ALERT_FLOATERS_ONLY = os.getenv("BLOCK_ALERT_FLOATERS_ONLY", "1") not in ("0", "false", "False")
+_FLOAT_BASES = ("KEYRATE", "RUONIA")
 BLOCK_ALERTS = os.getenv("BLOCK_ALERTS", "1") not in ("0", "false", "False")
 _ALERT_KEY = "alert"          # строка-водяной знак в block_cursor
 
@@ -517,6 +522,17 @@ async def notify_blocks() -> int:
     users = [u["email"] for u in await asyncio.to_thread(list_users) if u.get("email")]
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
 
+    # Знак двигаем по ВСЕМУ просмотренному куску, а не по разосланному: иначе
+    # пачка отфильтрованных фиксов подряд встала бы перед выборкой намертво и
+    # флоатер за ней никогда бы не позвонил (выборка ограничена limit).
+    seen_till = max(r["trade_id"] for r in rows)
+    if BLOCK_ALERT_FLOATERS_ONLY:
+        rows = [r for r in rows
+                if (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES]
+    if not rows:
+        mark_alerted(seen_till)
+        return 0
+
     matches = []
     for r in rows:
         lb = labels.get(r["isin"]) or {}
@@ -543,7 +559,7 @@ async def notify_blocks() -> int:
             "type": "block", "filter_id": 0, "filter_name": "Крупная сделка",
             "side": None, "sound": True, "desktop": True, "matches": matches,
         })
-    mark_alerted(max(r["trade_id"] for r in rows))
+    mark_alerted(seen_till)
     return len(rows)
 
 

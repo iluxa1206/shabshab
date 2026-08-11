@@ -25,10 +25,10 @@ const THRESHOLDS = [[0, "все"], [1e6, "1 млн"], [5e6, "5 млн"], [1e7, "
                     [5e7, "50 млн"], [1e8, "100 млн"]];
 const MARKETS = [[null, "все режимы"], ["bonds", "безадресные"], ["ndm", "адресные (РПС)"]];
 const SIDES = [[null, "любая"], ["buy", "покупка"], ["sell", "продажа"]];
-// охват: лента шире нашего юниверса, поэтому «весь рынок» — дефолт, а срез по
-// типу купона (флоатеры/фиксы) считает бэк по базе из справочников
-const SCOPES = [["market", "весь рынок"], ["universe", "наш юниверс"],
-                ["float", "флоатеры"], ["fixed", "фиксы"]];
+// Охват. Дефолт — флоатеры: стол про них, а крупняк рынка в рублёвом объёме
+// это почти целиком ОФЗ-ПД, и без фильтра лента вырождалась в ленту фиксов.
+// «Весь рынок» остаётся как контекст (там же фиксы и бумаги вне реестра).
+const SCOPES = [["float", "флоатеры"], ["market", "весь рынок"]];
 const LIMITS = [500, 2000, 5000];
 
 const money = (v) => {
@@ -60,7 +60,7 @@ export default function TradesTape() {
   const [market, setMarket] = useState(null);
   const [boards, setBoards] = useState([]);       // фильтр по конкретным режимам
   const [emitters, setEmitters] = useState([]);
-  const [scope, setScope] = useState("market");
+  const [scope, setScope] = useState("float");
   const [limit, setLimit] = useState(LIMITS[0]);
   const [pin, setPin] = useState(null);
   const [q, setQ] = useState("");
@@ -122,9 +122,9 @@ export default function TradesTape() {
       <div className="ia-head">
         <h2 className="ia-title">Лента сделок</h2>
         <span className="ia-hint">
-          сделки по всему рынку облигаций: безадресные режимы и адресные — РПС,
-          РПС с ЦК, размещения, выкупы (блок в адресном режиме в стакане не виден
-          вообще). Крупняк от 1 млн ₽ — по всему рынку, мельче — по нашему юниверсу
+          безадресные режимы и адресные — РПС, РПС с ЦК, размещения, выкупы (блок
+          в адресном режиме в стакане не виден вообще). По умолчанию только
+          флоатеры; крупняк от 1 млн ₽ есть по всему рынку, мельче — по юниверсу
           {sum.archive_till && <> · данные до {ts(sum.archive_till, today)}</>}
         </span>
         <div className="ia-filters">
@@ -173,10 +173,8 @@ export default function TradesTape() {
               {SCOPES.map(([v, label]) => (
                 <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
                   onClick={() => setScope(v)}
-                  title={v === "market" ? "все облигации MOEX, шире нашего юниверса"
-                    : v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
-                    : v === "fixed" ? "только фиксы из нашего универса"
-                    : "флоатеры + фиксы нашего универса"}>{label}</button>
+                  title={v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
+                    : "все облигации MOEX, включая фиксы и бумаги вне реестра"}>{label}</button>
               ))}
             </span>
           )}
