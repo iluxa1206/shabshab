@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
 import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
-import { fmt } from "../format.js";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
@@ -37,28 +35,12 @@ function TypeMenu({ type }) {
   );
 }
 
-function Clock() {
-  const [t, setT] = useState(() => new Date());
-  useEffect(() => {
-    const id = setInterval(() => setT(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const p = (n) => String(n).padStart(2, "0");
-  const on = t.getSeconds() % 2 === 0;
-  const sep = <span style={{ opacity: on ? 1 : 0.2 }}>:</span>;
-  return (
-    <span className="meta-chip" aria-label="Время">
-      <span className="meta-v">{p(t.getHours())}{sep}{p(t.getMinutes())}{sep}{p(t.getSeconds())}</span>
-    </span>
-  );
-}
-
 const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 
 // extra — слот для инструментов раздела в самой верхней панели (сейчас там живёт
 // «Аналитика» флоатеров): панель фильтров ниже — про отбор строк, а окна поверх
 // таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
-export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSettings, extra }) {
+export default function Topbar({ user, onLogout, onOpenSettings, extra }) {
   const type = currentType(useLocation().pathname);
   let sub = SUBNAV[type] || [];
   // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
@@ -80,16 +62,6 @@ export default function Topbar({ meta, live, onRefresh, user, onLogout, onOpenSe
         {extra && <span className="menubar-tools">{extra}</span>}
       </div>
       <div className="topbar-right">
-        <span className="meta-chip">
-          <span className="meta-k">РАСЧЁТ</span><span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
-          <span className="meta-sep">/</span>
-          <span className="meta-k">СТАВКИ</span><span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
-        </span>
-        <Clock />
-        <span className={"live " + (live ? "live-on" : "live-off")}>
-          <span className="dot" />{live ? "ОНЛАЙН" : "ОФФЛАЙН"}
-        </span>
-        <button className="btn" onClick={onRefresh}>Обновить</button>
         {user && (
           <button className="btn" onClick={onOpenSettings} title="Настройки доступа">
             {user.email}{user.role === "admin" && <> <IconGear size={11} /></>}

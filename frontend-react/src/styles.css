@@ -847,6 +847,13 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .kpi-cell-val.pos { color: var(--up); }
 .kpi-cell-val.neg { color: var(--down); }
 .kpi-cell-sub { color: var(--mut-2); letter-spacing: 0.06em; text-transform: none; }
+/* даты расчёта/ставок, часы, ОНЛАЙН и «Обновить» — переехали из шапки в статусбар */
+.status-cell.meta-chip { gap: 8px; padding: 0 14px; letter-spacing: 0.12em; white-space: nowrap; }
+.status-cell.live { gap: 7px; padding: 0 14px; font-weight: 600; }
+.status-cell.refresh-cell { padding: 0 12px; }
+.status-refresh { background: none; border: none; padding: 0; cursor: pointer; color: var(--fg);
+  font: inherit; letter-spacing: inherit; text-transform: inherit; display: flex; align-items: center; }
+.status-refresh:hover { color: var(--accent); }
 /* узкие экраны: статусбар переносится на несколько строк вместо вылета за край */
 @media (max-width: 1100px) {
   .statusbar { height: auto; min-height: 34px; flex-wrap: wrap; }

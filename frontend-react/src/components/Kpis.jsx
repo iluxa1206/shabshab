@@ -31,19 +31,8 @@ export default function KpisInline({ bonds }) {
     // разброс Y-IDX: межквартиль p25–p75, bps (ширина возможностей рынка)
     const yiP25 = yis.length ? Math.round(quantile(yis, 0.25)) : null;
     const yiP75 = yis.length ? Math.round(quantile(yis, 0.75)) : null;
-    // breadth: тон рынка за день по CHG (delta_to_prev_close, % от номинала)
-    const deltas = bonds.map((x) => x.delta_to_prev_close).filter((v) => v != null);
-    const up = deltas.filter((v) => v > 0).length;
-    const down = deltas.filter((v) => v < 0).length;
-    const medChg = deltas.length ? median(deltas) : null;
-    return {
-      avgYi, medYi, medDm, ru, kr,
-      yiP25, yiP75, hasYi: yis.length > 0,
-      up, down, medChg, nChg: deltas.length,
-    };
+    return { avgYi, medYi, medDm, ru, kr, yiP25, yiP75, hasYi: yis.length > 0 };
   }, [bonds]);
-
-  const sgn = (v, digits = 0) => (v > 0 ? "+" : "") + v.toFixed(digits);
 
   const cell = (label, value, title) => (
     <span className="status-cell kpi-cell" title={title}>
@@ -55,11 +44,6 @@ export default function KpisInline({ bonds }) {
     <>
       {cell("RUONIA", k.ru, "бумаг с базой RUONIA")}
       {cell("КС", k.kr, "бумаг с базой KEYRATE")}
-      <span className="status-cell kpi-cell" title="тон рынка за день по CHG (к закрытию)">
-        ДВИЖ <span className="kpi-cell-val pos">▲{k.nChg ? k.up : "—"}</span>
-        <span className="kpi-cell-val neg">▼{k.nChg ? k.down : "—"}</span>
-        {k.medChg != null && <span className="kpi-cell-sub">med {sgn(k.medChg, 2)}</span>}
-      </span>
       {cell("MED Y-IDX", k.medYi, "медианный Y-IDX (IRR − роллирование RUONIA), б.п.")}
       {cell("AVG Y-IDX", k.avgYi, "средний Y-IDX (IRR − роллирование RUONIA), б.п.")}
       {cell("Y-IDX P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс Y-IDX, б.п.")}

@@ -170,9 +170,51 @@ function Chart({ data }) {
   );
 }
 
+// Копирование в буфер: navigator.clipboard есть только в secure context
+// (https / localhost); на http-стенде падает — отсюда фолбэк через textarea.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* no-op: пробуем фолбэк */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+// Кнопка «столбцом в буфер»: значения по строкам таблицы, десятичная запятая —
+// вставка в Excel/Google Sheets с русской локалью попадает сразу в числа.
+function CopyColumnBtn({ values, title, label = "Копировать" }) {
+  const [state, setState] = useState(""); // "" | ok | err
+  const onCopy = async () => {
+    const text = values.map((v) => (v == null ? "" : v.toFixed(4).replace(".", ","))).join("\n");
+    const ok = await copyText(text);
+    setState(ok ? "ok" : "err");
+    setTimeout(() => setState(""), 1600);
+  };
+  return (
+    <button type="button" className="btn admin-btn-sm" onClick={onCopy} title={title}>
+      {state === "ok" ? `Скопировано · ${values.length}` : state === "err" ? "Не вышло" : label}
+    </button>
+  );
+}
+
 function QuoteTable({ data }) {
   return (
     <div style={{ marginTop: 14, overflowX: "auto" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <CopyColumnBtn values={data.quotes.map((q) => q.value_pct)}
+          label="Копировать котировки СПФИ"
+          title="Столбец par-котировок по строкам таблицы, десятичная запятая — для вставки в Excel" />
+        <span className="muted" style={{ fontSize: 11 }}>столбцом, в порядке тенора</span>
+      </div>
       <table className="curve-quotes" style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
         <thead>
           <tr style={{ textAlign: "right", color: "var(--mut)" }}>

@@ -1,10 +1,10 @@
-import { useState, useRef, useMemo, useCallback } from "react";
+import { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchAlerts, deleteAlert } from "../api.js";
 import { fmt } from "../format.js";
 import KpisInline from "./Kpis.jsx";
-import { IconBell, IconAlert } from "./icons.jsx";
+import { IconBell, IconAlert, IconRefresh } from "./icons.jsx";
 
 const mln = (v) => (v != null ? (v / 1e6).toFixed(1) : null);   // ₽ → млн
 
@@ -107,7 +107,25 @@ function AlertsCell({ bonds = [] }) {
   );
 }
 
-export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sources = {}, theme, onSetTheme }) {
+// Часы: живая секундная стрелка в нижней строке
+function Clock() {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setT(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const p = (n) => String(n).padStart(2, "0");
+  const on = t.getSeconds() % 2 === 0;
+  const sep = <span style={{ opacity: on ? 1 : 0.2 }}>:</span>;
+  return (
+    <span className="status-cell" aria-label="Время">
+      <span className="meta-v">{p(t.getHours())}{sep}{p(t.getMinutes())}{sep}{p(t.getSeconds())}</span>
+    </span>
+  );
+}
+
+export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sources = {}, theme, onSetTheme,
+                                    meta = {}, onRefresh }) {
   // ALOR = живой WS-поток; CBONDS — из meta (кривые ставок построены)
   const src = [
     { k: "ALOR", on: live },
@@ -121,11 +139,27 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
       {onFloaters && <KpisInline bonds={kpiBonds} />}
       <AlertsCell bonds={bonds} />
       <span className="status-cell grow" />
+      <span className="status-cell meta-chip">
+        <span className="meta-k">РАСЧЁТ</span><span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
+        <span className="meta-sep">/</span>
+        <span className="meta-k">СТАВКИ</span><span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
+      </span>
+      <Clock />
+      <span className={"status-cell live " + (live ? "live-on" : "live-off")}>
+        <span className="dot" />{live ? "ОНЛАЙН" : "ОФФЛАЙН"}
+      </span>
       {src.map((s) => (
         <span key={s.k} className={"status-cell src" + (s.on ? " on" : "")} title={s.on ? "связь активна" : "нет связи"}>
           <span className={"src-dot " + (s.on ? "on" : "off")} />{s.k}
         </span>
       ))}
+      {onRefresh && (
+        <span className="status-cell refresh-cell">
+          <button className="status-refresh" onClick={onRefresh} title="Обновить" aria-label="Обновить">
+            <IconRefresh size={13} />
+          </button>
+        </span>
+      )}
     </footer>
   );
 }

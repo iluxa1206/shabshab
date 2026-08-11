@@ -656,8 +656,6 @@ function Dashboard() {
   return (
     <div id="app" className={theme === "light" ? "" : "theme-" + theme}>
       <Topbar
-        meta={meta} live={live}
-        onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }}
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
@@ -693,7 +691,8 @@ function Dashboard() {
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"} onClose={closeDrawer} />
       <StatusBar count={bonds.length} bonds={bonds} kpiBonds={filtered} live={live} sources={meta.source_status}
-        theme={theme} onSetTheme={setTheme} />
+        theme={theme} onSetTheme={setTheme} meta={meta}
+        onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
       <AlertsWatcher />
     </div>
