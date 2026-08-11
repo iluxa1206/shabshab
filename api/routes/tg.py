@@ -285,6 +285,7 @@ class FilterParams(BaseModel):
     spread_min: Optional[float] = None  # Y-IDX бп
     spread_max: Optional[float] = None
     min_money_rub: Optional[float] = None
+    money_mode: str = "book"           # book — набор по лестнице | single — одна заявка
     years_min: Optional[float] = None   # срок до погашения, лет
     years_max: Optional[float] = None
     hide_subord: bool = False           # прятать суборды

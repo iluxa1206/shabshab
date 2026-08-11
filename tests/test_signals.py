@@ -353,3 +353,63 @@ def test_named_routes_win_over_param_route():
     # каждый именованный маршрут объявлен РАНЬШЕ любого параметрического,
     # иначе DELETE /events попадал бы в DELETE /{fid} и падал с 422
     assert max(named) < min(param)
+
+
+# --- крупные заявки: режим объёма single vs book, спред необязателен ---
+
+def _big_small():
+    uni = [{"isin": "RU000A0000A1", "name": "ААА-бонд", "rating": "AAA",
+            "emitter_name": "Эмитент", "maturity_date": "2029-01-01"}]
+    metrics = {"RU000A0000A1": {"yoi_ask": 300.0, "yoi_bid": 310.0, "ask": 100.0,
+                                "bid": 99.5, "face_px": 1000.0, "accrued_settle": 0.0,
+                                "yoi_slope": -100.0}}
+    # книга А: сумма 6 млн, но мелкими заявками по 600 тыс
+    small = {"RU000A0000A1": {"a": [[100.0 + i * 0.01, 600] for i in range(10)], "b": []}}
+    # книга Б: одна заявка на 6 млн
+    big = {"RU000A0000A1": {"a": [[100.0, 100], [100.05, 6000]], "b": []}}
+    return uni, metrics, small, big
+
+
+def test_spread_is_optional_when_volume_set():
+    p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 5e6})
+    assert p["spread_min"] is None and p["spread_max"] is None
+    # но совсем без условий фильтр не имеет смысла
+    with pytest.raises(core.FilterError):
+        core.normalize_params({"ratings": ["AAA"]})
+
+
+def test_single_mode_needs_one_big_order():
+    uni, metrics, small, big = _big_small()
+    p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 5e6,
+                               "money_mode": "single"})
+    # двадцать мелких заявок на ту же сумму — НЕ крупная заявка
+    assert core.evaluate(p, uni, metrics, small) == []
+    m = core.evaluate(p, uni, metrics, big)[0]
+    assert m["levels"] == 1 and m["money_rub"] == pytest.approx(6_003_000)
+    assert m["price"] == 100.05 and m["single_px"] == 100.05
+    # спред пересчитан к цене заявки, а не взят с верха стакана
+    assert m["val_bps"] == pytest.approx(300.0 + (100.05 - 100.0) * -100.0, abs=0.2)
+
+
+def test_book_mode_accepts_many_small_orders():
+    uni, metrics, small, big = _big_small()
+    p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 5e6,
+                               "money_mode": "book"})
+    m = core.evaluate(p, uni, metrics, small)[0]
+    assert m["levels"] > 1 and m["single_px"] is None
+    assert m["money_rub"] == pytest.approx(5e6)
+
+
+def test_single_mode_no_spread_bounds_keeps_bond_without_slope():
+    uni, metrics, _small, big = _big_small()
+    metrics["RU000A0000A1"].pop("yoi_slope")      # наклон не посчитался
+    p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 5e6,
+                               "money_mode": "single"})
+    # спред не задан условием → бумага не должна теряться из-за пустого Y-IDX
+    m = core.evaluate(p, uni, metrics, big)[0]
+    assert m["money_rub"] > 5e6 and m["val_bps"] is None
+
+
+def test_money_mode_validated():
+    with pytest.raises(core.FilterError):
+        core.normalize_params({"min_money_rub": 1e6, "money_mode": "мусор"})

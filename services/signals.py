@@ -222,12 +222,12 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
             if reason:
                 c.execute(
                     "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
-                    "val_bps,price,money_rub,want_money_rub,levels,reason,"
+                    "val_bps,price,money_rub,want_money_rub,levels,single_px,reason,"
                     "prev_val_bps,prev_price,prev_money_rub,fired_at,seen) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
                     (fid, user_email, m["isin"], m.get("name"), side,
                      m.get("val_bps"), m.get("price"), m.get("money_rub"),
-                     want_money, m.get("levels"), reason,
+                     want_money, m.get("levels"), m.get("single_px"), reason,
                      prev["val_bps"] if prev else None,
                      prev["price"] if prev else None,
                      prev["money_rub"] if prev else None, now))

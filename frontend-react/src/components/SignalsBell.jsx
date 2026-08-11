@@ -112,6 +112,7 @@ export default function SignalsBell() {
       if (e.want_money_rub || e.money_rub) {
         n.set("sigvol", String(Math.round(e.want_money_rub || e.money_rub)));
         n.set("sigside", e.side || "ask");
+        if (e.single_px) n.set("sigpx", String(e.single_px)); else n.delete("sigpx");
       } else {
         n.delete("sigvol"); n.delete("sigside");
       }

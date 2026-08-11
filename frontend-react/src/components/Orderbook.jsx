@@ -72,7 +72,7 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
 // Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
-export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, onClose }) {
+export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx, onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
@@ -123,12 +123,30 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // лучшей цены — ровно так же, как считал бэк (screener_core.vwap_for), и
   // помечаем уровни, вошедшие в набор. Последний берётся частично.
   const sigFill = useMemo(() => {
-    if (!(sigVol > 0) || !face) return {};
+    if (!face) return {};
     const src = sigSide === "bid" ? (ob?.bids || []) : (ob?.asks || []);
+    const live = src.filter((l) => l.quantity != null && l.price_pct != null);
     const out = {};
+
+    // Режим «крупная заявка»: подсвечиваем РОВНО тот уровень, что сработал.
+    // Цену ищем с допуском — в снимке она может отличаться в последнем знаке.
+    if (sigPx > 0) {
+      const hit = live.find((l) => Math.abs(l.price_pct - sigPx) < 0.005);
+      if (hit) {
+        out[`${sigSide}:${hit.price_pct}`] = {
+          money: hit.quantity * (face * hit.price_pct / 100 + (accrued || 0)),
+          partial: false,
+        };
+        return out;
+      }
+      // заявки уже нет в книге (сняли/исполнили) — подсветки нет, и это честно:
+      // рисовать её на соседнем уровне значило бы показать не тот объём
+      return out;
+    }
+
+    if (!(sigVol > 0)) return {};
     let left = sigVol;
-    for (const l of src) {
-      if (l.quantity == null || l.price_pct == null) continue;
+    for (const l of live) {
       const money = l.quantity * (face * l.price_pct / 100 + (accrued || 0));
       if (money <= 0) continue;
       const part = Math.min(money, left);
@@ -137,7 +155,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
       if (left <= 1e-9) break;
     }
     return out;
-  }, [ob, sigVol, sigSide, face, accrued]);
+  }, [ob, sigVol, sigSide, sigPx, face, accrued]);
 
   return (
     <div className="ob-panel-inner">

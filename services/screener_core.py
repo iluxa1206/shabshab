@@ -33,6 +33,8 @@ PARAM_DEFAULTS = {
     "spread_min": None,     # Y-IDX бп, нижняя граница диапазона
     "spread_max": None,     # Y-IDX бп, верхняя граница
     "min_money_rub": None,  # деньги на выбранной стороне стакана, руб
+    "money_mode": "book",   # 'book' — набрать сумму по лестнице (VWAP на тикет)
+                            # 'single' — ОДНА заявка не меньше суммы (крупный принт)
     "years_min": None,      # лет до погашения, нижняя граница
     "years_max": None,      # лет до погашения, верхняя граница
     "hide_subord": False,   # прятать суборды (см. _SUBORD_RE)
@@ -84,11 +86,18 @@ def normalize_params(raw: dict) -> dict:
             raise FilterError(f"{k}: должно быть числом")
     if p["min_money_rub"] is not None and p["min_money_rub"] <= 0:
         raise FilterError("min_money_rub: положительное число")
+    p["money_mode"] = raw.get("money_mode") or "book"
+    if p["money_mode"] not in ("book", "single"):
+        raise FilterError("money_mode: book | single")
     if (p["spread_min"] is not None and p["spread_max"] is not None
             and p["spread_min"] > p["spread_max"]):
         raise FilterError("Диапазон спреда: «от» больше «до»")
-    if p["spread_min"] is None and p["spread_max"] is None:
-        raise FilterError("Задай хотя бы одну границу спреда")
+    # Спред НЕобязателен: «покажи крупные заявки в ААА» — законный фильтр без
+    # единого слова про спред. Но совсем пустых условий быть не должно, иначе
+    # сигнал сведётся к «уведомляй обо всём рынке».
+    if (p["spread_min"] is None and p["spread_max"] is None
+            and p["min_money_rub"] is None):
+        raise FilterError("Задай границу спреда или объём — иначе условий нет")
     for k in ("years_min", "years_max"):
         if p[k] is not None and p[k] < 0:
             raise FilterError("Срок до погашения: неотрицательное число")
@@ -183,6 +192,23 @@ def vwap_for(levels, want_rub: float, face: float,
     return {"px": cost / taken, "money": taken, "levels": used, "partial": left > 1e-9}
 
 
+def best_level(levels, face: float, accrued: float = 0.0) -> Optional[dict]:
+    """Самый «денежный» уровень стороны → {price, qty, money}. Для режима
+    крупной заявки: интересует не сумма книги, а одна большая заявка."""
+    best = None
+    for lvl in (levels or []):
+        try:
+            px, qty = float(lvl[0]), float(lvl[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        money = level_money(px, qty, face, accrued)
+        if money <= 0:
+            continue
+        if best is None or money > best["money"]:
+            best = {"price": px, "qty": qty, "money": money}
+    return best
+
+
 def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
     if not v:
         return False
@@ -260,7 +286,21 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         ladder = (depth_map.get(isin) or {}).get("a" if side == "ask" else "b")
 
         top_val = row.get("yoi_ask") if side == "ask" else row.get("yoi_bid")
-        if want:
+        single_px = None
+        if want and params.get("money_mode") == "single":
+            # Крупная заявка: ищем САМЫЙ денежный уровень стороны. Набор по
+            # лестнице тут не годится — двадцать мелких заявок на 5 млн не то
+            # же самое, что одна заявка на 5 млн.
+            best = best_level(ladder, face, accrued)
+            if not best or best["money"] < want:
+                continue
+            price = single_px = best["price"]
+            val = y_idx_at(row, price, side)
+            if val is None and price == row.get(side):
+                val = top_val          # заявка стоит первой — спред верха точен
+            money = best["money"]
+            levels, partial = 1, False
+        elif want:
             v = vwap_for(ladder, want, face, accrued)
             if not vwap_passes(v, want):
                 continue
@@ -279,18 +319,26 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             money = side_money_rub(depth_map.get(isin), side, face, accrued)
             levels, partial = None, False
 
-        if val is None:
-            continue
-        if lo is not None and val < lo:
-            continue
-        if hi is not None and val > hi:
-            continue
+        # спред нужен для отсева ТОЛЬКО когда заданы границы: фильтр «крупные
+        # заявки в ААА» не должен терять бумагу из-за непосчитанного Y-IDX
+        if lo is not None or hi is not None:
+            if val is None:
+                continue
+            if lo is not None and val < lo:
+                continue
+            if hi is not None and val > hi:
+                continue
         out.append({"isin": isin, "name": u.get("name") or isin,
-                    "val_bps": round(val, 1), "price": price, "money_rub": money,
-                    "levels": levels, "partial": partial,
+                    # спред может быть неизвестен, если его границы не заданы
+                    # (фильтр «крупные заявки») и наклон Y-IDX не посчитался
+                    "val_bps": round(val, 1) if val is not None else None,
+                    "price": price, "money_rub": money,
+                    "levels": levels, "partial": partial, "single_px": single_px,
                     "rating": u.get("rating"), "emitter": u.get("emitter_name"),
                     "years": u.get("_years")})
-    out.sort(key=lambda m: m["val_bps"], reverse=True)
+    # по убыванию спреда; бумаги без спреда — в конец, по убыванию денег
+    out.sort(key=lambda m: (m["val_bps"] is not None, m["val_bps"] or 0,
+                            m["money_rub"] or 0), reverse=True)
     return out
 
 

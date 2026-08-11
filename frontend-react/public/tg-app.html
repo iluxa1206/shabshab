@@ -295,11 +295,16 @@
     if (p.spread_min != null && p.spread_max != null) range = `${p.spread_min}–${p.spread_max} бп`;
     else if (p.spread_min != null) range = `от ${p.spread_min} бп`;
     else range = `до ${p.spread_max} бп`;
+    let mm = "";
+    if (p.min_money_rub) {
+      const m = money(p.min_money_rub);
+      mm = p.money_mode === "single" ? ` · заявка от ${m} ₽` : ` · набор от ${m} ₽`;
+    }
     let years = "";
     if (p.years_min != null && p.years_max != null) years = ` · срок ${p.years_min}–${p.years_max} л`;
     else if (p.years_min != null) years = ` · срок от ${p.years_min} л`;
     else if (p.years_max != null) years = ` · срок до ${p.years_max} л`;
-    const m = (p.min_money_rub ? ` · от ${money(p.min_money_rub)} ₽ в стакане` : "") + years;
+    const m = mm + years;
     return { scope, range, m };
   }
 
@@ -426,8 +431,13 @@
               <input id="fmin" type="number" inputmode="numeric" step="any" placeholder="от" />
               <input id="fmax" type="number" inputmode="numeric" step="any" placeholder="до" />
             </div></label>
-          <label class="f" for="fmoney"><span>Денег в стакане на этой стороне, ₽</span>
+          <label class="f" for="fmoney"><span>Объём на этой стороне, ₽</span>
             <input id="fmoney" type="number" inputmode="numeric" step="any" placeholder="0 — не важно" /></label>
+          <label class="f"><span>Как считать объём</span>
+            <div class="seg" id="fmode" role="group">
+              <button type="button" data-v="book" aria-pressed="true">Набором</button>
+              <button type="button" data-v="single" aria-pressed="false">Одной заявкой</button>
+            </div></label>
           <label class="f"><span>Срок до погашения, лет</span>
             <div class="frow">
               <input id="fymin" type="number" inputmode="decimal" step="any" placeholder="от" />
@@ -603,6 +613,7 @@
 
     const ratings = chipGroup("f-ratings");
     const side = seg("f-side", "ask"), cd = seg("f-cd", "240");
+    const mmode = seg("fmode", "book");
     const emitters = multiPicker({
       input: "femit", suggest: "esuggest", chips: "echips",
       fetchItems: async (q) => (await api("/emitters?q=" + encodeURIComponent(q))).emitters.map((n) => ({ n })),
@@ -635,6 +646,7 @@
             spread_min: isFinite(lo) ? lo : null,
             spread_max: isFinite(hi) ? hi : null,
             min_money_rub: parseFloat($("fmoney").value) || null,
+            money_mode: mmode(),
             years_min: $("fymin").value === "" ? null : parseFloat($("fymin").value),
             years_max: $("fymax").value === "" ? null : parseFloat($("fymax").value),
             hide_subord: $("fsub").checked,

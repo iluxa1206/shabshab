@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS signal_events(
   money_rub REAL,                        -- фактически набранные деньги
   want_money_rub REAL,                   -- сколько просили набрать (для подсветки)
   levels INTEGER,                        -- уровней стакана в наборе
+  single_px REAL,                        -- цена крупной заявки (режим single)
   reason TEXT,                           -- new | price | spread | money
   prev_val_bps REAL, prev_price REAL, prev_money_rub REAL,
   fired_at TEXT NOT NULL,
@@ -236,6 +237,7 @@ _MIGRATIONS = [
     # signal_hits (лента+анти-спам одной таблицей) заменена парой
     # signal_state/signal_events; старая остаётся безвредной сиротой
     "DROP TABLE IF EXISTS signal_hits",
+    "ALTER TABLE signal_events ADD COLUMN single_px REAL",
 ]
 
 

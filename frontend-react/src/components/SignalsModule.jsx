@@ -35,15 +35,21 @@ function describe(p) {
   if (p.isins?.length) who.push(p.isins.length + " бумаг");
   let scope = who.length ? who.join(" или ") : "весь рынок";
   if (p.hide_subord) scope += ", без субордов";
-  let range;
+  let range = null;
   if (p.spread_min != null && p.spread_max != null) range = `${p.spread_min}–${p.spread_max} бп`;
   else if (p.spread_min != null) range = `от ${p.spread_min} бп`;
-  else range = `до ${p.spread_max} бп`;
+  else if (p.spread_max != null) range = `до ${p.spread_max} бп`;
+  let moneyTxt = null;
+  if (p.min_money_rub) {
+    const m = p.min_money_rub >= 1e6
+      ? fmt.num(p.min_money_rub / 1e6, 1) + " млн" : fmt.num(p.min_money_rub, 0);
+    moneyTxt = p.money_mode === "single" ? `заявка от ${m} ₽` : `набор от ${m} ₽`;
+  }
   let years = null;
   if (p.years_min != null && p.years_max != null) years = `${p.years_min}–${p.years_max} л`;
   else if (p.years_min != null) years = `от ${p.years_min} л`;
   else if (p.years_max != null) years = `до ${p.years_max} л`;
-  return { scope, range, years };
+  return { scope, range, years, moneyTxt };
 }
 
 /** Пикер с накоплением выбранного в чипы (эмитенты, отдельные бумаги). */
@@ -125,6 +131,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
   const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
   const [minMoney, setMinMoney] = useState(numOrEmpty(ep.min_money_rub));
+  const [moneyMode, setMoneyMode] = useState(ep.money_mode || "book");
   const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
   const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
@@ -139,15 +146,16 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     min_money_rub: minMoney === "" ? null : Number(minMoney),
+    money_mode: moneyMode,
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
     hide_subord: hideSub,
-  }), [ratings, emitters, isins, side, smin, smax, minMoney, ymin, ymax, hideSub]);
+  }), [ratings, emitters, isins, side, smin, smax, minMoney, moneyMode, ymin, ymax, hideSub]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
   useEffect(() => {
-    if (smin === "" && smax === "") { setPreview(null); return; }
+    if (smin === "" && smax === "" && minMoney === "") { setPreview(null); return; }
     let dead = false;
     const t = setTimeout(async () => {
       try {
@@ -156,7 +164,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       } catch { if (!dead) setPreview(null); }
     }, 400);
     return () => { dead = true; clearTimeout(t); };
-  }, [params, smin, smax]);
+  }, [params, smin, smax, minMoney]);
 
   const searchEmitters = useCallback(
     async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
@@ -166,13 +174,14 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     e.preventDefault();
     setErr("");
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
-    if (smin === "" && smax === "") { setErr("Задай хотя бы одну границу диапазона Y-IDX"); return; }
+    if (smin === "" && smax === "" && minMoney === "") {
+      setErr("Задай диапазон Y-IDX или объём — иначе условий нет"); return; }
     try {
       await onSubmit({ name: name.trim(), params, change_pct: changePct, sound, desktop });
       if (edit) return;      // правка закрывает форму снаружи
       setName(""); setRatings([]); setEmitters([]); setIsins([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
-      setHideSub(false); setPreview(null);
+      setMoneyMode("book"); setHideSub(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -251,7 +260,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
 
       <div className="sig-row">
         <div className="sig-field">
-          <label className="sig-label" htmlFor="sig-money">Денег в стакане, ₽</label>
+          <label className="sig-label" htmlFor="sig-money">Объём, ₽</label>
           <input id="sig-money" className="sig-input num" type="number" placeholder="не важно"
             value={minMoney} onChange={(e) => setMinMoney(e.target.value)} />
         </div>
@@ -277,6 +286,23 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           </div>
         </div>
       </div>
+
+      {minMoney !== "" && (
+        <div className="sig-field">
+          <label className="sig-label">Как считать объём</label>
+          <div className="sig-seg">
+            <button type="button" className={moneyMode === "book" ? "on" : ""}
+              onClick={() => setMoneyMode("book")}>Набором по стакану</button>
+            <button type="button" className={moneyMode === "single" ? "on" : ""}
+              onClick={() => setMoneyMode("single")}>Одной заявкой</button>
+          </div>
+          <div className="sig-note">
+            {moneyMode === "book"
+              ? "Собираем сумму по лестнице от лучшей цены; цена и спред — по средневзвесу набора."
+              : "Ждём ОДНУ заявку не меньше суммы; двадцать мелких на ту же сумму сигналом не считаются."}
+          </div>
+        </div>
+      )}
 
       <div className="sig-field">
         <label className="sig-label">Как оповещать</label>
@@ -320,9 +346,9 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
         <div className="sig-rc-cond num">
           <span className={f.params.side === "ask" ? "pos" : "neg"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
-          {" · Y-IDX "}{d.range}
+          {d.range ? ` · Y-IDX ${d.range}` : ""}
+          {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
           {d.years ? ` · срок ${d.years}` : ""}
-          {f.params.min_money_rub ? ` · от ${money(f.params.min_money_rub)} ₽` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
         </div>

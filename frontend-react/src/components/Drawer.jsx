@@ -427,7 +427,7 @@ function Content({ d, charts }) {
   );
 }
 
-export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, onClose }) {
+export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sigPx, onClose }) {
   const isFixed = kind === "fixed";
   const navigate = useNavigate();
   const detailsQ = useQuery({
@@ -566,7 +566,7 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, onC
               transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
             >
               <Orderbook isin={isin} kind={kind} face={face} accrued={accrued}
-                sigVol={sigVol} sigSide={sigSide} onClose={() => setShowOb(false)} />
+                sigVol={sigVol} sigSide={sigSide} sigPx={sigPx} onClose={() => setShowOb(false)} />
             </motion.aside>
           )}
         </>
