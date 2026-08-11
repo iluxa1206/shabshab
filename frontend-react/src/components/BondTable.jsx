@@ -3,9 +3,29 @@ import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { baseLabel, fmt, dmColor, ratingColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
+import { copyText } from "../clipboard.js";
 import CouponFormula from "./CouponFormula.jsx";
 
 const D = () => <span className="dash">—</span>;
+
+// ISIN под именем выпуска: клик копирует его в буфер. stopPropagation — иначе
+// клик уходит в строку и открывает карточку вместо копирования.
+function IsinCopy({ isin }) {
+  const [state, setState] = useState(""); // "" | ok | err
+  if (!isin) return null;
+  const onClick = async (e) => {
+    e.stopPropagation();
+    const ok = await copyText(isin);
+    setState(ok ? "ok" : "err");
+    setTimeout(() => setState(""), 1200);
+  };
+  return (
+    <button type="button" className={"isin-copy" + (state ? " " + state : "")} onClick={onClick}
+      title={state === "err" ? "Не удалось скопировать" : `${isin} — скопировать`}>
+      {state === "ok" ? "скопировано" : state === "err" ? "не вышло" : isin}
+    </button>
+  );
+}
 
 // WS тикнул цену, но производные метрики (DM/SM/z/dirty/CHG/Y-IDX) ещё
 // от прошлого расчёта бэка → dim-класс, чтобы трейдер не читал их как актуальные.
@@ -81,7 +101,7 @@ export const COLS = [
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
       return (
-        <td className="left" key="short_name">
+        <td className="left name-cell" key="short_name">
           <div className="bond-name">
             <span className={"fx-cls fx-" + (isOfz ? "ofz" : "corp")}>{isOfz ? "ОФЗ" : "КОРП"}</span>
             {b.short_name || b.isin}
@@ -90,6 +110,7 @@ export const COLS = [
             {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
             {!b.price_implausible && b.price_thin && <span className="badge-thin" title="0 сделок сегодня на MOEX — цена несвежая (вчерашний/старый принт). DM/z сняты с ненадёжной цены.">тонк</span>}
           </div>
+          <IsinCopy isin={b.isin} />
         </td>
       );
     } },

@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { fetchCurvePlot, fetchKsPath, fetchRuoniaIndex } from "../api.js";
 import { fmt } from "../format.js";
+import { copyText } from "../clipboard.js";
 import {
   extent, sqrtScale, linearScale, timeScale, linTicks, yearTicks,
   linePath, stepPath, GridY, XTicks, useNearestHover, Tooltip,
@@ -168,25 +169,6 @@ function Chart({ data }) {
       )}
     </div>
   );
-}
-
-// Копирование в буфер: navigator.clipboard есть только в secure context
-// (https / localhost); на http-стенде падает — отсюда фолбэк через textarea.
-async function copyText(text) {
-  try {
-    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
-  } catch { /* no-op: пробуем фолбэк */ }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch { return false; }
 }
 
 // Кнопка «столбцом в буфер»: значения по строкам таблицы, десятичная запятая —

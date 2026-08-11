@@ -331,6 +331,16 @@ td.mut { color: var(--mut); }
 /* рейтинг в скобках рядом с именем бумаги — цвет бакета как в фильтрах;
    вес обычный, чтобы не спорить с именем (оно жирное) */
 .bond-rt { margin-left: 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; }
+/* ISIN второй строкой под именем: кликом копируется в буфер. Второй этаж, а не
+   строка рядом с именем — колонка INSTRUMENT и так режется многоточием.
+   Паддинги ужаты как у двухэтажных ячеек котировок — высота строки не растёт. */
+.grid tbody td.name-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; }
+.isin-copy { display: block; margin-top: 1px; padding: 0; background: none; border: none;
+  font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0.02em;
+  color: var(--mut-2); cursor: pointer; }
+.isin-copy:hover { color: var(--fg); text-decoration: underline; }
+.isin-copy.ok { color: var(--up); text-decoration: none; }
+.isin-copy.err { color: var(--neg); text-decoration: none; }
 .bond-formula { color: var(--mut); font-size: 12px; }
 /* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
    ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */
