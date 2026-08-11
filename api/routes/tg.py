@@ -9,7 +9,7 @@ user_email 'tg:<tg_user_id>' (см. services/tg_users.py).
 import logging
 import os
 import re
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel
@@ -260,21 +260,36 @@ async def tg_search(q: str = "", user: dict = Depends(require_tg)):
     return {"results": instruments_registry.search(q, limit=10)}
 
 
+@router.get("/emitters", tags=["TG"])
+async def tg_emitters(q: str = "", user: dict = Depends(require_tg)):
+    """Эмитенты универса для пикера фильтра (218 имён — отдаём с поиском)."""
+    from services import instruments_registry
+    rows = instruments_registry.universe_rows()
+    q = (q or "").strip().lower()
+    names = sorted({(r.get("emitter_name") or "").strip()
+                    for r in rows if r.get("emitter_name")})
+    if q:
+        names = [n for n in names if q in n.lower()]
+    return {"emitters": names[:30], "total": len(names)}
+
+
 # --- скринер-фильтры (фаза 3) ---
 
 class FilterParams(BaseModel):
-    op: str = ">="
-    threshold: float = 250.0
-    src: str = "ask"                    # ask | last
-    base: Optional[str] = None          # KEYRATE | RUONIA | None
-    rating_min: Optional[str] = None
-    max_years: Optional[float] = None
-    min_depth_rub: Optional[float] = None
+    # отбор бумаг: три селектора по ИЛИ (пусто = весь рынок)
+    ratings: List[str] = []
+    emitters: List[str] = []
+    isins: List[str] = []
+    # условия сделки (всегда И)
+    side: str = "ask"                   # ask (оффер) | bid
+    spread_min: Optional[float] = None  # Y-IDX бп
+    spread_max: Optional[float] = None
+    min_money_rub: Optional[float] = None
 
 
 class FilterCreate(BaseModel):
     name: str
-    params: FilterParams = FilterParams()
+    params: FilterParams
     cooldown_min: int = 240
 
 

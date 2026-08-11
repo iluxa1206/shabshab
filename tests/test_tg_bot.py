@@ -201,81 +201,93 @@ from services import tg_screener as scr
 
 
 def test_normalize_params_defaults_and_errors():
-    p = scr.normalize_params({"threshold": 300})
-    assert p["op"] == ">=" and p["src"] == "ask" and p["threshold"] == 300.0
+    p = scr.normalize_params({"spread_min": 250})
+    assert p["side"] == "ask" and p["spread_min"] == 250.0 and p["spread_max"] is None
+    assert p["ratings"] == [] and p["emitters"] == [] and p["isins"] == []
     with pytest.raises(scr.FilterError):
-        scr.normalize_params({"op": "=="})
+        scr.normalize_params({"spread_min": 250, "side": "middle"})
     with pytest.raises(scr.FilterError):
-        scr.normalize_params({"rating_min": "ZZZ"})
+        scr.normalize_params({})                                    # без границ
     with pytest.raises(scr.FilterError):
-        scr.normalize_params({"max_years": -1})
+        scr.normalize_params({"spread_min": 300, "spread_max": 200})  # перевёрнут
+    with pytest.raises(scr.FilterError):
+        scr.normalize_params({"spread_min": 250, "ratings": ["ZZZ"]})
+    with pytest.raises(scr.FilterError):
+        scr.normalize_params({"spread_min": 250, "min_money_rub": -5})
 
 
-def test_rating_ok():
-    assert scr._rating_ok("AAA", "AA-")
-    assert scr._rating_ok("AA-", "AA-")
-    assert not scr._rating_ok("A+", "AA-")
-    assert not scr._rating_ok(None, "AA-")     # нет рейтинга — мимо
-    assert scr._rating_ok(None, None)
+def test_normalize_params_lists_cleaned():
+    p = scr.normalize_params({"spread_max": 300, "ratings": ["aaa", " aa "],
+                              "isins": ["ru000a10au99", ""], "emitters": [" ВЭБ.РФ "]})
+    assert p["ratings"] == ["AAA", "AA"]
+    assert p["isins"] == ["RU000A10AU99"]
+    assert p["emitters"] == ["ВЭБ.РФ"]
 
 
 def _mk_market():
     uni = [
-        {"isin": "RU000A0000A1", "name": "Хорошая", "base_rate_type": "KEYRATE",
-         "rating": "AA", "maturity_date": "2028-06-01"},
-        {"isin": "RU000A0000B2", "name": "Слабый рейтинг", "base_rate_type": "KEYRATE",
-         "rating": "BBB", "maturity_date": "2028-06-01"},
-        {"isin": "RU000A0000C3", "name": "РУОНИЯ", "base_rate_type": "RUONIA",
-         "rating": "AAA", "maturity_date": "2027-01-01"},
+        {"isin": "RU000A0000A1", "name": "Газпром 1", "base_rate_type": "KEYRATE",
+         "rating": "AA", "emitter_name": "Газпром капитал", "maturity_date": "2028-06-01"},
+        {"isin": "RU000A0000B2", "name": "Мелкий БО", "base_rate_type": "KEYRATE",
+         "rating": "BBB", "emitter_name": "Мелкая контора", "maturity_date": "2028-06-01"},
+        {"isin": "RU000A0000C3", "name": "ВЭБ 3", "base_rate_type": "RUONIA",
+         "rating": "AAA", "emitter_name": "ВЭБ.РФ", "maturity_date": "2027-01-01"},
         {"isin": "RU000A0000D4", "name": "Стейл", "base_rate_type": "KEYRATE",
-         "rating": "AAA", "maturity_date": "2028-06-01"},
+         "rating": "AAA", "emitter_name": "ВЭБ.РФ", "maturity_date": "2028-06-01"},
     ]
     metrics = {
-        "RU000A0000A1": {"yoi_ask": 280.0, "yoi": 275.0, "ask": 100.2, "face_px": 1000.0},
-        "RU000A0000B2": {"yoi_ask": 400.0, "yoi": 395.0, "ask": 99.0, "face_px": 1000.0},
-        "RU000A0000C3": {"yoi_ask": 180.0, "yoi": 178.0, "ask": 100.0, "face_px": 1000.0},
-        "RU000A0000D4": {"yoi_ask": 500.0, "yoi": 490.0, "ask": 98.0, "face_px": 1000.0,
-                          "price_stale": True},
+        "RU000A0000A1": {"yoi_ask": 280.0, "yoi_bid": 300.0, "ask": 100.2, "bid": 99.9, "face_px": 1000.0},
+        "RU000A0000B2": {"yoi_ask": 400.0, "yoi_bid": 420.0, "ask": 99.0, "bid": 98.5, "face_px": 1000.0},
+        "RU000A0000C3": {"yoi_ask": 180.0, "yoi_bid": 195.0, "ask": 100.0, "bid": 99.8, "face_px": 1000.0},
+        "RU000A0000D4": {"yoi_ask": 500.0, "yoi_bid": 520.0, "ask": 98.0, "bid": 97.5,
+                         "face_px": 1000.0, "price_stale": True},
     }
-    depth = {"RU000A0000A1": {"a": [[100.2, 3000], [100.3, 2000]], "b": []},
+    depth = {"RU000A0000A1": {"a": [[100.2, 3000], [100.3, 2000]], "b": [[99.9, 100]]},
              "RU000A0000B2": {"a": [[99.0, 50]], "b": []}}
     return uni, metrics, depth
 
 
-def test_evaluate_threshold_rating_stale():
+def test_evaluate_range_and_stale():
     uni, metrics, depth = _mk_market()
-    from datetime import date as _d
-    matches = scr.evaluate(scr.normalize_params({"threshold": 250, "rating_min": "AA-"}),
-                           uni, metrics, depth, today=_d(2026, 8, 11))
-    # B2 отсечён рейтингом, C3 порогом, D4 стейлом
-    assert [m["isin"] for m in matches] == ["RU000A0000A1"]
-    assert matches[0]["depth_rub"] == pytest.approx(100.2 / 100 * 1000 * 3000
-                                                    + 100.3 / 100 * 1000 * 2000)
+    p = scr.normalize_params({"spread_min": 250, "spread_max": 450})
+    matches = scr.evaluate(p, uni, metrics, depth)
+    # C3 ниже диапазона, D4 стейл; сортировка по убыванию спреда
+    assert [m["isin"] for m in matches] == ["RU000A0000B2", "RU000A0000A1"]
+    assert matches[1]["price"] == 100.2
 
 
-def test_evaluate_depth_and_base():
+def test_evaluate_selectors_are_or():
     uni, metrics, depth = _mk_market()
-    from datetime import date as _d
-    p = scr.normalize_params({"threshold": 250, "min_depth_rub": 1e6})
-    matches = scr.evaluate(p, uni, metrics, depth, today=_d(2026, 8, 11))
-    assert [m["isin"] for m in matches] == ["RU000A0000A1"]   # у B2 стакан 49.5к
-    p2 = scr.normalize_params({"threshold": 100, "base": "RUONIA"})
-    matches2 = scr.evaluate(p2, uni, metrics, depth, today=_d(2026, 8, 11))
-    assert [m["isin"] for m in matches2] == ["RU000A0000C3"]
+    # рейтинг AA ИЛИ эмитент ВЭБ.РФ → A1 (рейтинг) и C3 (эмитент)
+    p = scr.normalize_params({"spread_min": 100, "ratings": ["AA"], "emitters": ["ВЭБ.РФ"]})
+    assert sorted(m["isin"] for m in scr.evaluate(p, uni, metrics, depth)) \
+        == ["RU000A0000A1", "RU000A0000C3"]
+    # только ISIN
+    p2 = scr.normalize_params({"spread_min": 100, "isins": ["RU000A0000B2"]})
+    assert [m["isin"] for m in scr.evaluate(p2, uni, metrics, depth)] == ["RU000A0000B2"]
+    # пустые селекторы = весь рынок (кроме стейла)
+    p3 = scr.normalize_params({"spread_min": 100})
+    assert len(scr.evaluate(p3, uni, metrics, depth)) == 3
 
 
-def test_evaluate_max_years():
+def test_evaluate_side_bid_uses_bid_metric_and_money():
     uni, metrics, depth = _mk_market()
-    from datetime import date as _d
-    p = scr.normalize_params({"threshold": 100, "max_years": 1.0})
-    matches = scr.evaluate(p, uni, metrics, depth, today=_d(2026, 8, 11))
-    assert [m["isin"] for m in matches] == ["RU000A0000C3"]   # погашение 2027-01
+    p = scr.normalize_params({"spread_min": 100, "side": "bid", "isins": ["RU000A0000A1"]})
+    m = scr.evaluate(p, uni, metrics, depth)[0]
+    assert m["val_bps"] == 300.0 and m["price"] == 99.9
+    assert m["money_rub"] == pytest.approx(99.9 / 100 * 1000 * 100)
+
+
+def test_evaluate_min_money_filters():
+    uni, metrics, depth = _mk_market()
+    p = scr.normalize_params({"spread_min": 250, "min_money_rub": 1e6})
+    # у B2 на оффере 49.5к — отсекается; у A1 ~5.01 млн
+    assert [m["isin"] for m in scr.evaluate(p, uni, metrics, depth)] == ["RU000A0000A1"]
 
 
 def test_fresh_matches_cooldown(tg_client):
-    from services import portfolio_db
-    f = scr.create(424242, "тест", {"threshold": 250}, cooldown_min=60)
-    matches = [{"isin": "RU000A0000A1", "name": "X", "val_bps": 280, "price": 100, "depth_rub": None}]
+    f = scr.create(424242, "тест", {"spread_min": 250}, cooldown_min=60)
+    matches = [{"isin": "RU000A0000A1", "name": "X", "val_bps": 280, "price": 100, "money_rub": None}]
     assert len(scr.fresh_matches(f["id"], 60, matches)) == 1
     assert len(scr.fresh_matches(f["id"], 60, matches)) == 0   # внутри cooldown
     scr.delete(424242, f["id"])
@@ -283,25 +295,34 @@ def test_fresh_matches_cooldown(tg_client):
 
 def test_format_message_caps():
     ms = [{"isin": f"RU000A00000{i}", "name": f"Б{i}", "val_bps": 300 - i,
-           "price": 100.0, "depth_rub": 2e6} for i in range(12)]
-    txt = scr.format_message("мой фильтр", ms)
-    assert "мой фильтр" in txt and "…и ещё 4" in txt
+           "price": 100.0, "money_rub": 2e6} for i in range(12)]
+    txt = scr.format_message("мой фильтр", ms, "bid")
+    assert "мой фильтр" in txt and "бид" in txt and "…и ещё 4" in txt
     assert txt.count("•") == scr.MAX_PER_MESSAGE
 
 
 def test_rest_filters_crud(tg_client):
-    body = {"name": "скринер КС", "cooldown_min": 60,
-            "params": {"threshold": 260, "base": "KEYRATE", "rating_min": "AA-"}}
+    body = {"name": "широкие ААА", "cooldown_min": 60,
+            "params": {"spread_min": 260, "spread_max": 500, "ratings": ["AAA"],
+                       "emitters": ["ВЭБ.РФ"], "side": "bid", "min_money_rub": 1e6}}
     f = tg_client.post("/api/tg/filters", json=body, headers=_h()).json()
-    assert f["name"] == "скринер КС" and f["params"]["base"] == "KEYRATE"
+    assert f["params"]["ratings"] == ["AAA"] and f["params"]["side"] == "bid"
 
     assert len(tg_client.get("/api/tg/filters", headers=_h()).json()["filters"]) == 1
 
     r = tg_client.patch(f"/api/tg/filters/{f['id']}", json={"enabled": False}, headers=_h())
     assert r.json()["enabled"] is False
 
-    bad = tg_client.post("/api/tg/filters", json={"name": "x", "params": {"op": "=="}}, headers=_h())
+    bad = tg_client.post("/api/tg/filters",
+                         json={"name": "x", "params": {"spread_min": 300, "spread_max": 100}},
+                         headers=_h())
     assert bad.status_code == 400
 
     assert tg_client.delete(f"/api/tg/filters/{f['id']}", headers=_h()).status_code == 200
     assert tg_client.delete(f"/api/tg/filters/{f['id']}", headers=_h()).status_code == 404
+
+
+def test_rest_emitters(tg_client):
+    r = tg_client.get("/api/tg/emitters?q=газ", headers=_h())
+    assert r.status_code == 200
+    assert isinstance(r.json()["emitters"], list)
