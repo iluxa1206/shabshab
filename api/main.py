@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc, tg
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -443,6 +443,10 @@ async def alerts_monitor():
                                 logger.info("alert fired id=%s %s %s %s%s%s vol=%s",
                                             a["id"], isin, a["side"], a["metric"],
                                             a["op"], a["threshold"], hit["volume"])
+                                # Telegram: стакан уже на руках — рендер и HTTP
+                                # уходят в очередь, монитор не ждёт
+                                from services import tg_notify
+                                tg_notify.enqueue(a, bids, asks, face, hit)
                     except Exception as e:
                         logger.warning(f"alert monitor {isin} error: {e}")
             await asyncio.sleep(ALERT_POLL_INTERVAL)
@@ -606,7 +610,10 @@ async def lifespan(app: FastAPI):
     pool_task = asyncio.create_task(universe_stream_pool())
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
+    from services.tg_notify import tg_notify_worker
+    tg_task = asyncio.create_task(tg_notify_worker())
     yield
+    tg_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()
     engine_task.cancel()
@@ -667,6 +674,7 @@ app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
 app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
+app.include_router(tg.router, prefix="/api/tg")  # webhook защищён secret-заголовком
 
 # --- Frontend (static dashboard) ---
 # Приоритет: React-билд (frontend-react/dist), фоллбэк — старый vanilla frontend/.

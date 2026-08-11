@@ -13,7 +13,11 @@ RUN npm run build
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
-# Системные зависимости не нужны — pandas/openpyxl/aiohttp ставятся из wheels.
+# Шрифты для Pillow-рендера стаканов (Telegram-оповещения); остальные
+# зависимости ставятся из wheels, системных пакетов не требуют.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -133,6 +133,17 @@ CREATE TABLE IF NOT EXISTS tick_drain(
   last_ts TEXT NOT NULL,        -- 'YYYY-MM-DD HH:MM:SS' МСК, правая граница
   updated_at TEXT NOT NULL
 );
+
+-- Пользователи Telegram-бота (регистрация на /start). Идентичность бота своя,
+-- без привязки к веб-аккаунтам: алерты таких юзеров живут в общей таблице
+-- alerts с user_email = 'tg:<tg_user_id>' (движок alerts_monitor не в курсе).
+CREATE TABLE IF NOT EXISTS tg_users(
+  tg_user_id INTEGER PRIMARY KEY,
+  chat_id    INTEGER NOT NULL,
+  username   TEXT,
+  muted      INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;
