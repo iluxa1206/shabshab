@@ -637,9 +637,12 @@ export default function ChartPage() {
     // цена выключена и слоёв нет — верхняя панель пустая, схлопываем её
     const pane0Empty = !seriesRef.current.price && !seriesRef.current.vwap
       && !seriesRef.current.buy && !seriesRef.current.sell;
-    if (panes[0]) panes[0].setStretchFactor(pane0Empty ? 0.15 : (yidxDrawn ? 2.2 : 4));
+    // раскладка по умолчанию: (цена+объём) и спред — по половине экрана
+    // (3.3 + 0.7 сверху против 4 снизу), чтобы спред открывался сразу в
+    // читаемом масштабе, а не узкой полоской
+    if (panes[0]) panes[0].setStretchFactor(pane0Empty ? 0.15 : (yidxDrawn ? 3.3 : 4));
     if (panes[1]) panes[1].setStretchFactor(0.7);
-    if (panes[2]) panes[2].setStretchFactor(1.8);
+    if (panes[2]) panes[2].setStretchFactor(4);
     // autoSize подхватывает ширину контейнера уже после текущего кадра — fitContent
     // сразу посчитал бы масштаб по нулевой ширине и данные сжались бы к правому краю
     chart.timeScale().fitContent();
@@ -650,6 +653,7 @@ export default function ChartPage() {
       // ширину поля под ценовой шкалой меряем здесь: в момент подписки шкала
       // ещё не отрисована и полоса-обзор получалась во всю ширину контейнера
       measureRightPad(c, candles.length);
+      measureDistGeom(c);
     });
     return () => cancelAnimationFrame(raf);
   }, [candles, type, tf, theme, spreadPaneOn, spreadPts, smode, spreadOHLC, layerPts,
@@ -665,6 +669,26 @@ export default function ChartPage() {
   // Меряем по координате крайнего бара при ПОЛНОМ окне: правее него область
   // данных не идёт. Вызывается и после fitContent (шкала уже отрисована), и на
   // каждом изменении видимого диапазона.
+  // Геометрия панели спреда для гистограммы распределения: гистограмма должна
+  // жить в ТОЙ ЖЕ системе координат (пиксель ↔ bps), что и панель спреда слева,
+  // иначе связь уровней на графике и в распределении не видна глазом.
+  const [distGeom, setDistGeom] = useState(null);
+  const measureDistGeom = (chart) => {
+    const s = seriesRef.current.yidx;
+    const pane = chart?.panes?.()[2];
+    if (!s || !pane) { setDistGeom(null); return; }
+    const ph = pane.getHeight();
+    const vTop = s.coordinateToPrice(0);
+    const vBot = s.coordinateToPrice(ph);
+    if (!ph || ph < 40 || vTop == null || vBot == null || vTop === vBot) return;
+    const panes = chart.panes();
+    let top = 0;
+    for (let i = 0; i < 2; i++) top += (panes[i]?.getHeight() || 0) + 1; // +1 сепаратор
+    setDistGeom((g) => (g && g.top === top && g.h === ph
+                        && g.vTop === vTop && g.vBot === vBot)
+      ? g : { top, h: ph, vTop, vBot });
+  };
+
   const measureRightPad = (chart, n, range) => {
     const el = hostRef.current;
     const full = el ? el.getBoundingClientRect().width : 0;
@@ -681,8 +705,11 @@ export default function ChartPage() {
   useEffect(() => {
     const el = hostRef.current, chart = chartRef.current;
     if (!el || !chart) return;
-    const apply = () => chart.resize(Math.max(320, Math.round(el.clientWidth)),
-      Math.max(260, Math.round(el.clientHeight)));
+    const apply = () => {
+      chart.resize(Math.max(320, Math.round(el.clientWidth)),
+        Math.max(260, Math.round(el.clientHeight)));
+      requestAnimationFrame(() => chartRef.current && measureDistGeom(chartRef.current));
+    };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);
@@ -699,6 +726,8 @@ export default function ChartPage() {
     const onRange = (r) => {
       if (r) setVisRange({ from: r.from, to: r.to });
       measureRightPad(chart, n, r);
+      // автоскейл спреда пересчитывается на пан/зум — двигаем и гистограмму
+      measureDistGeom(chart);
     };
     ts.subscribeVisibleLogicalRangeChange(onRange);
     onRange(ts.getVisibleLogicalRange());
@@ -907,7 +936,8 @@ export default function ChartPage() {
 
       <div className="cp-row" style={{ height }}>
         <div className="cp-chart" ref={hostRef} />
-        {distOn && <SpreadDist dist={dist} theme={theme} height={height} skipped={distThin} label={sLabel} />}
+        {distOn && <SpreadDist dist={dist} theme={theme} height={height} skipped={distThin}
+          label={sLabel} geom={distGeom} />}
       </div>
 
       {candles.length > 1 && (
@@ -951,17 +981,23 @@ export default function ChartPage() {
 // глазом видно, в какой части своего диапазона сидит текущий уровень.
 const SUMMARY_H = 150;
 
-function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX" }) {
+function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX", geom = null }) {
   if (!dist || !theme) {
     return <div className="cp-dist"><div className="cp-dist-empty">мало точек спреда</div></div>;
   }
-  const h = Math.max(120, height - SUMMARY_H);
+  // aligned: гистограмма живёт в системе координат ПАНЕЛИ СПРЕДА (пиксель↔bps
+  // как у шкалы графика, та же вертикальная позиция) — уровни совпадают глазом.
+  // Без геометрии (панель спреда не отрисована) — прежний автономный масштаб.
+  const aligned = !!(geom && geom.h > 40 && geom.vTop !== geom.vBot);
+  const h = aligned ? height : Math.max(120, height - SUMMARY_H);
   const w = 208, padL = 6, padR = 44, padT = 8, padB = 16;
   const maxN = Math.max(...dist.hist.map((b) => b.n)) || 1;
   const span = (dist.hi - dist.lo) || 1;
-  const y = (v) => padT + (dist.hi - v) / span * (h - padT - padB);
+  const y = aligned
+    ? (v) => geom.top + (geom.vTop - v) / (geom.vTop - geom.vBot) * geom.h
+    : (v) => padT + (dist.hi - v) / span * (h - padT - padB);
   const barW = (n) => n / maxN * (w - padL - padR);
-  const rowH = Math.max(2, (h - padT - padB) / dist.hist.length - 1);
+  const fixedRowH = Math.max(2, (h - padT - padB) / dist.hist.length - 1);
   const yLast = y(dist.last);
   const row = (k, v, cls) => (
     <div className="cp-dist-row"><span>{k}</span><b className={cls}>{v}</b></div>
@@ -970,6 +1006,7 @@ function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX" }) {
 
   return (
     <div className="cp-dist">
+      <div className="cp-dist-top">
       <div className="cp-dist-head" title={skipped ? "тонкие дни (оборот < 1 млн ₽) в статистику не идут" : ""}>
         Распределение {label} · {dist.n} набл.{skipped ? ` · −${skipped} тонк.` : ""}
       </div>
@@ -983,25 +1020,41 @@ function SpreadDist({ dist, theme, height, skipped = 0, label = "Y-IDX" }) {
         {row("σ от среднего", dist.z != null ? dist.z.toFixed(2) : "—")}
         {row("Перцентиль", dist.pct.toFixed(1) + "%")}
       </div>
-      <svg width={w} height={h} role="img" aria-label={`Гистограмма распределения ${label}`}>
-        {dist.hist.map((b, i) => (
-          <rect key={i} x={padL} y={y(b.hi)} width={barW(b.n)} height={rowH}
-            fill={theme.accent} opacity={b.lo <= dist.last && dist.last <= b.hi ? 0.95 : 0.45} />
-        ))}
-        <line x1={padL} x2={w - padR + 4} y1={yLast} y2={yLast}
-          stroke={theme.fg} strokeWidth="1" strokeDasharray="3 2" />
-        <text x={w - padR + 6} y={yLast + 3} fontSize="10" fill={theme.fg}
-          fontFamily="var(--mono)">{n0(dist.last)}</text>
-        {/* границы прячем, когда они налезают на подпись текущего: на узком
-            диапазоне (несколько наблюдений) три числа сливались в кашу */}
-        {Math.abs(y(dist.hi) + 8 - yLast) > 11 && (
-          <text x={w - padR + 6} y={y(dist.hi) + 8} fontSize="9" fill={theme.mut}
-            fontFamily="var(--mono)">{n0(dist.hi)}</text>
+      </div>
+      <svg width={w} height={h} role="img" aria-label={`Гистограмма распределения ${label}`}
+        style={aligned ? { position: "absolute", left: 0, top: 0 } : undefined}>
+        {aligned && (
+          <defs>
+            {/* всё, что вылезает за вертикаль панели спреда, срезаем */}
+            <clipPath id="cp-dist-clip">
+              <rect x="0" y={geom.top} width={w} height={geom.h} />
+            </clipPath>
+          </defs>
         )}
-        {Math.abs(y(dist.lo) - yLast) > 11 && (
-          <text x={w - padR + 6} y={y(dist.lo)} fontSize="9" fill={theme.mut}
-            fontFamily="var(--mono)">{n0(dist.lo)}</text>
-        )}
+        <g clipPath={aligned ? "url(#cp-dist-clip)" : undefined}>
+          {dist.hist.map((b, i) => {
+            const y1 = y(b.hi);
+            const hh = aligned ? Math.max(1.5, y(b.lo) - y1 - 1) : fixedRowH;
+            return (
+              <rect key={i} x={padL} y={y1} width={barW(b.n)} height={hh}
+                fill={theme.accent} opacity={b.lo <= dist.last && dist.last <= b.hi ? 0.95 : 0.45} />
+            );
+          })}
+          <line x1={padL} x2={w - padR + 4} y1={yLast} y2={yLast}
+            stroke={theme.fg} strokeWidth="1" strokeDasharray="3 2" />
+          <text x={w - padR + 6} y={yLast + 3} fontSize="10" fill={theme.fg}
+            fontFamily="var(--mono)">{n0(dist.last)}</text>
+          {/* границы прячем, когда они налезают на подпись текущего: на узком
+              диапазоне (несколько наблюдений) три числа сливались в кашу */}
+          {Math.abs(y(dist.hi) + 8 - yLast) > 11 && (
+            <text x={w - padR + 6} y={y(dist.hi) + 8} fontSize="9" fill={theme.mut}
+              fontFamily="var(--mono)">{n0(dist.hi)}</text>
+          )}
+          {Math.abs(y(dist.lo) - yLast) > 11 && (
+            <text x={w - padR + 6} y={y(dist.lo)} fontSize="9" fill={theme.mut}
+              fontFamily="var(--mono)">{n0(dist.lo)}</text>
+          )}
+        </g>
       </svg>
     </div>
   );

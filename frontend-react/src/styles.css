@@ -538,7 +538,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-chart { flex: 1 1 auto; min-width: 0; height: 100%;
   border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .cp-dist { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 4px;
-  overflow: hidden; display: flex; flex-direction: column; }
+  overflow: hidden; display: flex; flex-direction: column; position: relative; }
+/* сводка поверх выровненной гистограммы (svg абсолютный на всю высоту) */
+.cp-dist-top { position: relative; z-index: 1; background: var(--bg); }
 .cp-dist-head { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em;
   color: var(--mut-2); padding: 6px 8px 4px; border-bottom: 1px solid var(--line-2); }
 .cp-dist-sum { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
