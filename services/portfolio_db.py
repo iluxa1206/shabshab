@@ -144,6 +144,28 @@ CREATE TABLE IF NOT EXISTS tg_users(
   muted      INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
+
+-- Скринер-фильтры бота: «любая бумага рынка, где Y-IDX ≥ X при ограничениях».
+-- params_json: {op, threshold, src, base, rating_min, max_years, min_depth_rub}
+CREATE TABLE IF NOT EXISTS tg_filters(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tg_user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  params_json TEXT NOT NULL,
+  cooldown_min INTEGER NOT NULL DEFAULT 240,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_tg_filters_user ON tg_filters(tg_user_id);
+
+-- Анти-спам скринера: когда бумага в последний раз уходила в чат по фильтру.
+-- Повторное оповещение — только после cooldown_min фильтра.
+CREATE TABLE IF NOT EXISTS tg_filter_hits(
+  filter_id INTEGER NOT NULL,
+  isin TEXT NOT NULL,
+  fired_at TEXT NOT NULL,
+  PRIMARY KEY(filter_id, isin)
+);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;

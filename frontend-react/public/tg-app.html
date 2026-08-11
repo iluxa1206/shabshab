@@ -59,7 +59,7 @@
   #suggest div:active { background: rgba(128,140,158,.2); }
   #suggest .s-isin { color: var(--hint); font-size: 11px; }
   .note { color: var(--hint); font-size: 12px; margin-top: 6px; }
-  #err { color: var(--red); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  #err, #ferr { color: var(--red); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
   .center { text-align: center; color: var(--hint); padding: 40px 10px; }
 </style>
 </head>
@@ -121,10 +121,35 @@
       </div></div>`;
   }
 
+  const RATINGS = ["AAA","AA+","AA","AA-","A+","A","A-","BBB+","BBB","BBB-","BB+","BB","BB-","B+","B","B-"];
+
+  function filterSummary(f) {
+    const p = f.params, parts = [];
+    parts.push(`Y-IDX ${p.op === ">=" ? "≥" : "≤"} ${p.threshold} бп`);
+    parts.push(p.src === "ask" ? "по аску" : "по последней");
+    if (p.base) parts.push(p.base === "KEYRATE" ? "КС" : "RUONIA");
+    if (p.rating_min) parts.push("рейтинг ≥ " + p.rating_min);
+    if (p.max_years) parts.push("≤ " + p.max_years + " л");
+    if (p.min_depth_rub) parts.push("стакан ≥ " + (p.min_depth_rub >= 1e6 ? p.min_depth_rub / 1e6 + " млн" : p.min_depth_rub.toLocaleString("ru")) + " ₽");
+    parts.push("пауза " + (f.cooldown_min >= 60 ? Math.round(f.cooldown_min / 60) + " ч" : f.cooldown_min + " мин"));
+    return parts.join(" · ");
+  }
+
+  function filterCard(f) {
+    return `<div class="card" data-fid="${f.id}">
+      <div class="row1"><span class="name">${f.name}</span>
+        <span class="badge ${f.enabled ? "active" : ""}">${f.enabled ? "вкл" : "выкл"}</span></div>
+      <div class="meta">${filterSummary(f)}</div>
+      <div class="actions">
+        <a data-fact="toggle">${f.enabled ? "выключить" : "включить"}</a>
+        <a data-fact="del" class="danger">удалить</a>
+      </div></div>`;
+  }
+
   async function render() {
-    let me, list;
+    let me, list, flt;
     try {
-      [me, list] = await Promise.all([api("/me"), api("/alerts")]);
+      [me, list, flt] = await Promise.all([api("/me"), api("/alerts"), api("/filters")]);
     } catch (e) {
       app.innerHTML = "Ошибка: " + e.message +
         (e.message.indexOf("Доступ") >= 0 ? "" : "<br>Попробуй переоткрыть Mini App.");
@@ -162,6 +187,35 @@
         <button type="submit">Создать</button>
         <div id="err"></div>
         <div class="note">Сработавший алерт придёт сюда картинкой стакана и встанет на паузу до повторного взвода.</div>
+      </form>
+
+      <h1 style="margin-top:22px">Скринер рынка</h1>
+      <div id="flist">${flt.filters.map(filterCard).join("") || '<div class="center">Фильтров нет</div>'}</div>
+      <form id="ff">
+        <h2>Новый фильтр</h2>
+        <input id="fname" placeholder="имя фильтра" required />
+        <div class="frow" style="margin-top:8px">
+          <select id="fop"><option value=">=">Y-IDX ≥</option><option value="<=">Y-IDX ≤</option></select>
+          <input id="fthr" type="number" step="any" placeholder="порог, бп" required />
+          <select id="fsrc"><option value="ask">по аску</option><option value="last">по последней</option></select>
+        </div>
+        <div class="frow">
+          <select id="fbase"><option value="">база: любая</option>
+            <option value="KEYRATE">КС</option><option value="RUONIA">RUONIA</option></select>
+          <select id="frating"><option value="">рейтинг: любой</option>
+            ${RATINGS.map(r => `<option value="${r}">≥ ${r}</option>`).join("")}</select>
+        </div>
+        <div class="frow">
+          <input id="fyears" type="number" step="any" placeholder="макс. лет до погаш." />
+          <input id="fdepth" type="number" step="any" placeholder="мин. стакан, ₽" />
+        </div>
+        <div class="frow">
+          <select id="fcd"><option value="60">пауза 1 ч</option><option value="240" selected>пауза 4 ч</option>
+            <option value="480">пауза 8 ч</option><option value="1440">пауза 1 день</option></select>
+        </div>
+        <button type="submit">Создать фильтр</button>
+        <div id="ferr"></div>
+        <div class="note">В торговые часы бот шлёт бумаги, прошедшие фильтр. Повтор по той же бумаге — не чаще паузы.</div>
       </form>`;
 
     $("mute").onclick = async () => {
@@ -189,6 +243,49 @@
         }
         render();
       } catch (e) { alert(e.message); }
+    };
+
+    $("flist").onclick = async (ev) => {
+      const act = ev.target.getAttribute && ev.target.getAttribute("data-fact");
+      if (!act) return;
+      const card = ev.target.closest(".card");
+      const fid = card.getAttribute("data-fid");
+      try {
+        if (act === "del") {
+          if (tg && tg.showConfirm) {
+            tg.showConfirm("Удалить фильтр?", async (ok) => {
+              if (ok) { await api("/filters/" + fid, { method: "DELETE" }); render(); }
+            });
+            return;
+          }
+          await api("/filters/" + fid, { method: "DELETE" });
+        } else if (act === "toggle") {
+          const on = ev.target.textContent === "включить";
+          await api("/filters/" + fid, { method: "PATCH", body: JSON.stringify({ enabled: on }) });
+        }
+        render();
+      } catch (e) { alert(e.message); }
+    };
+
+    $("ff").onsubmit = async (ev) => {
+      ev.preventDefault();
+      $("ferr").textContent = "";
+      const body = {
+        name: $("fname").value.trim(),
+        cooldown_min: parseInt($("fcd").value, 10),
+        params: {
+          op: $("fop").value, threshold: parseFloat($("fthr").value),
+          src: $("fsrc").value, base: $("fbase").value || null,
+          rating_min: $("frating").value || null,
+          max_years: parseFloat($("fyears").value) || null,
+          min_depth_rub: parseFloat($("fdepth").value) || null,
+        },
+      };
+      try {
+        await api("/filters", { method: "POST", body: JSON.stringify(body) });
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        render();
+      } catch (e) { $("ferr").textContent = e.message; }
     };
 
     // пикер ISIN

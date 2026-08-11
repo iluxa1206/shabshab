@@ -258,3 +258,68 @@ async def tg_mute(body: MuteBody, user: dict = Depends(require_tg)):
 async def tg_search(q: str = "", user: dict = Depends(require_tg)):
     from services import instruments_registry
     return {"results": instruments_registry.search(q, limit=10)}
+
+
+# --- скринер-фильтры (фаза 3) ---
+
+class FilterParams(BaseModel):
+    op: str = ">="
+    threshold: float = 250.0
+    src: str = "ask"                    # ask | last
+    base: Optional[str] = None          # KEYRATE | RUONIA | None
+    rating_min: Optional[str] = None
+    max_years: Optional[float] = None
+    min_depth_rub: Optional[float] = None
+
+
+class FilterCreate(BaseModel):
+    name: str
+    params: FilterParams = FilterParams()
+    cooldown_min: int = 240
+
+
+class FilterPatch(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    params: Optional[FilterParams] = None
+    cooldown_min: Optional[int] = None
+
+
+@router.get("/filters", tags=["TG"])
+async def tg_list_filters(user: dict = Depends(require_tg)):
+    from services import tg_screener
+    return {"filters": tg_screener.list_for_user(user["tg_user_id"])}
+
+
+@router.post("/filters", tags=["TG"])
+async def tg_create_filter(body: FilterCreate, user: dict = Depends(require_tg)):
+    from services import tg_screener
+    try:
+        return tg_screener.create(user["tg_user_id"], body.name,
+                                  body.params.model_dump(), body.cooldown_min)
+    except tg_screener.FilterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/filters/{fid}", tags=["TG"])
+async def tg_patch_filter(body: FilterPatch, fid: int = Path(...),
+                          user: dict = Depends(require_tg)):
+    from services import tg_screener
+    try:
+        f = tg_screener.update(
+            user["tg_user_id"], fid, name=body.name, enabled=body.enabled,
+            params=body.params.model_dump() if body.params else None,
+            cooldown_min=body.cooldown_min)
+    except tg_screener.FilterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if f is None:
+        raise HTTPException(status_code=404, detail="Фильтр не найден")
+    return f
+
+
+@router.delete("/filters/{fid}", tags=["TG"])
+async def tg_delete_filter(fid: int = Path(...), user: dict = Depends(require_tg)):
+    from services import tg_screener
+    if not tg_screener.delete(user["tg_user_id"], fid):
+        raise HTTPException(status_code=404, detail="Фильтр не найден")
+    return {"ok": True}
