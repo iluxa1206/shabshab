@@ -196,6 +196,8 @@ function StaleChips({ m }) {
 // синхронный курсор это маскировал. Теперь оба чарта режутся одной датой.
 const CHART_PERIODS = [[30, "1М"], [90, "3М"], [180, "6М"], [365, "1Г"]];
 const isoBack = (days) => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+// период карточки → код периода полноэкранной страницы /chart/:isin
+const CHART_P_CODE = { 30: "1m", 90: "3m", 180: "6m", 365: "1y" };
 
 // Графики карточки: цена (сверху) + динамика Y-IDX (снизу) на ОДНОМ периоде —
 // видно, как двигались цена и спред в одинаковом окне. Рендерится в выездной
@@ -215,7 +217,7 @@ function ChartsBody({ isin, period, setPeriod, onClose }) {
         </span>
         {/* полноэкранный график в своей вкладке: гибкий период, zoom/pan */}
         <a className="btn charts-full" target="_blank" rel="noopener noreferrer"
-          href={`${APP_BASENAME}/chart/${isin}?p=${period === 30 ? "1m" : period === 90 ? "3m" : period === 180 ? "6m" : "1y"}`}
+          href={`${APP_BASENAME}/chart/${isin}?p=${CHART_P_CODE[period] || "1y"}`}
           title="Открыть на весь экран в новой вкладке">⤢</a>
         <button className="btn ob-close" onClick={onClose} aria-label="Закрыть графики">✕</button>
       </div>
@@ -523,6 +525,16 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                     aria-pressed={showCharts}
                     title="Цена и динамика DM на общем периоде"
                   >ГРАФИКИ</button>
+                )}
+                {!isFixed && (
+                  // второй вход в те же графики, минуя панель карточки: полный
+                  // экран в новой вкладке с гибким периодом и zoom/pan
+                  <a
+                    className="btn ob-toggle"
+                    target="_blank" rel="noopener noreferrer"
+                    href={`${APP_BASENAME}/chart/${isin}?p=${CHART_P_CODE[period] || "3m"}`}
+                    title="Открыть графики на весь экран в новой вкладке"
+                  >ГРАФИКИ ⤢</a>
                 )}
                 {!isFixed && (
                   <button
