@@ -59,10 +59,13 @@ export function useElementHover() {
 // реальную ширину и зажимаем left в пределах контейнера; maxWidth не даёт
 // плашке быть шире графика (длинный текст переносится).
 const TT_MARGIN = 4;
+// Просвет между плашкой и точкой: радиус активной точки (4.4) плюс запас, чтобы
+// сама точка и обводка остались видны — ради них курсор туда и ведут.
+const TT_GAP = 10;
 
 export function Tooltip({ x, y, viewW, top = 0, dy = -4, padding = "2px 6px", multiline = false, children }) {
   const ref = useRef(null);
-  const [box, setBox] = useState(null); // { left, maxW }
+  const [box, setBox] = useState(null); // { left, maxW, top }
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -74,7 +77,23 @@ export function Tooltip({ x, y, viewW, top = 0, dy = -4, padding = "2px 6px", mu
     const w = Math.min(el.offsetWidth, maxW);
     const anchor = viewW ? (x / viewW) * cw : x;
     const left = Math.max(TT_MARGIN, Math.min(anchor - w / 2, cw - w - TT_MARGIN));
-    if (!box || Math.abs(box.left - left) > 0.5 || box.maxW !== maxW) setBox({ left, maxW });
+
+    // Вертикаль считаем ТОЛЬКО когда плашка привязана к точке. Раньше она
+    // ставилась ровно на точку и накрывала её собой: сдвиг был фиксированные
+    // −14 px, а плашка выше (тем более в две строки). Кладём её над точкой по
+    // реальной высоте, а если сверху не влезает — переворачиваем под точку.
+    let topPx = null;
+    if (y != null) {
+      const h = el.offsetHeight;
+      const ch = host ? host.clientHeight : 0;
+      topPx = y - h - TT_GAP;
+      if (topPx < TT_MARGIN) topPx = y + TT_GAP;
+      if (ch && topPx + h > ch - TT_MARGIN) topPx = Math.max(TT_MARGIN, ch - h - TT_MARGIN);
+    }
+    if (!box || Math.abs(box.left - left) > 0.5 || box.maxW !== maxW
+        || (topPx != null && (box.top == null || Math.abs(box.top - topPx) > 0.5))) {
+      setBox({ left, maxW, top: topPx });
+    }
   });
 
   return (
@@ -82,8 +101,8 @@ export function Tooltip({ x, y, viewW, top = 0, dy = -4, padding = "2px 6px", mu
       position: "absolute",
       left: box ? box.left : 0,
       maxWidth: box ? box.maxW : undefined,
-      top: y == null ? top : y,
-      transform: `translate(0, ${y == null ? dy : dy - 10}px)`, fontSize: 11,
+      top: y == null ? top : (box && box.top != null ? box.top : y),
+      transform: y == null ? `translate(0, ${dy}px)` : undefined, fontSize: 11,
       visibility: box ? "visible" : "hidden",
       background: "var(--inv-bg)", color: "var(--inv-fg)", padding,
       borderRadius: 4,
