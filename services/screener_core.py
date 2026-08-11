@@ -124,8 +124,10 @@ def selected(u: dict, params: dict) -> bool:
     return False
 
 
-def side_money_rub(ladder: Optional[dict], side: str, face: float) -> Optional[float]:
-    """Σ руб по выбранной стороне снимка глубины {'a'|'b': [[px_pct, qty], ...]}."""
+def side_money_rub(ladder: Optional[dict], side: str, face: float,
+                   accrued: float = 0.0) -> Optional[float]:
+    """Σ руб по выбранной стороне снимка глубины {'a'|'b': [[px_pct, qty], ...]}.
+    Деньги ГРЯЗНЫЕ — реальная сумма расчётов, как в frontend/src/vwap.js."""
     if not ladder:
         return None
     total = 0.0
@@ -134,27 +136,87 @@ def side_money_rub(ladder: Optional[dict], side: str, face: float) -> Optional[f
             px, qty = float(lvl[0]), float(lvl[1])
         except (TypeError, ValueError, IndexError):
             continue
-        total += px / 100.0 * face * qty
+        total += level_money(px, qty, face, accrued)
     return total or None
 
 
-def evaluate(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
-             today: Optional[date] = None) -> List[dict]:
-    """Матчи фильтра по рынку → [{isin, name, val_bps, price, money_rub, years}],
-    по убыванию спреда (сначала самые широкие)."""
-    side = params["side"]
-    lo, hi = params["spread_min"], params["spread_max"]
+# --- VWAP на объём. Порт frontend-react/src/vwap.js: фильтр по объёму в таблице
+# и сигналы обязаны давать одну и ту же цену на один и тот же тикет. Правила
+# оттуда же: деньги уровня грязные, последний уровень берётся частично, набор
+# засчитывается при добранных ≥ VOL_TOL от запрошенного. ---
+
+VOL_TOL = 0.9
+
+
+def level_money(px_pct: Optional[float], qty: Optional[float], face: float,
+                accrued: float = 0.0) -> float:
+    if px_pct is None or qty is None or not face:
+        return 0.0
+    return qty * (face * px_pct / 100.0 + (accrued or 0.0))
+
+
+def vwap_for(levels, want_rub: float, face: float,
+             accrued: float = 0.0) -> Optional[dict]:
+    """Средневзвешенная цена набора want_rub рублей по лестнице (от лучшей цены).
+    → {px, money, levels, partial} либо None. partial=True — глубины не хватило,
+    px посчитан по всей книге."""
+    if not levels or not (want_rub > 0) or not face:
+        return None
+    left, cost, taken, used = float(want_rub), 0.0, 0.0, 0
+    for lvl in levels:
+        try:
+            px, qty = float(lvl[0]), float(lvl[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        money = level_money(px, qty, face, accrued)
+        if money <= 0:
+            continue
+        used += 1
+        part = min(money, left)
+        cost += part * px           # цену взвешиваем деньгами, не количеством
+        taken += part
+        left -= part
+        if left <= 1e-9:
+            break
+    if taken <= 0:
+        return None
+    return {"px": cost / taken, "money": taken, "levels": used, "partial": left > 1e-9}
+
+
+def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
+    if not v:
+        return False
+    return (not v["partial"]) or v["money"] >= want_rub * VOL_TOL
+
+
+def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:
+    """Y-IDX по произвольной цене: линейно от известного якоря через наклон
+    dY/dP. На масштабе стакана Y-IDX(цена) практически прямая (см. vwap.js)."""
+    k = row.get("yoi_slope")
+    if px is None or k is None:
+        return None
+    if side == "ask":
+        anchors = [(row.get("ask"), row.get("yoi_ask")), (row.get("bid"), row.get("yoi_bid")),
+                   (row.get("last"), row.get("yoi"))]
+    else:
+        anchors = [(row.get("bid"), row.get("yoi_bid")), (row.get("ask"), row.get("yoi_ask")),
+                   (row.get("last"), row.get("yoi"))]
+    for ap, ay in anchors:
+        if ap is not None and ay is not None:
+            return ay + (px - ap) * k
+    return None
+
+
+def static_candidates(params: dict, uni: List[dict],
+                      today: Optional[date] = None) -> List[dict]:
+    """Отбор по НЕподвижным признакам: рейтинг/эмитент/ISIN, срок, суборд.
+    Считается редко — множество меняется только с реестром, а не с рынком.
+    Дальше мониторится только глубина этих бумаг (см. evaluate_candidates)."""
+    today = today or date.today()
     ylo, yhi = params.get("years_min"), params.get("years_max")
     hide_sub = params.get("hide_subord")
-    today = today or date.today()
     out = []
     for u in uni:
-        isin = u.get("isin")
-        row = metrics.get(isin)
-        if not row:
-            continue
-        if row.get("implausible") or row.get("price_stale") or row.get("price_thin"):
-            continue
         if hide_sub and is_subord(u):
             continue
         yrs = years_left(u.get("maturity_date"), today)
@@ -169,23 +231,75 @@ def evaluate(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
                 continue
         if not selected(u, params):
             continue
-        val = row.get("yoi_ask") if side == "ask" else row.get("yoi_bid")
+        out.append(dict(u, _years=round(yrs, 2) if yrs is not None else None))
+    return out
+
+
+def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
+                        depth_map: dict) -> List[dict]:
+    """Рыночная часть: по уже отобранным бумагам считает цену/спред/деньги и
+    отсеивает по диапазону спреда и объёму.
+
+    Если задан min_money_rub — цена это СРЕДНЕВЗВЕС набора этого объёма по
+    лестнице, а спред пересчитан к ней (иначе цифра относилась бы к верху
+    стакана на 50 бумаг, а исполняться сделка будет по всей лестнице).
+    Без объёма — верх стакана, как в таблице."""
+    side = params["side"]
+    lo, hi = params["spread_min"], params["spread_max"]
+    want = params.get("min_money_rub")
+    out = []
+    for u in candidates:
+        isin = u.get("isin")
+        row = metrics.get(isin)
+        if not row:
+            continue
+        if row.get("implausible") or row.get("price_stale") or row.get("price_thin"):
+            continue
+        face = row.get("face_px") or 1000.0
+        accrued = row.get("accrued_settle") or 0.0
+        ladder = (depth_map.get(isin) or {}).get("a" if side == "ask" else "b")
+
+        top_val = row.get("yoi_ask") if side == "ask" else row.get("yoi_bid")
+        if want:
+            v = vwap_for(ladder, want, face, accrued)
+            if not vwap_passes(v, want):
+                continue
+            price = round(v["px"], 4)
+            val = y_idx_at(row, v["px"], side)
+            if val is None and v["levels"] == 1:
+                # набор уложился в один уровень — VWAP-цена и есть верх стакана,
+                # его спред точен (а не приближение), наклон тут не нужен
+                val = top_val
+            money = v["money"]
+            levels = v["levels"]
+            partial = v["partial"]
+        else:
+            price = row.get(side)
+            val = top_val
+            money = side_money_rub(depth_map.get(isin), side, face, accrued)
+            levels, partial = None, False
+
         if val is None:
             continue
         if lo is not None and val < lo:
             continue
         if hi is not None and val > hi:
             continue
-        face = row.get("face_px") or 1000.0
-        money = side_money_rub(depth_map.get(isin), side, face)
-        if params["min_money_rub"] is not None and (money or 0) < params["min_money_rub"]:
-            continue
         out.append({"isin": isin, "name": u.get("name") or isin,
-                    "val_bps": val, "price": row.get(side), "money_rub": money,
+                    "val_bps": round(val, 1), "price": price, "money_rub": money,
+                    "levels": levels, "partial": partial,
                     "rating": u.get("rating"), "emitter": u.get("emitter_name"),
-                    "years": round(yrs, 2) if yrs is not None else None})
+                    "years": u.get("_years")})
     out.sort(key=lambda m: m["val_bps"], reverse=True)
     return out
+
+
+def evaluate(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
+             today: Optional[date] = None) -> List[dict]:
+    """Полный прогон (статика + рынок) — для разовых вызовов: превью формы,
+    телеграм-скринер. Постоянный мониторинг держит статику отдельно."""
+    return evaluate_candidates(params, static_candidates(params, uni, today),
+                               metrics, depth_map)
 
 
 async def market_snapshot():

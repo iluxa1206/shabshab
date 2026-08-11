@@ -582,12 +582,17 @@ function Dashboard() {
       const n = new URLSearchParams(sp);
       n.set("isin", isin);
       if (kind === "fixed") n.set("k", "fixed"); else n.delete("k");
+      n.delete("sigvol"); n.delete("sigside");   // подсветка объёма — только из ленты сигналов
       return n;
     });
   }, [setSearchParams]);
 
   const closeDrawer = useCallback(() => {
-    setSearchParams((sp) => { const n = new URLSearchParams(sp); n.delete("isin"); n.delete("k"); n.delete("ob"); return n; });
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      ["isin", "k", "ob", "sigvol", "sigside"].forEach((k) => n.delete(k));
+      return n;
+    });
     const el = lastTriggerRef.current;
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
@@ -692,7 +697,9 @@ function Dashboard() {
           </Suspense>} />
         <Route path="*" element={<Navigate to="/floaters" replace />} />
       </Routes>
-      <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"} onClose={closeDrawer} />
+      <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"}
+        sigVol={Number(searchParams.get("sigvol")) || 0} sigSide={searchParams.get("sigside") || "ask"}
+        onClose={closeDrawer} />
       <StatusBar count={bonds.length} bonds={bonds} kpiBonds={filtered} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} meta={meta}
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />

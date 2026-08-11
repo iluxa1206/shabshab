@@ -14,7 +14,9 @@ def clean_db():
     yield
     with _lock, _connect() as c:
         c.execute("DELETE FROM signal_filters WHERE user_email=?", (USER,))
-        c.execute("DELETE FROM signal_hits WHERE user_email=?", (USER,))
+        c.execute("DELETE FROM signal_events WHERE user_email=?", (USER,))
+        c.execute("DELETE FROM signal_state WHERE filter_id NOT IN "
+                  "(SELECT id FROM signal_filters)")
 
 
 def _market():
@@ -26,12 +28,16 @@ def _market():
         {"isin": "RU000A0000C3", "name": "ВЭБ 3", "rating": "AAA",
          "emitter_name": "ВЭБ.РФ", "maturity_date": "2031-08-11"},
     ]
+    # yoi_slope — производная Y-IDX по цене (бп на 1 пп), нужна для спреда по VWAP
     metrics = {
-        "RU000A0000A1": {"yoi_ask": 280.0, "yoi_bid": 300.0, "ask": 100.2, "bid": 99.9, "face_px": 1000.0},
-        "RU000A0000B2": {"yoi_ask": 400.0, "yoi_bid": 420.0, "ask": 99.0, "bid": 98.5, "face_px": 1000.0},
-        "RU000A0000C3": {"yoi_ask": 180.0, "yoi_bid": 195.0, "ask": 100.0, "bid": 99.8, "face_px": 1000.0},
+        "RU000A0000A1": {"yoi_ask": 280.0, "yoi_bid": 300.0, "ask": 100.2, "bid": 99.9,
+                         "face_px": 1000.0, "accrued_settle": 0.0, "yoi_slope": -100.0},
+        "RU000A0000B2": {"yoi_ask": 400.0, "yoi_bid": 420.0, "ask": 99.0, "bid": 98.5,
+                         "face_px": 1000.0, "accrued_settle": 0.0, "yoi_slope": -100.0},
+        "RU000A0000C3": {"yoi_ask": 180.0, "yoi_bid": 195.0, "ask": 100.0, "bid": 99.8,
+                         "face_px": 1000.0, "accrued_settle": 0.0, "yoi_slope": -100.0},
     }
-    depth = {"RU000A0000A1": {"a": [[100.2, 3000]], "b": [[99.9, 100]]},
+    depth = {"RU000A0000A1": {"a": [[100.2, 3000], [100.4, 5000]], "b": [[99.9, 100]]},
              "RU000A0000B2": {"a": [[99.0, 50]], "b": []}}
     return uni, metrics, depth
 
@@ -67,7 +73,7 @@ def test_evaluate_bid_side():
 
 
 def test_crud_and_isolation():
-    f = signals.create(USER, "мой сигнал", {"spread_min": 250}, cooldown_min=15)
+    f = signals.create(USER, "мой сигнал", {"spread_min": 250}, change_pct=5)
     assert f["enabled"] and f["sound"] and f["desktop"]
     assert f["params"]["side"] == "ask"
 
@@ -76,8 +82,8 @@ def test_crud_and_isolation():
     assert signals.update("other@example.com", f["id"], enabled=False) is None
     assert signals.delete("other@example.com", f["id"]) is False
 
-    upd = signals.update(USER, f["id"], enabled=False, sound=False, cooldown_min=60)
-    assert upd["enabled"] is False and upd["sound"] is False and upd["cooldown_min"] == 60
+    upd = signals.update(USER, f["id"], enabled=False, sound=False, change_pct=20)
+    assert upd["enabled"] is False and upd["sound"] is False and upd["change_pct"] == 20
     assert signals.delete(USER, f["id"]) is True
 
 
@@ -87,36 +93,7 @@ def test_create_validates():
     with pytest.raises(signals.FilterError):
         signals.create(USER, "x", {})
     with pytest.raises(signals.FilterError):
-        signals.create(USER, "x", {"spread_min": 250}, cooldown_min=99999)
-
-
-def test_hits_feed_and_cooldown():
-    f = signals.create(USER, "лента", {"spread_min": 250}, cooldown_min=60)
-    matches = [{"isin": "RU000A0000A1", "name": "Газпром 1", "val_bps": 280.0,
-                "price": 100.2, "money_rub": 3.0e6}]
-    fresh = signals.fresh_matches(f["id"], USER, 60, "ask", matches)
-    assert len(fresh) == 1 and fresh[0]["fired_at"]
-    assert signals.fresh_matches(f["id"], USER, 60, "ask", matches) == []
-
-    feed = signals.hits_for_user(USER)
-    assert len(feed) == 1
-    assert feed[0]["isin"] == "RU000A0000A1" and feed[0]["filter_name"] == "лента"
-    assert feed[0]["seen"] == 0 and feed[0]["val_bps"] == 280.0
-
-    assert signals.mark_seen(USER) == 1
-    assert signals.hits_for_user(USER)[0]["seen"] == 1
-    assert signals.clear_hits(USER) == 1
-    assert signals.hits_for_user(USER) == []
-
-
-def test_delete_filter_drops_its_hits():
-    f = signals.create(USER, "удалить", {"spread_min": 250})
-    signals.fresh_matches(f["id"], USER, 60, "ask",
-                          [{"isin": "RU000A0000A1", "name": "X", "val_bps": 280.0,
-                            "price": 100.0, "money_rub": None}])
-    assert len(signals.hits_for_user(USER)) == 1
-    signals.delete(USER, f["id"])
-    assert signals.hits_for_user(USER) == []
+        signals.create(USER, "x", {"spread_min": 250}, change_pct=0)
 
 
 def test_run_cycle_pushes_to_owner(monkeypatch):
@@ -134,7 +111,7 @@ def test_run_cycle_pushes_to_owner(monkeypatch):
         sent.append((email, payload))
     monkeypatch.setattr(wsmod.manager, "broadcast_signal", fake_broadcast)
 
-    f = signals.create(USER, "цикл", {"spread_min": 250, "side": "ask"}, cooldown_min=60)
+    f = signals.create(USER, "цикл", {"spread_min": 250, "side": "ask"})
     assert asyncio.run(signals.run_cycle()) >= 1
     mine = [s for s in sent if s[0] == USER]
     assert len(mine) == 1
@@ -142,6 +119,9 @@ def test_run_cycle_pushes_to_owner(monkeypatch):
     assert payload["filter_name"] == "цикл" and payload["side"] == "ask"
     assert {m["isin"] for m in payload["matches"]} == {"RU000A0000A1", "RU000A0000B2"}
 
+    assert all(m["reason"] == "new" for m in payload["matches"])
+
+    # второй тик без движения рынка — тишина
     sent.clear()
     asyncio.run(signals.run_cycle())
     assert [s for s in sent if s[0] == USER] == []
@@ -221,3 +201,141 @@ def test_years_range_validation():
         core.normalize_params({"spread_min": 100, "years_min": 5, "years_max": 2})
     with pytest.raises(core.FilterError):
         core.normalize_params({"spread_min": 100, "years_min": -1})
+
+
+# --- VWAP на объём: цена и спред по набранному тикету ---
+
+def test_vwap_price_and_spread_by_volume():
+    uni, metrics, depth = _market()
+    # 4 млн ₽ по A1: 3000 бумаг по 100.2 = 3.006 млн, остаток берём с 100.4
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 4e6,
+                               "isins": ["RU000A0000A1"]})
+    m = core.evaluate(p, uni, metrics, depth)[0]
+    assert m["levels"] == 2 and m["partial"] is False
+    assert m["money_rub"] == pytest.approx(4e6)
+    # средневзвес между 100.2 и 100.4, ближе к 100.2
+    assert 100.2 < m["price"] < 100.4
+    # спред пересчитан к этой цене наклоном: хуже, чем 280 у верха стакана
+    assert m["val_bps"] < 280.0
+    assert m["val_bps"] == pytest.approx(280.0 + (m["price"] - 100.2) * -100.0, abs=0.2)
+
+
+def test_vwap_single_level_uses_exact_top_spread():
+    uni, metrics, depth = _market()
+    metrics["RU000A0000A1"].pop("yoi_slope")     # наклона нет
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 1e6,
+                               "isins": ["RU000A0000A1"]})
+    m = core.evaluate(p, uni, metrics, depth)[0]
+    # набор уложился в верхний уровень → спред верха точен, а не приближение
+    assert m["levels"] == 1 and m["val_bps"] == 280.0
+
+
+def test_vwap_rejects_when_book_too_thin():
+    uni, metrics, depth = _market()
+    # у B2 на оффере всего 49.5 тыс ₽ — тикет на 1 млн не собрать
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 1e6,
+                               "isins": ["RU000A0000B2"]})
+    assert core.evaluate(p, uni, metrics, depth) == []
+
+
+def test_vwap_partial_within_tolerance_passes():
+    uni, metrics, depth = _market()
+    # книги A1 хватает на 8.026 млн; просим 8.5 млн — добрали 94% ≥ VOL_TOL
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 8.5e6,
+                               "isins": ["RU000A0000A1"]})
+    m = core.evaluate(p, uni, metrics, depth)[0]
+    assert m["partial"] is True and m["money_rub"] == pytest.approx(8_026_000)
+
+    # просим 10 млн — добрали 80% < VOL_TOL, тикет не собрать
+    p2 = core.normalize_params({"spread_min": 100, "min_money_rub": 10e6,
+                                "isins": ["RU000A0000A1"]})
+    assert core.evaluate(p2, uni, metrics, depth) == []
+
+
+def test_dirty_money_includes_accrued():
+    uni, metrics, depth = _market()
+    metrics["RU000A0000A1"]["accrued_settle"] = 50.0     # НКД 50 ₽ на бумагу
+    p = core.normalize_params({"spread_min": 100, "isins": ["RU000A0000A1"]})
+    m = core.evaluate(p, uni, metrics, depth)[0]
+    # 3000×(1000×1.002+50) + 5000×(1000×1.004+50)
+    assert m["money_rub"] == pytest.approx(3000 * 1052 + 5000 * 1054)
+
+
+# --- событийная модель ---
+
+def test_events_new_then_silence_then_change():
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "события", {"spread_min": 100, "isins": ["RU000A0000A1"]},
+                       change_pct=10)
+    p = f["params"]
+
+    ms = core.evaluate(p, uni, metrics, depth)
+    ev = signals.detect_events(f["id"], USER, "ask", 10, ms, None)
+    assert [e["reason"] for e in ev] == ["new"]
+
+    # ничего не изменилось — событий нет
+    assert signals.detect_events(f["id"], USER, "ask", 10, ms, None) == []
+
+    # цена уехала на 0.05% — ниже порога, молчим
+    metrics["RU000A0000A1"]["ask"] = 100.25
+    ms2 = core.evaluate(p, uni, metrics, depth)
+    assert signals.detect_events(f["id"], USER, "ask", 10, ms2, None) == []
+
+    # спред уехал на 20% — событие
+    metrics["RU000A0000A1"]["yoi_ask"] = 340.0
+    ms3 = core.evaluate(p, uni, metrics, depth)
+    ev3 = signals.detect_events(f["id"], USER, "ask", 10, ms3, None)
+    assert [e["reason"] for e in ev3] == ["spread"]
+    assert ev3[0]["prev_val_bps"] == 280.0
+
+    signals.delete(USER, f["id"])
+
+
+def test_events_money_change_and_leaving_set():
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "объём", {"spread_min": 100, "isins": ["RU000A0000A1"]},
+                       change_pct=10)
+    p = f["params"]
+    signals.detect_events(f["id"], USER, "ask", 10, core.evaluate(p, uni, metrics, depth), None)
+
+    # объём в стакане вырос вдвое — событие money
+    depth["RU000A0000A1"]["a"] = [[100.2, 6000], [100.4, 5000]]
+    ev = signals.detect_events(f["id"], USER, "ask", 10,
+                               core.evaluate(p, uni, metrics, depth), None)
+    assert [e["reason"] for e in ev] == ["money"]
+
+    # бумага вышла из набора → состояние забыто; вернулась → снова "new"
+    signals.detect_events(f["id"], USER, "ask", 10, [], None)
+    ev2 = signals.detect_events(f["id"], USER, "ask", 10,
+                                core.evaluate(p, uni, metrics, depth), None)
+    assert [e["reason"] for e in ev2] == ["new"]
+
+    signals.delete(USER, f["id"])
+
+
+def test_events_feed_and_unseen_counter():
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "лента", {"spread_min": 100, "isins": ["RU000A0000A1"]})
+    signals.detect_events(f["id"], USER, "ask", 10,
+                          core.evaluate(f["params"], uni, metrics, depth), 4e6)
+
+    feed = signals.events_for_user(USER)
+    assert len(feed) == 1 and feed[0]["filter_name"] == "лента"
+    assert feed[0]["reason"] == "new" and feed[0]["want_money_rub"] == 4e6
+    assert signals.unseen_count(USER) == 1
+    assert signals.mark_seen(USER) == 1 and signals.unseen_count(USER) == 0
+
+    # чистка ленты НЕ воскрешает бумаги как новые (состояние живёт отдельно)
+    signals.clear_events(USER)
+    assert signals.events_for_user(USER) == []
+    assert signals.detect_events(f["id"], USER, "ask", 10,
+                                 core.evaluate(f["params"], uni, metrics, depth), None) == []
+    signals.delete(USER, f["id"])
+
+
+def test_static_candidates_split():
+    uni, _metrics, _depth = _market()
+    p = core.normalize_params({"spread_min": 100, "ratings": ["AA"]})
+    cands = core.static_candidates(p, uni)
+    assert [c["isin"] for c in cands] == ["RU000A0000A1"]
+    assert cands[0]["_years"] is not None

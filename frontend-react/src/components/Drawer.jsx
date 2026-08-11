@@ -427,7 +427,7 @@ function Content({ d, charts }) {
   );
 }
 
-export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
+export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, onClose }) {
   const isFixed = kind === "fixed";
   const navigate = useNavigate();
   const detailsQ = useQuery({
@@ -447,6 +447,9 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
   const [showOb, setShowOb] = useState(true);
   useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
   const face = data?.reference?.face_value ?? null;
+  // НКД на дату поставки — тот же, из которого бэк собрал грязную цену: подсветка
+  // объёма сигнала в стакане должна считать деньги ровно как screener_core
+  const accrued = data?.valuation?.accrued_settle_rub ?? data?.reference?.accrued_interest ?? 0;
 
   // Панель графиков (флоатеры): цена + DM на общем периоде, слева от карточки.
   // Открывается кнопкой ГРАФИКИ (аналог СТАКАНА). Один элемент рендерится и в
@@ -562,7 +565,8 @@ export default function Drawer({ isin, kind, autoOrderbook, onClose }) {
               exit={{ x: reduce ? 0 : 24, opacity: 0 }}
               transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
             >
-              <Orderbook isin={isin} kind={kind} face={face} onClose={() => setShowOb(false)} />
+              <Orderbook isin={isin} kind={kind} face={face} accrued={accrued}
+                sigVol={sigVol} sigSide={sigSide} onClose={() => setShowOb(false)} />
             </motion.aside>
           )}
         </>

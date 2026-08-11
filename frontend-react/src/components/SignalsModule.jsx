@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  clearSignalHits, createSignalFilter, deleteSignalFilter, fetchSignalEmitters,
-  fetchSignalFilters, fetchSignalHits, markSignalHitsSeen, patchSignalFilter,
+  clearSignalEvents, createSignalFilter, deleteSignalFilter, fetchSignalEmitters,
+  fetchSignalEvents, fetchSignalFilters, markSignalEventsSeen, patchSignalFilter,
   previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
 
 const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
-const COOLDOWNS = [[5, "5 мин"], [15, "15 мин"], [60, "1 ч"], [240, "4 ч"], [1440, "1 день"]];
+// Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
+// прилетело повторное уведомление по уже найденной бумаге.
+const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];
+const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём" };
 
 const money = (v) =>
   v == null ? "—"
     : v >= 1e6 ? fmt.num(v / 1e6, 1) + " млн"
     : v >= 1e3 ? fmt.num(v / 1e3, 0) + " тыс" : fmt.num(v, 0);
 
-const cdLabel = (m) => (COOLDOWNS.find(([v]) => v === m) || [null, m + " мин"])[1];
+const chLabel = (v) => (CHANGES.find(([x]) => x === v) || [null, v + " %"])[1];
 
 const timeOf = (iso) => {
   try {
@@ -120,7 +123,7 @@ function FilterForm({ onSubmit, busy }) {
   const [ymin, setYmin] = useState("");
   const [ymax, setYmax] = useState("");
   const [hideSub, setHideSub] = useState(false);
-  const [cooldown, setCooldown] = useState(60);
+  const [changePct, setChangePct] = useState(10);
   const [sound, setSound] = useState(true);
   const [desktop, setDesktop] = useState(true);
   const [err, setErr] = useState("");
@@ -160,7 +163,7 @@ function FilterForm({ onSubmit, busy }) {
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
     if (smin === "" && smax === "") { setErr("Задай хотя бы одну границу диапазона Y-IDX"); return; }
     try {
-      await onSubmit({ name: name.trim(), params, cooldown_min: cooldown, sound, desktop });
+      await onSubmit({ name: name.trim(), params, change_pct: changePct, sound, desktop });
       setName(""); setRatings([]); setEmitters([]); setIsins([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
       setHideSub(false); setPreview(null);
@@ -254,11 +257,11 @@ function FilterForm({ onSubmit, busy }) {
 
       <div className="sig-row">
         <div className="sig-field">
-          <label className="sig-label">Повторять не чаще</label>
+          <label className="sig-label">Повторно сообщать при сдвиге</label>
           <div className="sig-seg">
-            {COOLDOWNS.map(([v, t]) => (
-              <button type="button" key={v} className={cooldown === v ? "on" : ""}
-                onClick={() => setCooldown(v)}>{t}</button>
+            {CHANGES.map(([v, t]) => (
+              <button type="button" key={v} className={changePct === v ? "on" : ""}
+                onClick={() => setChangePct(v)}>{t}</button>
             ))}
           </div>
         </div>
@@ -309,7 +312,7 @@ function FilterRow({ f, onToggle, onDelete }) {
           {" · Y-IDX "}{d.range}
           {d.years ? ` · срок ${d.years}` : ""}
           {f.params.min_money_rub ? ` · от ${money(f.params.min_money_rub)} ₽` : ""}
-          {" · пауза "}{cdLabel(f.cooldown_min)}
+          {" · сдвиг "}{chLabel(f.change_pct)}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
         </div>
       </div>
@@ -325,8 +328,8 @@ function FilterRow({ f, onToggle, onDelete }) {
 export default function SignalsModule() {
   const qc = useQueryClient();
   const filters = useQuery({ queryKey: ["signal-filters"], queryFn: fetchSignalFilters });
-  const hits = useQuery({
-    queryKey: ["signal-hits"], queryFn: () => fetchSignalHits(100), refetchInterval: 30000,
+  const events = useQuery({
+    queryKey: ["signal-events"], queryFn: () => fetchSignalEvents(100), refetchInterval: 30000,
   });
 
   const create = useMutation({
@@ -341,24 +344,24 @@ export default function SignalsModule() {
     mutationFn: deleteSignalFilter,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["signal-filters"] });
-      qc.invalidateQueries({ queryKey: ["signal-hits"] });
+      qc.invalidateQueries({ queryKey: ["signal-events"] });
     },
   });
   const clear = useMutation({
-    mutationFn: clearSignalHits,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["signal-hits"] }),
+    mutationFn: clearSignalEvents,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["signal-events"] }),
   });
 
-  // вкладка открыта — лента считается прочитанной (счётчик в меню гаснет)
+  // вкладка открыта — лента считается прочитанной (счётчик колокольчика гаснет)
   useEffect(() => {
-    if (!hits.data?.hits?.some((h) => !h.seen)) return;
-    markSignalHitsSeen()
-      .then(() => qc.invalidateQueries({ queryKey: ["signal-hits"] }))
+    if (!events.data?.unseen) return;
+    markSignalEventsSeen()
+      .then(() => qc.invalidateQueries({ queryKey: ["signal-events"] }))
       .catch(() => {});
-  }, [hits.data, qc]);
+  }, [events.data, qc]);
 
   const rows = filters.data?.filters || [];
-  const feed = hits.data?.hits || [];
+  const feed = events.data?.events || [];
 
   return (
     <div className="sig-wrap">
@@ -393,9 +396,10 @@ export default function SignalsModule() {
         {feed.length === 0
           ? <div className="sig-empty">Пока пусто.</div>
           : feed.map((h) => (
-              <div className="sig-hit" key={h.filter_id + h.isin}>
+              <div className="sig-hit" key={h.id}>
                 <div className="sig-hit-top">
                   <span className="sig-hit-name">{h.name || h.isin}</span>
+                  <span className={"sb-tag sb-" + h.reason}>{REASON[h.reason] || h.reason}</span>
                   <span className="sig-hit-time num">{timeOf(h.fired_at)}</span>
                 </div>
                 <div className="sig-hit-body num">
@@ -404,6 +408,7 @@ export default function SignalsModule() {
                   {" "}<b>{fmt.num(h.val_bps, 0)} бп</b>
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} ₽</>}
+                  {h.levels ? <> · {h.levels} ур</> : null}
                 </div>
                 <div className="sig-hit-meta">{h.filter_name || "фильтр удалён"} · {h.isin}</div>
               </div>

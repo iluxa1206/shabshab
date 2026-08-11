@@ -176,29 +176,49 @@ CREATE TABLE IF NOT EXISTS signal_filters(
   name TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   params_json TEXT NOT NULL,
-  cooldown_min INTEGER NOT NULL DEFAULT 60,
+  cooldown_min INTEGER NOT NULL DEFAULT 60,   -- ЛЕГАСИ: заменён на change_pct
   sound INTEGER NOT NULL DEFAULT 1,      -- звук при срабатывании
   desktop INTEGER NOT NULL DEFAULT 1,    -- системное уведомление браузера
+  change_pct REAL NOT NULL DEFAULT 10,   -- порог «шевеления» метрики, %
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_signal_filters_user ON signal_filters(user_email);
 
--- Срабатывания: и анти-спам (последнее время по паре фильтр+бумага), и лента
--- истории на вкладке. Одна строка на пару — повтор обновляет её и метрики.
-CREATE TABLE IF NOT EXISTS signal_hits(
+-- Текущее состояние набора: последние метрики бумаги, попадающей под фильтр.
+-- Эфемерное — вышла из набора, строка удаляется (вернётся = снова событие
+-- «новая», а не мнимое изменение от несвежего состояния). Ровно с ним
+-- сравнивается каждый тик, чтобы поймать шевеление на N%.
+CREATE TABLE IF NOT EXISTS signal_state(
   filter_id INTEGER NOT NULL,
   isin TEXT NOT NULL,
-  user_email TEXT NOT NULL,
-  name TEXT,
-  side TEXT,
   val_bps REAL,
   price REAL,
   money_rub REAL,
-  fired_at TEXT NOT NULL,
-  seen INTEGER NOT NULL DEFAULT 0,       -- лента прочитана пользователем
+  updated_at TEXT NOT NULL,
   PRIMARY KEY(filter_id, isin)
 );
-CREATE INDEX IF NOT EXISTS ix_signal_hits_user ON signal_hits(user_email, fired_at);
+
+-- Лента событий: история срабатываний, много записей на одну бумагу
+-- (появилась → цена ушла на 10% → объём вырос). Отдельно от состояния:
+-- состояние забывается при выходе из набора, история остаётся.
+CREATE TABLE IF NOT EXISTS signal_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filter_id INTEGER NOT NULL,
+  user_email TEXT NOT NULL,
+  isin TEXT NOT NULL,
+  name TEXT,
+  side TEXT,
+  val_bps REAL,                          -- спред по средневзвесу набора
+  price REAL,                            -- средневзвешенная цена набора
+  money_rub REAL,                        -- фактически набранные деньги
+  want_money_rub REAL,                   -- сколько просили набрать (для подсветки)
+  levels INTEGER,                        -- уровней стакана в наборе
+  reason TEXT,                           -- new | price | spread | money
+  prev_val_bps REAL, prev_price REAL, prev_money_rub REAL,
+  fired_at TEXT NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_signal_events_user ON signal_events(user_email, fired_at);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;
@@ -212,6 +232,10 @@ _MIGRATIONS = [
     "ALTER TABLE bar_hourly ADD COLUMN y_low_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN y_close_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN metrics_ver INTEGER",
+    "ALTER TABLE signal_filters ADD COLUMN change_pct REAL NOT NULL DEFAULT 10",
+    # signal_hits (лента+анти-спам одной таблицей) заменена парой
+    # signal_state/signal_events; старая остаётся безвредной сиротой
+    "DROP TABLE IF EXISTS signal_hits",
 ]
 
 

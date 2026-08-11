@@ -39,6 +39,8 @@ function desktopNotify(title, body) {
   });
 }
 
+const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём" };
+
 const money = (v) =>
   v == null ? null
     : v >= 1e6 ? fmt.num(v / 1e6, 1) + " млн ₽"
@@ -62,13 +64,13 @@ export default function SignalsWatcher() {
       if (payload.desktop && document.visibilityState !== "visible") {
         const head = matches[0];
         desktopNotify(
-          `${payload.filter_name}: ${matches.length} бумаг`,
-          `${head.name} — ${fmt.num(head.val_bps, 0)} бп` +
+          `${payload.filter_name}: ${matches.length} ${matches.length === 1 ? "бумага" : "бумаг"}`,
+          `${head.name} — ${fmt.num(head.val_bps, 0)} бп (${REASON[head.reason] || head.reason})` +
           (matches.length > 1 ? ` и ещё ${matches.length - 1}` : ""));
       }
       const id = ++seq.current;
       setCards((c) => [{ id, payload }, ...c].slice(0, 4));
-      qc.invalidateQueries({ queryKey: ["signal-hits"] });
+      qc.invalidateQueries({ queryKey: ["signal-events"] });
     });
     return () => conn.close();
   }, [qc]);
@@ -106,8 +108,15 @@ function SignalToast({ p, onDismiss }) {
       <div className="sig-toast-b">
         {p.matches.slice(0, 5).map((m) => (
           <div className="sig-toast-row num" key={m.isin}>
-            <span className="sig-toast-nm">{m.name}</span>
+            <span className="sig-toast-nm">
+              {m.name}
+              <span className={"sb-tag sb-" + m.reason}>{REASON[m.reason] || m.reason}</span>
+            </span>
             <span><b>{fmt.num(m.val_bps, 0)}</b> бп
+              {m.prev_val_bps != null && m.val_bps !== m.prev_val_bps && (
+                <span className={"sb-delta " + (m.val_bps > m.prev_val_bps ? "pos" : "neg")}>
+                  {m.val_bps > m.prev_val_bps ? "+" : "−"}{fmt.num(Math.abs(m.val_bps - m.prev_val_bps), 0)}
+                </span>)}
               {m.price != null && <> · {fmt.num(m.price, 2)}%</>}
               {money(m.money_rub) && <> · {money(m.money_rub)}</>}
             </span>

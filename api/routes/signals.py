@@ -30,7 +30,7 @@ class SignalParams(BaseModel):
 class SignalCreate(BaseModel):
     name: str
     params: SignalParams
-    cooldown_min: int = 60
+    change_pct: float = 10.0
     sound: bool = True
     desktop: bool = True
 
@@ -39,7 +39,7 @@ class SignalPatch(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
     params: Optional[SignalParams] = None
-    cooldown_min: Optional[int] = None
+    change_pct: Optional[float] = None
     sound: Optional[bool] = None
     desktop: Optional[bool] = None
 
@@ -54,7 +54,7 @@ async def list_filters(user: dict = Depends(require_user)):
 async def create_filter(body: SignalCreate, user: dict = Depends(require_user)):
     try:
         return signals.create(user["email"], body.name, body.params.model_dump(),
-                              cooldown_min=body.cooldown_min, sound=body.sound,
+                              change_pct=body.change_pct, sound=body.sound,
                               desktop=body.desktop)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -66,7 +66,7 @@ async def patch_filter(body: SignalPatch, fid: int = Path(...),
     try:
         f = signals.update(user["email"], fid, name=body.name, enabled=body.enabled,
                            params=body.params.model_dump() if body.params else None,
-                           cooldown_min=body.cooldown_min, sound=body.sound,
+                           change_pct=body.change_pct, sound=body.sound,
                            desktop=body.desktop)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -91,19 +91,21 @@ async def preview_filter(params: SignalParams, user: dict = Depends(require_user
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/hits", tags=["Signals"])
-async def list_hits(limit: int = signals.HITS_LIMIT, user: dict = Depends(require_user)):
-    return {"hits": signals.hits_for_user(user["email"], limit=min(int(limit), 500))}
+@router.get("/events", tags=["Signals"])
+async def list_events(limit: int = signals.EVENTS_LIMIT, user: dict = Depends(require_user)):
+    """Лента срабатываний + счётчик непрочитанных (для колокольчика)."""
+    return {"events": signals.events_for_user(user["email"], limit=min(int(limit), 500)),
+            "unseen": signals.unseen_count(user["email"])}
 
 
-@router.post("/hits/seen", tags=["Signals"])
-async def mark_hits_seen(user: dict = Depends(require_user)):
+@router.post("/events/seen", tags=["Signals"])
+async def mark_events_seen(user: dict = Depends(require_user)):
     return {"updated": signals.mark_seen(user["email"])}
 
 
-@router.delete("/hits", tags=["Signals"])
-async def clear_hits(user: dict = Depends(require_user)):
-    return {"deleted": signals.clear_hits(user["email"])}
+@router.delete("/events", tags=["Signals"])
+async def clear_events(user: dict = Depends(require_user)):
+    return {"deleted": signals.clear_events(user["email"])}
 
 
 @router.get("/search", tags=["Signals"])

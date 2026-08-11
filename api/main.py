@@ -455,12 +455,17 @@ async def alerts_monitor():
             await asyncio.sleep(30)
 
 
-SIGNALS_INTERVAL = int(os.getenv("SIGNALS_INTERVAL", "45"))
+SIGNALS_INTERVAL = float(os.getenv("SIGNALS_INTERVAL", "3"))
 
 
 async def signals_worker():
-    """Фон: фильтры вкладки СИГНАЛЫ против снапшота метрик универса. Такт чаще
-    телеграмного (сигнал нужен «пока стакан жив»), логика — в services.signals."""
+    """Фон: фильтры вкладки СИГНАЛЫ против снапшота рынка.
+
+    Такт секундный, и это дёшево: стаканы уже лежат в market_cache['depth']
+    push'ем от Alor (universe_stream), метрики — в universe_metrics. Тик читает
+    ПАМЯТЬ, статический отбор бумаг закеширован на фильтр, событий без движения
+    рынка не возникает. Так задержка сигнала равна задержке стакана, а не
+    периоду опроса."""
     from services import signals as signals_svc
     await asyncio.sleep(75)     # ждём прогрева движка метрик
     while True:
@@ -468,7 +473,7 @@ async def signals_worker():
             if _in_moex_trading_hours():
                 fired = await signals_svc.run_cycle()
                 if fired:
-                    logger.info("signals: сработало фильтров %d", fired)
+                    logger.info("signals: события по %d фильтрам", fired)
         except Exception as e:
             logger.warning(f"signals_worker error: {e}")
         await asyncio.sleep(SIGNALS_INTERVAL)

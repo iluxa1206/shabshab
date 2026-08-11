@@ -427,9 +427,9 @@ export const deleteSignalFilter = (id) =>
   request(`/api/signals/${id}`, { method: "DELETE" });
 export const previewSignalFilter = (json) =>
   request("/api/signals/preview", { method: "POST", json });
-export const fetchSignalHits = (limit = 100) => request(`/api/signals/hits?limit=${limit}`);
-export const markSignalHitsSeen = () => request("/api/signals/hits/seen", { method: "POST" });
-export const clearSignalHits = () => request("/api/signals/hits", { method: "DELETE" });
+export const fetchSignalEvents = (limit = 100) => request(`/api/signals/events?limit=${limit}`);
+export const markSignalEventsSeen = () => request("/api/signals/events/seen", { method: "POST" });
+export const clearSignalEvents = () => request("/api/signals/events", { method: "DELETE" });
 export const fetchSignalEmitters = (q) =>
   request(`/api/signals/emitters?q=${encodeURIComponent(q || "")}`);
 export const searchInstruments = (q) =>

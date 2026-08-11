@@ -5,6 +5,7 @@ import { fetchAlerts, deleteAlert } from "../api.js";
 import { fmt } from "../format.js";
 import KpisInline from "./Kpis.jsx";
 import { IconBell, IconAlert, IconRefresh } from "./icons.jsx";
+import SignalsBell from "./SignalsBell.jsx";
 
 const mln = (v) => (v != null ? (v / 1e6).toFixed(1) : null);   // ₽ → млн
 
@@ -171,6 +172,7 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
       )}
       {onFloaters && <KpisInline bonds={kpiBonds} />}
       <AlertsCell bonds={bonds} />
+      <SignalsBell />
       <span className="status-cell grow" />
       {/* подписи РАСЧЁТ/СТАВКИ ушли в тултип — двух дат хватает, а строка не влезала */}
       <span className="status-cell meta-chip" title="дата расчёта / дата ставок">

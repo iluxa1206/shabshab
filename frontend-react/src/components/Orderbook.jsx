@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { fetchOrderbook, fetchAlerts, connectOrderbookWs } from "../api.js";
@@ -29,7 +29,7 @@ const DEPTHS = [10, 20, 30, 50];
 // Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → Y-IDX
 // (первичная) + YTM, фикс → YTM+G-спред. side красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
-function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
+function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
   const hasQty = lvl.quantity != null;
   const rub = hasQty && face != null && lvl.price_pct != null
     ? lvl.quantity * face * (lvl.price_pct / 100)
@@ -45,8 +45,10 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
     : undefined;
   return (
     <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")
-        + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")}
-      onClick={onClick} title={armTitle}>
+        + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")
+        + (fill ? (fill.partial ? " ob-sig-part" : " ob-sig") : "")}
+      onClick={onClick}
+      title={fill ? `В наборе сигнала: ${fmt.num(fill.money, 0)} ₽${fill.partial ? " (уровень взят частично)" : ""}` : armTitle}>
       <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? <IconAlert size={11} /> : <IconBell size={11} />}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
@@ -70,7 +72,7 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert }) {
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
 // Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
-export default function Orderbook({ isin, kind, face, onClose }) {
+export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
@@ -116,6 +118,26 @@ export default function Orderbook({ isin, kind, face, onClose }) {
     ?? ob?.bids?.[0]?.price_pct ?? null;
   const spread = bestAsk != null && bestBid != null ? bestAsk - bestBid : null;
   const empty = !asks.length && !bids.length;
+
+  // Подсветка объёма сигнала: набираем sigVol рублей по стороне sigSide от
+  // лучшей цены — ровно так же, как считал бэк (screener_core.vwap_for), и
+  // помечаем уровни, вошедшие в набор. Последний берётся частично.
+  const sigFill = useMemo(() => {
+    if (!(sigVol > 0) || !face) return {};
+    const src = sigSide === "bid" ? (ob?.bids || []) : (ob?.asks || []);
+    const out = {};
+    let left = sigVol;
+    for (const l of src) {
+      if (l.quantity == null || l.price_pct == null) continue;
+      const money = l.quantity * (face * l.price_pct / 100 + (accrued || 0));
+      if (money <= 0) continue;
+      const part = Math.min(money, left);
+      out[`${sigSide}:${l.price_pct}`] = { money: part, partial: part < money - 1e-6 };
+      left -= part;
+      if (left <= 1e-9) break;
+    }
+    return out;
+  }, [ob, sigVol, sigSide, face, accrued]);
 
   return (
     <div className="ob-panel-inner">
@@ -163,13 +185,13 @@ export default function Orderbook({ isin, kind, face, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} fill={sigSide === "ask" ? sigFill[`ask:${l.price_pct}`] : null} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
               <tr className="ob-spread">
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} fill={sigSide === "bid" ? sigFill[`bid:${l.price_pct}`] : null} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
             </tbody>
           </table>
         )}

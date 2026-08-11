@@ -1534,3 +1534,54 @@ body.col-resizing * { cursor: col-resize !important; }
                   cursor: pointer; }
 .sig-note { font-size: 11px; color: var(--mut); line-height: 1.45; margin-top: 5px;
             max-width: 62ch; }
+
+/* ---- Колокольчик сигналов в нижней строке ---- */
+.sb-chip { position: relative; }
+.sb-btn { position: relative; display: inline-flex; align-items: center; gap: 5px;
+          background: transparent; border: 0; color: var(--mut); cursor: pointer;
+          padding: 4px 6px; transition: color .12s; }
+.sb-btn:hover, .sb-chip.open .sb-btn { color: var(--fg); }
+.sb-btn.has { color: var(--fg); }
+.sb-count { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1;
+            background: var(--down); color: #fff; border-radius: 8px; padding: 2px 5px; }
+.sb-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+          width: min(560px, calc(100vw - 32px)); max-height: 60vh; overflow: hidden;
+          display: flex; flex-direction: column; z-index: 220;
+          background: var(--bg); border: 1px solid var(--fg);
+          box-shadow: 0 10px 34px rgba(0,0,0,.3); }
+.sb-pop-h { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px;
+            border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: 0.12em; }
+.sb-pop-sub { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--mut);
+              font-size: 11px; }
+.sb-clear { margin-left: auto; background: transparent; border: 1px solid var(--line-2);
+            color: var(--mut); font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+            text-transform: uppercase; padding: 3px 7px; cursor: pointer; }
+.sb-clear:hover { border-color: var(--fg); color: var(--fg); }
+.sb-empty { padding: 22px 14px; color: var(--mut); font-size: 12px; text-align: center; }
+.sb-list { overflow-y: auto; }
+.sb-row { display: block; width: 100%; text-align: left; background: transparent;
+          border: 0; border-bottom: 1px solid var(--line); padding: 8px 12px;
+          cursor: pointer; transition: background .12s; }
+.sb-row:hover { background: var(--hover); }
+.sb-row-1 { display: flex; align-items: baseline; gap: 8px; }
+.sb-name { font-size: 12.5px; font-weight: 700; color: var(--fg); }
+.sb-time { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--mut); }
+.sb-row-2 { display: flex; align-items: baseline; gap: 8px; margin-top: 3px; font-size: 12px;
+            color: var(--fg); }
+.sb-px, .sb-vol { color: var(--mut); }
+.sb-row-3 { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--mut-2);
+            margin-top: 3px; letter-spacing: .04em; }
+.sb-tag { font-family: var(--mono); font-size: 8.5px; font-weight: 700; text-transform: uppercase;
+          letter-spacing: .1em; padding: 2px 5px; border: 1px solid currentColor; }
+.sb-new { color: var(--up); }
+.sb-price { color: var(--accent); }
+.sb-spread { color: var(--accent); }
+.sb-money { color: var(--mut); }
+.sb-delta { font-family: var(--mono); font-size: 10.5px; }
+
+/* уровни стакана, из которых собран объём сигнала */
+.ob-row.ob-sig { background: color-mix(in srgb, var(--accent) 18%, transparent);
+                 box-shadow: inset 2px 0 0 var(--accent); }
+.ob-row.ob-sig-part { background: color-mix(in srgb, var(--accent) 9%, transparent);
+                      box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
