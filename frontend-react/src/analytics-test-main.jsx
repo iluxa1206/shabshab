@@ -1,12 +1,13 @@
 // Тест-харнесс AnalyticsPanel: мок watchlist из 12 бумаг (почти все эмитенты
 // одиночные) — репро скрина юзера. Не входит в прод-бандл (отдельный entry).
 import { createRoot } from "react-dom/client";
-import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
+import { useState } from "react";
+import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import "./styles.css";
 
-const B = (isin, name, emitter, rating, dm, dur, refix) => ({
+const B = (isin, name, emitter, rating, y, dur, refix) => ({
   isin, short_name: name, emitter_name: emitter, rating,
-  disc_margin_bps: dm, spread_dur_yrs: dur, days_to_refix: refix,
+  yield_over_index_bps: y, disc_margin_bps: y - 8, spread_dur_yrs: dur, days_to_refix: refix,
 });
 
 const rows = [
@@ -54,4 +55,19 @@ window.fetch = (url, opts) => {
   return realFetch(url, opts);
 };
 
-createRoot(document.getElementById("root")).render(<AnalyticsPanel rows={rows} />);
+// имитация App: focus живёт снаружи и сужает «таблицу» под панелью
+function Harness() {
+  const [focus, setFocus] = useState(null);
+  const m = focusMatch(focus);
+  const shown = m ? rows.filter(m) : rows;
+  return (
+    <>
+      <AnalyticsPanel rows={rows} focus={focus} onFocus={setFocus} />
+      <div id="tbl" style={{ font: "12px monospace", color: "#ccc", padding: "8px 16px" }}>
+        таблица: {shown.length}/{rows.length} — {shown.map((b) => b.short_name).join(", ")}
+      </div>
+    </>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<Harness />);

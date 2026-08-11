@@ -4,7 +4,7 @@ import { fetchBlocks, fetchBlockBoards, fetchBlockDays, fetchTapeIssuers } from 
 import { fmt, baseLabel, ratingColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 
-// Вкладка КРУПНЫЕ — сделки от 5 млн ₽ по ВСЕМУ рынку облигаций.
+// Вкладка КРУПНЫЕ — сделки от 1 млн ₽ по ВСЕМУ рынку облигаций.
 //
 // Чем отличается от вкладки СДЕЛКИ: там обезличенная лента из тик-архива Alor —
 // только безадресные борды и только бумаги нашего юниверса. Здесь источник ISS и
@@ -17,8 +17,14 @@ import IssuerFilter from "./IssuerFilter.jsx";
 // глубже старта сбора лента поштучно пуста, а дневная — нет.
 
 const WINDOWS = [[1, "сегодня"], [3, "3д"], [7, "7д"], [30, "30д"], [90, "90д"]];
-const THRESHOLDS = [[0, "от 5 млн"], [1e7, "10 млн"], [5e7, "50 млн"], [1e8, "100 млн"]];
+// 0 = порог записи слоя (1 млн ₽): мельче в архиве ничего нет
+const THRESHOLDS = [[0, "от 1 млн"], [5e6, "5 млн"], [1e7, "10 млн"],
+                    [5e7, "50 млн"], [1e8, "100 млн"]];
 const MARKETS = [[null, "все режимы"], ["bonds", "безадресные"], ["ndm", "адресные (РПС)"]];
+// охват: лента шире нашего юниверса, поэтому «весь рынок» — дефолт, а срез по
+// типу купона (флоатеры/фиксы) считает бэк по базе из справочников
+const SCOPES = [["market", "весь рынок"], ["universe", "наш юниверс"],
+                ["float", "флоатеры"], ["fixed", "фиксы"]];
 const LIMITS = [500, 2000, 5000];
 
 const money = (v) => {
@@ -42,7 +48,7 @@ export default function BlocksTape() {
   const [market, setMarket] = useState(null);
   const [boards, setBoards] = useState([]);       // фильтр по конкретным режимам
   const [emitters, setEmitters] = useState([]);
-  const [universeOnly, setUniverseOnly] = useState(false);
+  const [scope, setScope] = useState("market");
   const [limit, setLimit] = useState(LIMITS[0]);
   const [pin, setPin] = useState(null);
   const [q, setQ] = useState("");
@@ -67,15 +73,15 @@ export default function BlocksTape() {
     abort.current = ac;
     setStatus("loading");
     const req = view === "days"
-      ? fetchBlockDays({ isin: pin, days, minValue: minValue || 5e6 }, ac.signal)
+      ? fetchBlockDays({ isin: pin, days, minValue: minValue || 1e6 }, ac.signal)
         .then((d) => { setDayData(d); })
       : fetchBlocks({ days, minValue, market, board: boards, issuer: emitters,
-                      isin: pin, universeOnly, limit }, ac.signal)
+                      isin: pin, scope, limit }, ac.signal)
         .then((d) => { setData(d); });
     req.then(() => setStatus("ready"))
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [days, minValue, market, boards, emitters, pin, universeOnly, limit, view, tick]);
+  }, [days, minValue, market, boards, emitters, pin, scope, limit, view, tick]);
 
   const today = useMemo(() => {
     const d = new Date();
@@ -104,7 +110,7 @@ export default function BlocksTape() {
       <div className="ia-head">
         <h2 className="ia-title">Крупные сделки</h2>
         <span className="ia-hint">
-          сделки от 5 млн ₽ по всему рынку облигаций (шире нашего юниверса):
+          сделки от 1 млн ₽ по всему рынку облигаций (шире нашего юниверса):
           безадресные режимы и адресные — РПС, РПС с ЦК, размещения, выкупы.
           Блок в адресном режиме в стакане не виден вообще
           {sum.archive_till && <> · данные до {ts(sum.archive_till, today)}</>}
@@ -140,13 +146,20 @@ export default function BlocksTape() {
               ))}
             </span>
           )}
+          {view === "trades" && (
+            <span className="seg" role="tablist" aria-label="Охват">
+              {SCOPES.map(([v, label]) => (
+                <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
+                  onClick={() => setScope(v)}
+                  title={v === "market" ? "все облигации MOEX, шире нашего юниверса"
+                    : v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
+                    : v === "fixed" ? "только фиксы из нашего универса"
+                    : "флоатеры + фиксы нашего универса"}>{label}</button>
+              ))}
+            </span>
+          )}
           <IssuerFilter issuers={issuers} selected={emitters}
             onToggle={(n) => setEmitters((a) => toggle(a, n))} onClear={() => setEmitters([])} />
-          {view === "trades" && (
-            <button className={"seg-btn" + (universeOnly ? " active" : "")}
-              onClick={() => setUniverseOnly((v) => !v)}
-              title="только бумаги нашего юниверса (флоатеры + фиксы)">наш юниверс</button>
-          )}
           <input className="tape-search" placeholder="бумага / ISIN…" value={q}
             onChange={(e) => setQ(e.target.value)} />
           <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>

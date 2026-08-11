@@ -14,7 +14,8 @@
       tradeno=<последний вычитанный>&next_trade=1&limit=5000 — инкремент;
       без tradeno — с начала сессии, пагинация start.
 Замеры на 2026-08-11: bonds — 271 947 сделок за день (55 страниц, ~100 c на
-полный проход), из них ≥5 млн ₽ всего 506; ndm — 4 656 сделок (1 страница).
+полный проход), из них ≥5 млн ₽ всего 506, ≥1 млн — порядка полутора тысяч;
+ndm — 4 656 сделок (1 страница).
 Поэтому опрашиваем сквозным курсором: за минуту прирост — единицы страниц.
 
 Протухший курсор безопасен: ISS на неизвестный tradeno отдаёт ленту с начала
@@ -44,8 +45,10 @@ _PAGE = 5000                  # максимальный limit сквозной 
 _HIST_PAGE = 100              # пагинация history-эндпоинтов ISS
 
 # Порог записи. Всё, что мельче, не пишем: за день по рынку 272k безадресных
-# сделок, из них крупных сотни — база не должна повторять tick-архив.
-BLOCK_MIN_VALUE_RUB = float(os.getenv("BLOCK_MIN_VALUE_RUB", "5000000"))
+# сделок — база не должна повторять tick-архив. Замер на 2026-08-11 по архиву:
+# ≥1 млн ₽ — 1194 сделки за день, ≥5 млн — 414. Держим 1 млн: на этом уровне
+# счёт идёт на сотни тысяч строк в год, а мелкий блок в неликвиде уже виден.
+BLOCK_MIN_VALUE_RUB = float(os.getenv("BLOCK_MIN_VALUE_RUB", "1000000"))
 BLOCK_BACKFILL_DAYS = int(os.getenv("BLOCK_BACKFILL_DAYS", "30"))
 # Полный проход ленты с начала сессии дорогой (55 страниц) — держим потолок,
 # чтобы сбой курсора не превратил каждый опрос в стомегабайтную выкачку.
@@ -330,9 +333,29 @@ async def backfill(days: int = BLOCK_BACKFILL_DAYS, force: bool = False) -> dict
 
 # ────────────────────────── чтение ──────────────────────────
 
+# Порог, за которым список бумаг едет во временную таблицу, а не в плейсхолдеры:
+# у SQLite потолок переменных на запрос (999 в старых сборках), а «только
+# флоатеры» — это 1300+ ISIN. Раньше такой фильтр приходилось молча выключать.
+_INLINE_ISINS = 400
+_TMP = "_isin_filter"
+
+
+def _bind_isins(c, isins: Optional[list[str]]) -> bool:
+    """Кладёт большой список бумаг во временную таблицу соединения.
+    → True, если фильтр ушёл в таблицу (WHERE смотрит в неё)."""
+    if not isins or len(isins) <= _INLINE_ISINS:
+        return False
+    c.execute(f"CREATE TEMP TABLE IF NOT EXISTS {_TMP}(isin TEXT PRIMARY KEY)")
+    c.execute(f"DELETE FROM {_TMP}")
+    c.executemany(f"INSERT OR IGNORE INTO {_TMP}(isin) VALUES(?)",
+                  [(i,) for i in isins])
+    return True
+
+
 def _where(frm: Optional[str], till: Optional[str], min_value: float,
            market: Optional[str], boards: Optional[list[str]],
-           isins: Optional[list[str]], side: Optional[str]) -> tuple[str, list]:
+           isins: Optional[list[str]], side: Optional[str],
+           isins_in_tmp: bool = False) -> tuple[str, list]:
     q, args = " WHERE 1=1", []
     if frm:
         q += " AND ts >= ?"
@@ -349,7 +372,9 @@ def _where(frm: Optional[str], till: Optional[str], min_value: float,
     if boards:
         q += f" AND board IN ({','.join('?' * len(boards))})"
         args.extend(boards)
-    if isins:
+    if isins_in_tmp:
+        q += f" AND isin IN (SELECT isin FROM {_TMP})"
+    elif isins:
         q += f" AND isin IN ({','.join('?' * len(isins))})"
         args.extend(isins)
     if side in ("buy", "sell"):
@@ -363,12 +388,12 @@ def read_blocks(frm: Optional[str] = None, till: Optional[str] = None,
                 boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
                 side: Optional[str] = None, limit: int = 500) -> list[dict]:
     """Лента крупных сделок, новые сверху."""
-    where, args = _where(frm, till, min_value, market, boards, isins, side)
-    q = ("SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur "
-         "FROM block_trade" + where + " ORDER BY ts DESC, trade_id DESC LIMIT ?")
-    args.append(limit)
     with _connect() as c:
-        return [dict(r) for r in c.execute(q, args).fetchall()]
+        tmp = _bind_isins(c, isins)
+        where, args = _where(frm, till, min_value, market, boards, isins, side, tmp)
+        q = ("SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur "
+             "FROM block_trade" + where + " ORDER BY ts DESC, trade_id DESC LIMIT ?")
+        return [dict(r) for r in c.execute(q, [*args, limit]).fetchall()]
 
 
 def blocks_stats(frm: Optional[str] = None, till: Optional[str] = None,
@@ -379,9 +404,10 @@ def blocks_stats(frm: Optional[str] = None, till: Optional[str] = None,
 
     Обороты суммируем только по рублёвым выпускам: у валютных бумаг VALUE
     приходит в валюте расчётов, и сложение дало бы бессмысленное число."""
-    where, args = _where(frm, till, min_value, market, boards, isins, side)
     _V = "SUM(CASE WHEN cur IS NULL OR cur='SUR' THEN value ELSE 0 END)"
     with _connect() as c:
+        tmp = _bind_isins(c, isins)
+        where, args = _where(frm, till, min_value, market, boards, isins, side, tmp)
         tot = c.execute(f"SELECT COUNT(*) n, {_V} v FROM block_trade" + where,
                         args).fetchone()
         by_mkt = c.execute(f"SELECT market, COUNT(*) n, {_V} v FROM block_trade"
@@ -434,7 +460,7 @@ def boards_seen(days: int = 30) -> list[dict]:
 # ────────────────────────── уведомления о блоках ──────────────────────────
 #
 # Порог уведомления НАМНОГО выше порога записи: за день по рынку ~500 сделок
-# ≥5 млн ₽ — колокольчик от такого потока стал бы шумом. В ленту КРУПНЫЕ
+# ≥1 млн ₽ — колокольчик от такого потока стал бы шумом. В ленту КРУПНЫЕ
 # пишется всё, звонит только по-настоящему крупное.
 BLOCK_ALERT_MIN_RUB = float(os.getenv("BLOCK_ALERT_MIN_RUB", "100000000"))
 BLOCK_ALERTS = os.getenv("BLOCK_ALERTS", "1") not in ("0", "false", "False")

@@ -52,6 +52,24 @@ def _labels() -> dict:
     return out
 
 
+# Охват ленты. Флоатер отличаем по базе купона (KEYRATE/RUONIA) — тем же
+# признаком, что и вся остальная система; всё, что не флоатер и есть в наших
+# справочниках, — фикс.
+SCOPES = ("market", "universe", "float", "fixed")
+_FLOAT_BASES = ("KEYRATE", "RUONIA")
+
+
+def _scope_isins(scope: str, labels: dict) -> Optional[list[str]]:
+    """Список бумаг под охват (None = весь рынок, фильтра нет)."""
+    if scope == "universe":
+        return list(labels.keys())
+    if scope == "float":
+        return [k for k, v in labels.items() if (v.get("base") or "") in _FLOAT_BASES]
+    if scope == "fixed":
+        return [k for k, v in labels.items() if (v.get("base") or "") not in _FLOAT_BASES]
+    return None
+
+
 def _moex_names() -> dict:
     """isin → SHORTNAME из суточного справочника ISS: подписи для бумаг вне
     юниверса (их в ленте большинство — рынок шире нашего реестра)."""
@@ -80,12 +98,17 @@ async def blocks(
     issuer: Optional[list[str]] = Query(None, description="эмитенты (по реестру)"),
     isin: Optional[str] = Query(None, description="одна бумага"),
     side: Optional[str] = Query(None, description="buy | sell (только безадресные)"),
-    universe_only: bool = Query(False, description="только бумаги нашего юниверса"),
+    scope: str = Query("market", description="market | universe | float | fixed"),
+    universe_only: bool = Query(False, description="ЛЕГАСИ: то же, что scope=universe"),
     limit: int = Query(500, ge=1, le=5000),
 ):
     """{blocks, summary} — крупные сделки, новые сверху."""
     if market is not None and market not in ("bonds", "ndm"):
         raise HTTPException(status_code=400, detail="market: bonds | ndm")
+    if scope not in SCOPES:
+        raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
+    if universe_only and scope == "market":
+        scope = "universe"
     if side is not None and side not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="side: buy | sell")
     isin = (isin or "").strip().upper() or None
@@ -106,14 +129,15 @@ async def blocks(
                     "summary": {"n": 0, "value": 0, "by_market": {}, "top": [],
                                 "archive_till": None},
                     "warning": "по эмитенту нет бумаг в реестре"}
-    elif universe_only:
-        isins = list(labels.keys())
-
-    # лимит переменных SQLite: столько бумаг = выбран почти весь наш юниверс,
-    # фильтр всё равно почти ничего не режет — идём без него, а не режем молча
-    if isins and len(isins) > 900:
-        logger.info("blocks: фильтр по %d бумагам — игнорирую", len(isins))
-        isins = None
+    else:
+        # список любой длины: большой уезжает во временную таблицу внутри
+        # block_trades, плейсхолдерами он бы не поместился (флоатеров 1300+)
+        isins = _scope_isins(scope, labels)
+        if isins is not None and not isins:
+            return {"from": None, "blocks": [], "scope": scope,
+                    "summary": {"n": 0, "value": 0, "by_market": {}, "top": [],
+                                "archive_till": None},
+                    "warning": "справочники ещё не прогреты — охват пуст"}
 
     frm = (date.today() - timedelta(days=days - 1)).isoformat()
     rows, summary = await asyncio.gather(
@@ -129,7 +153,7 @@ async def blocks(
         t["emitter"] = lb.get("emitter")
 
     return {"from": frm, "days": days, "min_value": min_value, "market": market,
-            "board": board, "side": side,
+            "board": board, "side": side, "scope": scope,
             "truncated": len(rows) >= limit and summary["n"] > len(rows),
             "blocks": rows, "summary": summary}
 

@@ -257,15 +257,15 @@ export const fetchTapeIssuers = () =>
 // --- Крупные сделки (вкладка КРУПНЫЕ) ---
 // Лента по ВСЕМУ рынку облигаций, включая адресные режимы (РПС/размещения),
 // которых нет в обезличенном тик-архиве. Источник — ISS, см. services/block_trades.
+// scope: market (весь рынок) | universe (флоатеры+фиксы) | float | fixed
 export const fetchBlocks = ({ days = 1, minValue = 0, market, board, issuer, isin,
-                              side, universeOnly = false, limit = 500 } = {}, signal) => {
-  const p = new URLSearchParams({ days, min_value: minValue, limit });
+                              side, scope = "market", limit = 500 } = {}, signal) => {
+  const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   if (market) p.set("market", market);
   for (const b of [].concat(board || [])) if (b) p.append("board", b);
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
   if (isin) p.set("isin", isin);
   if (side) p.set("side", side);
-  if (universeOnly) p.set("universe_only", "true");
   return request(`/api/blocks?${p}`, { signal });
 };
 

@@ -12,7 +12,7 @@ import Topbar from "./components/Topbar.jsx";
 import { IconChart } from "./components/icons.jsx";
 import Toolbar from "./components/Toolbar.jsx";
 import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
-import AnalyticsPanel from "./components/AnalyticsPanel.jsx";
+import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
@@ -104,6 +104,10 @@ function Dashboard() {
   const [spreadTo, setSpreadTo] = useState(() => initialParams().get("st") || localStorage.getItem("spreadTo") || "");
   const [query, setQuery] = useState(() => initialParams().get("q") || "");
   const [showAnalytics, setShowAnalytics] = useState(false);
+  // выбор на графике аналитики ({type:"issuer"|"rating", key}) — временный фильтр
+  // ТОЛЬКО таблицы: сами графики считаются по полному отфильтрованному набору,
+  // повторный клик снимает выбор и таблица возвращается к прежнему составу
+  const [anFocus, setAnFocus] = useState(null);
   const [sort, setSort] = useState({ key: "yield_over_index_bps", dir: "asc" });
 
   // drawer бумаги — в URL (?isin=): deep-link + back закрывает
@@ -559,6 +563,12 @@ function Dashboard() {
   }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch,
       matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
 
+  // набор строк таблицы: отфильтрованный + сужение выбором на графике аналитики
+  const tableRows = useMemo(() => {
+    const m = showAnalytics ? focusMatch(anFocus) : null;
+    return m ? filtered.filter(m) : filtered;
+  }, [filtered, anFocus, showAnalytics]);
+
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
     const m = new Map();
@@ -636,12 +646,12 @@ function Dashboard() {
         spreadTo={spreadTo} setSpreadTo={setSpreadTo}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
-        shown={filtered.length} total={bonds.length}
+        shown={tableRows.length} total={bonds.length}
         visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
       />
-      {showAnalytics && <AnalyticsPanel rows={filtered} />}
+      {showAnalytics && <AnalyticsPanel rows={filtered} focus={anFocus} onFocus={setAnFocus} />}
       <BondTable
-        rows={filtered}
+        rows={tableRows}
         status={status}
         errMsg={errMsg}
         sort={sort}
@@ -669,7 +679,7 @@ function Dashboard() {
         onOpenSettings={() => setShowSettings(true)}
         extra={onFloaters && (
           <button className={"seg-btn tool-btn" + (showAnalytics ? " active" : "")}
-            onClick={() => setShowAnalytics(!showAnalytics)}
+            onClick={() => { setShowAnalytics(!showAnalytics); setAnFocus(null); }}
             aria-pressed={showAnalytics}
             title="Аналитика — кросс-секция рынка над таблицей">
             <IconChart size={12} /> Аналитика
