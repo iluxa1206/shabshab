@@ -36,7 +36,12 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "nosub"];
+// Субординация — по имени бумаги: отдельного признака нет ни у MOEX, ни у
+// corpbonds, а маркер в short_name — устойчивая конвенция («ВТБСУБ1-12»,
+// «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
+// Тот же паттерн у скринера — services/screener_core.py::_SUBORD_RE.
+const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
 // Такт котировок рынка (бумаги вне избранного). Избранное идёт push-стримом.
 const QUOTES_POLL_MS = 5000;
 // Пол частоты reprice на бумагу: в push-потоке цена ликвидной бумаги двигается
@@ -84,6 +89,9 @@ function Dashboard() {
   const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("rt")); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("em")); // имена эмитентов (мульти)
   const [twoSided, setTwoSided] = useState(() => initialParams().get("two") === "1");  // только двусторонние котировки
+  // суборды/перпы вон: другой класс риска, в сравнении спредов ломают картину
+  const [hideSub, setHideSub] = useState(() => initialParams().get("nosub") === "1"
+    || (!initialParams().has("nosub") && localStorage.getItem("hideSubord") === "1"));
   // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка стороны
   // пересчитывается в VWAP на этот объём по лестнице стакана
   const [volBid, setVolBid] = useState(() => Number(initialParams().get("vb"))
@@ -173,6 +181,7 @@ function Dashboard() {
       ratingsSel.forEach((v) => next.append("rt", v));
       emittersSel.forEach((v) => next.append("em", v));
       if (twoSided) next.set("two", "1");
+      if (hideSub) next.set("nosub", "1");
       if (volBid) next.set("vb", String(volBid));
       if (volAsk) next.set("va", String(volAsk));
       if (volMode === "or" && (volBid || volAsk)) next.set("vm", "or");
@@ -182,9 +191,10 @@ function Dashboard() {
       if (spreadTo) next.set("st", spreadTo);
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, volBid, volAsk, volMode,
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, volBid, volAsk, volMode,
       matFrom, matTo, spreadFrom, spreadTo, setSearchParams]);
 
+  useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
@@ -510,6 +520,8 @@ function Dashboard() {
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
     if (ratingsSel.length) rows = rows.filter((b) => ratingMatch(b.rating));
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
+    // суборды/перпы вон — распознаём по имени выпуска (см. SUBORD_RE)
+    if (hideSub) rows = rows.filter((b) => !SUBORD_RE.test(b.short_name || ""));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
     // окно погашения в ЛЕТ до погашения: границы переводим в даты-отсечки и
@@ -559,7 +571,7 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, query, sort, watch,
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, twoSided, query, sort, watch,
       matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
 
   // набор строк таблицы: отфильтрованный + сужение выбором на графике аналитики
@@ -617,12 +629,13 @@ function Dashboard() {
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
-    + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (query !== "" ? 1 : 0)
+    + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 1 : 0) + (query !== "" ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
-    setTwoSided(false); setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
+    setTwoSided(false); setHideSub(false);
+    setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
     setSpreadFrom(""); setSpreadTo("");
   }, []);
 
@@ -637,6 +650,7 @@ function Dashboard() {
         clearEmitters={() => setEmittersSel([])}
         activeFilters={activeFilters} onResetFilters={resetFilters}
         twoSided={twoSided} setTwoSided={setTwoSided}
+        hideSub={hideSub} setHideSub={setHideSub}
         volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
         volMode={volMode} setVolMode={setVolMode}
         depthTs={depthQ.data?.ts} depthLoading={volOn && depthQ.isLoading}

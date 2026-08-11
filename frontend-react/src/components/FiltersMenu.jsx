@@ -7,6 +7,7 @@ import { IconFilter } from "./icons.jsx";
 export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
+  hideSub, setHideSub,
   activeCount,
 }) {
   const [open, setOpen] = useState(false);
@@ -52,6 +53,18 @@ export default function FiltersMenu({
                 onClick={() => toggleBase("RUONIA")}>RUONIA</button>
             </div>
           </div>
+
+          {/* секция есть только там, где хост даёт обработчик (тест-страница таблицы — без него) */}
+          {setHideSub && <div className="fp-sec">
+            <div className="fp-head"><span className="fg-lbl">ТИП</span></div>
+            <div className="fp-chips">
+              <button className={"chip-btn" + (hideSub ? " on" : "")}
+                aria-pressed={!!hideSub}
+                title={"Убрать субординированные выпуски и перпы (СУБ / SUB / Т1 / ПЕРП в имени). "
+                  + "Другой класс риска: спред к ним не сравним с обычным старшим долгом."}
+                onClick={() => setHideSub(!hideSub)}>без субордов</button>
+            </div>
+          </div>}
 
           <div className="fp-sec">
             <div className="fp-head">

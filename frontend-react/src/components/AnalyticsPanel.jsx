@@ -358,7 +358,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
               <div className="an-tt-h">{fmt.date(p.date)}</div>
               {at.map(({ s, pt }) => (
                 <div key={s.key} style={{ color: colorOf(s, series.indexOf(s)) }}>
-                  {trunc(s.key, 10)} {Math.round(pt.med)}
+                  {trunc(s.key, 10)} {Math.round(pt.med)} <span className="an-tt-n">n{pt.n}</span>
                 </div>
               ))}
             </>

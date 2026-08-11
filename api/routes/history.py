@@ -4,6 +4,7 @@
 сегодняшнюю модель. Оценка динамики, не точный историч. спред (кривая/срок
 менялись) — но для тренда достаточно. Без хранилища, on-demand."""
 import asyncio
+import math
 import re
 import logging
 from typing import Optional
@@ -262,6 +263,12 @@ async def trades(
 
 _YIDX_BAND = (-1500, 3000)   # тот же бэнд, что у DM в аналитике: мусор стейл/тонких цен
 _AGG_TOP_ISSUERS = 8         # линий в режиме «эмитент» (медиана рынка — отдельно)
+# Порог покрытия дня: медиана по 2 бумагам из 130 — не медиана бакета, а пик-артефакт.
+# Опора — p95 числа бумаг в дне у самой серии (не медиана: покрытие бимодально,
+# у ранних дат бэкфилл даёт 1-2 бумаги на сотню полных дней, медиана съезжает в 1).
+# Порог относительный, поэтому мелкие серии живут: у эмитента с одной бумагой
+# p95 = 1 → порог 1, линия остаётся целиком.
+_AGG_MIN_N_FRAC = 0.5
 
 
 from pydantic import BaseModel, Field
@@ -343,12 +350,20 @@ async def yidx_aggregate(body: YidxAggBody):
         order = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"]
         acc = {k: acc[k] for k in order if k in acc}
 
-    dates = sorted({d for v in acc.values() for d in v})
-    series = [{
-        "key": k,
-        "points": [{"date": d, "med": round(_median(v[d]), 1), "n": len(v[d])}
-                   for d in dates if d in v],
-    } for k, v in acc.items()]
+    def _p95(ns: list[int]) -> int:
+        s = sorted(ns)
+        return s[min(len(s) - 1, math.ceil(len(s) * 0.95) - 1)]
+
+    # тонкие дни вон: порог = доля от полного (p95) покрытия самой серии
+    series = []
+    for k, v in acc.items():
+        n_min = max(1, math.ceil(_p95([len(x) for x in v.values()]) * _AGG_MIN_N_FRAC))
+        pts = [{"date": d, "med": round(_median(vs), 1), "n": len(vs)}
+               for d, vs in sorted(v.items()) if len(vs) >= n_min]
+        if pts:
+            series.append({"key": k, "points": pts, "n_min": n_min})
+
+    dates = sorted({p["date"] for s in series for p in s["points"]})
     return {"by": by, "days": days, "dates": dates, "series": series,
             "exact_from": dates[0] if dates else None}
 

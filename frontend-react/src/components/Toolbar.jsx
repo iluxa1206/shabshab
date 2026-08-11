@@ -10,6 +10,7 @@ const RATINGS = [
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
+  hideSub, setHideSub,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   spreadFrom, setSpreadFrom, spreadTo, setSpreadTo,
@@ -71,6 +72,7 @@ export default function Toolbar({
           basesSel={basesSel} toggleBase={toggleBase} clearBases={clearBases}
           issuers={issuers || []} emittersSel={emittersSel || []}
           toggleEmitter={toggleEmitter} clearEmitters={clearEmitters}
+          hideSub={hideSub} setHideSub={setHideSub}
           activeCount={activeFilters}
         />
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}

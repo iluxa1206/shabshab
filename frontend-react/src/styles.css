@@ -1,6 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Martian+Mono:wght@300;400;500;600;700;800&display=swap');
 
 :root {
+  color-scheme: light;
   --mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
   /* Light = swiss paper */
   --bg: #ffffff;
@@ -30,6 +31,7 @@
    селектор #app.theme-dark оставлял экран логина всегда светлым */
 .theme-dark {
   /* Dark = real-time LED display */
+  color-scheme: dark;
   --bg: #000000;
   --fg: #f2f2f2;
   --mut: #a3a3a3;             /* ~7:1 on black */
@@ -55,6 +57,7 @@
 
 /* Grey = графит, средняя ступень между белым и чёрным (мягче тёмной) */
 .theme-grey {
+  color-scheme: dark;
   --bg: #33383f;
   --fg: #eceef1;
   --mut: #b0b5bd;
@@ -78,6 +81,12 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Контролы не наследуют цвет: UA красит <button>/<input>/<select> системным
+   buttontext/fieldtext. При светлой схеме ОС это чёрный — на тёмной теме текст
+   пропадал (строки тоста сигналов, строки попапа колокольчика и т.п.).
+   color-scheme у тем + inherit здесь снимают весь класс багов. */
+button, input, select, textarea { color: inherit; }
 
 body {
   background: var(--bg);
@@ -1013,6 +1022,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-leg-btn.dim { opacity: .35; }
 /* шапка компактного тултипа графика */
 .an-tt-h { color: var(--inv-fg); opacity: .7; }
+/* покрытие дня (сколько бумаг в медиане) — второстепенно, приглушено */
+.an-tt-n { opacity: .55; }
 .an-leg-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .an-note { font-size: 9.5px; color: var(--mut-2); margin-top: 4px; font-family: var(--mono); }
