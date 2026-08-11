@@ -11,10 +11,12 @@ close_bps) — иначе свеча спреда на графике собир
 день с одним-двумя торговавшими часами вырождалась в палку. Спред обратен цене:
 y_high_bps — спред по МАКСИМАЛЬНОЙ цене, то есть минимальный спред бара.
 
-Спред считается reprice'ом vwap через ТЕКУЩУЮ модель бумаги (build_metrics_fn) —
-как и candle-оценка в /history/{isin}/spread: кривая/НКД/срок сегодняшние, поэтому
-уровень серии — оценка, а форма (движение внутри дня/недели) честная. Точный
-as-of движок (services/backdate) дневной и дорогой — для часовой сетки не годится.
+Спред: сегодняшние бары прайсятся живой моделью (build_metrics_fn), ПРОШЛЫЕ дни —
+честным as-of (backdate.asof_bar_metrics: кривая/НКД/номинал того дня). Раньше
+всё окно прайсилось сегодняшней моделью — у бумаг близко к погашению это давало
+сотни bps мусора на исторических датах (Магнит5Р03: −697 в мае при честных +80).
+Пересчёт прошлого дорог → ensure_bars делает его фоном, а стейл-спреды прошлых
+версий (metrics_ver) сразу занулит: панель падает на дневную honest-серию.
 
 Глубина: свечи ISS отдают часы на годы назад, ограничения ~30 дней (как у тикового
 архива Alor) здесь нет. buy_*/sell_* и trades — из тикового архива, см.
@@ -128,6 +130,7 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
         return []
 
     metrics_fn = None
+    asof_fn = None
     if with_metrics:
         from services.orderbook_svc import build_metrics_fn
         try:
@@ -135,37 +138,51 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
         except Exception as e:      # модель не собралась — отдаём бары без спреда
             logger.warning("bars %s: модель не загрузилась (%s) — только цена", isin, e)
             face_ref = None
+        # прошлые дни — честный as-of (пока только флоатеры: у фиксов нет
+        # архива G-кривой, их g-спред остаётся оценкой сегодняшней моделью)
+        if kind == "floater" and metrics_fn is not None and days > 0:
+            from services.backdate import asof_bar_metrics
+            try:
+                asof_fn = await asof_bar_metrics(isin, days, board)
+            except Exception as e:
+                logger.warning("bars %s: as-of модель не собралась (%s) — "
+                               "прошлые дни сегодняшней моделью", isin, e)
     else:
         face_ref = None
     fallback_face = float(face_ref) if face_ref else _DEFAULT_FACE
+    today_iso = date.today().isoformat()
 
     # reprice уровней — чистый CPU: в event loop он вставал бы на десятки мс на
     # бумагу × весь обход демона (то самое «сайт периодически подвисает»)
     def _crunch() -> list[dict]:
-        memo: dict[float, dict] = {}
+        memo: dict[tuple, dict] = {}
         bars: list[dict] = []
         for c in candles:
             vol, val, begin = c.get("volume"), c.get("value"), c.get("begin")
             if not begin:
                 continue
             ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
-            face = _face_for(faces, ts[:10], fallback_face)
+            day = ts[:10]
+            face = _face_for(faces, day, fallback_face)
             vwap = round(val / vol / face * 100, 4) if vol and val and face else c.get("close")
+            # прошлый день → честный as-of того дня; сегодня → живая модель
+            use_asof = asof_fn is not None and day < today_iso
 
             def _metrics(price) -> dict:
-                """Спред по одной цене. memo — по округлённой цене: внутри дня
-                open/high/low/close часов повторяются, и 4 точки на бар почти не
-                добавляют счёта поверх прежней одной."""
-                if metrics_fn is None or price is None:
+                """Спред по одной цене. memo — (день, округлённая цена): внутри
+                дня open/high/low/close часов повторяются, и 4 точки на бар почти
+                не добавляют счёта поверх прежней одной."""
+                if price is None or (metrics_fn is None and not use_asof):
                     return {}
                 key = round(float(price), 3)
-                m = memo.get(key)
+                mkey = (day if use_asof else "", key)
+                m = memo.get(mkey)
                 if m is None:
                     try:
-                        m = metrics_fn(key) or {}
+                        m = (asof_fn(day, key) if use_asof else metrics_fn(key)) or {}
                     except Exception:
                         m = {}
-                    memo[key] = m
+                    memo[mkey] = m
                 return m
 
             m = _metrics(vwap)
@@ -183,6 +200,7 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 "y_high_bps": _metrics(h).get(spread_key),
                 "y_low_bps": _metrics(l).get(spread_key),
                 "y_close_bps": _metrics(cl).get(spread_key),
+                "metrics_ver": BARS_METRICS_VERSION,
             })
         return bars
 
@@ -190,9 +208,15 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
     return await run_heavy(_crunch)
 
 
+# Версия модели спреда в барах. Поднять при правке, меняющей цифру спреда бара:
+# бары старых версий занулят спред и пересчитаются фоном при первом запросе.
+#   NULL — «цена × модель дня записи» (candle-est, до 2026-08-11)
+#   1    — прошлые дни честным as-of (asof_bar_metrics), сегодня живой моделью
+BARS_METRICS_VERSION = 1
+
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",
-         "y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps")
+         "y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps", "metrics_ver")
 
 
 def upsert_bars(bars: list[dict]) -> int:
@@ -211,12 +235,87 @@ def upsert_bars(bars: list[dict]) -> int:
     return len(rows)
 
 
+def _null_stale_spreads(isin: str, frm: str, till_day: str) -> int:
+    """Зануляет спред-поля баров ПРОШЛЫХ версий движка в окне [frm, till_day):
+    candle-est мусор не должен рисоваться, пока фоновый honest-пересчёт не дошёл.
+    Цена/объём остаются — слой средневзвеса живёт."""
+    with _lock, _connect() as c:
+        cur = c.execute(
+            "UPDATE bar_hourly SET y_idx_bps=NULL, dm_bps=NULL, g_spread_bps=NULL, "
+            "ytm=NULL, y_open_bps=NULL, y_high_bps=NULL, y_low_bps=NULL, "
+            "y_close_bps=NULL WHERE isin=? AND ts>=? AND ts<? "
+            "AND (metrics_ver IS NULL OR metrics_ver<?) "
+            "AND (y_idx_bps IS NOT NULL OR g_spread_bps IS NOT NULL "
+            "     OR y_close_bps IS NOT NULL)",
+            (isin, frm, till_day, BARS_METRICS_VERSION))
+        return cur.rowcount or 0
+
+
+def _covered_from(isin: str) -> Optional[str]:
+    """Самый ранний ts бара текущей версии метрик (None — таких нет)."""
+    with _connect() as c:
+        r = c.execute(
+            "SELECT min(ts) FROM bar_hourly WHERE isin=? AND metrics_ver>=?",
+            (isin, BARS_METRICS_VERSION)).fetchone()
+    return r[0] if r and r[0] else None
+
+
+_bg_backfill: set = set()               # isin'ы с уже запущенным фоновым пересчётом
+_bg_sem = asyncio.Semaphore(2)          # честный as-of сетевой и тяжёлый — не флудим
+
+
+def _day_covered(isin: str, day: str) -> bool:
+    with _connect() as c:
+        r = c.execute(
+            "SELECT 1 FROM bar_hourly WHERE isin=? AND ts>=? AND ts<? "
+            "AND metrics_ver>=? LIMIT 1",
+            (isin, day, day + " 24", BARS_METRICS_VERSION)).fetchone()
+    return r is not None
+
+
 async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
-                      board: Optional[str] = None) -> int:
-    """Строит и персистит бары окна. Идемпотентно. Запись — в поток: SQLite
-    синхронный, а зовёт нас и демон, и роут."""
-    bars = await build_bars(isin, days, kind, board)
-    return await asyncio.to_thread(upsert_bars, bars)
+                      board: Optional[str] = None, wait_past: bool = False) -> int:
+    """Инкрементально держит бары окна свежими. Инлайн — только хвост
+    (сегодня; вчера — если ещё не покрыт текущей версией метрик). Прошлые дни
+    без метрик текущей версии — фоновым пересчётом (честный as-of, для длинного
+    окна — минуты): роут не ждёт, спред-панель до его конца живёт на дневной
+    honest-серии (стейл-спреды прошлых версий зануляются сразу). Идемпотентно."""
+    frm = (date.today() - timedelta(days=days)).isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    stale = await asyncio.to_thread(_null_stale_spreads, isin, frm, yesterday)
+    if stale:
+        logger.info("bars %s: занулено %d стейл-спредов старой версии", isin, stale)
+
+    # хвост инлайн: сегодня живой моделью; вчера (as-of) — только если не покрыт
+    tail_days = 0 if await asyncio.to_thread(_day_covered, isin, yesterday) else 1
+    tail = await build_bars(isin, min(days, tail_days), kind, board)
+    n = await asyncio.to_thread(upsert_bars, tail)
+
+    covered = await asyncio.to_thread(_covered_from, isin)
+    need_past = days > 1 and (stale > 0 or covered is None or covered[:10] > frm)
+    if need_past and isin not in _bg_backfill:
+        _bg_backfill.add(isin)
+
+        async def _past():
+            try:
+                async with _bg_sem:
+                    bars = await build_bars(isin, days, kind, board)
+                    m = await asyncio.to_thread(upsert_bars, bars)
+                logger.info("bars honest backfill %s: %d строк (%d дн)", isin, m, days)
+                return m
+            except Exception as e:
+                logger.warning("bars honest backfill %s: %s", isin, e)
+                return 0
+            finally:
+                _bg_backfill.discard(isin)
+
+        if wait_past:
+            # разовый бэкфилл-скрипт: процесс не должен выйти раньше пересчёта
+            n += await _past()
+        else:
+            asyncio.create_task(_past())
+    return n
 
 
 def read_bars(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
@@ -354,7 +453,8 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
         nonlocal done
         async with sem:
             try:
-                stat["bars"] += await ensure_bars(isin, days=days, kind=kind)
+                stat["bars"] += await ensure_bars(isin, days=days, kind=kind,
+                                                  wait_past=days > 7)
                 if with_ticks:
                     from services import trades_archive as ta
                     stat["ticks"] += await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS),

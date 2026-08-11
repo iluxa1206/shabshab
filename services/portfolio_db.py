@@ -145,6 +145,7 @@ _MIGRATIONS = [
     "ALTER TABLE bar_hourly ADD COLUMN y_high_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN y_low_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN y_close_bps REAL",
+    "ALTER TABLE bar_hourly ADD COLUMN metrics_ver INTEGER",
 ]
 
 

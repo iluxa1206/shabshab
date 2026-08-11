@@ -410,6 +410,69 @@ async def fetch_history_range(secid: str, d_from: date, d_till: date,
     return out
 
 
+async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
+    """Sync-фабрика ЧЕСТНЫХ метрик для прошлых дней: fn(day_iso, price_pct) →
+    {y_idx_bps, dm_bps, g_spread_bps, yield_pct}. Кривая/НКД/номинал — as-of
+    дня (та же математика, что honest_spread_series), но прайсит ЛЮБУЮ цену дня
+    (часовые бары: vwap/OHLC), а не только close. I/O — только здесь, при сборке;
+    сама fn — чистый CPU, можно звать из heavy-потока. Поднимает исключение,
+    если as-of контекст не собрался (бумага погашена/только размещена/нет кривой)."""
+    from datetime import date as _date, timedelta as _td
+    d_till = _date.today() - _td(days=1)
+    d_from = d_till - _td(days=days + 7)
+    ctx = await load_backdate_ctx(isin, d_till, board)
+    rows = await fetch_history_range(ctx["secid"], d_from, d_till, ctx["board"])
+    ref = ctx["ref_obj"]
+    periods, amorts, offers = ctx["periods"], ctx["amorts"], ctx["offers"]
+
+    from services.valuation import _index_provider, calculate_valuation_metrics
+    from services.market_data import MarketDataService
+    warns: list = []
+    _fn, hist_pairs = _index_provider(ref.base, warns, None)
+    _r, _k, _cd, _rd = await MarketDataService.get_curves()
+    today_curve = _r if ref.base == "RUONIA" else _k
+    if today_curve is None:
+        raise CalculationException("Текущая кривая недоступна — as-of сшить не из чего")
+    ru_hist = hist_pairs if ref.base == "RUONIA" else _index_provider("RUONIA", warns, None)[1]
+
+    dates = [r["date"] for r in rows]
+    curve_memo: dict = {}
+
+    def fn(day_iso: str, price: float) -> dict:
+        d = _date.fromisoformat(day_iso)
+        i = bisect_right(dates, day_iso) - 1
+        row = rows[i] if i >= 0 else None
+        accint = row.get("accint") if row else None
+        if accint is not None and row["date"] != day_iso:
+            # день без строки history (выходная сессия) — доначисляем от факта
+            accint, _n = _accrue_to_date(float(accint), _date.fromisoformat(row["date"]),
+                                         d, periods, ref.face_value)
+        if accint is None:
+            accint = _accrued_from_periods(periods, d, ref.face_value)
+        if accint is None:
+            return {}
+        if row and row.get("facevalue"):
+            ref.face_value = float(row["facevalue"])
+        cm = curve_memo.get(day_iso)
+        if cm is None:
+            curve, _mode = curve_asof(ref.base, d, today_curve, hist_pairs)
+            ru = (curve if ref.base == "RUONIA" else
+                  (curve_asof("RUONIA", d, _r, ru_hist)[0]
+                   if (_r is not None and ru_hist) else None))
+            cm = curve_memo[day_iso] = (curve, ru)
+        curve, ru = cm
+        m = calculate_valuation_metrics(
+            ref, price, curve, d, accrued_override=float(accint),
+            periods=periods, amorts=amorts, offers=offers,
+            ruonia_curve=ru, accrued_basis="calc")
+        return {"y_idx_bps": m.get("yield_over_index_bps"),
+                "dm_bps": m.get("disc_margin_bps"),
+                "g_spread_bps": m.get("g_spread_bps"),
+                "yield_pct": m.get("yield_xirr_pct")}
+
+    return fn
+
+
 _honest_memo: dict = {}     # (isin, days, board) → (msk_day, result); прошлое не меняется,
                             # хвост realized-кривой обновляется раз в день — TTL сутки
 
