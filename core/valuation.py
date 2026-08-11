@@ -343,6 +343,24 @@ def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
         return accrued_calc, None
 
     a = accrued_at(periods, settle)
+    if a is None and p_s is not None:
+        # Купон НОВОГО периода ещё не опубликован (value=None) — accrued_at даёт
+        # None, и фолбэк «оставить старый НКД» тут ловушка: cashflow уже отдал
+        # купон продавцу (pay_date <= settle), а dirty оставался с ПОЛНЫМ старым
+        # НКД → завышен на целый купон → guard номинального убытка гасил
+        # SM/DM/y_idx в день перед выплатой (Магнит5Р03 @ 2026-07-27).
+        s2, _e2, _v2 = p_s
+        k = (settle - s2).days
+        if k <= 0:
+            a = 0.0          # поставка в самый старт периода — начислять нечего
+        elif p_c is not None:
+            # k дней нового периода по дневной ставке СТАРОГО купона — лучшая
+            # оценка, пока новый купон не опубликован
+            sc, ec, vc = p_c
+            if vc is not None:
+                a = round(vc / ((ec - sc).days or 1) * k, 4)
+            elif (calc_date - sc).days > 0:
+                a = round(accrued_calc / (calc_date - sc).days * k, 4)
     if a is not None:
         return round(a, 4), (f"ex-coupon: купон уходит продавцу (поставка {settle.isoformat()}), "
                              "НКД пересчитан от начала нового купонного периода")
