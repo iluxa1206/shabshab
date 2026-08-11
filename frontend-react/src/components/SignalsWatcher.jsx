@@ -40,7 +40,8 @@ function desktopNotify(title, body) {
   });
 }
 
-const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём" };
+const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
+                 block: "блок" };
 
 const money = (v) =>
   v == null ? null
@@ -80,10 +81,16 @@ export default function SignalsWatcher() {
       if (payload.sound) chime();
       if (payload.desktop && document.visibilityState !== "visible") {
         const head = matches[0];
+        const body = payload.type === "block"
+          // у крупной сделки нет спреда набора — в уведомлении сумма и режим
+          ? `${head.name} — ${money(head.money_rub)}` +
+            (head.negotiated ? " (адресная)" : "")
+          : `${head.name} — ${fmt.num(head.val_bps, 0)} бп (${REASON[head.reason] || head.reason})`;
         desktopNotify(
-          `${payload.filter_name}: ${matches.length} ${matches.length === 1 ? "бумага" : "бумаг"}`,
-          `${head.name} — ${fmt.num(head.val_bps, 0)} бп (${REASON[head.reason] || head.reason})` +
-          (matches.length > 1 ? ` и ещё ${matches.length - 1}` : ""));
+          payload.type === "block"
+            ? `Крупная сделка${matches.length > 1 ? `: ${matches.length}` : ""}`
+            : `${payload.filter_name}: ${matches.length} ${matches.length === 1 ? "бумага" : "бумаг"}`,
+          body + (matches.length > 1 ? ` и ещё ${matches.length - 1}` : ""));
       }
       const id = ++seq.current;
       setCards((c) => [{ id, payload }, ...c].slice(0, 4));
@@ -112,6 +119,46 @@ function SignalToast({ p, onOpen, onDismiss }) {
 
   const side = p.side === "ask" ? "оффер" : "бид";
   const shown = p.matches.slice(0, 6);
+
+  // Крупная сделка — другое событие, не срабатывание фильтра: ни стороны
+  // стакана, ни спреда набора у неё нет, поэтому и карточка своя.
+  if (p.type === "block") {
+    return (
+      <motion.div className="sig-toast" role="alert"
+        initial={reduce ? false : { x: 40, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 400, damping: 30 }}>
+        <button className="sig-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
+        <div className="sig-toast-h">
+          <span>Крупная сделка</span>
+          <span className="sig-toast-n">
+            {p.matches.length} {p.matches.length === 1 ? "сделка" : "сделок"}</span>
+        </div>
+        <div className="sig-toast-b">
+          {shown.map((m) => (
+            <button type="button" className="sig-toast-row" key={m.isin + m.ts}
+              onClick={() => onOpen(m, "ask")} title="Открыть карточку и стакан">
+              <span className="sig-toast-nm">
+                <span className="nm">{m.name}</span>
+                <span className={"blk-tag" + (m.negotiated ? " blk-tag-ndm" : "")}>
+                  {m.negotiated ? "адресная" : "стакан"}</span>
+              </span>
+              <span className="sig-toast-val">{money(m.money_rub)}</span>
+              <span className="sig-toast-sub">
+                <span>{m.isin}</span>
+                <span>цена {fmt.num(m.price, 2)}%</span>
+                <span>{(m.ts || "").slice(11, 16)}</span>
+                {m.rating && <span>{m.rating}</span>}
+              </span>
+            </button>
+          ))}
+          {p.matches.length > shown.length && (
+            <div className="sig-toast-more">…и ещё {p.matches.length - shown.length}</div>
+          )}
+        </div>
+      </motion.div>
+    );
+  }
   return (
     <motion.div className="sig-toast" role="alert"
       initial={reduce ? false : { x: 40, opacity: 0 }}

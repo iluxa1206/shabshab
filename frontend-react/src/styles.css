@@ -1400,6 +1400,16 @@ body.col-resizing * { cursor: col-resize !important; }
   font-size: 12px; color: var(--mut); }
 .tape-table tbody tr.tape-row-static { cursor: default; }
 
+/* ── КРУПНЫЕ: режим торгов рядом со сделкой ──
+   Адресные сделки (РПС/размещения/выкупы) подсвечены: их нет ни в стакане, ни
+   в обезличенной ленте, и глазом они должны отделяться от безадресных мгновенно. */
+.blk-board { white-space: nowrap; }
+.blk-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  border: 1px solid var(--line-2); color: var(--mut); }
+.blk-tag-ndm { border-color: var(--accent); color: var(--accent); }
+.tape-table tbody tr.blk-ndm td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.blk-boards { margin-top: 6px; }
+
 /* ── КАЛЬКУЛЯТОР кастомной облигации ── */
 .calc-page { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 24px;
   max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box;

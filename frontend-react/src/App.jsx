@@ -27,6 +27,7 @@ import SignalsModule from "./components/SignalsModule.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 import TradesTape from "./components/TradesTape.jsx";
+import BlocksTape from "./components/BlocksTape.jsx";
 // lightweight-charts тянет ~180 kB — грузим только на самой странице графика,
 // а не в общий бандл дашборда
 const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
@@ -685,6 +686,7 @@ function Dashboard() {
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/trades" element={<TradesTape />} />
+        <Route path="/blocks" element={<BlocksTape />} />
         <Route path="/signals" element={<SignalsModule />} />
         <Route path="/payments" element={<PaymentsCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />

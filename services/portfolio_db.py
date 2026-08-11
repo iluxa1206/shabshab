@@ -134,6 +134,60 @@ CREATE TABLE IF NOT EXISTS tick_drain(
   updated_at TEXT NOT NULL
 );
 
+-- Крупные сделки по ВСЕМ облигациям MOEX (не только по юниверсу): безадресные
+-- режимы (market=bonds) и адресные/РПС (market=ndm — PSOB/PTOB/PSAU/PSBB/...).
+-- Источник — ISS, сквозная лента всего рынка: 271k безадресных сделок за день
+-- отфильтровываются порогом BLOCK_MIN_VALUE_RUB и в базу попадают сотни строк.
+-- Отдельно от trade_tick: тот льётся из Alor по одной бумаге, знает только
+-- безадресные борды (TQCB/TQOB/TQRD) и подчищается ретеншеном.
+CREATE TABLE IF NOT EXISTS block_trade(
+  trade_id INTEGER PRIMARY KEY,   -- TRADENO MOEX, сквозной по всем рынкам
+  isin TEXT NOT NULL,             -- по SECID из справочника; для ОФЗ ≠ secid
+  secid TEXT NOT NULL,
+  ts TEXT NOT NULL,               -- 'YYYY-MM-DD HH:MM:SS' МСК
+  market TEXT NOT NULL,           -- bonds (безадресные) | ndm (адресные/РПС)
+  board TEXT,
+  price REAL,                     -- % номинала
+  qty REAL,                       -- бумаг
+  value REAL NOT NULL,            -- руб, без НКД
+  yld REAL,                       -- доходность сделки (YIELD ISS)
+  side TEXT,                      -- buy|sell — агрессор; у адресных сделок NULL
+  face REAL,
+  cur TEXT                        -- валюта расчётов (SUR/CNY/USD): VALUE в НЕЙ,
+                                  -- поэтому суммы в статистике считаем по SUR
+);
+CREATE INDEX IF NOT EXISTS ix_block_ts ON block_trade(ts);
+CREATE INDEX IF NOT EXISTS ix_block_isin_ts ON block_trade(isin, ts);
+CREATE INDEX IF NOT EXISTS ix_block_value ON block_trade(value);
+
+-- Дневные агрегаты РПС (ISS history market=ndm). Поштучных адресных сделок за
+-- прошлые дни ISS не отдаёт вообще — только «бумага/борд/день: оборот, число
+-- сделок, средневзвес». Нужны, чтобы видеть блоки ДО запуска поштучного сбора.
+CREATE TABLE IF NOT EXISTS block_day(
+  isin TEXT NOT NULL,
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD'
+  board TEXT NOT NULL,
+  secid TEXT,
+  numtrades INTEGER,
+  value REAL,                     -- руб за день по этому борду
+  waprice REAL,
+  close REAL,
+  volume REAL,                    -- бумаг
+  face REAL,
+  PRIMARY KEY(isin, date, board)
+);
+CREATE INDEX IF NOT EXISTS ix_block_day_date ON block_day(date);
+
+-- Курсор сквозной ленты: последний вычитанный TRADENO по рынку. Протухший
+-- курсор (вчерашний номер) безопасен — ISS на неизвестный tradeno отдаёт ленту
+-- с начала сессии, то есть деградирует до полного прохода, а не до дыры.
+CREATE TABLE IF NOT EXISTS block_cursor(
+  market TEXT PRIMARY KEY,        -- bonds | ndm
+  last_tradeno INTEGER NOT NULL,
+  session_date TEXT,
+  updated_at TEXT NOT NULL
+);
+
 -- Пользователи Telegram-бота (регистрация на /start). Идентичность бота своя,
 -- без привязки к веб-аккаунтам: алерты таких юзеров живут в общей таблице
 -- alerts с user_email = 'tg:<tg_user_id>' (движок alerts_monitor не в курсе).

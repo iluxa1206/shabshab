@@ -15,6 +15,9 @@ const REASON = {
   price: ["цена", "цена сдвинулась"],
   spread: ["спред", "спред сдвинулся"],
   money: ["объём", "объём в стакане изменился"],
+  // не фильтр скринера, а рыночное событие: сделка крупнее порога уведомления
+  // (в т.ч. адресная — РПС/размещение, которой в стакане не видно вообще)
+  block: ["блок", "крупная сделка по рынку"],
 };
 
 const timeOf = (iso) => {
@@ -157,17 +160,31 @@ export default function SignalsBell() {
                       <span className={"sb-tag sb-" + e.reason} title={title}>{tag}</span>
                       <span className="sb-time num">{timeOf(e.fired_at)}</span>
                     </span>
-                    <span className="sb-row-2 num">
-                      <span className={e.side === "ask" ? "pos" : "neg"}>
-                        {e.side === "ask" ? "оффер" : "бид"}</span>
-                      <b>{fmt.num(e.val_bps, 0)} бп</b>
-                      <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
-                      <span className="sb-px">{fmt.num(e.price, 2)}%</span>
-                      <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />
-                      <span className="sb-vol">{money(e.money_rub)} ₽
-                        {e.levels ? ` · ${e.levels} ур` : ""}</span>
-                    </span>
-                    <span className="sb-row-3">{e.filter_name || "фильтр удалён"} · {e.isin}</span>
+                    {e.reason === "block" ? (
+                      // у сделки нет ни спреда набора, ни стороны стакана —
+                      // показываем то, что есть: сумма, цена и агрессор
+                      <span className="sb-row-2 num">
+                        <b>{money(e.money_rub)} ₽</b>
+                        <span className="sb-px">{fmt.num(e.price, 2)}%</span>
+                        {e.side && (
+                          <span className={e.side === "buy" ? "pos" : "neg"}>
+                            {e.side === "buy" ? "покупка" : "продажа"}</span>)}
+                      </span>
+                    ) : (
+                      <span className="sb-row-2 num">
+                        <span className={e.side === "ask" ? "pos" : "neg"}>
+                          {e.side === "ask" ? "оффер" : "бид"}</span>
+                        <b>{fmt.num(e.val_bps, 0)} бп</b>
+                        <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
+                        <span className="sb-px">{fmt.num(e.price, 2)}%</span>
+                        <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />
+                        <span className="sb-vol">{money(e.money_rub)} ₽
+                          {e.levels ? ` · ${e.levels} ур` : ""}</span>
+                      </span>
+                    )}
+                    <span className="sb-row-3">
+                      {e.reason === "block" ? "крупная сделка" : (e.filter_name || "фильтр удалён")}
+                      {" · "}{e.isin}</span>
                   </button>
                 );
               })}

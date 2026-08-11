@@ -44,6 +44,28 @@ def _bars_stat() -> dict:
                 "ticks": 0, "tick_papers": 0, "ticks_from": None}
 
 
+def _blocks_stat() -> dict:
+    """Слой крупных сделок (block_trade/block_day): сколько накоплено и с какой
+    даты. Таблицы моложе прод-базы — их отсутствие статус не валит."""
+    from services.portfolio_db import _connect
+    try:
+        with _connect() as c:
+            b = c.execute("SELECT COUNT(*) n, COUNT(DISTINCT isin) p, MIN(ts) a, "
+                          "MAX(ts) z FROM block_trade").fetchone()
+            nd = c.execute("SELECT COUNT(*) n FROM block_trade WHERE market='ndm'").fetchone()
+            d = c.execute("SELECT COUNT(*) n, MIN(date) a FROM block_day").fetchone()
+            # список бумаг — чтобы пересечь с юниверсом в питоне: лента шире
+            # реестра (весь рынок облигаций), и «покрытие» без пересечения
+            # давало бы больше 100%
+            isins = {r[0] for r in c.execute("SELECT DISTINCT isin FROM block_trade")}
+        return {"blocks": b["n"], "papers": b["p"], "from": (b["a"] or "")[:10],
+                "till": b["z"], "ndm": nd["n"], "days": d["n"],
+                "days_from": (d["a"] or "")[:10], "isins": isins}
+    except Exception:
+        return {"blocks": 0, "papers": 0, "from": None, "till": None,
+                "ndm": 0, "days": 0, "days_from": None, "isins": set()}
+
+
 @router.get("", tags=["Status"])
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
@@ -85,6 +107,7 @@ async def get_status():
 
     total = fl_n + fx_n
     bars_stat = _bars_stat()
+    blk = _blocks_stat()
 
     def frac(n, d):
         return {"n": n, "total": d, "pct": round(100 * n / d) if d else 0}
@@ -118,6 +141,12 @@ async def get_status():
             {"key": "Архив сделок (тики)", **frac(bars_stat["tick_papers"], total),
              "hint": f"сделок {bars_stat['ticks']} · с {bars_stat['ticks_from'] or '—'} "
                      f"(у брокера глубина ~30 дней, дальше только наш архив)"},
+            {"key": "Крупные сделки (весь рынок)",
+             **frac(len(blk["isins"] & ({*fl_ids} | {i for i, _ in fx_items})), total),
+             "hint": f"сделок {blk['blocks']} (из них адресных/РПС {blk['ndm']}) по "
+                     f"{blk['papers']} бумагам рынка · "
+                     f"с {blk['from'] or '—'} · последняя {blk['till'] or '—'}; "
+                     f"дневных РПС-агрегатов {blk['days']} с {blk['days_from'] or '—'}"},
         ],
         # что грузится ПРЯМО СЕЙЧАС: обход баров, прогрев после рестарта, дрейн
         # рейтингов, разовые бэкфилл-скрипты (см. services/progress.py)

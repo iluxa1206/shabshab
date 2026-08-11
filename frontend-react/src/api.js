@@ -254,6 +254,36 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, issuer, isin,
 export const fetchTapeIssuers = () =>
   request("/api/trades/issuers").then((d) => d.issuers || []);
 
+// --- Крупные сделки (вкладка КРУПНЫЕ) ---
+// Лента по ВСЕМУ рынку облигаций, включая адресные режимы (РПС/размещения),
+// которых нет в обезличенном тик-архиве. Источник — ISS, см. services/block_trades.
+export const fetchBlocks = ({ days = 1, minValue = 0, market, board, issuer, isin,
+                              side, universeOnly = false, limit = 500 } = {}, signal) => {
+  const p = new URLSearchParams({ days, min_value: minValue, limit });
+  if (market) p.set("market", market);
+  for (const b of [].concat(board || [])) if (b) p.append("board", b);
+  for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
+  if (isin) p.set("isin", isin);
+  if (side) p.set("side", side);
+  if (universeOnly) p.set("universe_only", "true");
+  return request(`/api/blocks?${p}`, { signal });
+};
+
+export const fetchBlockBoards = (days = 30) =>
+  request(`/api/blocks/boards?days=${days}`).then((d) => d.boards || []);
+
+// крупные сделки одной бумаги + её дневные РПС-обороты (карточка выпуска)
+export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500 } = {}, signal) =>
+  request(`/api/blocks/${encodeURIComponent(isin)}?days=${days}&min_value=${minValue}&limit=${limit}`,
+          { signal });
+
+// дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
+export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000 } = {}, signal) => {
+  const p = new URLSearchParams({ days, min_value: minValue, limit });
+  if (isin) p.set("isin", isin);
+  return request(`/api/blocks/days?${p}`, { signal });
+};
+
 export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
   let u = `/api/bonds/${encodeURIComponent(isin)}/candles?tf=${tf}`;
   if (board) u += `&board=${board}`;

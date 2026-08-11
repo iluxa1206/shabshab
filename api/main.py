@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc, tg, signals as signals_route
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, blocks, calc, tg, signals as signals_route
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -560,6 +560,61 @@ async def hourly_bars_worker():
         await asyncio.sleep(max(60.0, (nxt - now).total_seconds()))
 
 
+BLOCK_POLL_INTERVAL = int(os.getenv("BLOCK_POLL_INTERVAL", "60"))     # опрос ленты, сек
+BLOCK_WORKER = os.getenv("BLOCK_WORKER", "1") not in ("0", "false", "False")
+
+
+async def block_trades_worker():
+    """Крупные сделки по всему рынку облигаций: безадресные + РПС/адресные.
+
+    Сквозная лента ISS читается курсором по TRADENO, поэтому такт дешёвый
+    (единицы страниц на минуту торгов) — в отличие от Alor, куда за тем же
+    пришлось бы ходить по каждой бумаге отдельно.
+
+    Вне торговых часов не крутим; раз в сутки после закрытия догружаем дневные
+    РПС-агрегаты — поштучных адресных сделок за прошлые дни ISS не отдаёт, и
+    это единственный способ увидеть блоки за дни до запуска сбора."""
+    if not BLOCK_WORKER:
+        return
+    from services import block_trades as bt
+    await asyncio.sleep(45)              # пропускаем стартовый прогрев
+    backfilled_on = None
+    try:
+        logger.info("block trades backfill: %s", await bt.backfill())
+        backfilled_on = datetime.now(_MSK).date()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"block trades backfill error: {e}")
+    seeded = False
+    while True:
+        try:
+            now = datetime.now(_MSK)
+            if _in_moex_trading_hours():
+                res = await bt.sweep()
+                if res["saved"]:
+                    logger.info("block trades: +%d (просмотрено %d)",
+                                res["saved"], res["seen"])
+                if not seeded:
+                    # знак уведомлений ставим ПОСЛЕ первого прохода: иначе
+                    # холодный старт вывалил бы в колокольчик всю сессию разом
+                    seeded = True
+                    await asyncio.to_thread(bt.seed_alert_mark)
+                else:
+                    sent = await bt.notify_blocks()
+                    if sent:
+                        logger.info("block trades: %d уведомлений", sent)
+            elif now.hour == 1 and backfilled_on != now.date():
+                # ночью, когда дневная история ISS уже опубликована
+                backfilled_on = now.date()
+                logger.info("block trades backfill: %s", await bt.backfill())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"block trades worker error: {e}")
+        await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else 600)
+
+
 ARCHIVE_VACUUM_MIN_ROWS = int(os.getenv("ARCHIVE_VACUUM_MIN_ROWS", "200000"))
 
 
@@ -648,6 +703,7 @@ async def lifespan(app: FastAPI):
     bars_worker = asyncio.create_task(hourly_bars_worker())
     depth_task = asyncio.create_task(depth_poller())
     archive_task = asyncio.create_task(archive_maintenance())
+    blocks_task = asyncio.create_task(block_trades_worker())
     quotes_task = asyncio.create_task(quotes_poller())
     from services.universe_stream import universe_stream_pool, metrics_worker
     pool_task = asyncio.create_task(universe_stream_pool())
@@ -676,6 +732,7 @@ async def lifespan(app: FastAPI):
     bars_worker.cancel()
     depth_task.cancel()
     archive_task.cancel()
+    blocks_task.cancel()
 
 app = FastAPI(
     title="Shabshab Floaters API",
@@ -720,6 +777,7 @@ app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
 app.include_router(signals_route.router, prefix="/api/signals", dependencies=_gate)
 app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
+app.include_router(blocks.router, prefix="/api/blocks", dependencies=_gate)
 app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 app.include_router(tg.router, prefix="/api/tg")  # webhook защищён secret-заголовком

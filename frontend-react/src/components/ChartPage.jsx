@@ -7,7 +7,7 @@ import {
 } from "lightweight-charts";
 import {
   fetchCandles, fetchSpreadHistory, fetchBondDetails, fetchBondRow,
-  fetchHourlyBars, fetchTrades,
+  fetchHourlyBars, fetchTrades, fetchBlocksByIsin,
 } from "../api.js";
 import { fmt, baseLabel } from "../format.js";
 import { Brush } from "../charts/index.js";
@@ -43,6 +43,8 @@ const LAYERS = [
   ["vwap", "Средневзвес", "VWAP часа (свой архив) + Y-IDX по нему на внутридневном масштабе"],
   ["sides", "Покупки/продажи", "VWAP по агрессору: buy и sell отдельными линиями"],
   ["big", "Крупные сделки", "Маркеры отдельных сделок крупнее порога"],
+  ["rps", "РПС/блоки", "Адресные сделки (РПС, РПС с ЦК, размещения, выкупы) — "
+          + "в стакане и обезличенной ленте их нет вообще"],
 ];
 const BIG_THRESHOLDS = [1, 5, 10, 50, 100];   // млн ₽
 const LAYER_MAX_DAYS = 730;                   // потолок окна баров у бэка
@@ -343,6 +345,13 @@ export default function ChartPage() {
     enabled: on("big"),
     staleTime: 300_000,
   });
+  const qBlocks = useQuery({
+    queryKey: ["rps-blocks", isin, layerDays, bigMln],
+    queryFn: () => fetchBlocksByIsin(isin, { days: Math.min(layerDays, 400),
+                                             minValue: bigMln * 1e6, limit: 400 }),
+    enabled: on("rps"),
+    staleTime: 300_000,
+  });
 
   // Тип метрики спреда узнаём по самим барам: страница открывается по ISIN и
   // обслуживает и флоатеры (Y-IDX), и фиксы (G-спред) — у фикса y_idx пуст во
@@ -372,6 +381,17 @@ export default function ChartPage() {
     });
     return rows;
   }, [qTrades.data, from, to]);
+
+  const rpsTrades = useMemo(() => {
+    // только адресные: безадресный крупняк уже рисует слой «Крупные сделки»,
+    // иначе одна и та же сделка получила бы два маркера
+    const rows = (qBlocks.data?.blocks || []).filter((t) => {
+      if (!t.negotiated) return false;
+      const d = t.ts.slice(0, 10);
+      return (!from || d >= from) && (!to || d <= to);
+    });
+    return rows;
+  }, [qBlocks.data, from, to]);
 
   // панель спреда есть либо от дневной истории, либо от часовых баров
   const spreadPaneOn = smode !== "off" && (spreadOn || (barsOn && layersOk));
@@ -569,7 +589,10 @@ export default function ChartPage() {
       }
     }
 
-    // ── слой «крупные сделки»: маркеры на ценовой серии ──────────────────────
+    // ── маркеры сделок: крупные безадресные + адресные (РПС) ────────────────
+    // Оба слоя садятся на ОДНУ серию, поэтому маркеры собираем вместе: два
+    // вызова createSeriesMarkers по одному хосту затирают друг друга.
+    const marks = [];
     if (on("big") && bigTrades.length) {
       // одна цена — один маркер: в час может прийти несколько крупных принтов,
       // накладываясь друг на друга; берём самый крупный в баре
@@ -580,18 +603,40 @@ export default function ChartPage() {
         const prev = best.get(key);
         if (!prev || (t.value || 0) > (prev.value || 0)) best.set(key, { ...t, time });
       }
-      const marks = [...best.values()]
-        .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0))
-        .map((t) => ({
+      for (const t of best.values()) {
+        marks.push({
           time: t.time,
           position: t.side === "sell" ? "aboveBar" : "belowBar",
           shape: t.side === "sell" ? "arrowDown" : "arrowUp",
           color: t.side === "sell" ? theme.down : theme.up,
           text: `${Math.round((t.value || 0) / 1e6)}М`,
-        }));
+        });
+      }
+    }
+    if (on("rps") && rpsTrades.length) {
+      // у адресной сделки нет агрессора — ни стрелки, ни цвета стороны:
+      // кружок акцентным цветом над баром, подпись «объём + режим»
+      const best = new Map();
+      for (const t of rpsTrades) {
+        const time = tradeTime(t.ts, tf);
+        const prev = best.get(time);
+        if (!prev || (t.value || 0) > (prev.value || 0)) best.set(time, { ...t, time });
+      }
+      for (const t of best.values()) {
+        marks.push({
+          time: t.time,
+          position: "aboveBar",
+          shape: "circle",
+          color: theme.accent || theme.up,
+          text: `${Math.round((t.value || 0) / 1e6)}М ${t.board_title || "РПС"}`,
+        });
+      }
+    }
+    if (marks.length) {
+      marks.sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
       // ценовой график может быть выключен — маркеры сажаем на средневзвес
       const host = price || seriesRef.current.vwap;
-      if (marks.length && host) seriesRef.current.marks = createSeriesMarkers(host, marks);
+      if (host) seriesRef.current.marks = createSeriesMarkers(host, marks);
     }
 
     let yidxDrawn = false;
@@ -663,7 +708,7 @@ export default function ChartPage() {
     });
     return () => cancelAnimationFrame(raf);
   }, [candles, type, tf, theme, spreadPaneOn, spreadPts, smode, spreadOHLC, layerPts,
-      bigTrades, layers, layersOk]);
+      bigTrades, rpsTrades, layers, layersOk]);
 
   // при смене окна/таймфрейма старая строка легенды осталась бы висеть от
   // предыдущего курсора — гасим
@@ -868,7 +913,7 @@ export default function ChartPage() {
               onClick={() => toggleLayer(k)}>{l}</button>
           ))}
         </span>
-        {on("big") && (
+        {(on("big") || on("rps")) && (
           <label className="cp-date">крупнее
             <select value={bigMln} onChange={(e) => setParam({ mv: e.target.value })}>
               {BIG_THRESHOLDS.map((v) => <option key={v} value={v}>{v} млн ₽</option>)}
@@ -892,8 +937,9 @@ export default function ChartPage() {
           onClick={() => setParam({ dist: distOn ? null : "1" })}>Распределение</button>
         <span className="cp-hint">
           {(qBars.isPending && barsOn) || (qTrades.isPending && on("big"))
+            || (qBlocks.isPending && on("rps"))
             ? "загрузка архива…"
-            : barsOn || on("big")
+            : barsOn || on("big") || on("rps")
               ? [
                   barsOn && layerPts.length ? `${layerPts.length} баров` : null,
                   on("big")
@@ -901,6 +947,7 @@ export default function ChartPage() {
                       + (qTrades.data?.truncated
                           ? ` (из ${qTrades.data.total} — показаны самые крупные)` : "")
                     : null,
+                  on("rps") ? `${rpsTrades.length} адресных (РПС)` : null,
                   qTrades.data?.eff_spread_bps != null
                     ? `эфф. спред по крупным ${qTrades.data.eff_spread_bps} б.п. цены` : null,
                 ].filter(Boolean).join(" · ")
@@ -975,6 +1022,9 @@ export default function ChartPage() {
             {!spreadPaneOn && " · панель спреда выключена"}
             {on("big") && !bigTrades.length &&
               ` · сделок крупнее ${bigMln} млн ₽ в архиве нет (глубина тиков ~30 дней)`}
+            {on("rps") && !rpsTrades.length &&
+              ` · адресных сделок от ${bigMln} млн ₽ нет: поштучный сбор РПС идёт вперёд`
+              + " с момента запуска, за прошлые дни у ISS только дневные обороты (вкладка КРУПНЫЕ)"}
           </>
         )}
       </div>
