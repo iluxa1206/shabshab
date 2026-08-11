@@ -547,6 +547,13 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION,
                        retrust_dates=untrusted)
          if missing_or_null else 0)
+    # недоверенные даты, до которых честный движок не дотянулся (нет строки
+    # MOEX history — выходные сессии/дыры) — сносим, иначе мусор рисуется вечно
+    # пустая серия — скорее сбой MOEX/сети, чем «дат нет»: не сносим, дождёмся
+    if untrusted and series["points"]:
+        from services.spread_history import drop_untrusted
+        leftover = untrusted - {p["date"] for p in series["points"]}
+        n += drop_untrusted(isin, leftover)
     _backfill_done[(isin, board)] = (_date.today(), days)
     return n + dropped
 

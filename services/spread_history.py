@@ -90,6 +90,23 @@ def drop_stale_honest(isin: str, engine_ver: int) -> int:
         return cur.rowcount or 0
 
 
+def drop_untrusted(isin: str, dates: set) -> int:
+    """Удаляет легаси-строки БЕЗ src за перечисленные даты. Нужно для дат, по
+    которым честный движок посчитать не смог (выходные сессии: свеча есть, а
+    строки MOEX history нет) — candle-est мусор там иначе жил бы вечно и
+    рисовался как exact. src='snap'/'honest' не трогаются."""
+    if not dates:
+        return 0
+    n = 0
+    with _lock, _connect() as c:
+        for d in dates:
+            cur = c.execute(
+                "DELETE FROM spread_daily WHERE isin=? AND date=? AND src IS NULL",
+                (isin, d))
+            n += cur.rowcount or 0
+    return n
+
+
 def upsert_honest(isin: str, points: list, existing_dates: set,
                   engine_ver: int = 0, retrust_dates: Optional[set] = None) -> int:
     """Персистит честный бэкфилл: INSERT точек для дат без строки (src='honest');
