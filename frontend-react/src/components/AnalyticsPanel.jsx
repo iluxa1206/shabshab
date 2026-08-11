@@ -19,15 +19,6 @@ const BCOLOR = {
   BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
 };
 
-// склонение «бумага/бумаги/бумаг» по числу
-const plu = (n) => {
-  const a = Math.abs(n) % 100, b = a % 10;
-  if (a > 10 && a < 20) return "бумаг";
-  if (b === 1) return "бумага";
-  if (b >= 2 && b <= 4) return "бумаги";
-  return "бумаг";
-};
-
 // Y-IDX (доходность над индексом, bps) — первичная метрика панели: та же, что в
 // таблице, в стакане и в истории снапшотов. Бэнд отсекает мусор от стейл/тонких
 // цен неликвида (тот же, что на бэкенде для spread_daily).
@@ -450,7 +441,7 @@ function AggToggle({ value, onChange }) {
 function AnCard({ title, hint, ctl, full, onToggleFull, children }) {
   return (
     <div className={"an-card" + (full ? " an-full" : "")}>
-      <div className="an-title">
+      <div className="an-title an-head">
         <span className="an-title-txt">{title}</span>
         <span className="an-title-ctl">
           {ctl}
@@ -459,7 +450,7 @@ function AnCard({ title, hint, ctl, full, onToggleFull, children }) {
             aria-label={full ? "свернуть" : "на весь экран"}>{full ? "✕" : "⤢"}</button>
         </span>
       </div>
-      {hint && <div className="an-hint">{hint}</div>}
+      {hint && <div className="an-hint an-sub">{hint}</div>}
       {children}
     </div>
   );
@@ -494,6 +485,10 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   const pickIssuer = toggle("issuer");
   const pickRating = toggle("rating");
 
+  // смена агрегации меняет измерение фильтра: старый выбор в новых графиках
+  // не подсвечивается, а таблица оставалась бы сужённой «молча» — снимаем
+  useEffect(() => { onFocus && onFocus(null); }, [groupBy]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!full) return;
     const f = (e) => { if (e.key === "Escape") setFull(null); };
@@ -505,8 +500,16 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   const bigH = Math.max(320, vh - 230);
   const scH = full === "scatter" ? bigH : SC_H;
   const yhH = full === "hist" ? bigH : YH_H;
-  const distRowH = full === "dist" ? 30 : undefined;
-  const distCap = full === "dist" ? Math.max(22, Math.floor((vh - 220) / 30)) : ISSUER_CAP;
+  // box-график в полный экран: строки растягиваются по высоте окна (иначе
+  // 3 рейтинг-бакета висели полоской вверху пустого экрана), эмитентов
+  // показываем столько, сколько влезает при комфортной высоте строки
+  const distN = Math.max(1, byIss
+    ? Math.min(new Set(rows.map(emKey).filter(Boolean)).size, 40)
+    : new Set(rows.map((b) => norm(b.rating))).size);
+  const distRowH = full === "dist"
+    ? Math.max(24, Math.min(120, Math.floor((vh - 200) / distN)))
+    : undefined;
+  const distCap = full === "dist" ? Math.max(ISSUER_CAP, distN) : ISSUER_CAP;
 
   const periodCtl = (
     <span className="an-toggle" role="group" aria-label="период">

@@ -968,14 +968,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
    Раньше переключатель периода был float'ом в потоке тела карточки и его
    перекрывал позиционированный .cf-box графика — клики не доходили.
    (float у .an-toggle во флекс-контейнере игнорируется, правило общее.) */
-.an-title { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
-  font-size: 11px; letter-spacing: .05em; color: var(--fg); margin-bottom: 4px; text-transform: uppercase; }
+.an-title { font-size: 11px; letter-spacing: .05em; color: var(--fg); margin-bottom: 8px; text-transform: uppercase; }
+.an-title.an-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 4px; }
 .an-title-txt { white-space: nowrap; }
 /* контролы прижаты вправо; подсказка вынесена под заголовок отдельной строкой —
    в одной строке она рвалась на 5 строк и раздувала шапку карточки */
 .an-title-ctl { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
-.an-hint { display: block; font-size: 10px; color: var(--mut-2); text-transform: none;
-  letter-spacing: 0; margin: 0 0 6px; line-height: 1.3; }
+.an-hint { font-size: 10px; color: var(--mut-2); text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.an-hint.an-sub { display: block; margin: 0 0 6px; line-height: 1.3; }
 .an-full-btn { font: 11px var(--mono); color: var(--mut); background: transparent; line-height: 1;
   border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; cursor: pointer; }
 .an-full-btn:hover { color: var(--fg); border-color: var(--fg); }

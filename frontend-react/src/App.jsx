@@ -717,7 +717,7 @@ function Dashboard() {
         sigVol={Number(searchParams.get("sigvol")) || 0} sigSide={searchParams.get("sigside") || "ask"}
         sigPx={Number(searchParams.get("sigpx")) || 0}
         onClose={closeDrawer} />
-      <StatusBar count={bonds.length} bonds={bonds} kpiBonds={filtered} live={live} sources={meta.source_status}
+      <StatusBar count={bonds.length} bonds={bonds} kpiBonds={tableRows} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} meta={meta}
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
