@@ -297,6 +297,11 @@ class BondListItem(BaseModel):
     offer_date: Optional[date] = None
     offer_kind: Optional[str] = None               # 'put' | 'call'
     has_call: Optional[bool] = None
+    # Статичные признаки выпуска для быстрых фильтров витрины (не цено-зависимые,
+    # в WS-патч не уходят). is_ofz — суверен Минфина (субфеды сюда НЕ попадают),
+    # has_amort — в графике MOEX больше одного транша погашения номинала.
+    is_ofz: bool = False
+    has_amort: bool = False
     sm_to_offer_bps: Optional[int] = None          # simple margin к оферте (yield-to-put)
     disc_margin_to_offer_bps: Optional[int] = None # discount margin к оферте
 

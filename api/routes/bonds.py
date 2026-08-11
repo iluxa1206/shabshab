@@ -45,6 +45,15 @@ def get_base_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
+# ОФЗ-ПК: суверен Минфина. Эмитент в реестре — авторитет, имя выпуска (ОФЗ 29xxx /
+# SU29…) — фолбэк для строк без emitter_name. Субфеды («Минфин Амурской обл.»,
+# «Амур 24001») сюда НЕ попадают: для витрины это корпоративный риск.
+_OFZ_NAME_RE = re.compile(r"^(ОФЗ|SU2\d)", re.I)
+
+
+def _is_ofz(u: dict, name: str) -> bool:
+    return (u.get("emitter_name") or "").strip() == "Минфин России" \
+        or bool(_OFZ_NAME_RE.match((name or "").strip()))
 
 
 async def compute_universe_metrics(uni: list, isins: list) -> dict:
@@ -84,6 +93,7 @@ def _uni_item(u, name, mx, spread_dur, adv=None):
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
         offer_kind=mx.get("offer_kind"), has_call=u.get("has_call"),
+        is_ofz=_is_ofz(u, name), has_amort=bool(mx.get("has_amort")),
         sm_to_offer_bps=mx.get("sm_to_offer"), disc_margin_to_offer_bps=mx.get("dm_to_offer"),
     )
 

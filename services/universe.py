@@ -172,7 +172,12 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             price_thin = (calc_date - date.fromisoformat(prev_date)).days > 4
         except (ValueError, TypeError):
             price_thin = False
+    # Амортизация: в графике MOEX больше одного транша погашения номинала
+    # (единственная запись — это обычное погашение в конце). Признак статичный,
+    # в WS-патч не уходит; нужен фильтру «без аморт» на фронте.
+    has_amort = sum(1 for a in (amorts or []) if a.get("value") is not None) > 1
     return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
+            "has_amort": has_amort,
             "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
             "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,

@@ -36,7 +36,7 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "nosub"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "nosub", "noam", "cls"];
 // Субординация — по имени бумаги: отдельного признака нет ни у MOEX, ни у
 // corpbonds, а маркер в short_name — устойчивая конвенция («ВТБСУБ1-12»,
 // «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
@@ -89,9 +89,25 @@ function Dashboard() {
   const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("rt")); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("em")); // имена эмитентов (мульти)
   const [twoSided, setTwoSided] = useState(() => initialParams().get("two") === "1");  // только двусторонние котировки
-  // суборды/перпы вон: другой класс риска, в сравнении спредов ломают картину
-  const [hideSub, setHideSub] = useState(() => initialParams().get("nosub") === "1"
-    || (!initialParams().has("nosub") && localStorage.getItem("hideSubord") === "1"));
+  // суборды/перпы вон: другой класс риска, в сравнении спредов ломают картину.
+  // ВКЛЮЧЁН ПО УМОЛЧАНИЮ — чистый рынок старшего долга; выключается вручную и
+  // тогда запоминается (localStorage "0"), поэтому null-проверка, а не === "1".
+  const [hideSub, setHideSub] = useState(() => {
+    const p = initialParams();
+    if (p.has("nosub")) return p.get("nosub") === "1";
+    const ls = localStorage.getItem("hideSubord");
+    return ls === null ? true : ls === "1";
+  });
+  // амортизируемые вон: у них падающий номинал, спред-дюрация и сам спред не
+  // сопоставимы с bullet-выпусками. Признак has_amort — из графика MOEX.
+  const [hideAmort, setHideAmort] = useState(() => {
+    const p = initialParams();
+    if (p.has("noam")) return p.get("noam") === "1";
+    return localStorage.getItem("hideAmort") === "1";
+  });
+  // класс эмитента: OFZ (суверен Минфина) / CORP (всё остальное, включая субфеды).
+  // Пустой список = оба, как и у прочих групп-мультивыборов.
+  const [clsSel, setClsSel] = useState(() => initialParams().getAll("cls"));
   // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка стороны
   // пересчитывается в VWAP на этот объём по лестнице стакана
   const [volBid, setVolBid] = useState(() => Number(initialParams().get("vb"))
@@ -182,6 +198,8 @@ function Dashboard() {
       emittersSel.forEach((v) => next.append("em", v));
       if (twoSided) next.set("two", "1");
       if (hideSub) next.set("nosub", "1");
+      if (hideAmort) next.set("noam", "1");
+      clsSel.forEach((v) => next.append("cls", v));
       if (volBid) next.set("vb", String(volBid));
       if (volAsk) next.set("va", String(volAsk));
       if (volMode === "or" && (volBid || volAsk)) next.set("vm", "or");
@@ -191,10 +209,11 @@ function Dashboard() {
       if (spreadTo) next.set("st", spreadTo);
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, volBid, volAsk, volMode,
-      matFrom, matTo, spreadFrom, spreadTo, setSearchParams]);
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, clsSel,
+      volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
+  useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
@@ -522,6 +541,10 @@ function Dashboard() {
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
     // суборды/перпы вон — распознаём по имени выпуска (см. SUBORD_RE)
     if (hideSub) rows = rows.filter((b) => !SUBORD_RE.test(b.short_name || ""));
+    // амортизация — факт графика MOEX (больше одного транша погашения), флаг с бэка
+    if (hideAmort) rows = rows.filter((b) => !b.has_amort);
+    // ОФЗ / КОРП: класс считает бэк (is_ofz), фронт только сопоставляет выбор
+    if (clsSel.length) rows = rows.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
     // окно погашения в ЛЕТ до погашения: границы переводим в даты-отсечки и
@@ -571,8 +594,8 @@ function Dashboard() {
       return (x - y) * m;
     });
     return rows;
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, twoSided, query, sort, watch,
-      matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
+      query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
 
   // набор строк таблицы: отфильтрованный + сужение выбором на графике аналитики
   const tableRows = useMemo(() => {
@@ -628,13 +651,16 @@ function Dashboard() {
   }, [navigate]);
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
+  // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
+  // поэтому в бейдж он попадает только когда СНЯТ (рынок показан целиком).
   const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
-    + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 1 : 0) + (query !== "" ? 1 : 0)
+    + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 0 : 1) + (query !== "" ? 1 : 0)
+    + (hideAmort ? 1 : 0) + (clsSel.length ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
-    setTwoSided(false); setHideSub(false);
+    setTwoSided(false); setHideSub(true); setHideAmort(false); setClsSel([]);
     setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
     setSpreadFrom(""); setSpreadTo("");
   }, []);
@@ -651,6 +677,8 @@ function Dashboard() {
         activeFilters={activeFilters} onResetFilters={resetFilters}
         twoSided={twoSided} setTwoSided={setTwoSided}
         hideSub={hideSub} setHideSub={setHideSub}
+        hideAmort={hideAmort} setHideAmort={setHideAmort}
+        clsSel={clsSel} toggleCls={toggleIn(setClsSel)}
         volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
         volMode={volMode} setVolMode={setVolMode}
         depthTs={depthQ.data?.ts} depthLoading={volOn && depthQ.isLoading}
