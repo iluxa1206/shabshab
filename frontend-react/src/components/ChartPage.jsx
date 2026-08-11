@@ -139,8 +139,13 @@ const barSpreadOHLC = (b) => {
   return { o, c, h: Math.max(...all), l: Math.min(...all) };
 };
 
-function layerPoints(bars, tf) {
+// useVwap: спред точки по средневзвесу (слой СРЕДНЕВЗВЕС включён) или по цене
+// закрытия (выключен) — линия спреда следует тому же представлению цены, что
+// выбрано на ценовом графике. У старых баров y_close_bps может не быть —
+// откатываемся на средневзвес, чтобы серия не рвалась.
+function layerPoints(bars, tf, useVwap = true) {
   if (!bars?.length) return [];
+  const ptSpread = (b) => (useVwap ? barSpread(b) : (b.y_close_bps ?? barSpread(b)));
   if (tf === "5m" || tf === "1h") {
     // На часовой сетке «тонкий» — сам час: одиночная сделка на утренней сессии
     // даёт спред в сотни б.п. и так же травит статистику, как тонкий день.
@@ -152,7 +157,7 @@ function layerPoints(bars, tf) {
     return bars.map((b) => {
       const s = barSpreadOHLC(b);
       // на часовой сетке свеча спреда — сам бар: у часа есть свои O/H/L/C цены
-      return { ...b, time: toTime(b.ts, "1h"), y_idx_bps: barSpread(b),
+      return { ...b, time: toTime(b.ts, "1h"), y_idx_bps: ptSpread(b),
                y_o: s?.o ?? null, y_h: s?.h ?? null, y_l: s?.l ?? null, y_c: s?.c ?? null,
                thin: (b.value || 0) < min };
     });
@@ -183,6 +188,11 @@ function layerPoints(bars, tf) {
     const hh = a.hours.filter((x) => x.v >= min);
     const src = hh.length ? hh : a.hours;
     const wavg = a.yDen ? a.yNum / a.yDen : null;
+    // спред по цене закрытия дня — close последнего часа с OHLC (та же цена,
+    // что закрытие дневной свечи); старые бары без OHLC → средневзвес
+    const withC = src.filter((x) => x.ohlc);
+    const closeVal = withC.length ? withC[withC.length - 1].ohlc.c : wavg;
+    const dayVal = useVwap ? wavg : (closeVal ?? wavg);
     const thin = a.val < Y_OHLC_MIN_DAY_VALUE;
 
     // Дневная свеча спреда: open — по цене открытия первого часа, close — по
@@ -191,7 +201,7 @@ function layerPoints(bars, tf) {
     // сессией. Часы без ohlc (старые бары) вносят одну точку по vwap.
     let cndl = null;
     if (thin) {
-      cndl = wavg != null ? { o: wavg, c: wavg, h: wavg, l: wavg } : null;
+      cndl = dayVal != null ? { o: dayVal, c: dayVal, h: dayVal, l: dayVal } : null;
     } else {
       const withOhlc = src.filter((x) => x.ohlc);
       const pts = src.flatMap((x) => (x.ohlc ? [x.ohlc.o, x.ohlc.h, x.ohlc.l, x.ohlc.c] : [x.y]));
@@ -210,7 +220,7 @@ function layerPoints(bars, tf) {
       volume: a.vol,
       value: a.val,
       thin,
-      y_idx_bps: wavg,
+      y_idx_bps: dayVal,
       y_o: cndl?.o ?? null,
       y_c: cndl?.c ?? null,
       y_h: cndl?.h ?? null,
@@ -352,8 +362,8 @@ export default function ChartPage() {
       const d = b.ts.slice(0, 10);
       return (!from || d >= from) && (!to || d <= to);
     });
-    return layerPoints(rows, tf);
-  }, [qBars.data, tf, from, to]);
+    return layerPoints(rows, tf, on("vwap"));
+  }, [qBars.data, tf, from, to, layers, layersOk]); // eslint-disable-line
 
   const bigTrades = useMemo(() => {
     const rows = (qTrades.data?.trades || []).filter((t) => {
@@ -472,8 +482,11 @@ export default function ChartPage() {
     seriesRef.current = {};
 
     const pxFmt = { type: "price", precision: 2, minMove: 0.01 };
-    let price;
-    if (type === "line") {
+    let price = null;
+    if (type === "off") {
+      // ценовой график скрыт: пане 0 остаются слои (средневзвес/стороны);
+      // маркеры крупных сделок цепляются к средневзвесу ниже
+    } else if (type === "line") {
       price = chart.addSeries(AreaSeries, {
         lineColor: theme.accent, lineWidth: 2,
         topColor: theme.accent + "33", bottomColor: theme.accent + "05",
@@ -509,7 +522,7 @@ export default function ChartPage() {
       price.setData(candles.map((c) => ({
         time: toTime(c.t, tf), open: c.o, high: c.h, low: c.l, close: c.c })));
     }
-    seriesRef.current.price = price;
+    if (price) seriesRef.current.price = price;
 
     const vol = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
@@ -570,7 +583,9 @@ export default function ChartPage() {
           color: t.side === "sell" ? theme.down : theme.up,
           text: `${Math.round((t.value || 0) / 1e6)}М`,
         }));
-      if (marks.length) seriesRef.current.marks = createSeriesMarkers(price, marks);
+      // ценовой график может быть выключен — маркеры сажаем на средневзвес
+      const host = price || seriesRef.current.vwap;
+      if (marks.length && host) seriesRef.current.marks = createSeriesMarkers(host, marks);
     }
 
     let yidxDrawn = false;
@@ -581,9 +596,11 @@ export default function ChartPage() {
       const spFmt = { type: "price", precision: 0, minMove: 1 };
       yidxDrawn = true;
       if (spreadOHLC && smode === "hlc") {
+        // Цвета синхронизированы с ЦЕНОВЫМ графиком, а не со своей осью: спред
+        // обратен цене, минимум спреда — это максимум цены (зелёный), и наоборот.
         for (const [key, field, color, w] of [
-          ["yhi", "h", theme.up, 1],
-          ["ylo", "l", theme.down, 1],
+          ["yhi", "h", theme.down, 1],
+          ["ylo", "l", theme.up, 1],
           ["yidx", "c", theme.fg, 2],
         ]) {
           const s = chart.addSeries(LineSeries, {
@@ -617,7 +634,10 @@ export default function ChartPage() {
     // RVD-раскладка: цена сверху, спред — второй полноценный график под ней,
     // объём между ними тонкой полосой (динамику спреда в узкой панели не видно)
     const panes = chart.panes();
-    if (panes[0]) panes[0].setStretchFactor(yidxDrawn ? 2.2 : 4);
+    // цена выключена и слоёв нет — верхняя панель пустая, схлопываем её
+    const pane0Empty = !seriesRef.current.price && !seriesRef.current.vwap
+      && !seriesRef.current.buy && !seriesRef.current.sell;
+    if (panes[0]) panes[0].setStretchFactor(pane0Empty ? 0.15 : (yidxDrawn ? 2.2 : 4));
     if (panes[1]) panes[1].setStretchFactor(0.7);
     if (panes[2]) panes[2].setStretchFactor(1.8);
     // autoSize подхватывает ширину контейнера уже после текущего кадра — fitContent
@@ -694,9 +714,10 @@ export default function ChartPage() {
     if (!chart) return;
     const onMove = (param) => {
       const s = seriesRef.current;
-      if (!param.time || !s.price) { setLegend(null); return; }
-      const p = param.seriesData.get(s.price);
-      if (!p) { setLegend(null); return; }
+      if (!param.time) { setLegend(null); return; }
+      // ценовой график может быть выключен — легенда живёт на остальных сериях
+      const p = (s.price ? param.seriesData.get(s.price) : null) || {};
+      if (s.price && !param.seriesData.get(s.price)) { setLegend(null); return; }
       const val = (ser) => (ser ? param.seriesData.get(ser)?.value : null);
       // Спред может быть свечой — тогда в seriesData лежит open/high/low/close,
       // и close — это ПОСЛЕДНИЙ час дня, а не средневзвешенный за день. Их надо
@@ -780,7 +801,8 @@ export default function ChartPage() {
         <span className="cp-group" role="group" aria-label="Вид">
           {[["candles", "Свечи", "OHLC свечами"],
             ["hlc", "HLC", "Три линии: максимум, минимум, закрытие"],
-            ["line", "Линия", "Только цена закрытия"]].map(([k, l, hint]) => (
+            ["line", "Линия", "Только цена закрытия"],
+            ["off", "Выкл", "Скрыть ценовой график (остаются слои и спред)"]].map(([k, l, hint]) => (
             <button key={k} type="button" title={hint}
               className={"cp-btn" + (type === k ? " on" : "")}
               onClick={() => setParam({ type: k })}>{l}</button>
@@ -820,7 +842,7 @@ export default function ChartPage() {
         )}
         <span className="cp-layers-k">спред</span>
         <span className="cp-group" role="group" aria-label="Панель спреда">
-          {[["line", "Линия", `${sLabel} по средневзвешенной цене дня`],
+          {[["line", "Линия", `${sLabel}: по средневзвесу при включённом слое СРЕДНЕВЗВЕС, иначе по цене закрытия`],
             ["candles", "Свечи", "O/H/L/C спреда из часовых значений дня"],
             ["hlc", "HLC", "Три линии: макс/мин спреда за день и закрытие"],
             ["off", "Выкл", "убрать панель спреда"]].map(([k, l, hint]) => (
@@ -907,7 +929,9 @@ export default function ChartPage() {
                 баров OHLC спреда нет, и подпись врала про «снапшот» */}
             {spreadPaneOn && hasYidx &&
               (spreadPts[0]?.src === "bars"
-                ? " · спред по средневзвешенной цене (свой архив)"
+                ? (on("vwap")
+                    ? " · спред по средневзвешенной цене (свой архив)"
+                    : " · спред по цене закрытия (свой архив)")
                 : " · спред по цене закрытия (дневной снапшот)")}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}
             {spreadPaneOn && hasYidx && !spreadOHLC && (smode === "candles" || smode === "hlc") &&
