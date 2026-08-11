@@ -212,7 +212,9 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 # бары старых версий занулят спред и пересчитаются фоном при первом запросе.
 #   NULL — «цена × модель дня записи» (candle-est, до 2026-08-11)
 #   1    — прошлые дни честным as-of (asof_bar_metrics), сегодня живой моделью
-BARS_METRICS_VERSION = 1
+#   2    — realized-гибрид якорится на первую архивную кривую (скачок на
+#          границе архива котировок убран; HONEST_ENGINE_VERSION=4)
+BARS_METRICS_VERSION = 2
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",

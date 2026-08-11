@@ -59,6 +59,27 @@ def save_snapshot(ois_quotes: list, irs_quotes: list) -> int:
     return len(rows)
 
 
+def quotes_first(base: str) -> Optional[tuple]:
+    """Самая РАННЯЯ дата архива котировок базы + котировки этого дня.
+    Якорь гибридной кривой для дат ДО начала архива: сшивать реализованный факт
+    индекса с первой архивной кривой честнее, чем с сегодняшней — иначе серия
+    рвётся скачком на границе архива (см. backdate.curve_asof).
+    → (date, list[core.rates.Quote]) или None (архив пуст)."""
+    _ensure_schema()
+    with _connect() as c:
+        row = c.execute("SELECT MIN(date) AS d FROM swap_quotes_daily WHERE base=?",
+                        (base,)).fetchone()
+        qd = row["d"] if row else None
+        if not qd:
+            return None
+        rows = c.execute(
+            "SELECT tenor, value FROM swap_quotes_daily WHERE base=? AND date=?",
+            (base, qd)).fetchall()
+    from core.rates import Quote
+    qdate = date.fromisoformat(qd)
+    return qdate, [Quote(f"{base} {r['tenor']}", r["tenor"], r["value"], qdate) for r in rows]
+
+
 def quotes_asof(base: str, d: date, max_lag_days: int = 7) -> Optional[list]:
     """Котировки на ближайшую дату ≤ d (не старше max_lag_days).
     → list[core.rates.Quote] или None (архив ещё не покрывает дату)."""

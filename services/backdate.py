@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from bisect import bisect_right
 from datetime import date, timedelta
 from typing import Optional, Tuple
@@ -34,18 +35,95 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------- кривая as-of
 
-def build_hybrid_curve(base: str, calc_date: date, hist_pairs: list,
-                       today_curve: DiscountCurve) -> BootstrappedForwardCurve:
-    """Гибридная кривая на прошлую дату D: DF от D+1 до старта сегодняшней кривой
-    компаундится дневным ФАКТОМ индекса (ступень: последняя ставка ЦБ ≤ t), дальше
-    подшиваются узлы сегодняшней кривой, отмасштабированные сплайс-DF.
+class SplicedAsofCurve(DiscountCurve):
+    """Гибридная кривая на прошлую дату D: [eff=D+1 … splice) — дневной ФАКТ
+    индекса (ступень: последняя ставка ЦБ ≤ t), от splice — ДЕЛЕГИРОВАНИЕ
+    anchor-кривой (её forward/df/конвенция без изменений).
 
-    Узлы ставятся на каждой смене ставки — log-linear интерполяция DF между ними
-    воспроизводит дневной компаундинг точно (exp линеен по дням при конст. ставке).
-    Конвенция forward() — как у боевой кривой той же базы (BootstrappedForwardCurve).
-    """
+    Раньше гибрид пересобирал узлы anchor в BootstrappedForwardCurve — DF
+    совпадали, но forward() на годовых+ сегментах считался другой конвенцией:
+    sheet-кривая идёт по пути уровней (KEYRATE >1Y — квартальный номинал из
+    годового par), а Bootstrapped давал простую ставку фактора, «раздутую»
+    компаундингом (~+70bp на сегменте 1Y→2Y при КС ~13%). Дальние купоны
+    realized-дат завышались, и серия спреда была смещена на десятки bps
+    относительно market-дат (ТрансмхПБ8 28→29.07: −50bp «скачок»)."""
+
+    def __init__(self, base: str, eff: date, splice: date, anchor: DiscountCurve,
+                 dates: list, rates: list):
+        self.base_type = base
+        self.rate_convention = anchor.rate_convention
+        self._anchor = anchor
+        self._splice = splice
+        self._dates, self._rates = dates, rates
+        # факт-фактор по дням до splice + кумулятив для df()/окон
+        self._cum = {}          # date → Π(1+r/365) от eff до date (не включая)
+        f = 1.0
+        d = eff
+        while d <= splice:
+            self._cum[d] = f
+            if d == splice:
+                break
+            f *= 1.0 + (self._rate_at(d) / 100.0) / 365.0
+            d += timedelta(days=1)
+        self._fact_total = self._cum[splice]
+        super().__init__(eff, [(splice, 1.0 / self._fact_total)])
+
+    def _rate_at(self, d: date) -> float:
+        i = bisect_right(self._dates, d) - 1
+        return self._rates[i]
+
+    def _fact_factor(self, t1: date, t2: date) -> float:
+        """Π(1+r/365) факт-сегмента на [t1, t2) внутри [eff, splice]."""
+        return self._cum[t2] / self._cum[t1]
+
+    def df(self, d: date) -> float:
+        if d <= self.calc_date:
+            return 1.0
+        if d <= self._splice:
+            if d in self._cum:
+                return 1.0 / self._cum[d]
+            # дата внутри факт-сегмента, но вне сетки (не бывает: сетка дневная)
+            return super().df(d)
+        return (1.0 / self._fact_total) * self._anchor.df(d)
+
+    def daily_forward(self, d: date) -> float:
+        if d >= self._splice:
+            return self._anchor.daily_forward(d)
+        # факт ЦБ хранится в процентах, контракт daily_forward — доли
+        return self._rate_at(max(d, self.calc_date)) / 100.0
+
+    def forward(self, t1: date, t2: date) -> float:
+        if t1 >= t2:
+            raise ValueError("t2 must be strictly > t1")
+        if t1 >= self._splice:
+            return self._anchor.forward(t1, t2)          # конвенция anchor как есть
+        a, b = max(t1, self.calc_date), min(t2, self._splice)
+        n_fact = (b - a).days
+        n_anchor = (t2 - self._splice).days if t2 > self._splice else 0
+        n = (t2 - t1).days
+        if self.base_type == "KEYRATE":
+            # simple ACT/365 — средневзвешенный по дням уровень окна (как sheet)
+            lvl_sum = 0.0
+            d = a
+            while d < b:
+                lvl_sum += self._rate_at(d) / 100.0
+                d += timedelta(days=1)
+            if n_anchor > 0:
+                lvl_sum += self._anchor.forward(self._splice, t2) * n_anchor
+            return lvl_sum / n
+        # RUONIA daily-comp: факторы факт-части и anchor-части перемножаются
+        ln = math.log(self._fact_factor(a, b))
+        if n_anchor > 0:
+            ln += math.log(self._anchor.df(self._splice) / self._anchor.df(t2))
+        return 365.0 * (math.exp(ln / n) - 1.0)
+
+
+def build_hybrid_curve(base: str, calc_date: date, hist_pairs: list,
+                       today_curve: DiscountCurve) -> DiscountCurve:
+    """Гибридная кривая на прошлую дату D: факт индекса от D+1 до старта
+    anchor-кривой, дальше — сама anchor-кривая (см. SplicedAsofCurve)."""
     eff = calc_date + timedelta(days=1)            # T+1, как effective start bootstrap
-    splice = today_curve.calc_date                  # effective start сегодняшней кривой
+    splice = today_curve.calc_date                  # effective start anchor-кривой
     if eff >= splice:
         return today_curve                          # D сегодня/вчера — гибрид не нужен
 
@@ -55,29 +133,10 @@ def build_hybrid_curve(base: str, calc_date: date, hist_pairs: list,
         raise CalculationException(
             f"история {base} не покрывает {eff.isoformat()} — гибридная кривая невозможна")
 
-    def rate_at(d: date) -> float:
-        i = bisect_right(dates, d) - 1
-        return rates[i]
+    return SplicedAsofCurve(base, eff, splice, today_curve, dates, rates)
 
-    nodes = []
-    df = 1.0
-    d = eff
-    prev_rate = rate_at(d)
-    while d < splice:
-        r = rate_at(d)
-        if r != prev_rate:
-            nodes.append((d, df))                   # узел на смене ставки
-            prev_rate = r
-        df /= (1.0 + (r / 100.0) / 365.0)           # дневной факт, ACT/365
-        d += timedelta(days=1)
-    nodes.append((splice, df))
 
-    scale = df
-    for nd, ndf in today_curve.nodes:
-        if nd > splice:
-            nodes.append((nd, scale * ndf))
-
-    return BootstrappedForwardCurve(eff, nodes, base)
+_anchor_memo: dict = {}    # (base, first_archive_date) → кривая; архив прошлого не меняется
 
 
 def curve_asof(base: str, calc_date: date, today_curve: DiscountCurve,
@@ -96,7 +155,25 @@ def curve_asof(base: str, calc_date: date, today_curve: DiscountCurve,
             return SheetForwardCurve(calc_date, quotes, base), "market"
         except Exception as e:
             logger.warning(f"as-of bootstrap {base}@{calc_date} failed: {e} — фолбэк на гибрид")
-    return build_hybrid_curve(base, calc_date, hist_pairs, today_curve), "realized"
+    # Даты ДО начала архива: якорь гибрида — ПЕРВАЯ архивная кривая, не
+    # сегодняшняя. Свопы дрейфуют, и хвост сегодняшней кривой рвал серию скачком
+    # ровно на границе архива (ТрансмхПБ8 28→29.07: −50bp Y-IDX при флэт цене);
+    # с якорем в первой архивной дате гибрид на границе сходится к ней по
+    # построению. Хвост за якорем — рынок той даты, ближайший к D из доступных.
+    anchor = today_curve
+    try:
+        from services.curve_history import quotes_first
+        first = quotes_first(base)
+        if first and first[0] > calc_date:
+            key = (base, first[0])
+            a = _anchor_memo.get(key)
+            if a is None:
+                from core.forwards import SheetForwardCurve
+                a = _anchor_memo[key] = SheetForwardCurve(first[0], first[1], base)
+            anchor = a
+    except Exception as e:
+        logger.warning(f"anchor curve {base}: {e} — гибрид на сегодняшней кривой")
+    return build_hybrid_curve(base, calc_date, hist_pairs, anchor), "realized"
 
 
 # ------------------------------------------------------- дневная строка MOEX
@@ -350,7 +427,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         raise CalculationException(f"НКД на {d.isoformat()} не восстановился")
 
     if curve_mode == "realized":
-        warnings.append("кривая as-of: реализованный факт индекса до сегодня + текущая "
+        warnings.append("кривая as-of: реализованный факт индекса + ближайшая архивная "
                         "своп-кривая дальше (архив котировок дату не покрывает)")
 
     return {
@@ -566,7 +643,10 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #   3 — 2026-08-04: база Y-IDX — роллирование RUONIA для ВСЕХ флоатеров
 #       (КС-бумаги больше не сравниваются с квартальным роллированием КС),
 #       компаундинг по рабочим дням + простое начисление на нерабочих
-HONEST_ENGINE_VERSION = 3
+#   4 — 2026-08-11: якорь realized-гибрида — ПЕРВАЯ архивная кривая, не
+#       сегодняшняя: серия рвалась скачком на границе архива котировок
+#       (realized→market), у ТрансмхПБ8 −50bp за день при флэт цене
+HONEST_ENGINE_VERSION = 4
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
