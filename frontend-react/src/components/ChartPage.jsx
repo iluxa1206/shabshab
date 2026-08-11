@@ -391,12 +391,18 @@ export default function ChartPage() {
     // на внутридневной сетке дневной снапшот не годится: одна точка на день
     // легла бы поверх часовых баров, да ещё по другой цене (закрытие vs VWAP)
     if (tf === "5m" || tf === "1h") return bars;
-    if (smode === "candles" || daily.length < 2) return bars;
-    // У часовых баров потолок глубины (LAYER_MAX_DAYS): на длинном окне снапшот
-    // spread_daily уходит дальше назад. Источники не сшиваем — разная база
-    // цены (средневзвес часа vs цена закрытия), берём тот, что покрывает окно.
-    return daily[0].time < bars[0].time.slice(0, 10) ? daily : bars;
-  }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf]);
+    if (smode === "candles" || smode === "hlc" || daily.length < 2) return bars;
+    // Бары предпочтительнее: спред по средневзвесу/закрытию и честные значения
+    // по выходным сессиям (вечерний снапшот воскресенья у короткой бумаги давал
+    // выброс по тонкому клоузу). Daily — только когда бары НЕ покрывают окно
+    // (глубина архива меньше периода). «Покрывают» — с допуском в неделю:
+    // строгое сравнение дат проигрывало из-за выходных на границе окна.
+    const barsFrom = String(bars[0].time).slice(0, 10);
+    const covered = from
+      ? barsFrom <= new Date(Date.parse(from) + 7 * 864e5).toISOString().slice(0, 10)
+      : barsFrom <= daily[0].time;
+    return covered ? bars : daily;
+  }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from]);
 
   // Свечи и HLC у спреда возможны только там, где в баре есть внутридневной
   // разброс: дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
