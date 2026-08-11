@@ -82,8 +82,10 @@ export default function SignalsWatcher() {
       if (payload.desktop && document.visibilityState !== "visible") {
         const head = matches[0];
         const body = payload.type === "block"
-          // у крупной сделки нет спреда набора — в уведомлении сумма и режим
+          // у крупной сделки спред считается по ЦЕНЕ ПРИНТА (не по набору
+          // стакана): сумма без уровня не говорит, дорого забрали или дёшево
           ? `${head.name} — ${money(head.money_rub)}` +
+            (head.val_bps != null ? ` · ${fmt.num(head.val_bps, 0)} бп` : "") +
             (head.negotiated ? " (адресная)" : "")
           : `${head.name} — ${fmt.num(head.val_bps, 0)} бп (${REASON[head.reason] || head.reason})`;
         desktopNotify(
@@ -143,7 +145,13 @@ function SignalToast({ p, onOpen, onDismiss }) {
                 <span className={"blk-tag" + (m.negotiated ? " blk-tag-ndm" : "")}>
                   {m.negotiated ? "адресная" : "стакан"}</span>
               </span>
-              <span className="sig-toast-val">{money(m.money_rub)}</span>
+              <span className="sig-toast-val">
+                {money(m.money_rub)}
+                {m.val_bps != null && (
+                  <span style={{ ...dmColor(m.val_bps), marginLeft: 6, fontSize: "11px" }}>
+                    {fmt.num(m.val_bps, 0)} бп</span>
+                )}
+              </span>
               <span className="sig-toast-sub">
                 <span>{m.isin}</span>
                 <span>цена {fmt.num(m.price, 2)}%</span>

@@ -89,6 +89,11 @@ async def tape(
         asyncio.to_thread(tape_svc.tape_stats, frm=frm, min_value=min_value, side=side,
                           market=market, boards=board, isins=isins))
     moex = await asyncio.to_thread(_moex_names)
+    # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
+    # block_trades.price_new_trades): цена в % номинала между выпусками
+    # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев
+    # контекстов по сотне выпусков занимает минуту на первом запросе.
+    priced = sum(1 for r in rows if r.get("y_idx_bps") is not None)
 
     for r in rows:
         lb = labels.get(r["isin"]) or {}
@@ -105,6 +110,7 @@ async def tape(
     return {"from": frm, "days": days, "min_value": min_value, "side": side,
             "market": market, "board": board, "scope": scope,
             "truncated": len(rows) >= limit and summary["n"] > len(rows),
+            "y_idx_rows": priced,      # по скольким строкам спред посчитан
             "trades": rows, "summary": summary}
 
 

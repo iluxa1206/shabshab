@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchMarketTape, fetchTapeBoards, fetchBlockDays, fetchTapeIssuers } from "../api.js";
-import { fmt, baseLabel, ratingColor } from "../format.js";
+import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
@@ -236,6 +236,7 @@ export default function TradesTape() {
                   <th>ОБЪЁМ, шт</th>
                   <th>СУММА</th>
                   <th className="left">СТОРОНА</th>
+                  <th title="спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)">Y-IDX, бп</th>
                   <th>ДОХ-ТЬ, %</th>
                 </tr>
               </thead>
@@ -268,6 +269,10 @@ export default function TradesTape() {
                         {money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : " ₽"}
                       </td>
                       <td className="left"><SideTag side={r.side} /></td>
+                      <td className="num" style={r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
+                        title={r.dm_bps != null ? `DM ${fmt.num(r.dm_bps, 0)} бп` : undefined}>
+                        {r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—"}
+                      </td>
                       <td className="num">{r.yld != null ? fmt.num(r.yld, 2) : "—"}</td>
                     </tr>
                   );

@@ -153,8 +153,14 @@ CREATE TABLE IF NOT EXISTS block_trade(
   yld REAL,                       -- доходность сделки (YIELD ISS)
   side TEXT,                      -- buy|sell — агрессор; у адресных сделок NULL
   face REAL,
-  cur TEXT                        -- валюта расчётов (SUR/CNY/USD): VALUE в НЕЙ,
+  cur TEXT,                       -- валюта расчётов (SUR/CNY/USD): VALUE в НЕЙ,
                                   -- поэтому суммы в статистике считаем по SUR
+  -- Спред по ЦЕНЕ СДЕЛКИ (только флоатеры). Считается один раз, когда сделка
+  -- приезжает в архив: модель тогда актуальна, а считать на лету при чтении
+  -- ленты нельзя — прогрев контекстов сотни выпусков занимает минуту.
+  y_idx_bps REAL,
+  dm_bps REAL,
+  metrics_at TEXT                 -- когда посчитали (NULL = ещё не считали)
 );
 CREATE INDEX IF NOT EXISTS ix_block_ts ON block_trade(ts);
 CREATE INDEX IF NOT EXISTS ix_block_isin_ts ON block_trade(isin, ts);
@@ -292,6 +298,10 @@ _MIGRATIONS = [
     # signal_state/signal_events; старая остаётся безвредной сиротой
     "DROP TABLE IF EXISTS signal_hits",
     "ALTER TABLE signal_events ADD COLUMN single_px REAL",
+    # спред сделки: считается демоном при приходе, не при чтении ленты
+    "ALTER TABLE block_trade ADD COLUMN y_idx_bps REAL",
+    "ALTER TABLE block_trade ADD COLUMN dm_bps REAL",
+    "ALTER TABLE block_trade ADD COLUMN metrics_at TEXT",
 ]
 
 

@@ -593,8 +593,14 @@ async def block_trades_worker():
             if _in_moex_trading_hours():
                 res = await bt.sweep()
                 if res["saved"]:
-                    logger.info("block trades: +%d (просмотрено %d)",
-                                res["saved"], res["seen"])
+                    logger.info("block trades: +%d (просмотрено %d, спред %s)",
+                                res["saved"], res["seen"], res.get("priced", 0))
+                else:
+                    # тихий такт — время добить хвост без спреда (первый запуск
+                    # после миграции, бумаги с холодным контекстом)
+                    left = await bt.price_new_trades()
+                    if left:
+                        logger.info("block trades: спред досчитан по %d сделкам", left)
                 if not seeded:
                     # знак уведомлений ставим ПОСЛЕ первого прохода: иначе
                     # холодный старт вывалил бы в колокольчик всю сессию разом

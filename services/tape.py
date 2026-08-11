@@ -72,7 +72,7 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp) -> tuple[str,
     t_cond, t_args = _cond(frm, till, min_value, boards, isins, side, tmp, alias="t")
 
     blocks = ("SELECT trade_id, isin, ts, price, qty, value, side, board, market, "
-              "yld, cur, secid FROM block_trade WHERE 1=1" + b_cond)
+              "yld, cur, secid, y_idx_bps, dm_bps FROM block_trade WHERE 1=1" + b_cond)
     # тики знают только безадресные борды: при выборе адресного режима их вклад
     # заведомо пуст, и лишний скан 8+ млн строк не нужен
     if market == "ndm":
@@ -80,8 +80,11 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp) -> tuple[str,
     if market == "bonds":
         blocks += " AND market='bonds'"
 
+    # у тика спреда нет: он считается только для крупных сделок (block_trade),
+    # гонять солвер по миллионам мелких принтов смысла нет
     ticks = ("SELECT t.trade_id, t.isin, t.ts, t.price, t.qty, t.value, t.side, "
-             "t.board, 'bonds' AS market, NULL AS yld, 'SUR' AS cur, NULL AS secid "
+             "t.board, 'bonds' AS market, NULL AS yld, 'SUR' AS cur, NULL AS secid, "
+             "NULL AS y_idx_bps, NULL AS dm_bps "
              "FROM trade_tick t WHERE 1=1" + t_cond +
              " AND NOT EXISTS (SELECT 1 FROM block_trade b WHERE b.trade_id = t.trade_id)")
     return "(" + blocks + " UNION ALL " + ticks + ")", [*b_args, *t_args]

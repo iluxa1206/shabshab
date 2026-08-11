@@ -456,9 +456,15 @@ export default function SignalsModule() {
                   <span className="sig-hit-time num">{timeOf(h.fired_at)}</span>
                 </div>
                 <div className="sig-hit-body num">
-                  <span className={h.side === "ask" ? "pos" : "neg"}>
-                    {h.side === "ask" ? "оффер" : "бид"}</span>
-                  {" "}<b>{fmt.num(h.val_bps, 0)} бп</b>
+                  {/* у крупной сделки сторона — агрессор (buy/sell), а не сторона
+                      стакана; у адресной её нет вообще */}
+                  {h.reason === "block"
+                    ? (h.side === "buy" || h.side === "sell") && (
+                        <span className={h.side === "buy" ? "pos" : "neg"}>
+                          {h.side === "buy" ? "покупка" : "продажа"}</span>)
+                    : <span className={h.side === "ask" ? "pos" : "neg"}>
+                        {h.side === "ask" ? "оффер" : "бид"}</span>}
+                  {h.val_bps != null && <> <b>{fmt.num(h.val_bps, 0)} бп</b></>}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} ₽</>}
                   {h.levels ? <> · {h.levels} ур</> : null}

@@ -240,13 +240,79 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
             "cursor": last}
 
 
-async def sweep(from_start: bool = False) -> dict:
+async def sweep(from_start: bool = False, with_metrics: bool = True) -> dict:
     """Проход по обоим рынкам одним клиентом. Последовательно: ISS под общим
     семафором market_data, параллелить нечего."""
     async with httpx.AsyncClient() as client:
         res = [await sweep_market(m, client, from_start=from_start) for m in MARKETS]
-    return {"markets": res, "saved": sum(x["saved"] for x in res),
-            "seen": sum(x["seen"] for x in res)}
+    out = {"markets": res, "saved": sum(x["saved"] for x in res),
+           "seen": sum(x["seen"] for x in res)}
+    if with_metrics and out["saved"]:
+        out["priced"] = await price_new_trades()
+    return out
+
+
+# ────────────────────────── спред сделки ──────────────────────────
+
+def unpriced(limit: int = 400) -> list[dict]:
+    """Сделки без посчитанного спреда, новые сначала.
+
+    Считаем ТОЛЬКО в момент прихода (демоном), а не при чтении ленты: контекст
+    строится на выпуск и стоит сетевого gather, поэтому первый запрос ленты по
+    сотне выпусков занимал бы минуту. Демон же видит за такт десятки сделок по
+    десятку бумаг, и контексты у него тёплые."""
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT trade_id, isin, price FROM block_trade "
+            "WHERE metrics_at IS NULL AND price IS NOT NULL "
+            "ORDER BY trade_id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_metrics(vals: list[tuple]) -> int:
+    """[(y_idx, dm, trade_id)] → в базу. metrics_at ставится всегда, даже когда
+    спред посчитать нечем (фикс, бумага вне реестра): иначе такие строки
+    возвращались бы в очередь на каждом такте демона."""
+    if not vals:
+        return 0
+    now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
+    with _lock, _connect() as c:
+        cur = c.executemany(
+            "UPDATE block_trade SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE trade_id=?",
+            [(y, d, now, tid) for y, d, tid in vals])
+        return cur.rowcount or 0
+
+
+async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
+    """Досчитывает спред новым сделкам. → сколько строк обновлено.
+
+    Сначала пачкой закрываем всё, что считать не нужно (фиксы, бумаги вне
+    реестра) — иначе они забивают очередь: крупняк рынка это почти целиком
+    ОФЗ-ПД, и до флоатеров расчёт просто не доходил. Солвер тратится только на
+    флоатеры, `limit` — их потолок на такт."""
+    rows = await asyncio.to_thread(unpriced, batch)
+    if not rows:
+        return 0
+    from services import instruments_registry as reg
+    from services import trade_yidx
+
+    labels = await asyncio.to_thread(reg.labels_map)
+    floats, others = [], []
+    for r in rows:
+        (floats if (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES
+         else others).append(r)
+
+    done = 0
+    if others:
+        done += await asyncio.to_thread(
+            save_metrics, [(None, None, r["trade_id"]) for r in others])
+    if floats:
+        floats = floats[:limit]
+        await trade_yidx.enrich(floats, labels, max_isins=limit)
+        done += await asyncio.to_thread(
+            save_metrics,
+            [(r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"]) for r in floats])
+    return done
 
 
 # ────────────────────────── бэкфилл дневных агрегатов РПС ──────────────────────────
@@ -480,7 +546,8 @@ def pending_alerts(limit: int = 20) -> list[dict]:
     mark = get_cursor(_ALERT_KEY) or 0
     with _connect() as c:
         rows = c.execute(
-            "SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,cur "
+            "SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,cur,"
+            "y_idx_bps "
             "FROM block_trade WHERE trade_id > ? AND value >= ? "
             "AND (cur IS NULL OR cur='SUR') ORDER BY trade_id LIMIT ?",
             (mark, BLOCK_ALERT_MIN_RUB, limit)).fetchall()
@@ -533,6 +600,14 @@ async def notify_blocks() -> int:
         mark_alerted(seen_till)
         return 0
 
+    # Спред сделки: «блок на 300 млн» без уровня ничего не говорит — важно, по
+    # какому Y-IDX его забрали. Обычно он уже посчитан тем же тактом демона
+    # (price_new_trades идёт сразу после sweep); досчитываем только хвост —
+    # сделок в очереди звонка единицы, это дёшево.
+    if any(r.get("y_idx_bps") is None for r in rows):
+        from services import trade_yidx
+        await trade_yidx.for_rows([r for r in rows if r.get("y_idx_bps") is None])
+
     matches = []
     for r in rows:
         lb = labels.get(r["isin"]) or {}
@@ -540,6 +615,7 @@ async def notify_blocks() -> int:
             "isin": r["isin"],
             "name": lb.get("name") or names.get(r["isin"]) or r["isin"],
             "price": r["price"], "money_rub": r["value"],
+            "val_bps": r.get("y_idx_bps"),      # тем же ключом, что у алертов стакана
             "board": r["board"], "negotiated": r["market"] == "ndm",
             "side": r["side"], "ts": r["ts"], "reason": "block",
             "rating": lb.get("rating"), "fired_at": now,
@@ -549,8 +625,10 @@ async def notify_blocks() -> int:
         with _lock, _connect() as c:
             c.executemany(
                 "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
-                "price,money_rub,reason,fired_at,seen) VALUES(0,?,?,?,?,?,?,'block',?,0)",
-                [(u, m["isin"], m["name"], m["side"], m["price"], m["money_rub"], now)
+                "price,money_rub,val_bps,reason,fired_at,seen) "
+                "VALUES(0,?,?,?,?,?,?,?,'block',?,0)",
+                [(u, m["isin"], m["name"], m["side"], m["price"], m["money_rub"],
+                  m["val_bps"], now)
                  for u in users for m in matches])
     await asyncio.to_thread(_persist)
 
