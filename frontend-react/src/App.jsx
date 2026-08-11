@@ -22,6 +22,8 @@ import CalcModule from "./components/CalcModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
+import SignalsWatcher from "./components/SignalsWatcher.jsx";
+import SignalsModule from "./components/SignalsModule.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 import TradesTape from "./components/TradesTape.jsx";
@@ -678,6 +680,7 @@ function Dashboard() {
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
         <Route path="/euro" element={<EuroStub />} />
         <Route path="/trades" element={<TradesTape />} />
+        <Route path="/signals" element={<SignalsModule />} />
         <Route path="/payments" element={<PaymentsCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
@@ -695,6 +698,7 @@ function Dashboard() {
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
       <AlertsWatcher />
+      <SignalsWatcher />
     </div>
   );
 }

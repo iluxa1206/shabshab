@@ -166,6 +166,39 @@ CREATE TABLE IF NOT EXISTS tg_filter_hits(
   fired_at TEXT NOT NULL,
   PRIMARY KEY(filter_id, isin)
 );
+
+-- Вкладка СИГНАЛЫ: те же фильтры скринера, но владелец — веб-аккаунт, а
+-- доставка идёт в браузер (WS-пуш + тост/уведомление). Условия фильтра
+-- общие с ботом, см. services/screener_core.py.
+CREATE TABLE IF NOT EXISTS signal_filters(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  params_json TEXT NOT NULL,
+  cooldown_min INTEGER NOT NULL DEFAULT 60,
+  sound INTEGER NOT NULL DEFAULT 1,      -- звук при срабатывании
+  desktop INTEGER NOT NULL DEFAULT 1,    -- системное уведомление браузера
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_signal_filters_user ON signal_filters(user_email);
+
+-- Срабатывания: и анти-спам (последнее время по паре фильтр+бумага), и лента
+-- истории на вкладке. Одна строка на пару — повтор обновляет её и метрики.
+CREATE TABLE IF NOT EXISTS signal_hits(
+  filter_id INTEGER NOT NULL,
+  isin TEXT NOT NULL,
+  user_email TEXT NOT NULL,
+  name TEXT,
+  side TEXT,
+  val_bps REAL,
+  price REAL,
+  money_rub REAL,
+  fired_at TEXT NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0,       -- лента прочитана пользователем
+  PRIMARY KEY(filter_id, isin)
+);
+CREATE INDEX IF NOT EXISTS ix_signal_hits_user ON signal_hits(user_email, fired_at);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;

@@ -1414,3 +1414,119 @@ body.col-resizing * { cursor: col-resize !important; }
 .calc-m-v { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .calc-table-wrap { max-height: 320px; overflow: auto; }
 .calc-row-mine td { font-weight: 700; background: var(--line-2); }
+
+/* ---- Сигналы ---- */
+.sig-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0;
+            flex: 1; min-height: 0; overflow: hidden; }
+.sig-col { padding: 20px 24px; overflow-y: auto; min-width: 0; }
+.sig-feed-col { border-left: 1px solid var(--line); background: var(--hover); }
+.sig-head { display: flex; align-items: baseline; gap: 12px; font-size: 13px; font-weight: 800;
+            text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 16px; }
+.sig-head-sub { font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0;
+                color: var(--mut); }
+.sig-clear { margin-left: auto; padding: 4px 8px; font-size: 9px; }
+.sig-empty { border: 1px dashed var(--line-2); padding: 20px; color: var(--mut); font-size: 12px;
+             line-height: 1.5; }
+
+/* карточка фильтра */
+.sig-row-card { display: flex; gap: 16px; align-items: flex-start;
+                border: 1px solid var(--line); border-left: 3px solid var(--fg);
+                padding: 12px 14px; margin-bottom: 8px; }
+.sig-row-card.off { border-left-color: var(--line-2); opacity: .62; }
+.sig-rc-main { flex: 1; min-width: 0; }
+.sig-rc-title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.sig-state { font-family: var(--mono); font-size: 9px; font-weight: 600; text-transform: uppercase;
+             letter-spacing: 0.12em; padding: 2px 6px; border: 1px solid currentColor; }
+.sig-state.on { color: var(--up); }
+.sig-state.off { color: var(--mut-2); }
+.sig-rc-sub { font-size: 12px; color: var(--mut); margin-top: 3px; }
+.sig-rc-cond { font-size: 12px; margin-top: 5px; font-variant-numeric: tabular-nums;
+               text-align: left; }
+.sig-rc-actions { display: flex; gap: 6px; flex: none; }
+.sig-rc-actions .btn { padding: 5px 10px; font-size: 9px; }
+
+/* форма */
+.sig-form { border: 1px solid var(--fg); padding: 18px; margin-top: 20px; max-width: 720px; }
+.sig-form-head { font-size: 13px; font-weight: 800; text-transform: uppercase;
+                 letter-spacing: 0.14em; margin-bottom: 16px; }
+.sig-section { font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase;
+               letter-spacing: 0.14em; color: var(--mut); margin: 18px 0 10px;
+               padding-top: 12px; border-top: 1px solid var(--line); }
+.sig-section span { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--mut-2);
+                    margin-left: 8px; }
+.sig-field { margin-bottom: 12px; flex: 1; min-width: 0; }
+.sig-label { display: block; font-size: 11px; color: var(--mut); text-transform: uppercase;
+             letter-spacing: 0.1em; margin-bottom: 5px; }
+.sig-input { width: 100%; height: 34px; padding: 6px 10px; font-family: inherit; font-size: 13px;
+             color: var(--fg); background: var(--bg); border: 1px solid var(--line-2);
+             border-radius: 0; }
+.sig-input.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.sig-input:focus { outline: none; border-color: var(--fg); }
+.sig-row { display: flex; gap: 14px; }
+.sig-row.tight { gap: 8px; }
+
+.sig-seg { display: flex; border: 1px solid var(--line-2); }
+.sig-seg button { flex: 1; height: 34px; padding: 0 10px; background: transparent; border: 0;
+                  border-right: 1px solid var(--line-2); font-family: var(--mono); font-size: 10px;
+                  font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+                  color: var(--mut); cursor: pointer; transition: background .12s, color .12s; }
+.sig-seg button:last-child { border-right: 0; }
+.sig-seg button.on { background: var(--fg); color: var(--bg); }
+.sig-seg button.on.up { background: var(--up); color: #fff; }
+.sig-seg button.on.down { background: var(--down); color: #fff; }
+
+.sig-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sig-chip { height: 28px; padding: 0 10px; background: transparent; border: 1px solid var(--line-2);
+            font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+            color: var(--mut); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+            transition: background .12s, color .12s, border-color .12s; }
+.sig-chip:hover { border-color: var(--fg); color: var(--fg); }
+.sig-chip.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.sig-chip-x { opacity: .7; font-size: 9px; }
+
+.sig-picker { position: relative; }
+.sig-suggest { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 60;
+               background: var(--bg); border: 1px solid var(--fg); max-height: 240px;
+               overflow-y: auto; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+.sig-suggest button { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 10px;
+                      background: transparent; border: 0; border-bottom: 1px solid var(--line);
+                      text-align: left; font-size: 12px; color: var(--fg); cursor: pointer; }
+.sig-suggest button:last-child { border-bottom: 0; }
+.sig-suggest button:hover { background: var(--hover); }
+.sig-suggest-sub { font-family: var(--mono); font-size: 10px; color: var(--mut); }
+
+.sig-checks { display: flex; gap: 18px; font-size: 12px; color: var(--fg); }
+.sig-checks label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.sig-preview { margin-top: 12px; padding: 9px 12px; background: var(--hover);
+               border-left: 3px solid var(--accent); font-size: 12px; line-height: 1.45; }
+.sig-err { margin-top: 10px; color: var(--neg); font-size: 12px; }
+.sig-submit { margin-top: 14px; width: 100%; padding: 10px; }
+
+/* лента */
+.sig-hit { border: 1px solid var(--line); background: var(--bg); padding: 9px 11px; margin-bottom: 6px; }
+.sig-hit-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.sig-hit-name { font-size: 12.5px; font-weight: 700; }
+.sig-hit-time { font-family: var(--mono); font-size: 10px; color: var(--mut); }
+.sig-hit-body { font-size: 12px; margin-top: 3px; text-align: left; }
+.sig-hit-meta { font-family: var(--mono); font-size: 9.5px; color: var(--mut-2); margin-top: 3px;
+                letter-spacing: 0.04em; }
+
+/* всплывающие окна поверх любой вкладки */
+.sig-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 210; display: flex;
+              flex-direction: column; gap: 8px; max-width: 360px; }
+.sig-toast { position: relative; background: var(--bg); border: 1px solid var(--fg);
+             border-left: 3px solid var(--accent); padding: 11px 30px 11px 13px;
+             box-shadow: 0 6px 22px rgba(0,0,0,.25); }
+.sig-toast-h { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em;
+               margin-bottom: 7px; font-family: var(--mono); }
+.sig-toast-b { font-size: 12px; line-height: 1.45; }
+.sig-toast-row { display: flex; justify-content: space-between; gap: 10px; text-align: left; }
+.sig-toast-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 165px; }
+.sig-toast-more { color: var(--mut); font-size: 11px; margin-top: 3px; }
+.sig-toast-x { position: absolute; top: 0; right: 0; background: transparent; border: 0;
+               color: var(--mut); cursor: pointer; font-size: 12px; padding: 9px 11px; }
+
+@media (max-width: 1100px) {
+  .sig-wrap { grid-template-columns: minmax(0, 1fr); }
+  .sig-feed-col { border-left: 0; border-top: 1px solid var(--line); }
+}

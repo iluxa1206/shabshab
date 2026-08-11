@@ -29,6 +29,11 @@ class ConnectionManager:
         # сокеты с wildcard-подпиской market:* — получают патчи ВСЕХ бумаг
         # (вся таблица живая, а не только избранное)
         self.market_firehose: Set[WebSocket] = set()
+        # вкладка СИГНАЛЫ: канал адресуется не бумагой, а владельцем-аккаунтом,
+        # {user_email: сокеты}. Открытых вкладок у человека может быть несколько
+        # — сигнал уходит во все.
+        self.signal_clients: Dict[str, Set[WebSocket]] = {}
+        self.socket_user: Dict[WebSocket, str] = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -50,6 +55,13 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket):
         self.market_firehose.discard(websocket)
+        email = self.socket_user.pop(websocket, None)
+        if email:
+            socks = self.signal_clients.get(email)
+            if socks:
+                socks.discard(websocket)
+                if not socks:
+                    del self.signal_clients[email]
         if websocket in self.client_subs:
             subs = self.client_subs[websocket]
             for isin in subs["market"]:
@@ -120,6 +132,25 @@ class ConnectionManager:
             for ws in dead_sockets:
                 self.disconnect(ws)
 
+    def subscribe_signals(self, websocket: WebSocket, user_email: str):
+        self.signal_clients.setdefault(user_email, set()).add(websocket)
+        self.socket_user[websocket] = user_email
+
+    async def broadcast_signal(self, user_email: str, payload: dict):
+        """Событие вкладки СИГНАЛЫ — во все открытые вкладки пользователя."""
+        targets = self.signal_clients.get(user_email)
+        if not targets:
+            return
+        message = {"channel": "signals", "data": payload}
+        dead = set()
+        for connection in list(targets):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.add(connection)
+        for ws in dead:
+            self.disconnect(ws)
+
     async def broadcast_orderbook(self, isin: str, data: dict):
         if isin in self.orderbook_subscriptions:
             message = {"channel": "orderbook", "isin": isin, "data": data}
@@ -140,7 +171,8 @@ manager = ConnectionManager()
 async def websocket_market_endpoint(websocket: WebSocket):
     # Закрываем WS без валидной сессии (cookie уходит на хендшейке, same-origin).
     from api.routes.auth import user_from_websocket
-    if not user_from_websocket(websocket):
+    ws_user = user_from_websocket(websocket)
+    if not ws_user:
         await websocket.close(code=1008)  # policy violation
         return
     await manager.connect(websocket)
@@ -155,6 +187,19 @@ async def websocket_market_endpoint(websocket: WebSocket):
                 isin = payload.get("isin")
                 
                 isin = (isin or "").strip().upper() if isinstance(isin, str) else None
+                # сигналы адресуются аккаунтом (isin не нужен): адресат берётся
+                # из сессии хендшейка, из сообщения клиента — никогда
+                if channel == "signals":
+                    if action == "subscribe":
+                        manager.subscribe_signals(websocket, ws_user["email"])
+                        await websocket.send_json({"status": "subscribed", "channel": "signals"})
+                    elif action == "unsubscribe":
+                        socks = manager.signal_clients.get(ws_user["email"])
+                        if socks:
+                            socks.discard(websocket)
+                        manager.socket_user.pop(websocket, None)
+                        await websocket.send_json({"status": "unsubscribed", "channel": "signals"})
+                    continue
                 # wildcard: вся таблица одним сообщением, вне лимита точечных подписок
                 if channel == "market" and isin == "*":
                     if action == "subscribe":

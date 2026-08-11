@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc, tg
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, calc, tg, signals as signals_route
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -455,6 +455,25 @@ async def alerts_monitor():
             await asyncio.sleep(30)
 
 
+SIGNALS_INTERVAL = int(os.getenv("SIGNALS_INTERVAL", "45"))
+
+
+async def signals_worker():
+    """Фон: фильтры вкладки СИГНАЛЫ против снапшота метрик универса. Такт чаще
+    телеграмного (сигнал нужен «пока стакан жив»), логика — в services.signals."""
+    from services import signals as signals_svc
+    await asyncio.sleep(75)     # ждём прогрева движка метрик
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                fired = await signals_svc.run_cycle()
+                if fired:
+                    logger.info("signals: сработало фильтров %d", fired)
+        except Exception as e:
+            logger.warning(f"signals_worker error: {e}")
+        await asyncio.sleep(SIGNALS_INTERVAL)
+
+
 TG_SCREENER_INTERVAL = int(os.getenv("TG_SCREENER_INTERVAL", "180"))
 
 
@@ -632,9 +651,11 @@ async def lifespan(app: FastAPI):
     from services.tg_notify import tg_notify_worker
     tg_task = asyncio.create_task(tg_notify_worker())
     tg_scr_task = asyncio.create_task(tg_screener_worker())
+    signals_task = asyncio.create_task(signals_worker())
     yield
     tg_task.cancel()
     tg_scr_task.cancel()
+    signals_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()
     engine_task.cancel()
@@ -691,6 +712,7 @@ app.include_router(instruments.router, prefix="/api/instruments", dependencies=_
 app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
 app.include_router(status.router, prefix="/api/status", dependencies=_gate)
 app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
+app.include_router(signals_route.router, prefix="/api/signals", dependencies=_gate)
 app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
 app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)

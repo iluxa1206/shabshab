@@ -416,3 +416,61 @@ export function connectOrderbookWs(isin, onData) {
     },
   };
 }
+
+// --- Сигналы (вкладка СИГНАЛЫ) ---
+export const fetchSignalFilters = () => request("/api/signals");
+export const createSignalFilter = (json) =>
+  request("/api/signals", { method: "POST", json });
+export const patchSignalFilter = (id, json) =>
+  request(`/api/signals/${id}`, { method: "PATCH", json });
+export const deleteSignalFilter = (id) =>
+  request(`/api/signals/${id}`, { method: "DELETE" });
+export const previewSignalFilter = (json) =>
+  request("/api/signals/preview", { method: "POST", json });
+export const fetchSignalHits = (limit = 100) => request(`/api/signals/hits?limit=${limit}`);
+export const markSignalHitsSeen = () => request("/api/signals/hits/seen", { method: "POST" });
+export const clearSignalHits = () => request("/api/signals/hits", { method: "DELETE" });
+export const fetchSignalEmitters = (q) =>
+  request(`/api/signals/emitters?q=${encodeURIComponent(q || "")}`);
+export const searchInstruments = (q) =>
+  request(`/api/signals/search?q=${encodeURIComponent(q || "")}`);
+
+// WS-канал сигналов: адресуется аккаунтом (бэк берёт его из cookie-сессии),
+// поэтому подписка не несёт параметров. onSignal(payload) — {filter_name,
+// side, matches[], sound, desktop}. Reconnect с тем же backoff, что у котировок.
+export function connectSignalsWs(onSignal, onStatus) {
+  const WS_URL =
+    (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
+  let ws = null, closed = false, reconnectTimer = null, backoff = 1000;
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; open(); }, backoff);
+    backoff = Math.min(backoff * 2, 30000);
+  };
+
+  const open = () => {
+    try { ws = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
+    ws.onopen = () => {
+      backoff = 1000;
+      onStatus && onStatus(true);
+      ws.send(JSON.stringify({ action: "subscribe", channel: "signals" }));
+    };
+    ws.onclose = () => { onStatus && onStatus(false); scheduleReconnect(); };
+    ws.onerror = () => onStatus && onStatus(false);
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.channel === "signals" && msg.data) onSignal(msg.data);
+    };
+  };
+  open();
+
+  return {
+    close() {
+      closed = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (ws) ws.close();
+    },
+  };
+}

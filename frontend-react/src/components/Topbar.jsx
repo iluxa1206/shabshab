@@ -10,7 +10,8 @@ const TYPES = [
 ];
 const SUBNAV = {
   floaters: [["/floaters", "Список"], ["/issuers", "Эмитенты"], ["/trades", "Сделки"],
-             ["/payments", "Выплаты"], ["/curves", "Кривые"], ["/calc/float", "Калькулятор"]],
+             ["/signals", "Сигналы"], ["/payments", "Выплаты"], ["/curves", "Кривые"],
+             ["/calc/float", "Калькулятор"]],
   fixed: [["/fixed", "Список"], ["/calc", "Калькулятор"]],
   euro: [],
   status: [],
