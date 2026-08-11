@@ -60,28 +60,6 @@ async def create_filter(body: SignalCreate, user: dict = Depends(require_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.patch("/{fid}", tags=["Signals"])
-async def patch_filter(body: SignalPatch, fid: int = Path(...),
-                       user: dict = Depends(require_user)):
-    try:
-        f = signals.update(user["email"], fid, name=body.name, enabled=body.enabled,
-                           params=body.params.model_dump() if body.params else None,
-                           change_pct=body.change_pct, sound=body.sound,
-                           desktop=body.desktop)
-    except signals.FilterError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if f is None:
-        raise HTTPException(status_code=404, detail="Фильтр не найден")
-    return f
-
-
-@router.delete("/{fid}", tags=["Signals"])
-async def delete_filter(fid: int = Path(...), user: dict = Depends(require_user)):
-    if not signals.delete(user["email"], fid):
-        raise HTTPException(status_code=404, detail="Фильтр не найден")
-    return {"ok": True}
-
-
 @router.post("/preview", tags=["Signals"])
 async def preview_filter(params: SignalParams, user: dict = Depends(require_user)):
     """Что попадёт под условия прямо сейчас — до сохранения фильтра."""
@@ -126,3 +104,27 @@ async def list_emitters(q: str = "", user: dict = Depends(require_user)):
     if q:
         names = [n for n in names if q in n.lower()]
     return {"emitters": names[:30], "total": len(names)}
+
+
+# Параметрические маршруты — В КОНЦЕ: FastAPI сопоставляет по порядку, и
+# объявленный выше /{fid} перехватывал DELETE /events (422 вместо чистки ленты).
+@router.patch("/{fid}", tags=["Signals"])
+async def patch_filter(body: SignalPatch, fid: int = Path(...),
+                       user: dict = Depends(require_user)):
+    try:
+        f = signals.update(user["email"], fid, name=body.name, enabled=body.enabled,
+                           params=body.params.model_dump() if body.params else None,
+                           change_pct=body.change_pct, sound=body.sound,
+                           desktop=body.desktop)
+    except signals.FilterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if f is None:
+        raise HTTPException(status_code=404, detail="Фильтр не найден")
+    return f
+
+
+@router.delete("/{fid}", tags=["Signals"])
+async def delete_filter(fid: int = Path(...), user: dict = Depends(require_user)):
+    if not signals.delete(user["email"], fid):
+        raise HTTPException(status_code=404, detail="Фильтр не найден")
+    return {"ok": True}

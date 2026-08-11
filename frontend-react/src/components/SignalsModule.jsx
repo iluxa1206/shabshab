@@ -110,22 +110,27 @@ function MultiPicker({ label, placeholder, items, onChange, search, keyOf, label
   );
 }
 
-/** Форма фильтра: отбор бумаг (ИЛИ) + условия сделки (И) + живое превью. */
-function FilterForm({ onSubmit, busy }) {
-  const [name, setName] = useState("");
-  const [ratings, setRatings] = useState([]);
-  const [emitters, setEmitters] = useState([]);
-  const [isins, setIsins] = useState([]);
-  const [side, setSide] = useState("ask");
-  const [smin, setSmin] = useState("");
-  const [smax, setSmax] = useState("");
-  const [minMoney, setMinMoney] = useState("");
-  const [ymin, setYmin] = useState("");
-  const [ymax, setYmax] = useState("");
-  const [hideSub, setHideSub] = useState(false);
-  const [changePct, setChangePct] = useState(10);
-  const [sound, setSound] = useState(true);
-  const [desktop, setDesktop] = useState(true);
+const numOrEmpty = (v) => (v == null ? "" : String(v));
+
+/** Форма фильтра: отбор бумаг (ИЛИ) + условия сделки (И) + живое превью.
+ *  edit — существующий фильтр: те же поля, но сохраняем правкой. Монтируется
+ *  с key={edit?.id ?? "new"}, поэтому начальные значения ставятся один раз. */
+function FilterForm({ onSubmit, busy, edit, onCancel }) {
+  const ep = edit?.params || {};
+  const [name, setName] = useState(edit?.name || "");
+  const [ratings, setRatings] = useState(ep.ratings || []);
+  const [emitters, setEmitters] = useState(ep.emitters || []);
+  const [isins, setIsins] = useState(ep.isins || []);
+  const [side, setSide] = useState(ep.side || "ask");
+  const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
+  const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
+  const [minMoney, setMinMoney] = useState(numOrEmpty(ep.min_money_rub));
+  const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
+  const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
+  const [hideSub, setHideSub] = useState(!!ep.hide_subord);
+  const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
+  const [sound, setSound] = useState(edit ? !!edit.sound : true);
+  const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
 
@@ -164,6 +169,7 @@ function FilterForm({ onSubmit, busy }) {
     if (smin === "" && smax === "") { setErr("Задай хотя бы одну границу диапазона Y-IDX"); return; }
     try {
       await onSubmit({ name: name.trim(), params, change_pct: changePct, sound, desktop });
+      if (edit) return;      // правка закрывает форму снаружи
       setName(""); setRatings([]); setEmitters([]); setIsins([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
       setHideSub(false); setPreview(null);
@@ -171,8 +177,13 @@ function FilterForm({ onSubmit, busy }) {
   };
 
   return (
-    <form className="sig-form" onSubmit={submit}>
-      <div className="sig-form-head">Новый сигнал</div>
+    <form className={"sig-form" + (edit ? " editing" : "")} onSubmit={submit}>
+      <div className="sig-form-head">
+        {edit ? `Правка: ${edit.name}` : "Новый сигнал"}
+        {edit && (
+          <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
+        )}
+      </div>
 
       <div className="sig-field">
         <label className="sig-label" htmlFor="sig-name">Название</label>
@@ -290,15 +301,15 @@ function FilterForm({ onSubmit, busy }) {
 
       {err && <div className="sig-err">{err}</div>}
       <button className="btn sig-submit" type="submit" disabled={busy}>
-        {busy ? "Создаём…" : "Создать сигнал"}</button>
+        {busy ? "Сохраняем…" : edit ? "Сохранить изменения" : "Создать сигнал"}</button>
     </form>
   );
 }
 
-function FilterRow({ f, onToggle, onDelete }) {
+function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
   const d = describe(f.params);
   return (
-    <div className={"sig-row-card" + (f.enabled ? "" : " off")}>
+    <div className={"sig-row-card" + (f.enabled ? "" : " off") + (editing ? " on-edit" : "")}>
       <div className="sig-rc-main">
         <div className="sig-rc-title">
           {f.name}
@@ -317,6 +328,7 @@ function FilterRow({ f, onToggle, onDelete }) {
         </div>
       </div>
       <div className="sig-rc-actions">
+        <button className="btn" onClick={() => onEdit(f)}>Изменить</button>
         <button className="btn" onClick={() => onToggle(f)}>
           {f.enabled ? "Выключить" : "Включить"}</button>
         <button className="btn btn-danger" onClick={() => onDelete(f.id)}>Удалить</button>
@@ -327,6 +339,7 @@ function FilterRow({ f, onToggle, onDelete }) {
 
 export default function SignalsModule() {
   const qc = useQueryClient();
+  const [editId, setEditId] = useState(null);
   const filters = useQuery({ queryKey: ["signal-filters"], queryFn: fetchSignalFilters });
   const events = useQuery({
     queryKey: ["signal-events"], queryFn: () => fetchSignalEvents(100), refetchInterval: 30000,
@@ -339,6 +352,13 @@ export default function SignalsModule() {
   const patch = useMutation({
     mutationFn: ({ id, body }) => patchSignalFilter(id, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["signal-filters"] }),
+  });
+  const save = useMutation({
+    mutationFn: ({ id, body }) => patchSignalFilter(id, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["signal-filters"] });
+      setEditId(null);
+    },
   });
   const del = useMutation({
     mutationFn: deleteSignalFilter,
@@ -362,6 +382,7 @@ export default function SignalsModule() {
 
   const rows = filters.data?.filters || [];
   const feed = events.data?.events || [];
+  const editing = rows.find((f) => f.id === editId) || null;
 
   return (
     <div className="sig-wrap">
@@ -377,13 +398,19 @@ export default function SignalsModule() {
             ? <div className="sig-empty">Сигналов нет. Опиши условия — при совпадении
                 придёт всплывающее окно, звук и запись в ленту справа.</div>
             : rows.map((f) => (
-                <FilterRow key={f.id} f={f}
+                <FilterRow key={f.id} f={f} editing={editId === f.id}
                   onToggle={(x) => patch.mutate({ id: x.id, body: { enabled: !x.enabled } })}
-                  onDelete={(id) => del.mutate(id)} />
+                  onEdit={(x) => setEditId(editId === x.id ? null : x.id)}
+                  onDelete={(id) => { if (editId === id) setEditId(null); del.mutate(id); }} />
               ))}
 
-        <FilterForm busy={create.isPending}
-          onSubmit={(body) => create.mutateAsync(body)} />
+        {/* key переинициализирует поля при смене правимого фильтра */}
+        <FilterForm key={editing?.id ?? "new"} edit={editing}
+          busy={editing ? save.isPending : create.isPending}
+          onCancel={() => setEditId(null)}
+          onSubmit={(body) => (editing
+            ? save.mutateAsync({ id: editing.id, body })
+            : create.mutateAsync(body))} />
       </div>
 
       <div className="sig-col sig-feed-col">

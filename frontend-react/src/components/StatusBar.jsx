@@ -172,7 +172,6 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
       )}
       {onFloaters && <KpisInline bonds={kpiBonds} />}
       <AlertsCell bonds={bonds} />
-      <SignalsBell />
       <span className="status-cell grow" />
       {/* подписи РАСЧЁТ/СТАВКИ ушли в тултип — двух дат хватает, а строка не влезала */}
       <span className="status-cell meta-chip" title="дата расчёта / дата ставок">
@@ -182,6 +181,7 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
       </span>
       <Clock />
       <SourcesDot src={src} />
+      <SignalsBell />
       {onRefresh && (
         <span className="status-cell refresh-cell">
           <button className="status-refresh" onClick={onRefresh} title="Обновить" aria-label="Обновить">

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectSignalsWs } from "../api.js";
-import { fmt } from "../format.js";
+import { fmt, dmColor } from "../format.js";
 
 // Двухтональный сигнал через WebAudio (без ассета). Отличается от бипа алертов
 // стакана, чтобы на слух было понятно, что именно сработало.
@@ -53,8 +54,21 @@ const money = (v) =>
  */
 export default function SignalsWatcher() {
   const qc = useQueryClient();
+  const [, setSearchParams] = useSearchParams();
   const [cards, setCards] = useState([]);
   const seq = useRef(0);
+
+  // клик по бумаге в окне — карточка + стакан с подсветкой набранного объёма
+  const openBond = (m, side) => {
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      n.set("isin", m.isin); n.delete("k"); n.set("ob", "1");
+      const vol = m.want_money_rub || m.money_rub;
+      if (vol) { n.set("sigvol", String(Math.round(vol))); n.set("sigside", side || "ask"); }
+      else { n.delete("sigvol"); n.delete("sigside"); }
+      return n;
+    });
+  };
 
   useEffect(() => {
     const conn = connectSignalsWs((payload) => {
@@ -80,13 +94,13 @@ export default function SignalsWatcher() {
   return (
     <div className="sig-toasts">
       {cards.map(({ id, payload }) => (
-        <SignalToast key={id} p={payload} onDismiss={() => dismiss(id)} />
+        <SignalToast key={id} p={payload} onOpen={openBond} onDismiss={() => dismiss(id)} />
       ))}
     </div>
   );
 }
 
-function SignalToast({ p, onDismiss }) {
+function SignalToast({ p, onOpen, onDismiss }) {
   const reduce = useReducedMotion();
   useEffect(() => {
     const t = setTimeout(onDismiss, 25000);
@@ -94,36 +108,54 @@ function SignalToast({ p, onDismiss }) {
   }, [onDismiss]);
 
   const side = p.side === "ask" ? "оффер" : "бид";
+  const shown = p.matches.slice(0, 6);
   return (
     <motion.div className="sig-toast" role="alert"
       initial={reduce ? false : { x: 40, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
-      exit={{ opacity: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 30 }}>
       <button className="sig-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
       <div className="sig-toast-h">
-        Сигнал · {p.filter_name}
-        <span className={p.side === "ask" ? "pos" : "neg"}> {side}</span>
+        <span>Сигнал · {p.filter_name}</span>
+        <span className={p.side === "ask" ? "pos" : "neg"}>{side}</span>
+        <span className="sig-toast-n">
+          {p.matches.length} {p.matches.length === 1 ? "бумага" : "бумаг"}</span>
       </div>
       <div className="sig-toast-b">
-        {p.matches.slice(0, 5).map((m) => (
-          <div className="sig-toast-row num" key={m.isin}>
+        {shown.map((m) => (
+          <button type="button" className="sig-toast-row" key={m.isin}
+            onClick={() => onOpen(m, p.side)} title="Открыть карточку и стакан">
             <span className="sig-toast-nm">
-              {m.name}
+              <span className="nm">{m.name}</span>
               <span className={"sb-tag sb-" + m.reason}>{REASON[m.reason] || m.reason}</span>
             </span>
-            <span><b>{fmt.num(m.val_bps, 0)}</b> бп
+            <span className="sig-toast-val" style={dmColor(m.val_bps)}>
+              {fmt.num(m.val_bps, 0)} бп
               {m.prev_val_bps != null && m.val_bps !== m.prev_val_bps && (
                 <span className={"sb-delta " + (m.val_bps > m.prev_val_bps ? "pos" : "neg")}>
-                  {m.val_bps > m.prev_val_bps ? "+" : "−"}{fmt.num(Math.abs(m.val_bps - m.prev_val_bps), 0)}
+                  {" "}{m.val_bps > m.prev_val_bps ? "+" : "−"}
+                  {fmt.num(Math.abs(m.val_bps - m.prev_val_bps), 0)}
                 </span>)}
-              {m.price != null && <> · {fmt.num(m.price, 2)}%</>}
-              {money(m.money_rub) && <> · {money(m.money_rub)}</>}
             </span>
-          </div>
+            <span className="sig-toast-sub">
+              <span>{m.isin}</span>
+              <span>цена {fmt.num(m.price, 2)}%
+                {m.prev_price != null && m.price !== m.prev_price && (
+                  <span className={"sb-delta " + (m.price > m.prev_price ? "pos" : "neg")}>
+                    {" "}{m.price > m.prev_price ? "+" : "−"}
+                    {fmt.num(Math.abs(m.price - m.prev_price), 2)}
+                  </span>)}
+              </span>
+              {m.money_rub != null && (
+                <span>объём {money(m.money_rub)}{m.levels ? ` · ${m.levels} ур` : ""}
+                  {m.partial ? " (частично)" : ""}</span>)}
+              {m.years != null && <span>{fmt.num(m.years, 1)} л</span>}
+              {m.rating && <span>{m.rating}</span>}
+            </span>
+          </button>
         ))}
-        {p.matches.length > 5 && (
-          <div className="sig-toast-more">…и ещё {p.matches.length - 5}</div>
+        {p.matches.length > shown.length && (
+          <div className="sig-toast-more">…и ещё {p.matches.length - shown.length}</div>
         )}
       </div>
     </motion.div>

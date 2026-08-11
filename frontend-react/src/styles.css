@@ -1512,17 +1512,33 @@ body.col-resizing * { cursor: col-resize !important; }
                 letter-spacing: 0.04em; }
 
 /* всплывающие окна поверх любой вкладки */
-.sig-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 210; display: flex;
-              flex-direction: column; gap: 8px; max-width: 360px; }
+.sig-toasts { position: fixed; right: 16px; bottom: 44px; z-index: 210; display: flex;
+              flex-direction: column; gap: 8px; width: min(560px, calc(100vw - 32px)); }
 .sig-toast { position: relative; background: var(--bg); border: 1px solid var(--fg);
-             border-left: 3px solid var(--accent); padding: 11px 30px 11px 13px;
+             border-left: 3px solid var(--accent); padding: 0 0 8px;
              box-shadow: 0 6px 22px rgba(0,0,0,.25); }
-.sig-toast-h { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em;
-               margin-bottom: 7px; font-family: var(--mono); }
-.sig-toast-b { font-size: 12px; line-height: 1.45; }
-.sig-toast-row { display: flex; justify-content: space-between; gap: 10px; text-align: left; }
-.sig-toast-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 165px; }
-.sig-toast-more { color: var(--mut); font-size: 11px; margin-top: 3px; }
+.sig-toast-h { display: flex; align-items: baseline; gap: 8px; padding: 9px 30px 8px 12px;
+               border-bottom: 1px solid var(--line);
+               font-family: var(--mono); font-size: 10px; font-weight: 800;
+               text-transform: uppercase; letter-spacing: 0.1em; }
+.sig-toast-h .sig-toast-n { margin-left: auto; color: var(--mut); font-weight: 600;
+                            text-transform: none; letter-spacing: 0; }
+.sig-toast-b { font-size: 12px; }
+/* строка тоста повторяет колонки ленты: имя+тег, спред с дельтой, цена, деньги */
+.sig-toast-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+                 width: 100%; padding: 6px 12px; background: transparent; border: 0;
+                 border-bottom: 1px solid var(--line); text-align: left; cursor: pointer;
+                 transition: background .12s; }
+.sig-toast-row:last-of-type { border-bottom: 0; }
+.sig-toast-row:hover { background: var(--hover); }
+.sig-toast-nm { display: flex; align-items: baseline; gap: 7px; min-width: 0;
+                font-size: 12.5px; font-weight: 700; color: var(--fg); }
+.sig-toast-nm span.nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sig-toast-val { font-family: var(--mono); font-size: 12.5px; font-weight: 700;
+                 white-space: nowrap; }
+.sig-toast-sub { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px;
+                 font-family: var(--mono); font-size: 10.5px; color: var(--mut); }
+.sig-toast-more { color: var(--mut); font-size: 11px; padding: 6px 12px 0; }
 .sig-toast-x { position: absolute; top: 0; right: 0; background: transparent; border: 0;
                color: var(--mut); cursor: pointer; font-size: 12px; padding: 9px 11px; }
 
@@ -1542,10 +1558,27 @@ body.col-resizing * { cursor: col-resize !important; }
           padding: 4px 6px; transition: color .12s; }
 .sb-btn:hover, .sb-chip.open .sb-btn { color: var(--fg); }
 .sb-btn.has { color: var(--fg); }
+/* новые события — мигаем красным 10 секунд (класс снимается таймером) */
+.sb-btn.blink { animation: sb-blink 0.9s steps(1, end) infinite; }
+.sb-btn.blink .sb-count { animation: sb-blink-bg 0.9s steps(1, end) infinite; }
+@keyframes sb-blink {
+  0%, 49% { color: var(--down); }
+  50%, 100% { color: var(--mut); }
+}
+@keyframes sb-blink-bg {
+  0%, 49% { background: var(--down); transform: scale(1.12); }
+  50%, 100% { background: var(--mut-2); transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sb-btn.blink, .sb-btn.blink .sb-count { animation: none; }
+  .sb-btn.blink { color: var(--down); }
+}
 .sb-count { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1;
             background: var(--down); color: #fff; border-radius: 8px; padding: 2px 5px; }
-.sb-pop { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-          width: min(560px, calc(100vw - 32px)); max-height: 60vh; overflow: hidden;
+/* якорь по ПРАВОМУ краю: колокольчик стоит в правом углу строки, и попап,
+   центрированный по кнопке, вылезал бы за экран */
+.sb-pop { position: absolute; bottom: calc(100% + 8px); right: 0;
+          width: min(620px, calc(100vw - 24px)); max-height: 60vh; overflow: hidden;
           display: flex; flex-direction: column; z-index: 220;
           background: var(--bg); border: 1px solid var(--fg);
           box-shadow: 0 10px 34px rgba(0,0,0,.3); }
@@ -1585,3 +1618,10 @@ body.col-resizing * { cursor: col-resize !important; }
                  box-shadow: inset 2px 0 0 var(--accent); }
 .ob-row.ob-sig-part { background: color-mix(in srgb, var(--accent) 9%, transparent);
                       box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+.sig-form-head { display: flex; align-items: baseline; gap: 12px; }
+.sig-cancel { margin-left: auto; background: transparent; border: 1px solid var(--line-2);
+              color: var(--mut); font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+              text-transform: uppercase; padding: 4px 8px; cursor: pointer; }
+.sig-cancel:hover { border-color: var(--fg); color: var(--fg); }
+.sig-form.editing { border-color: var(--accent); }
+.sig-row-card.on-edit { border-left-color: var(--accent); background: var(--hover); }

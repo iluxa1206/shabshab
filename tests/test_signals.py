@@ -339,3 +339,17 @@ def test_static_candidates_split():
     cands = core.static_candidates(p, uni)
     assert [c["isin"] for c in cands] == ["RU000A0000A1"]
     assert cands[0]["_years"] is not None
+
+
+# --- маршруты: именованные пути не должны съедаться параметрическим /{fid} ---
+
+def test_named_routes_win_over_param_route():
+    from api.routes import signals as route
+    paths = [(r.path, sorted(r.methods - {"HEAD", "OPTIONS"}))
+             for r in route.router.routes]
+    named = [i for i, (p, _) in enumerate(paths) if "{" not in p]
+    param = [i for i, (p, _) in enumerate(paths) if "{" in p]
+    assert named and param
+    # каждый именованный маршрут объявлен РАНЬШЕ любого параметрического,
+    # иначе DELETE /events попадал бы в DELETE /{fid} и падал с 422
+    assert max(named) < min(param)

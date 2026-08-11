@@ -45,7 +45,10 @@ export default function SignalsBell() {
   const qc = useQueryClient();
   const [, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
+  const [blink, setBlink] = useState(false);
   const boxRef = useRef(null);
+  const prevUnseen = useRef(null);
+  const blinkT = useRef(null);
 
   const q = useQuery({
     queryKey: ["signal-events"],
@@ -64,6 +67,18 @@ export default function SignalsBell() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["signal-events"] }),
   });
 
+  // Новые непрочитанные → колокольчик мигает красным 10 секунд. Триггер —
+  // РОСТ счётчика: перерисовка или отметка «прочитано» мигать не должны.
+  useEffect(() => {
+    const prev = prevUnseen.current;
+    prevUnseen.current = unseen;
+    if (prev === null || unseen <= prev) return;
+    setBlink(true);
+    clearTimeout(blinkT.current);
+    blinkT.current = setTimeout(() => setBlink(false), 10000);
+  }, [unseen]);
+  useEffect(() => () => clearTimeout(blinkT.current), []);
+
   // клик мимо попапа закрывает его: попап крупный и перекрывает таблицу
   useEffect(() => {
     if (!open) return;
@@ -78,6 +93,8 @@ export default function SignalsBell() {
   }, [open]);
 
   const toggle = useCallback(() => {
+    setBlink(false);
+    clearTimeout(blinkT.current);
     setOpen((v) => {
       if (!v && unseen) seenMut.mutate();
       return !v;
@@ -105,7 +122,8 @@ export default function SignalsBell() {
 
   return (
     <span className={"status-cell sb-chip" + (open ? " open" : "")} ref={boxRef}>
-      <button type="button" className={"sb-btn" + (unseen ? " has" : "")} onClick={toggle}
+      <button type="button"
+        className={"sb-btn" + (unseen ? " has" : "") + (blink ? " blink" : "")} onClick={toggle}
         title="Сигналы: лента срабатываний" aria-expanded={open}>
         <IconBell />
         {unseen > 0 && <span className="sb-count">{unseen > 99 ? "99+" : unseen}</span>}
