@@ -51,6 +51,13 @@ async def call(method: str, payload: Optional[dict] = None,
                     logger.warning("tg %s error: %s", method, body.get("description"))
                     return None
                 return body.get("result")
+            except httpx.ConnectError as e:
+                # На прод-VPS имя api.telegram.org резолвится провайдерским DNS
+                # только в IPv6 (маршрута нет), а часть IPv4-пула Telegram
+                # блокируется — лечится extra_hosts/TG_API_IP в compose.
+                logger.warning("tg %s connect error (attempt %d): %s — проверь "
+                               "TG_API_IP/extra_hosts", method, attempt + 1, e)
+                await asyncio.sleep(1.5 * (attempt + 1))
             except httpx.HTTPError as e:
                 logger.warning("tg %s http error (attempt %d): %s", method, attempt + 1, e)
                 await asyncio.sleep(1.5 * (attempt + 1))

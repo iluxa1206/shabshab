@@ -23,6 +23,13 @@ services:
       - ALL
     env_file:
       - .env
+    # api.telegram.org: DNS хостера (reg.ru) отдаёт по имени ТОЛЬКО AAAA-запись,
+    # а IPv6-маршрута на VPS нет → «Network is unreachable». Часть IPv4-пула
+    # Telegram с этого хоста тоже не пингуется; 149.154.167.220 доступен и
+    # отвечает. Пишем его в /etc/hosts контейнера — имя (а значит SNI и проверка
+    # сертификата) остаётся прежним. Сменить: TG_API_IP в .env.
+    extra_hosts:
+      - "api.telegram.org:${TG_API_IP:-149.154.167.220}"
     # Лимит памяти: idle ~95MB, пик на pandas+юниверс НРД. 768MB — потолок,
     # защищает соседний стек astra-prod от OOM-killer на общем 3.8GB VPS.
     mem_limit: 768m
