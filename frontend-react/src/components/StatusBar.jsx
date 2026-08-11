@@ -124,6 +124,35 @@ function Clock() {
   );
 }
 
+// Источники данных одной точкой: строка статусбара не влезала по ширине.
+// Цвет — агрегат (все на связи / часть отвалилась / все молчат),
+// разбивка по источникам — в тултипе при наведении.
+function SourcesDot({ src }) {
+  const [open, setOpen] = useState(false);
+  const nOn = src.filter((s) => s.on).length;
+  const state = nOn === src.length ? "on" : nOn === 0 ? "off" : "part";
+  const label = state === "on" ? "все источники на связи"
+    : state === "off" ? "нет связи ни с одним источником"
+    : `на связи ${nOn} из ${src.length}`;
+  return (
+    <span className="status-cell src-cell" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}
+      title={label} aria-label={`Источники данных: ${label}`}>
+      <span className={"src-dot " + state} />
+      {open && (
+        <div className="src-pop">
+          {src.map((s) => (
+            <div key={s.k} className="src-pop-row">
+              <span className={"src-dot " + (s.on ? "on" : "off")} />
+              <span className="src-pop-k">{s.k}</span>
+              <span className="src-pop-v">{s.on ? "связь активна" : "нет связи"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sources = {}, theme, onSetTheme,
                                     meta = {}, onRefresh }) {
   // ALOR = живой WS-поток; CBONDS — из meta (кривые ставок построены)
@@ -135,24 +164,22 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
   return (
     <footer className="statusbar">
       {onSetTheme && <ThemeSwitch theme={theme} onSetTheme={onSetTheme} />}
-      {onFloaters && <span className="status-cell">ИНСТРУМЕНТЫ <span className="counter">{String(count).padStart(3, "0")}</span></span>}
+      {onFloaters && (
+        <span className="status-cell tools-cell" title="инструментов в выборке">
+          БУМАГ <span className="counter">{String(count).padStart(3, "0")}</span>
+        </span>
+      )}
       {onFloaters && <KpisInline bonds={kpiBonds} />}
       <AlertsCell bonds={bonds} />
       <span className="status-cell grow" />
-      <span className="status-cell meta-chip">
-        <span className="meta-k">РАСЧЁТ</span><span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
+      {/* подписи РАСЧЁТ/СТАВКИ ушли в тултип — двух дат хватает, а строка не влезала */}
+      <span className="status-cell meta-chip" title="дата расчёта / дата ставок">
+        <span className="meta-v">{fmt.date(meta.calc_date) || "—"}</span>
         <span className="meta-sep">/</span>
-        <span className="meta-k">СТАВКИ</span><span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
+        <span className="meta-v">{fmt.date(meta.rates_date) || "—"}</span>
       </span>
       <Clock />
-      <span className={"status-cell live " + (live ? "live-on" : "live-off")}>
-        <span className="dot" />{live ? "ОНЛАЙН" : "ОФФЛАЙН"}
-      </span>
-      {src.map((s) => (
-        <span key={s.k} className={"status-cell src" + (s.on ? " on" : "")} title={s.on ? "связь активна" : "нет связи"}>
-          <span className={"src-dot " + (s.on ? "on" : "off")} />{s.k}
-        </span>
-      ))}
+      <SourcesDot src={src} />
       {onRefresh && (
         <span className="status-cell refresh-cell">
           <button className="status-refresh" onClick={onRefresh} title="Обновить" aria-label="Обновить">

@@ -34,8 +34,10 @@ export default function KpisInline({ bonds }) {
     return { avgYi, medYi, medDm, ru, kr, yiP25, yiP75, hasYi: yis.length > 0 };
   }, [bonds]);
 
-  const cell = (label, value, title) => (
-    <span className="status-cell kpi-cell" title={title}>
+  // cls "sec" — второстепенные метрики: прячутся на узких экранах, чтобы
+  // строка статусбара не уезжала за край (важные слева остаются)
+  const cell = (label, value, title, cls = "") => (
+    <span className={"status-cell kpi-cell " + cls} title={title}>
       {label} <span className="kpi-cell-val">{value ?? "—"}</span>
     </span>
   );
@@ -46,8 +48,8 @@ export default function KpisInline({ bonds }) {
       {cell("КС", k.kr, "бумаг с базой KEYRATE")}
       {cell("MED Y-IDX", k.medYi, "медианный Y-IDX (IRR − роллирование RUONIA), б.п.")}
       {cell("AVG Y-IDX", k.avgYi, "средний Y-IDX (IRR − роллирование RUONIA), б.п.")}
-      {cell("Y-IDX P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс Y-IDX, б.п.")}
-      {cell("MED DM", k.medDm, "медианный discount margin (вспом.), б.п.")}
+      {cell("P25–P75", k.hasYi ? `${k.yiP25}–${k.yiP75}` : null, "межквартильный разброс Y-IDX, б.п.", "sec")}
+      {cell("MED DM", k.medDm, "медианный discount margin (вспом.), б.п.", "sec")}
     </>
   );
 }

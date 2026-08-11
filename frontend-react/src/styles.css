@@ -125,11 +125,6 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .meta-k { color: var(--mut-2); }
 .meta-v { color: var(--fg); font-variant-numeric: tabular-nums; }
 .meta-sep { color: var(--line-2); }
-.live { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; }
-.live .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.live-on { color: var(--fg); } .live-on .dot { animation: blink 1.2s steps(1) infinite; }
-.live-off { color: var(--mut-2); }
-@keyframes blink { 50% { opacity: 0; } }
 
 .btn {
   font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em;
@@ -828,8 +823,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .status-cell.grow { flex: 1; }
 .status-cell:last-child { border-right: none; }
 .counter { color: var(--fg); letter-spacing: 0.18em; }
-.status-cell.src { color: var(--mut-2); }
-.status-cell.src.on { color: var(--fg); }
+/* источники данных — одна точка + разбивка в тултипе (строка не влезала) */
+.status-cell.src-cell { padding: 0 12px; position: relative; color: var(--mut-2); }
+.src-pop { position: absolute; bottom: calc(100% + 6px); right: 8px; z-index: 40;
+  background: var(--bg); border: 1px solid var(--fg); padding: 6px 10px; white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); }
+.src-pop-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 11px; }
+.src-pop-k { color: var(--fg); min-width: 56px; }
+.src-pop-v { color: var(--mut); text-transform: none; letter-spacing: 0.04em; }
 /* переключатель цветовой гаммы (низ-лево): 3 оттенка light/grey/dark */
 .status-cell.theme-switch { gap: 7px; padding: 0 14px; }
 .theme-dot { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line-2);
@@ -838,9 +839,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .theme-dot::after { content: ""; position: absolute; inset: -10px; border-radius: 50%; }
 .theme-dot:hover { border-color: var(--fg); }
 .theme-dot.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
-.src-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+.src-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .src-dot.on { background: var(--up); box-shadow: 0 0 4px var(--up); }
-.src-dot.off { background: var(--mut-2); }
+.src-dot.part { background: var(--accent); box-shadow: 0 0 4px var(--accent); }
+.src-dot.off { background: var(--down); }
 /* компактные KPI в статусбаре (бывший верхний блок) */
 .status-cell.kpi-cell { gap: 6px; padding: 0 14px; white-space: nowrap; }
 .kpi-cell-val { color: var(--fg); font-weight: 600; letter-spacing: 0.06em; }
@@ -849,8 +851,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .kpi-cell-sub { color: var(--mut-2); letter-spacing: 0.06em; text-transform: none; }
 /* даты расчёта/ставок, часы, ОНЛАЙН и «Обновить» — переехали из шапки в статусбар */
 .status-cell.meta-chip { gap: 8px; padding: 0 14px; letter-spacing: 0.12em; white-space: nowrap; }
-.status-cell.live { gap: 7px; padding: 0 14px; font-weight: 600; }
 .status-cell.refresh-cell { padding: 0 12px; }
+.status-cell.tools-cell { padding: 0 14px; gap: 6px; white-space: nowrap; }
+/* до 1500px второстепенные KPI прячутся: строка режется у правого края раньше,
+   чем срабатывает перенос на несколько строк (1100px) */
+@media (max-width: 1500px) { .status-cell.kpi-cell.sec { display: none; } }
 .status-refresh { background: none; border: none; padding: 0; cursor: pointer; color: var(--fg);
   font: inherit; letter-spacing: inherit; text-transform: inherit; display: flex; align-items: center; }
 .status-refresh:hover { color: var(--accent); }
@@ -883,7 +888,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 ::selection { background: var(--inv-bg); color: var(--inv-fg); }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-on .dot { animation: none; }
   .grid tbody tr.flash td { animation: none; }
   .skel::after { animation: none; }
   * { transition-duration: .001ms !important; }
