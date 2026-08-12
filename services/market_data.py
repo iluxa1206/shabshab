@@ -71,14 +71,18 @@ def _call_dates_cached() -> Dict[str, list]:
     return _CALL_DATES
 
 
-def _with_call_offers(isin: str, sched: dict) -> dict:
+CALL_OFFER_SOURCE = "corpbonds"   # метка синтетической записи (см. call_offers_asof)
+
+
+def _with_call_offers(isin: str, sched: dict, asof: Optional[date] = None) -> dict:
     """Копия расписания с добавленной ближайшей будущей датой колла (если есть).
-    Дубль не создаём: если MOEX сам отдал оферту на эту дату — она авторитетнее."""
+    Дубль не создаём: если MOEX сам отдал оферту на эту дату — она авторитетнее.
+    asof — на какую дату «будущая» (по умолчанию сегодня; бэкдейт передаёт свою)."""
     dates = _call_dates_cached().get(isin)
     if not dates:
         return sched
-    today = date.today().isoformat()
-    future = [d for d in sorted(dates) if d > today]
+    ref = (asof or date.today()).isoformat()
+    future = [d for d in sorted(dates) if d > ref]
     if not future:
         return sched
     nearest = future[0]
@@ -86,10 +90,25 @@ def _with_call_offers(isin: str, sched: dict) -> dict:
     if any((o.get("date") or "") == nearest for o in offers):
         return sched
     offers.append({"date": nearest, "type": "call-опцион", "price": None,
-                   "source": "corpbonds"})
+                   "source": CALL_OFFER_SOURCE})
     out = dict(sched)
     out["offers"] = offers
     return out
+
+
+def call_offers_asof(isin: str, offers: Optional[list], asof: date) -> Optional[list]:
+    """Оферты, пересобранные на ПРОШЛУЮ дату: своя синтетическая call-запись
+    выбрасывается и ставится ближайшая будущая ОТНОСИТЕЛЬНО asof.
+
+    Нужно бэкдейту: расписание приходит из общего дневного кэша, где инъекция
+    сделана на СЕГОДНЯ, и расчёт на 2026-01-15 получал бы колл-горизонт из
+    будущего (у бермудского колла даты каждый месяц — ошибка на весь срок).
+    Записи самого MOEX не трогаем: их фильтрация по дате — забота
+    first_call_date/next_offer_info, которым settle уже передан as-of."""
+    clean = [o for o in (offers or []) if o.get("source") != CALL_OFFER_SOURCE]
+    out = _with_call_offers(isin, {"offers": clean}, asof=asof)["offers"]
+    # исходный список пустой и колла нет → сохраняем None (как было у вызывающего)
+    return out if (out or offers is not None) else None
 
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.

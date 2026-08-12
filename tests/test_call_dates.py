@@ -69,6 +69,28 @@ def test_injected_offer_becomes_call_horizon():
         md._CALL_DATES, md._CALL_DATES_AT = {}, 0.0
 
 
+def test_call_offers_asof_uses_backdated_reference():
+    """Бэкдейт: ближайшая будущая считается от РАСЧЁТНОЙ даты, не от сегодня.
+    У бермудского колла даты каждый месяц — иначе горизонт был бы из будущего."""
+    import services.market_data as md
+
+    md._CALL_DATES = {"XX": ["2026-01-20", "2026-02-20", "2026-12-14"]}
+    md._CALL_DATES_AT = float("inf")
+    try:
+        today = md._with_call_offers("XX", {"offers": []})["offers"]
+        assert [o["date"] for o in today] == ["2026-12-14"]
+        # своя вчерашняя запись выбрасывается, ставится корректная на as-of
+        asof = md.call_offers_asof("XX", today, date(2026, 1, 15))
+        assert [o["date"] for o in asof] == ["2026-01-20"]
+        assert [o["date"] for o in md.call_offers_asof("XX", today, date(2026, 2, 1))] \
+            == ["2026-02-20"]
+        # записи MOEX не трогаем
+        mixed = [{"date": "2027-05-05", "type": "Оферта", "price": 100.0}] + today
+        assert md.call_offers_asof("XX", mixed, date(2026, 1, 15))[0]["type"] == "Оферта"
+    finally:
+        md._CALL_DATES, md._CALL_DATES_AT = {}, 0.0
+
+
 def test_moex_offer_wins_over_injected():
     """Своя запись MOEX на ту же дату авторитетнее — дубля не создаём."""
     import services.market_data as md

@@ -155,7 +155,11 @@ export const COLS = [
       return (
         <td className="num mat-cell" key="maturity_date">
           <div className="mat-main">
-            <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}
+            {/* маркеры стоят у ДАТЫ ОФЕРТЫ (второй этаж) — они про неё. У
+                погашения остаются, только когда этажа нет: колл без даты
+                (has_call из corpbonds) иначе потерял бы маркер вовсе */}
+            {!b.offer_date && <OfferMarks b={b} />}
+            {fmt.date(b.maturity_date) ?? <D />}
             {yrsTo(b.maturity_date) != null && (
               <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
                 {" (" + yrsTo(b.maturity_date) + ")"}</span>
@@ -164,7 +168,7 @@ export const COLS = [
           {b.offer_date && (
             <div className="mat-offer"
               title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
-              {fmt.date(b.offer_date)}
+              <OfferMarks b={b} />{fmt.date(b.offer_date)}
               {yrsTo(b.offer_date) != null && (
                 <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
                   {" (" + yrsTo(b.offer_date) + ")"}</span>

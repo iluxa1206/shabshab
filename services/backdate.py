@@ -391,7 +391,11 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
 
     periods = schedules.get(isin) or schedules.get(secid)
     amorts = sched_full.get("amorts")
-    offers = sched_full.get("offers")
+    # Даты колла подмешаны в общий дневной кэш расписаний на СЕГОДНЯ — для as-of
+    # расчёта пересобираем их на дату d (у бермудского колла даты каждый месяц,
+    # иначе горизонт брался бы из будущего относительно расчётной даты).
+    from services.market_data import call_offers_asof
+    offers = call_offers_asof(isin, sched_full.get("offers"), d)
     if not periods:
         # без расписания ядро строит сетку купонов сама и прогнозирует ВСЕ купоны,
         # включая уже зафиксированный текущий — раньше это происходило молча
