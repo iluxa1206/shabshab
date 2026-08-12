@@ -111,6 +111,13 @@ _MIGRATIONS = [
     # универсе только 'Оферта' / 'Оферта (состоялось)' / 'Оферта/Погашение', т.е.
     # даты оферт есть, а чья это опция — из MOEX не узнать.
     "ALTER TABLE instruments ADD COLUMN has_call INTEGER",
+    # Сверка типа купона со smart-lab (services/smartlab_audit). Внешний источник
+    # называет тип словами и о нашей математике ничего не знает — этим и ценен:
+    # ловит и ложный FIXED от классификатора, и флоатер с чужой базой.
+    # sl_type: 'fixed' | 'floater' | NULL (сайт молчит — не вердикт, а «не знаем»)
+    "ALTER TABLE instruments ADD COLUMN sl_type TEXT",
+    "ALTER TABLE instruments ADD COLUMN sl_checked_at TEXT",
+    "ALTER TABLE instruments ADD COLUMN sl_mismatch INTEGER",   # 1 — расходится с нашим base
 ]
 
 
@@ -743,7 +750,8 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "cap_pct", "floor_pct", "coupon_text", "rating", "has_call",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
                  "emitter_name", "active",
-                 "spec_err_pp", "spec_verdict", "spec_n_coupons", "spec_checked_at")
+                 "spec_err_pp", "spec_verdict", "spec_n_coupons", "spec_checked_at",
+                 "sl_type", "sl_checked_at", "sl_mismatch")
 
 
 # Поля купона, которыми ручной слой реестра ПЕРЕОПРЕДЕЛЯЕТ прайсинг (мост в
@@ -803,6 +811,68 @@ def list_spec_mismatch(min_verdict: str = "WARN") -> list[dict]:
             f"spec_checked_at, manual_locked "
             f"FROM instruments WHERE active=1 AND spec_verdict IN ({ph}) "
             f"ORDER BY spec_err_pp DESC", verdicts).fetchall()
+    return [dict(r) for r in rows]
+
+
+_FLOAT_BASES_REG = ("KEYRATE", "RUONIA", "EXOTIC")
+
+
+def set_smartlab_type(isin: str, sl_type: Optional[str]) -> Optional[str]:
+    """Записать тип купона со smart-lab и сверить с нашим base.
+    → 'mismatch_fixed' (у нас FIXED, там флоатер) | 'mismatch_floater'
+    (у нас флоатер, там фикс) | None (сходится или сайт молчит).
+
+    Молчание сайта (sl_type=None) не считаем расхождением и не затираем прошлый
+    ответ: «не знаем» ничего не опровергает."""
+    _ensure()
+    isin = (isin or "").strip()
+    with _lock, _conn() as c:
+        row = c.execute("SELECT base FROM instruments WHERE isin=?", (isin,)).fetchone()
+        if row is None:
+            return None
+        verdict = None
+        if sl_type == "floater" and row["base"] == "FIXED":
+            verdict = "mismatch_fixed"
+        elif sl_type == "fixed" and row["base"] in _FLOAT_BASES_REG:
+            verdict = "mismatch_floater"
+        c.execute("UPDATE instruments SET sl_type=COALESCE(?, sl_type), sl_checked_at=?, "
+                  "sl_mismatch=? WHERE isin=?",
+                  (sl_type, _now(), 1 if verdict else 0, isin))
+    return verdict
+
+
+def clear_base(isin: str) -> bool:
+    """Снять НАШ вердикт о базе купона: бумага возвращается в состояние «база
+    неизвестна» и заново проходит конвейер (corpbonds → калибратор). Нужно,
+    когда внешняя сверка показала, что вердикт неверен. Маржу не трогаем: она
+    могла прийти из проспекта и от базы не зависит."""
+    _ensure()
+    with _lock, _conn() as c:
+        n = c.execute("UPDATE instruments SET base=NULL, reviewed=0, updated_at=? "
+                      "WHERE isin=? AND manual_locked=0", (_now(), (isin or "").strip())).rowcount
+        c.execute("DELETE FROM enrich_seen WHERE isin=?", ((isin or "").strip(),))
+    return bool(n)
+
+
+def list_sl_stale(limit: int = 40) -> list[str]:
+    """Порция бумаг на сверку со smart-lab: сначала ни разу не проверенные,
+    затем самые давние. Внешний сайт — ходим понемногу за прогон."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin FROM instruments WHERE active=1 "
+            "ORDER BY (sl_checked_at IS NOT NULL), sl_checked_at LIMIT ?", (limit,)).fetchall()
+    return [r["isin"] for r in rows]
+
+
+def list_sl_mismatch() -> list[dict]:
+    """Бумаги, чей тип купона расходится со smart-lab — очередь на разбор."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, sl_type, sl_checked_at, "
+            "manual_locked, source FROM instruments "
+            "WHERE active=1 AND sl_mismatch=1 ORDER BY short_name").fetchall()
     return [dict(r) for r in rows]
 
 

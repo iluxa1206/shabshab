@@ -357,3 +357,61 @@ def test_list_no_spec(reg):
     reg.upsert({"isin": "RU_INC", "base": "KEYRATE", "maturity_date": "2030-01-01"}, "cbonds")
     ids = {r["isin"] for r in reg.list_no_spec()}
     assert ids == {"RU_NOSPEC"}
+
+
+# ── сверка типа купона со smart-lab (services/smartlab_audit) ───────────────
+
+def test_smartlab_type_agrees(reg):
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150}, "cbonds")
+    assert reg.set_smartlab_type("RU1", "floater") is None      # сходится
+    r = reg.get("RU1")
+    assert r["sl_type"] == "floater" and r["sl_mismatch"] == 0 and r["sl_checked_at"]
+
+
+def test_smartlab_catches_wrong_fixed(reg):
+    """Наш вердикт FIXED против «плавающего купона» на сайте — расхождение."""
+    reg.upsert({"isin": "RU1", "base": "FIXED"}, "moex")
+    assert reg.set_smartlab_type("RU1", "floater") == "mismatch_fixed"
+    assert reg.get("RU1")["sl_mismatch"] == 1
+    assert [x["isin"] for x in reg.list_sl_mismatch()] == ["RU1"]
+
+
+def test_smartlab_catches_wrong_floater(reg):
+    reg.upsert({"isin": "RU1", "base": "RUONIA", "margin_bps": 100}, "cbonds")
+    assert reg.set_smartlab_type("RU1", "fixed") == "mismatch_floater"
+    assert reg.get("RU1")["sl_mismatch"] == 1
+
+
+def test_smartlab_silence_is_not_a_verdict(reg):
+    """Сайт про тип молчит — не расхождение, и прошлый ответ не затирается."""
+    reg.upsert({"isin": "RU1", "base": "FIXED"}, "moex")
+    reg.set_smartlab_type("RU1", "fixed")
+    assert reg.set_smartlab_type("RU1", None) is None
+    r = reg.get("RU1")
+    assert r["sl_type"] == "fixed" and r["sl_mismatch"] == 0
+
+
+def test_clear_base_returns_bond_to_queue(reg):
+    reg.upsert({"isin": "RU1", "base": "FIXED", "margin_bps": 300}, "moex")
+    assert reg.clear_base("RU1") is True
+    r = reg.get("RU1")
+    assert r["base"] is None and r["reviewed"] == 0
+    assert r["margin_bps"] == 300      # маржа от базы не зависит — не трогаем
+
+
+def test_clear_base_respects_manual_lock(reg):
+    reg.upsert({"isin": "RU1", "base": "FIXED"}, "moex")
+    reg.set_manual("RU1", {"base": "FIXED"}, lock=True)
+    assert reg.clear_base("RU1") is False
+    assert reg.get("RU1")["base"] == "FIXED"
+
+
+def test_sl_stale_rotation(reg):
+    """Порция: сначала ни разу не проверенные, потом самые давние."""
+    for i in ("RU1", "RU2", "RU3"):
+        reg.upsert({"isin": i, "base": "KEYRATE", "margin_bps": 100}, "cbonds")
+    reg.set_smartlab_type("RU1", "floater")
+    assert reg.list_sl_stale(2) == ["RU2", "RU3"]
+    reg.set_smartlab_type("RU2", "floater")
+    reg.set_smartlab_type("RU3", "floater")
+    assert reg.list_sl_stale(1) == ["RU1"]      # проверенный раньше всех

@@ -132,7 +132,10 @@ async def catalog(only_active: bool = True, floaters_only: bool = False,
     # горизонт по дефолту «до погашения», админ должен видеть кандидатов
     return {"items": items, "count": reg.count(),
             "offers_no_spec": _offers_no_spec(),
-            "spec_mismatch": [r["isin"] for r in reg.list_spec_mismatch()]}
+            "spec_mismatch": [r["isin"] for r in reg.list_spec_mismatch()],
+            # тип купона разошёлся с внешним источником (smart-lab): наш вывод о
+            # базе проверен НЕ нашими данными, разбирать вручную
+            "sl_mismatch": reg.list_sl_mismatch()}
 
 
 @router.post("/{isin}/recheck-spec", tags=["Instruments"])

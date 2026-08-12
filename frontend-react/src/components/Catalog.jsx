@@ -77,6 +77,8 @@ export default function Catalog({ user }) {
   const [query, setQuery] = useState("");
   const [missOnly, setMissOnly] = useState(false);
   const [specBadOnly, setSpecBadOnly] = useState(false);
+  // тип купона разошёлся со smart-lab: наш вывод о базе проверен ЧУЖИМИ данными
+  const [slBadOnly, setSlBadOnly] = useState(false);
   const [floatersOnly, setFloatersOnly] = useState(true);
   const [editIsin, setEditIsin] = useState(null);
   const [importMsg, setImportMsg] = useState(null);
@@ -106,16 +108,18 @@ export default function Catalog({ user }) {
     if (missOnly) items = items.filter((r) => !r.priceable);
     // спека расходится с фактом выплат: неверный лаг/окно/режим
     if (specBadOnly) items = items.filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD");
+    if (slBadOnly) items = items.filter((r) => r.sl_mismatch);
     const s = query.trim().toLowerCase();
     if (s) items = items.filter((r) =>
       r.isin.toLowerCase().includes(s) || (r.short_name || "").toLowerCase().includes(s));
     if (specBadOnly) items = [...items].sort((a, b) => (b.spec_err_pp || 0) - (a.spec_err_pp || 0));
     return items;
-  }, [q.data, missOnly, specBadOnly, query]);
+  }, [q.data, missOnly, specBadOnly, slBadOnly, query]);
 
   const specBadCount = useMemo(
     () => (q.data?.items || []).filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD").length,
     [q.data]);
+  const slBadCount = (q.data?.sl_mismatch || []).length;
 
   const cnt = q.data?.count;
   const invalidate = () => qc.invalidateQueries({ queryKey: CATALOG_KEY });
@@ -154,6 +158,13 @@ export default function Catalog({ user }) {
               {specBadCount} спека расходится
             </span>
           )}
+          {slBadCount > 0 && (
+            <span className="admin-badge admin-warn"
+              title={"Тип купона расходится со smart-lab (внешний источник, наши данные не использует):\n"
+                + (q.data.sl_mismatch || []).map((r) => `${r.short_name} · у нас ${r.base || "нет базы"} · сайт: ${r.sl_type === "fixed" ? "фикс" : "флоатер"}`).join("\n")}>
+              {slBadCount} тип купона спорный
+            </span>
+          )}
           {q.data?.offers_no_spec?.length > 0 && (
             <span className="admin-badge admin-warn"
               title={"Будущая оферта, поведение купона не задано (var_type) — считаются к погашению:\n"
@@ -175,6 +186,11 @@ export default function Catalog({ user }) {
             onClick={() => setSpecBadOnly(!specBadOnly)}
             title="Бумаги, где пересчёт прошлых купонов нашей спекой расходится с фактом выплат — признак неверного лага/окна/режима">
             спека расходится{specBadCount ? ` (${specBadCount})` : ""}
+          </button>
+          <button className={"chip-btn" + (slBadOnly ? " on" : "")}
+            onClick={() => setSlBadOnly(!slBadOnly)}
+            title="Тип купона расходится с внешним источником (smart-lab): наш вывод о базе проверен не нашими данными">
+            тип купона спорный{slBadCount ? ` (${slBadCount})` : ""}
           </button>
           <button className={"chip-btn" + (floatersOnly ? " on" : "")} onClick={() => setFloatersOnly(!floatersOnly)}>
             только флоатеры

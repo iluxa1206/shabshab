@@ -5,6 +5,7 @@ import { baseLabel, fmt, dmColor, ratingColor } from "../format.js";
 import { fetchAlerts } from "../api.js";
 import { copyText } from "../clipboard.js";
 import CouponFormula from "./CouponFormula.jsx";
+import { HeaderCell } from "./TableHeader.jsx";
 
 const D = () => <span className="dash">—</span>;
 
@@ -242,82 +243,6 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
     </tr>
   );
 });
-
-// Шапка: клик — сортировка, перетаскивание — перенос колонки. HTML5 dnd после
-// drop клик не генерит, так что сортировка от переноса не срабатывает.
-// Alt+←/→ с клавиатуры двигает колонку без мыши.
-function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey, overKey, setOverKey,
-                     onResizeCol, onResetColWidth }) {
-  // Тяга за правую границу заголовка. Ширину меряем у живого <th> (а не из
-  // COLS.w), поэтому тянется и колонка, которую ещё не трогали. Двойной клик по
-  // ручке — вернуть ширину по умолчанию.
-  const startResize = (e) => {
-    if (!onResizeCol) return;
-    e.preventDefault(); e.stopPropagation();
-    const th = e.currentTarget.parentElement;
-    const startX = e.clientX, startW = th.getBoundingClientRect().width;
-    const move = (ev) => onResizeCol(col.key, Math.max(48, Math.round(startW + ev.clientX - startX)));
-    const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      document.body.classList.remove("col-resizing");
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-    document.body.classList.add("col-resizing");
-  };
-
-  const active = sort.key === col.key;
-  const cls =
-    (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
-    (col.sep ? "col-sep " : "") + (col.grp ? "col-grp " : "") +
-    (dragKey === col.key ? "th-drag " : "") +
-    (overKey === col.key && dragKey && dragKey !== col.key ? "th-over " : "") +
-    (active ? "sorted " + (sort.dir === "asc" ? "asc" : "") : "");
-  const onKeyDown = (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSort(col.key); return; }
-    if (onMoveCol && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-      e.preventDefault();
-      onMoveCol(col.key, e.key === "ArrowLeft" ? "-1" : "+1");
-    }
-  };
-  return (
-    <th
-      className={cls.trim()}
-      role="button"
-      tabIndex={0}
-      draggable={!!onMoveCol}
-      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
-      title="Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"
-      onClick={() => onSort(col.key)}
-      onKeyDown={onKeyDown}
-      // источник переноса держим в ref, а не только в state: state обновляется
-      // асинхронно, и обработчик drop в том же тике видел бы ещё null
-      onDragStart={(e) => {
-        dragRef.current = col.key; setDragKey(col.key);
-        e.dataTransfer.effectAllowed = "move";
-        try { e.dataTransfer.setData("text/plain", col.key); } catch { /* Safari */ }
-      }}
-      onDragEnd={() => { dragRef.current = null; setDragKey(null); setOverKey(null); }}
-      onDragOver={(e) => { if (dragRef.current) { e.preventDefault(); setOverKey(col.key); } }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const from = dragRef.current || e.dataTransfer.getData("text/plain");
-        if (from && from !== col.key) onMoveCol(from, col.key);
-        dragRef.current = null; setDragKey(null); setOverKey(null);
-      }}
-    >
-      {col.label}{col.sub && <><br /><small>{col.sub}</small></>}
-      {onResizeCol && (
-        <span className="th-resize" role="presentation" draggable={false}
-          title="Потяни — ширина колонки; двойной клик — вернуть по умолчанию"
-          onMouseDown={startResize}
-          onClick={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => { e.stopPropagation(); onResetColWidth?.(col.key); }} />
-      )}
-    </th>
-  );
-}
 
 export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth }) {
   // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),

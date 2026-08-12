@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
+import { copyText } from "../clipboard.js";
+import { HeaderCell } from "./TableHeader.jsx";
 import IssuerFilter from "./IssuerFilter.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
@@ -52,27 +54,93 @@ function SideTag({ side }) {
     {buy ? "buy" : "sell"}</span>;
 }
 
+// ── колонки ленты ───────────────────────────────────────────────────────────
+// Порядок, ширины и сортировка — как в СПИСКЕ (общий HeaderCell): переносятся
+// перетаскиванием, тянутся за границу, кликом сортируются. Раскладка живёт в
+// localStorage, чтобы стол не собирал её заново каждое утро.
+const COLS = [
+  { key: "date",   label: "ДАТА",       align: "left", w: 6,  get: (r) => r.ts },
+  { key: "time",   label: "ВРЕМЯ",      align: "left", w: 8,  get: (r) => r.ts },
+  { key: "name",   label: "БУМАГА",     align: "left", w: 20, get: (r) => (r.name || "").toLowerCase() },
+  { key: "isin",   label: "ISIN",       align: "left", w: 14, get: (r) => r.isin },
+  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 11, get: (r) => r.maturity || "" },
+  { key: "board",  label: "РЕЖИМ",      align: "left", w: 9,  get: (r) => r.board_short || r.board || "" },
+  { key: "price",  label: "ЦЕНА, %",    align: "num",  w: 8,  get: (r) => r.price },
+  { key: "value",  label: "СУММА, МЛН", align: "num",  w: 11, get: (r) => r.value },
+  { key: "side",   label: "СТОРОНА",    align: "left", w: 8,  get: (r) => r.side || "" },
+  { key: "yidx",   label: "R-SPREAD, БП", align: "num", w: 12, get: (r) => r.y_idx_bps,
+    title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
+  { key: "yld",    label: "ДОХ-ТЬ, %",  align: "num",  w: 8,  get: (r) => r.yld },
+];
+const DEFAULT_COLS = COLS.map((c) => c.key);
+const LS_ORDER = "tapeCols";
+const LS_WIDTHS = "tapeColW";
+// Фильтры ленты переживают уход на график/карточку и возврат «назад»: без
+// этого стол пересобирал условия после каждого клика по бумаге.
+const LS_FILTERS = "tapeFilters";
+
+const readLS = (k, fallback) => {
+  try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v ?? fallback; }
+  catch { return fallback; }
+};
+const savedFilters = () => readLS(LS_FILTERS, {}) || {};
+const pick = (v, fallback) => (v === undefined || v === null ? fallback : v);
+
+/** ISIN с копированием по клику: в ленте он нужен, чтобы утащить бумагу в
+ *  чужую систему, а выделять мышью в плотной таблице неудобно. */
+function IsinCell({ isin }) {
+  const [state, setState] = useState("");
+  if (!isin) return <span className="dash">—</span>;
+  const onClick = async (e) => {
+    e.stopPropagation();
+    const ok = await copyText(isin);
+    setState(ok ? "ok" : "err");
+    setTimeout(() => setState(""), 1200);
+  };
+  return (
+    <button type="button" className={"tape-isin" + (state ? " " + state : "")}
+      onClick={onClick} title="Клик — скопировать ISIN">
+      {state === "ok" ? "скопирован" : state === "err" ? "не вышло" : isin}
+    </button>
+  );
+}
+
+/** Кнопки у названия: график во весь экран и карточка со стаканом. Обе —
+ *  обычная навигация, поэтому «назад» возвращает в ленту, а фильтры она
+ *  держит в URL и восстанавливает сама. */
+function RowLinks({ isin, onOpen }) {
+  const stop = (e) => e.stopPropagation();
+  return (
+    <span className="tape-links">
+      <button type="button" className="tape-link" title="График выпуска на весь экран"
+        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>◱</button>
+      <button type="button" className="tape-link" title="Карточка бумаги со стаканом"
+        onClick={(e) => { stop(e); onOpen(isin, "card"); }}>▤</button>
+    </span>
+  );
+}
+
 export default function TradesTape() {
   const nav = useNavigate();
   // дефолт — рабочий срез: неделя и крупняк от 1 млн ₽. Максимум («макс» +
   // «все») лента тянет, но агрегат по миллиону сделок считается секундами.
-  const [days, setDays] = useState(7);
-  const [minValue, setMinValue] = useState(1e6);
-  const [side, setSide] = useState(null);
-  const [market, setMarket] = useState(null);
-  const [emitters, setEmitters] = useState([]);
-  const [scope, setScope] = useState("float");
-  const [limit, setLimit] = useState(LIMITS[0]);
-  const [spreadMin, setSpreadMin] = useState("");
-  const [spreadMax, setSpreadMax] = useState("");
-  const [ttmMin, setTtmMin] = useState("");
-  const [ttmMax, setTtmMax] = useState("");
-  const [ratings, setRatings] = useState([]);       // выбранные грейды
+  const [days, setDays] = useState(() => pick(savedFilters().days, 7));
+  const [minValue, setMinValue] = useState(() => pick(savedFilters().minValue, 1e6));
+  const [side, setSide] = useState(() => pick(savedFilters().side, null));
+  const [market, setMarket] = useState(() => pick(savedFilters().market, null));
+  const [emitters, setEmitters] = useState(() => pick(savedFilters().emitters, []));
+  const [scope, setScope] = useState(() => pick(savedFilters().scope, "float"));
+  const [limit, setLimit] = useState(() => pick(savedFilters().limit, LIMITS[0]));
+  const [spreadMin, setSpreadMin] = useState(() => pick(savedFilters().spreadMin, ""));
+  const [spreadMax, setSpreadMax] = useState(() => pick(savedFilters().spreadMax, ""));
+  const [ttmMin, setTtmMin] = useState(() => pick(savedFilters().ttmMin, ""));
+  const [ttmMax, setTtmMax] = useState(() => pick(savedFilters().ttmMax, ""));
+  const [ratings, setRatings] = useState(() => pick(savedFilters().ratings, []));   // выбранные грейды
   const [ratingOpts, setRatingOpts] = useState([]);
-  const [pin, setPin] = useState(null);
+  const [pin, setPin] = useState(() => pick(savedFilters().pin, null));
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
   // адресных: у безадресных поштучный архив полный, агрегировать нечего.
-  const [byDay, setByDay] = useState(false);
+  const [byDay, setByDay] = useState(() => pick(savedFilters().byDay, false));
   const [q, setQ] = useState("");
   const [data, setData] = useState(null);
   const [dayData, setDayData] = useState(null);
@@ -82,6 +150,19 @@ export default function TradesTape() {
   const [tick, setTick] = useState(0);
   const [live, setLive] = useState(true);
   const [lastAt, setLastAt] = useState(null);
+  // раскладка колонок: порядок и ширины переживают перезагрузку
+  const [colOrder, setColOrder] = useState(() => {
+    const saved = readLS(LS_ORDER, null);
+    const known = new Set(DEFAULT_COLS);
+    const kept = Array.isArray(saved) ? saved.filter((k) => known.has(k)) : [];
+    // новые колонки версии дописываем в конец, а не теряем молча
+    return kept.length ? [...kept, ...DEFAULT_COLS.filter((k) => !kept.includes(k))] : DEFAULT_COLS;
+  });
+  const [colWidths, setColWidths] = useState(() => readLS(LS_WIDTHS, {}));
+  const [sort, setSort] = useState({ key: null, dir: "desc" });
+  const dragRef = useRef(null);
+  const [dragKey, setDragKey] = useState(null);
+  const [overKey, setOverKey] = useState(null);
   const abort = useRef(null);
 
   // ISIN в поиске — не текстовый фильтр по загруженным строкам, а сужение
@@ -93,6 +174,15 @@ export default function TradesTape() {
   }, [q]);
   const isinReq = pin || qIsin;
   const daysView = market === "ndm" && byDay;
+
+  useEffect(() => {
+    localStorage.setItem(LS_FILTERS, JSON.stringify({
+      days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
+      ttmMin, ttmMax, ratings, byDay, pin }));
+  }, [days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
+      ttmMin, ttmMax, ratings, byDay, pin]);
+  useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
+  useEffect(() => { localStorage.setItem(LS_WIDTHS, JSON.stringify(colWidths)); }, [colWidths]);
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
@@ -173,6 +263,59 @@ export default function TradesTape() {
   }, [dayRows]);
 
   const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+
+  // ── колонки: порядок, ширина, сортировка ─────────────────────────────────
+  const cols = useMemo(() => {
+    const byKey = new Map(COLS.map((c) => [c.key, c]));
+    const out = colOrder.map((k) => byKey.get(k)).filter(Boolean);
+    return out.length ? out : COLS;
+  }, [colOrder]);
+
+  const onSort = (key) => setSort((s0) => (s0.key === key
+    ? { key, dir: s0.dir === "desc" ? "asc" : "desc" }
+    : { key, dir: "desc" }));
+
+  const onMoveCol = (from, to) => setColOrder((order) => {
+    const next = [...order];
+    const i = next.indexOf(from);
+    if (i < 0) return order;
+    next.splice(i, 1);
+    if (to === "-1" || to === "+1") {
+      next.splice(Math.max(0, Math.min(next.length, i + (to === "-1" ? -1 : 1))), 0, from);
+    } else {
+      const j = next.indexOf(to);
+      next.splice(j < 0 ? next.length : j, 0, from);
+    }
+    return next;
+  });
+  const onResizeCol = (key, px) => setColWidths((w) => ({ ...w, [key]: px }));
+  const onResetColWidth = (key) => setColWidths((w) => {
+    const next = { ...w }; delete next[key]; return next;
+  });
+
+  // Сортировка КЛИЕНТСКАЯ, по загруженным строкам: сервер отдаёт срез по
+  // времени, и пересортировка всего окна на бэке ради колонки не нужна.
+  const sorted = useMemo(() => {
+    if (!sort.key) return rows;
+    const col = COLS.find((c) => c.key === sort.key);
+    if (!col) return rows;
+    const sign = sort.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const x = col.get(a), y = col.get(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;            // пустые всегда внизу
+      if (y == null) return -1;
+      if (typeof x === "number" && typeof y === "number") return (x - y) * sign;
+      return String(x).localeCompare(String(y), "ru") * sign;
+    });
+  }, [rows, sort]);
+
+  // Открыть бумагу из ленты. Фильтры лежат в URL, поэтому «назад» из графика
+  // или карточки возвращает ленту в том же виде — без пересбора условий.
+  const openBond = (isin, where) => {
+    if (where === "chart") nav(`/chart/${isin}`);
+    else nav(`/floaters?isin=${isin}&ob=1`);
+  };
 
   return (
     <div className="issuer-agg tape-page">
@@ -311,54 +454,68 @@ export default function TradesTape() {
           </div>
 
           <div className="ia-table-wrap">
-            <table className="grid tape-table">
+            <table className="grid tape-table cols-fixed">
+              <colgroup>
+                {cols.map((c) => <col key={c.key} style={colWidths[c.key]
+                  ? { "--cw": colWidths[c.key] + "px" }
+                  : { "--cw": (c.w || 8) + "ch" }} />)}
+                <col className="fill-col" />
+              </colgroup>
               <thead>
                 <tr>
-                  <th className="left">ДАТА</th>
-                  <th className="left">ВРЕМЯ</th>
-                  <th className="left">БУМАГА</th>
-                  <th className="left">РЕЖИМ</th>
-                  <th>ЦЕНА, %</th>
-                  <th>СУММА, МЛН</th>
-                  <th className="left">СТОРОНА</th>
-                  <th title="спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)">R-spread, бп</th>
-                  <th>ДОХ-ТЬ, %</th>
+                  {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
+                    onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
+                    overKey={overKey} setOverKey={setOverKey}
+                    onResizeCol={onResizeCol} onResetColWidth={onResetColWidth} />)}
+                  <th className="fill-col" />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {sorted.map((r) => {
                   // график выпуска построен вокруг флоатера — для фиксов/ОФЗ и
                   // бумаг вне юниверса он пустой, такие строки никуда не ведут
                   const clickable = r.base === "KEYRATE" || r.base === "RUONIA";
+                  const cell = {
+                    date: <span className="tape-ts">{dpart(r.ts)}</span>,
+                    time: <span className="tape-ts">{tpart(r.ts)}</span>,
+                    name: (
+                      <span className="tape-name-cell">
+                        <RowLinks isin={r.isin} onOpen={openBond} />
+                        {r.name}
+                        {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
+                        {r.base && <span className="tape-base">{r.base === "FIXED" ? "фикс" : baseLabel(r.base)}</span>}
+                      </span>
+                    ),
+                    isin: <IsinCell isin={r.isin} />,
+                    mat: r.maturity ? fmt.date(String(r.maturity).slice(0, 10)) : <span className="dash">—</span>,
+                    board: (
+                      <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}
+                        title={r.board_title || r.board}>
+                        {r.board_short || r.board}
+                      </span>
+                    ),
+                    price: fmt.pct(r.price),
+                    value: <>{money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : ""}</>,
+                    side: <SideTag side={r.side} />,
+                    yidx: r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—",
+                    yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
+                  };
                   return (
                     <tr key={r.trade_id}
                       className={(clickable ? "" : "tape-row-static ")
                                  + (r.negotiated ? "blk-ndm" : "")}
-                      onClick={clickable ? () => nav(`/chart/${r.isin}`) : undefined}
+                      onClick={clickable ? () => openBond(r.isin, "chart") : undefined}
                       title={`${r.isin} · ${r.ts} · ${r.board_title || r.board}`}>
-                      <td className="left tape-ts">{dpart(r.ts)}</td>
-                      <td className="left tape-ts">{tpart(r.ts)}</td>
-                      <td className="left tape-name">
-                        {r.name}
-                        {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
-                        {r.base && <span className="tape-base">{r.base === "FIXED" ? "фикс" : baseLabel(r.base)}</span>}
-                      </td>
-                      <td className="left blk-board">
-                        <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}
-                          title={r.board_title || r.board}>
-                          {r.board_short || r.board}
-                        </span>
-                      </td>
-                      <td className="num">{fmt.pct(r.price)}</td>
-                      <td className="num tape-val">
-                        {money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : ""}
-                      </td>
-                      <td className="left"><SideTag side={r.side} /></td>
-                      <td className="num" style={r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
-                        title={r.dm_bps != null ? `DM ${fmt.num(r.dm_bps, 0)} бп` : undefined}>
-                        {r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—"}
-                      </td>
-                      <td className="num">{r.yld != null ? fmt.num(r.yld, 2) : "—"}</td>
+                      {cols.map((c) => (
+                        <td key={c.key}
+                          className={c.align === "left" ? "left" : c.align === "num" ? "num" : ""}
+                          style={c.key === "yidx" && r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
+                          title={c.key === "yidx" && r.dm_bps != null
+                            ? `DM ${fmt.num(r.dm_bps, 0)} бп` : undefined}>
+                          {cell[c.key]}
+                        </td>
+                      ))}
+                      <td className="fill-col" />
                     </tr>
                   );
                 })}

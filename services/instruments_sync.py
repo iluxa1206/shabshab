@@ -191,8 +191,20 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("spec backtest failed: %s", e)
 
+    # 9. внешняя сверка типа купона (smart-lab): единственная проверка нашего
+    #    вывода НЕ нашими данными — см. services/smartlab_audit
+    sl_stats = {}
+    try:
+        from services import smartlab_audit
+        sl_stats = await smartlab_audit.run()
+    except Exception as e:
+        logger.warning("smart-lab audit failed: %s", e)
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
                   "inferred": inf_stats.get("filled", 0),
+                  "sl_checked": sl_stats.get("checked", 0),
+                  "sl_mismatch": sl_stats.get("mismatch", 0),
+                  "sl_reverted": sl_stats.get("reverted", 0),
                   "br_specs": br_stats.get("written", 0),
                   "spec_checked": bt_stats.get("checked", 0),
                   "spec_bad": bt_stats.get("bad", 0) + bt_stats.get("warn", 0),
