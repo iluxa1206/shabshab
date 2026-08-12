@@ -240,6 +240,7 @@ CREATE TABLE IF NOT EXISTS signal_filters(
   sound INTEGER NOT NULL DEFAULT 1,      -- звук при срабатывании
   desktop INTEGER NOT NULL DEFAULT 1,    -- системное уведомление браузера
   change_pct REAL NOT NULL DEFAULT 10,   -- порог «шевеления» метрики, %
+  kind TEXT NOT NULL DEFAULT 'book',     -- book — стакан | block — крупная сделка
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_signal_filters_user ON signal_filters(user_email);
@@ -302,6 +303,9 @@ _MIGRATIONS = [
     "ALTER TABLE block_trade ADD COLUMN y_idx_bps REAL",
     "ALTER TABLE block_trade ADD COLUMN dm_bps REAL",
     "ALTER TABLE block_trade ADD COLUMN metrics_at TEXT",
+    # тип фильтра: book — условия по стакану (исторический, потому DEFAULT),
+    # block — крупная сделка в ленте (см. services/block_trades.notify_blocks)
+    "ALTER TABLE signal_filters ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'",
 ]
 
 

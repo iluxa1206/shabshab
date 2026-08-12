@@ -28,9 +28,25 @@ class SignalParams(BaseModel):
     hide_subord: bool = False           # прятать суборды
 
 
+class BlockParams(BaseModel):
+    """Фильтр крупной сделки (kind=block): не состояние стакана, а факт сделки
+    в ленте — отсюда порог в рублях, режим торгов и база купона."""
+    ratings: List[str] = []
+    emitters: List[str] = []
+    isins: List[str] = []
+    bases: List[str] = []               # KEYRATE/RUONIA/FIXED, пусто = любая
+    min_value_rub: Optional[float] = None
+    markets: str = "all"                # all | main (безадресные) | ndm (РПС)
+    side: str = "any"                   # any | buy | sell — агрессор
+    hide_subord: bool = False
+
+
 class SignalCreate(BaseModel):
     name: str
-    params: SignalParams
+    kind: str = "book"                  # book — стакан | block — крупная сделка
+    # форма kind-зависимая, поэтому dict: разбор и валидация — в screener_core
+    # (normalize_params / normalize_block_params), одни и те же для API и бота
+    params: dict = {}
     change_pct: float = 10.0
     sound: bool = True
     desktop: bool = True
@@ -39,7 +55,7 @@ class SignalCreate(BaseModel):
 class SignalPatch(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
-    params: Optional[SignalParams] = None
+    params: Optional[dict] = None
     change_pct: Optional[float] = None
     sound: Optional[bool] = None
     desktop: Optional[bool] = None
@@ -48,17 +64,23 @@ class SignalPatch(BaseModel):
 @router.get("", tags=["Signals"])
 async def list_filters(user: dict = Depends(require_user)):
     return {"filters": signals.list_for_user(user["email"]),
-            "ratings": signals.RATINGS}
+            "ratings": signals.RATINGS, "bases": signals.BLOCK_BASES}
 
 
 @router.post("", tags=["Signals"])
 async def create_filter(body: SignalCreate, user: dict = Depends(require_user)):
     try:
-        return signals.create(user["email"], body.name, body.params.model_dump(),
+        return signals.create(user["email"], body.name, body.params,
                               change_pct=body.change_pct, sound=body.sound,
-                              desktop=body.desktop)
+                              desktop=body.desktop, kind=body.kind)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/all", tags=["Signals"])
+async def delete_all_filters(user: dict = Depends(require_user)):
+    """Снести все фильтры пользователя разом (вместе с их событиями в ленте)."""
+    return {"deleted": signals.delete_all(user["email"])}
 
 
 @router.post("/preview", tags=["Signals"])
@@ -66,6 +88,17 @@ async def preview_filter(params: SignalParams, user: dict = Depends(require_user
     """Что попадёт под условия прямо сейчас — до сохранения фильтра."""
     try:
         return await signals.preview(user["email"], params.model_dump())
+    except signals.FilterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/preview-block", tags=["Signals"])
+async def preview_block_filter(params: BlockParams, user: dict = Depends(require_user)):
+    """Сколько сделок СЕГОДНЯ прошло бы под условия — блок-фильтр событийный,
+    «набора прямо сейчас» у него не бывает."""
+    import asyncio
+    try:
+        return await asyncio.to_thread(signals.preview_block, params.model_dump())
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -114,9 +147,8 @@ async def patch_filter(body: SignalPatch, fid: int = Path(...),
                        user: dict = Depends(require_user)):
     try:
         f = signals.update(user["email"], fid, name=body.name, enabled=body.enabled,
-                           params=body.params.model_dump() if body.params else None,
-                           change_pct=body.change_pct, sound=body.sound,
-                           desktop=body.desktop)
+                           params=body.params, change_pct=body.change_pct,
+                           sound=body.sound, desktop=body.desktop)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if f is None:

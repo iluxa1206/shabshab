@@ -469,8 +469,13 @@ export const patchSignalFilter = (id, json) =>
   request(`/api/signals/${id}`, { method: "PATCH", json });
 export const deleteSignalFilter = (id) =>
   request(`/api/signals/${id}`, { method: "DELETE" });
+export const deleteAllSignalFilters = () =>
+  request("/api/signals/all", { method: "DELETE" });
 export const previewSignalFilter = (json) =>
   request("/api/signals/preview", { method: "POST", json });
+// у блок-фильтра «набора сейчас» нет — превью считает сегодняшние сделки
+export const previewBlockFilter = (json) =>
+  request("/api/signals/preview-block", { method: "POST", json });
 export const fetchSignalEvents = (limit = 100) => request(`/api/signals/events?limit=${limit}`);
 export const markSignalEventsSeen = () => request("/api/signals/events/seen", { method: "POST" });
 export const clearSignalEvents = () => request("/api/signals/events", { method: "DELETE" });

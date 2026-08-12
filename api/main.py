@@ -727,7 +727,11 @@ async def lifespan(app: FastAPI):
     blocks_task = asyncio.create_task(block_trades_worker())
     quotes_task = asyncio.create_task(quotes_poller())
     from services.universe_stream import universe_stream_pool, metrics_worker
+    from services.trades_stream import trades_stream_pool
     pool_task = asyncio.create_task(universe_stream_pool())
+    # безадресные сделки юниверса пушем: ISS-лента (block_trades) отстаёт на 15
+    # минут, у Alor задержки нет — см. services/trades_stream
+    tape_task = asyncio.create_task(trades_stream_pool())
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
     from services.tg_notify import tg_notify_worker
@@ -740,6 +744,7 @@ async def lifespan(app: FastAPI):
     signals_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()
+    tape_task.cancel()
     engine_task.cancel()
     lag_task.cancel()
     seed.cancel()

@@ -107,6 +107,86 @@ def normalize_params(raw: dict) -> dict:
     return p
 
 
+# ────────────────────── фильтр «крупная сделка» (kind=block) ──────────────────
+#
+# Другой класс события: не состояние стакана, а ФАКТ сделки в ленте. Поэтому и
+# параметры другие — порог в рублях, режим торгов (безадресный / РПС) и база
+# купона; спреда/стороны стакана здесь нет. Отбор бумаг (рейтинг/эмитент/ISIN,
+# суборды) общий с book-фильтром, чтобы «крупняк только в моих эмитентах»
+# описывался теми же чипами.
+BLOCK_PARAM_DEFAULTS = {
+    "ratings": [],
+    "emitters": [],
+    "isins": [],
+    "bases": [],                  # KEYRATE/RUONIA/FIXED, пусто = любая база
+    "min_value_rub": 100_000_000.0,
+    "markets": "all",             # all | main (безадресные) | ndm (РПС/адресные)
+    "side": "any",                # any | buy | sell — агрессор сделки
+    "hide_subord": False,
+}
+
+BLOCK_BASES = ["KEYRATE", "RUONIA", "FIXED"]
+
+
+def normalize_block_params(raw: dict) -> dict:
+    raw = raw or {}
+    p = dict(BLOCK_PARAM_DEFAULTS)
+    p["ratings"] = _str_list(raw.get("ratings"), "ratings", upper=True)
+    p["emitters"] = _str_list(raw.get("emitters"), "emitters")
+    p["isins"] = _str_list(raw.get("isins"), "isins", upper=True)
+    p["bases"] = _str_list(raw.get("bases"), "bases", upper=True)
+    for r in p["ratings"]:
+        if r not in RATINGS:
+            raise FilterError(f"rating: {' '.join(RATINGS)}")
+    for b in p["bases"]:
+        if b not in BLOCK_BASES:
+            raise FilterError(f"base: {' '.join(BLOCK_BASES)}")
+    v = raw.get("min_value_rub")
+    if v in (None, ""):
+        raise FilterError("Задай порог объёма сделки")
+    try:
+        p["min_value_rub"] = float(v)
+    except (TypeError, ValueError):
+        raise FilterError("min_value_rub: должно быть числом")
+    # Нижняя граница — порог ЗАПИСИ ленты: сделок мельче в базе может не быть
+    # вовсе (ночью день ужимается), обещать по ним звонок нечестно.
+    if p["min_value_rub"] < 1_000_000:
+        raise FilterError("Порог объёма: от 1 млн ₽")
+    p["markets"] = raw.get("markets") or "all"
+    if p["markets"] not in ("all", "main", "ndm"):
+        raise FilterError("markets: all | main | ndm")
+    p["side"] = raw.get("side") or "any"
+    if p["side"] not in ("any", "buy", "sell"):
+        raise FilterError("side: any | buy | sell")
+    p["hide_subord"] = bool(raw.get("hide_subord"))
+    return p
+
+
+def block_matches(trade: dict, meta: dict, params: dict) -> bool:
+    """Подходит ли сделка из ленты под условия block-фильтра.
+
+    trade — строка block_trade (value/market/side/isin), meta — подпись бумаги
+    из instruments_registry.labels_map: {name, emitter, base, rating}."""
+    if (trade.get("value") or 0) < params["min_value_rub"]:
+        return False
+    if params["markets"] == "ndm" and trade.get("market") != "ndm":
+        return False
+    if params["markets"] == "main" and trade.get("market") == "ndm":
+        return False
+    if params["side"] != "any" and trade.get("side") != params["side"]:
+        return False
+    base = (meta.get("base") or "FIXED").upper()
+    if params["bases"]:
+        # всё, что не флоатер, для фильтра — FIXED: своих подтипов у фиксов в
+        # реестре нет, а «крупняк в фиксах» пользователь описывает одной кнопкой
+        if (base if base in ("KEYRATE", "RUONIA") else "FIXED") not in params["bases"]:
+            return False
+    if params["hide_subord"] and is_subord({"name": meta.get("name")}):
+        return False
+    return selected({"isin": trade.get("isin"), "rating": meta.get("rating"),
+                     "emitter_name": meta.get("emitter")}, params)
+
+
 def is_subord(u: dict) -> bool:
     return bool(_SUBORD_RE.search(u.get("name") or ""))
 

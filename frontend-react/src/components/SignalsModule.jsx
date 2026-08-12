@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  clearSignalEvents, createSignalFilter, deleteSignalFilter, fetchSignalEmitters,
-  fetchSignalEvents, fetchSignalFilters, markSignalEventsSeen, patchSignalFilter,
-  previewSignalFilter, searchInstruments,
+  clearSignalEvents, createSignalFilter, deleteAllSignalFilters, deleteSignalFilter,
+  fetchSignalEmitters, fetchSignalEvents, fetchSignalFilters, markSignalEventsSeen,
+  patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
 
@@ -11,7 +11,10 @@ const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 // Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
 // прилетело повторное уведомление по уже найденной бумаге.
 const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];
-const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём" };
+// block — не срабатывание фильтра, а рыночное событие (filter_id=0), поэтому
+// filter_name у него пустой: подпись собираем сами, см. sig-hit-meta ниже.
+const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
+                 block: "блок" };
 
 const money = (v) =>
   v == null ? "—"
@@ -25,6 +28,30 @@ const timeOf = (iso) => {
     return new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
   } catch { return ""; }
 };
+
+// Фильтр крупной сделки: база купона и режим торгов — то, чем крупняк
+// отличается от стакана (адресные РПС в стакане не видны вообще).
+const BASES = [["KEYRATE", "КС"], ["RUONIA", "RUONIA"], ["FIXED", "фикс"]];
+const MARKETS = [["all", "все"], ["main", "безадресные"], ["ndm", "адресные"]];
+const SIDES = [["any", "любая"], ["buy", "покупка"], ["sell", "продажа"]];
+const labelOfPair = (pairs, v) => (pairs.find(([x]) => x === v) || [null, v])[1];
+// «1 сделка / 2 сделки / 5 сделок» — счётчик превью читается как текст, а не как лог
+const plural = (n, one, few, many) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  return b === 1 ? one : many;
+};
+
+/** Человеческое описание условий блок-фильтра — строкой в карточке. */
+function describeBlock(p) {
+  const bases = p.bases?.length
+    ? p.bases.map((b) => labelOfPair(BASES, b)).join("/") : "любая база";
+  const money = p.min_value_rub >= 1e6
+    ? fmt.num(p.min_value_rub / 1e6, 1) + " млн" : fmt.num(p.min_value_rub, 0);
+  return `от ${money} ₽ · ${labelOfPair(MARKETS, p.markets)} · ${bases}`
+    + (p.side !== "any" ? ` · ${labelOfPair(SIDES, p.side)}` : "");
+}
 
 /** Человеческое описание условий фильтра — одной строкой, как в карточке. */
 function describe(p) {
@@ -177,7 +204,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     if (smin === "" && smax === "" && minMoney === "") {
       setErr("Задай диапазон R-spread или объём — иначе условий нет"); return; }
     try {
-      await onSubmit({ name: name.trim(), params, change_pct: changePct, sound, desktop });
+      await onSubmit({ name: name.trim(), kind: "book", params,
+                       change_pct: changePct, sound, desktop });
       if (edit) return;      // правка закрывает форму снаружи
       setName(""); setRatings([]); setEmitters([]); setIsins([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
@@ -332,7 +360,216 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   );
 }
 
+/** Форма фильтра крупной сделки. Условий стакана здесь нет: событие — факт
+ *  сделки в ленте (в т.ч. адресной РПС, которой в стакане не бывает). */
+function BlockForm({ onSubmit, busy, edit, onCancel }) {
+  const ep = edit?.params || {};
+  const [name, setName] = useState(edit?.name || "");
+  const [ratings, setRatings] = useState(ep.ratings || []);
+  const [emitters, setEmitters] = useState(ep.emitters || []);
+  const [isins, setIsins] = useState(ep.isins || []);
+  const [bases, setBases] = useState(ep.bases || ["KEYRATE", "RUONIA"]);
+  const [minValue, setMinValue] = useState(numOrEmpty(ep.min_value_rub ?? 100000000));
+  const [markets, setMarkets] = useState(ep.markets || "all");
+  const [side, setSide] = useState(ep.side || "any");
+  const [hideSub, setHideSub] = useState(!!ep.hide_subord);
+  const [sound, setSound] = useState(edit ? !!edit.sound : true);
+  const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
+  const [err, setErr] = useState("");
+  const [preview, setPreview] = useState(null);
+
+  const params = useMemo(() => ({
+    ratings, emitters, isins, bases, markets, side, hide_subord: hideSub,
+    min_value_rub: minValue === "" ? null : Number(minValue),
+  }), [ratings, emitters, isins, bases, markets, side, hideSub, minValue]);
+
+  // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
+  // выставленный порог либо молчит неделю, либо звонит каждые пять минут.
+  useEffect(() => {
+    if (minValue === "" || Number(minValue) < 1e6) { setPreview(null); return; }
+    let dead = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await previewBlockFilter(params);
+        if (!dead) setPreview(r);
+      } catch { if (!dead) setPreview(null); }
+    }, 400);
+    return () => { dead = true; clearTimeout(t); };
+  }, [params, minValue]);
+
+  const searchEmitters = useCallback(
+    async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
+  const searchBonds = useCallback(async (q) => (await searchInstruments(q)).results, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    if (!name.trim()) { setErr("Дай сигналу название"); return; }
+    if (minValue === "" || Number(minValue) < 1e6) {
+      setErr("Порог объёма: от 1 млн ₽ — мельче лента не хранит"); return; }
+    try {
+      await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop });
+      if (edit) return;
+      setName(""); setRatings([]); setEmitters([]); setIsins([]); setPreview(null);
+    } catch (e2) { setErr(e2.message); }
+  };
+
+  return (
+    <form className={"sig-form" + (edit ? " editing" : "")} onSubmit={submit}>
+      <div className="sig-form-head">
+        {edit ? `Правка: ${edit.name}` : "Новый сигнал: крупная сделка"}
+        {edit && (
+          <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
+        )}
+      </div>
+
+      <div className="sig-field">
+        <label className="sig-label" htmlFor="blk-name">Название</label>
+        <input id="blk-name" className="sig-input" value={name} placeholder="например, блоки в моих эмитентах"
+          onChange={(e) => setName(e.target.value)} />
+      </div>
+
+      <div className="sig-section">Какие сделки</div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label" htmlFor="blk-money">Объём сделки от, ₽</label>
+          <input id="blk-money" className="sig-input num" type="number" value={minValue}
+            onChange={(e) => setMinValue(e.target.value)} />
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Режим торгов</label>
+          <div className="sig-seg">
+            {MARKETS.map(([v, t]) => (
+              <button type="button" key={v} className={markets === v ? "on" : ""}
+                onClick={() => setMarkets(v)}>{t}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="sig-note">
+        Адресные — РПС, размещения и выкупы: в стакане их не видно вообще, крупняк чаще идёт именно так.
+      </div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">База купона</label>
+          <div className="sig-chips">
+            {BASES.map(([v, t]) => (
+              <button type="button" key={v}
+                className={"sig-chip" + (bases.includes(v) ? " on" : "")}
+                onClick={() => setBases(bases.includes(v)
+                  ? bases.filter((x) => x !== v) : [...bases, v])}>{t}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Сторона (агрессор)</label>
+          <div className="sig-seg">
+            {SIDES.map(([v, t]) => (
+              <button type="button" key={v} className={side === v ? "on" : ""}
+                onClick={() => setSide(v)}>{t}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="sig-note">
+        Пустая база — любые бумаги. Крупняк рынка в рублях почти целиком ОФЗ-ПД,
+        поэтому без КС/RUONIA лента уведомлений вырождается в фиксы. У адресных сделок стороны нет.
+      </div>
+
+      <div className="sig-section">Какие бумаги <span>условия объединяются по «или»</span></div>
+
+      <div className="sig-field">
+        <label className="sig-label">Рейтинг</label>
+        <div className="sig-chips">
+          {RATINGS.map((r) => (
+            <button type="button" key={r}
+              className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
+              onClick={() => setRatings(ratings.includes(r)
+                ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
+          ))}
+        </div>
+      </div>
+
+      <MultiPicker label="Эмитенты" placeholder="начни вводить название"
+        items={emitters} onChange={setEmitters} search={searchEmitters}
+        keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
+
+      <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
+        items={isins} onChange={setIsins} search={searchBonds}
+        keyOf={(r) => r.isin} labelOf={(r) => r.name}
+        subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
+
+      <div className="sig-field">
+        <label className="sig-check-line">
+          <input type="checkbox" checked={hideSub}
+            onChange={(e) => setHideSub(e.target.checked)} />
+          <span>Прятать суборды</span>
+        </label>
+      </div>
+
+      <div className="sig-field">
+        <label className="sig-label">Как оповещать</label>
+        <div className="sig-checks">
+          <label><input type="checkbox" checked={sound}
+            onChange={(e) => setSound(e.target.checked)} /> звук</label>
+          <label><input type="checkbox" checked={desktop}
+            onChange={(e) => setDesktop(e.target.checked)} /> окно системы</label>
+        </div>
+      </div>
+
+      {preview && (
+        <div className="sig-preview">
+          {preview.total === 0
+            ? "Сегодня под условия не попала ни одна сделка."
+            : <>Сегодня под условия {plural(preview.total, "попала", "попало", "попало")}{" "}
+                <b>{preview.total}</b>{preview.capped ? "+" : ""}{" "}
+                {plural(preview.total, "сделка", "сделки", "сделок")}:{" "}
+                {preview.matches.slice(0, 4).map(
+                  (m) => `${m.name} (${money(m.money_rub)} ₽)`).join(", ")}
+                {preview.total > 4 && ` и ещё ${preview.total - 4}`}</>}
+        </div>
+      )}
+
+      {err && <div className="sig-err">{err}</div>}
+      <button className="btn sig-submit" type="submit" disabled={busy}>
+        {busy ? "Сохраняем…" : edit ? "Сохранить изменения" : "Создать сигнал"}</button>
+    </form>
+  );
+}
+
 function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
+  if (f.kind === "block") {
+    return (
+      <div className={"sig-row-card" + (f.enabled ? "" : " off") + (editing ? " on-edit" : "")}>
+        <div className="sig-rc-main">
+          <div className="sig-rc-title">
+            {f.name}
+            <span className="sb-tag sb-block">блок</span>
+            <span className={"sig-state " + (f.enabled ? "on" : "off")}>
+              {f.enabled ? "включён" : "выключен"}</span>
+          </div>
+          <div className="sig-rc-sub">{describe(f.params).scope}</div>
+          <div className="sig-rc-cond num">
+            {describeBlock(f.params)}
+            {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
+          </div>
+        </div>
+        <div className="sig-rc-actions">
+          <button className="btn" onClick={() => onEdit(f)}>Изменить</button>
+          <button className="btn" onClick={() => onToggle(f)}>
+            {f.enabled ? "Выключить" : "Включить"}</button>
+          <button className="btn btn-danger" onClick={() => onDelete(f.id)}>Удалить</button>
+        </div>
+      </div>
+    );
+  }
+  return <BookFilterRow f={f} onToggle={onToggle} onDelete={onDelete}
+    onEdit={onEdit} editing={editing} />;
+}
+
+function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
   const d = describe(f.params);
   return (
     <div className={"sig-row-card" + (f.enabled ? "" : " off") + (editing ? " on-edit" : "")}>
@@ -366,6 +603,7 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
 export default function SignalsModule() {
   const qc = useQueryClient();
   const [editId, setEditId] = useState(null);
+  const [newKind, setNewKind] = useState("book");   // тип создаваемого фильтра
   const filters = useQuery({ queryKey: ["signal-filters"], queryFn: fetchSignalFilters });
   const events = useQuery({
     queryKey: ["signal-events"], queryFn: () => fetchSignalEvents(100), refetchInterval: 30000,
@@ -389,6 +627,14 @@ export default function SignalsModule() {
   const del = useMutation({
     mutationFn: deleteSignalFilter,
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["signal-filters"] });
+      qc.invalidateQueries({ queryKey: ["signal-events"] });
+    },
+  });
+  const delAll = useMutation({
+    mutationFn: deleteAllSignalFilters,
+    onSuccess: () => {
+      setEditId(null);
       qc.invalidateQueries({ queryKey: ["signal-filters"] });
       qc.invalidateQueries({ queryKey: ["signal-events"] });
     },
@@ -417,6 +663,13 @@ export default function SignalsModule() {
           Сигналы
           <span className="sig-head-sub">
             бот проверяет рынок в торговые часы и показывает бумаги, попавшие под условия</span>
+          {rows.length > 0 && (
+            <button className="btn sig-clear"
+              onClick={() => {
+                if (window.confirm(`Удалить все фильтры (${rows.length})? Их события в ленте тоже уйдут.`))
+                  delAll.mutate();
+              }}>Удалить все</button>
+          )}
         </div>
 
         {filters.isLoading ? <div className="muted">Загрузка…</div>
@@ -430,13 +683,34 @@ export default function SignalsModule() {
                   onDelete={(id) => { if (editId === id) setEditId(null); del.mutate(id); }} />
               ))}
 
+        {/* Тип нового фильтра: условия стакана — это состояние рынка, крупная
+            сделка — факт в ленте. Поля общие только по отбору бумаг. */}
+        {!editing && (
+          <div className="sig-field sig-kind">
+            <label className="sig-label">Тип сигнала</label>
+            <div className="sig-seg">
+              <button type="button" className={newKind === "book" ? "on" : ""}
+                onClick={() => setNewKind("book")}>Стакан</button>
+              <button type="button" className={newKind === "block" ? "on" : ""}
+                onClick={() => setNewKind("block")}>Крупная сделка</button>
+            </div>
+          </div>
+        )}
+
         {/* key переинициализирует поля при смене правимого фильтра */}
-        <FilterForm key={editing?.id ?? "new"} edit={editing}
-          busy={editing ? save.isPending : create.isPending}
-          onCancel={() => setEditId(null)}
-          onSubmit={(body) => (editing
-            ? save.mutateAsync({ id: editing.id, body })
-            : create.mutateAsync(body))} />
+        {(editing ? editing.kind === "block" : newKind === "block")
+          ? <BlockForm key={editing?.id ?? "new-block"} edit={editing}
+              busy={editing ? save.isPending : create.isPending}
+              onCancel={() => setEditId(null)}
+              onSubmit={(body) => (editing
+                ? save.mutateAsync({ id: editing.id, body })
+                : create.mutateAsync(body))} />
+          : <FilterForm key={editing?.id ?? "new"} edit={editing}
+              busy={editing ? save.isPending : create.isPending}
+              onCancel={() => setEditId(null)}
+              onSubmit={(body) => (editing
+                ? save.mutateAsync({ id: editing.id, body })
+                : create.mutateAsync(body))} />}
       </div>
 
       <div className="sig-col sig-feed-col">
@@ -469,7 +743,13 @@ export default function SignalsModule() {
                   {h.money_rub != null && <> · {money(h.money_rub)} ₽</>}
                   {h.levels ? <> · {h.levels} ур</> : null}
                 </div>
-                <div className="sig-hit-meta">{h.filter_name || "фильтр удалён"} · {h.isin}</div>
+                <div className="sig-hit-meta">
+                  {/* у блока filter_name пустой, когда звонило умолчание
+                      (env-порог), а не заведённый пользователем фильтр */}
+                  {h.filter_name
+                    || (h.reason === "block" ? "крупная сделка по рынку" : "фильтр удалён")}
+                  {" · "}{h.isin}
+                </div>
               </div>
             ))}
       </div>

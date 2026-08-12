@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
-from services.screener_core import (RATINGS, FilterError, evaluate,  # noqa: F401
+from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
+                                    block_matches, evaluate,
                                     evaluate_candidates, market_snapshot,
-                                    normalize_params, static_candidates)
+                                    normalize_block_params, normalize_params,
+                                    static_candidates)
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +38,35 @@ def _now() -> str:
 def _row(r) -> dict:
     d = dict(r)
     d["params"] = json.loads(d.pop("params_json"))
+    d["kind"] = d.get("kind") or "book"
     for k in ("enabled", "sound", "desktop"):
         d[k] = bool(d[k])
     return d
 
 
+def _normalize(kind: str, params: dict) -> dict:
+    return normalize_block_params(params) if kind == "block" else normalize_params(params)
+
+
+def _check_kind(kind: Optional[str]) -> str:
+    kind = (kind or "book").strip()
+    if kind not in ("book", "block"):
+        raise FilterError("kind: book | block")
+    return kind
+
+
 # --- CRUD (per user_email) ---
 
 def create(user_email: str, name: str, params: dict, *, change_pct: float = 10.0,
-           sound: bool = True, desktop: bool = True) -> dict:
+           sound: bool = True, desktop: bool = True, kind: str = "book") -> dict:
     name = (name or "").strip()
     if not name or len(name) > 60:
         raise FilterError("Название: 1–60 символов")
+    kind = _check_kind(kind)
     change_pct = float(change_pct if change_pct is not None else 10.0)
     if not (0.1 <= change_pct <= 100):
         raise FilterError("Порог изменения: 0,1–100 %")
-    p = normalize_params(params)
+    p = _normalize(kind, params)
     with _lock, _connect() as c:
         n = c.execute("SELECT COUNT(*) FROM signal_filters WHERE user_email=?",
                       (user_email,)).fetchone()[0]
@@ -59,9 +74,9 @@ def create(user_email: str, name: str, params: dict, *, change_pct: float = 10.0
             raise FilterError(f"Больше {_MAX_FILTERS_PER_USER} фильтров не поддерживается")
         cur = c.execute(
             "INSERT INTO signal_filters(user_email,name,params_json,change_pct,"
-            "sound,desktop,created_at) VALUES(?,?,?,?,?,?,?)",
+            "sound,desktop,kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
             (user_email, name, json.dumps(p, ensure_ascii=False), change_pct,
-             int(bool(sound)), int(bool(desktop)), _now()))
+             int(bool(sound)), int(bool(desktop)), kind, _now()))
         fid = cur.lastrowid
     return get(fid)
 
@@ -80,9 +95,31 @@ def list_for_user(user_email: str) -> List[dict]:
 
 
 def list_enabled() -> List[dict]:
+    """Включённые фильтры СТАКАНА — их гоняет run_cycle. Блочные сюда не
+    попадают: они срабатывают не на снимок рынка, а на приход сделки."""
     with _connect() as c:
-        rows = c.execute("SELECT * FROM signal_filters WHERE enabled=1").fetchall()
+        rows = c.execute("SELECT * FROM signal_filters WHERE enabled=1 "
+                         "AND COALESCE(kind,'book')='book'").fetchall()
     return [_row(r) for r in rows]
+
+
+def list_enabled_blocks() -> List[dict]:
+    """Включённые фильтры крупных сделок — их применяет block_trades."""
+    with _connect() as c:
+        rows = c.execute("SELECT * FROM signal_filters WHERE enabled=1 "
+                         "AND kind='block' ORDER BY id").fetchall()
+    return [_row(r) for r in rows]
+
+
+def block_filter_owners() -> set:
+    """Кто вообще завёл блок-фильтр — включённый ИЛИ выключенный.
+
+    Этим отделяется «настроил сам» от «ничего не трогал»: у первых умолчание из
+    env не работает вовсе, иначе выключенный фильтр воскрешал бы дефолтный
+    звонок и выключить уведомления было бы нечем."""
+    with _connect() as c:
+        return {r["user_email"] for r in c.execute(
+            "SELECT DISTINCT user_email FROM signal_filters WHERE kind='block'").fetchall()}
 
 
 def update(user_email: str, fid: int, *, name: Optional[str] = None,
@@ -111,7 +148,7 @@ def update(user_email: str, fid: int, *, name: Optional[str] = None,
         sets.append("change_pct=?"); args.append(change_pct)
     if params is not None:
         sets.append("params_json=?")
-        args.append(json.dumps(normalize_params(params), ensure_ascii=False))
+        args.append(json.dumps(_normalize(f["kind"], params), ensure_ascii=False))
         # условия сменились — прошлое состояние набора недействительно
         _reset_state(fid)
     if sets:
@@ -129,6 +166,21 @@ def delete(user_email: str, fid: int) -> bool:
             c.execute("DELETE FROM signal_state WHERE filter_id=?", (fid,))
             c.execute("DELETE FROM signal_events WHERE filter_id=?", (fid,))
         return cur.rowcount > 0
+
+
+def delete_all(user_email: str) -> int:
+    """Сносит ВСЕ фильтры пользователя разом — вместе с их состоянием и их
+    событиями в ленте, ровно как поштучный delete()."""
+    with _lock, _connect() as c:
+        ids = [r["id"] for r in c.execute(
+            "SELECT id FROM signal_filters WHERE user_email=?", (user_email,)).fetchall()]
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        c.execute(f"DELETE FROM signal_state WHERE filter_id IN ({marks})", ids)
+        c.execute(f"DELETE FROM signal_events WHERE filter_id IN ({marks})", ids)
+        c.execute("DELETE FROM signal_filters WHERE user_email=?", (user_email,))
+    return len(ids)
 
 
 def _reset_state(fid: int) -> None:
@@ -252,6 +304,33 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
         for isin in [i for i in known if i not in present]:
             c.execute("DELETE FROM signal_state WHERE filter_id=? AND isin=?", (fid, isin))
     return events
+
+
+def preview_block(params: dict, limit: int = 20) -> dict:
+    """Сколько сделок СЕГОДНЯ попало бы под условия блок-фильтра.
+
+    Живого набора у такого фильтра нет — событие мгновенное, поэтому вместо
+    «что в наборе сейчас» показываем уже случившееся за день: иначе порог
+    ставится вслепую и либо молчит неделю, либо звонит каждые пять минут."""
+    from datetime import date
+
+    from services import instruments_registry as reg
+
+    p = normalize_block_params(params)
+    day = date.today().isoformat()
+    with _connect() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT trade_id,isin,ts,market,side,value FROM block_trade "
+            "WHERE ts >= ? AND value >= ? AND (cur IS NULL OR cur='SUR') "
+            "ORDER BY value DESC LIMIT 500",
+            (day, p["min_value_rub"])).fetchall()]
+    labels = reg.labels_map()
+    hits = [r for r in rows if block_matches(r, labels.get(r["isin"]) or {}, p)]
+    return {"ready": True, "total": len(hits), "capped": len(rows) >= 500,
+            "matches": [{"isin": h["isin"],
+                         "name": (labels.get(h["isin"]) or {}).get("name") or h["isin"],
+                         "money_rub": h["value"], "ts": h["ts"]}
+                        for h in hits[:limit]]}
 
 
 async def preview(user_email: str, params: dict, limit: int = 20) -> dict:

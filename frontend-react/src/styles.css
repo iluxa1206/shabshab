@@ -1701,6 +1701,10 @@ body.col-resizing * { cursor: col-resize !important; }
 .sb-price { color: var(--accent); }
 .sb-spread { color: var(--accent); }
 .sb-money { color: var(--mut); }
+/* рыночное событие, а не фильтр — отдельный цвет, чтобы не путать с сигналами */
+.sb-block { color: var(--accent); }
+/* выбор типа создаваемого сигнала — стоит над формой, отбивка как у формы */
+.sig-kind { margin-top: 14px; }
 .sb-delta { font-family: var(--mono); font-size: 10.5px; }
 
 /* уровни стакана, из которых собран объём сигнала */

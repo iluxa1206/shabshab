@@ -593,19 +593,23 @@ BLOCK_ALERTS = os.getenv("BLOCK_ALERTS", "1") not in ("0", "false", "False")
 _ALERT_KEY = "alert"          # строка-водяной знак в block_cursor
 
 
-def pending_alerts(limit: int = 20) -> list[dict]:
+def pending_alerts(limit: int = 50, min_value: Optional[float] = None) -> list[dict]:
     """Сделки крупнее порога уведомления, ещё не разосланные.
 
     Водяной знак — TRADENO (сквозной и монотонный), а не время: сделка может
-    доехать в ленту позже соседней по времени, и по времени её бы пропустили."""
+    доехать в ленту позже соседней по времени, и по времени её бы пропустили.
+
+    min_value — самый низкий порог среди активных получателей: выборка обязана
+    быть общей (знак один на всех), а кому что звонить, решается уже по строкам."""
     mark = get_cursor(_ALERT_KEY) or 0
+    thr = BLOCK_ALERT_MIN_RUB if min_value is None else min_value
     with _connect() as c:
         rows = c.execute(
             "SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,cur,"
             "y_idx_bps "
             "FROM block_trade WHERE trade_id > ? AND value >= ? "
             "AND (cur IS NULL OR cur='SUR') ORDER BY trade_id LIMIT ?",
-            (mark, BLOCK_ALERT_MIN_RUB, limit)).fetchall()
+            (mark, thr, limit)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -627,31 +631,74 @@ def seed_alert_mark() -> None:
 async def notify_blocks() -> int:
     """Рассылает новые крупные блоки в ленту СИГНАЛОВ и в колокольчик.
 
-    События кладутся в signal_events с filter_id=0 — это не фильтр скринера, а
-    рыночное событие, общее для всех пользователей; UI отличает его по
+    Кому и что звонит, решают ФИЛЬТРЫ пользователя вида kind='block'
+    (services/signals): порог в рублях, режим торгов, база купона, отбор бумаг.
+    У кого таких фильтров нет — работает умолчание из env (BLOCK_ALERT_MIN_RUB
+    + только флоатеры): исторический режим, чтобы включённые уведомления не
+    пропали молча у тех, кто фильтр не заводил.
+
+    События кладутся в signal_events с filter_id фильтра (0 — для умолчания,
+    это не фильтр скринера, а рыночное событие); UI отличает их по
     reason='block'. Возвращает число разосланных сделок."""
     if not BLOCK_ALERTS:
         return 0
-    rows = await asyncio.to_thread(pending_alerts)
-    if not rows:
-        return 0
     from api.routes import ws as wsmod
+    from services import signals
     from services.auth_users import list_users
     from services import instruments_registry as reg
 
+    users = [u["email"] for u in await asyncio.to_thread(list_users) if u.get("email")]
+    if not users:
+        return 0
+    bfilters = await asyncio.to_thread(signals.list_enabled_blocks)
+    by_user: dict[str, list] = {}
+    for f in bfilters:
+        by_user.setdefault(f["user_email"], []).append(f)
+    # Умолчание — только для тех, кто блок-фильтров не заводил вовсе: иначе
+    # выключенный фильтр воскрешал бы дефолтный звонок.
+    owners = await asyncio.to_thread(signals.block_filter_owners)
+    legacy_users = [u for u in users if u not in owners]
+
+    # Порог выборки — минимальный из тех, что кому-то нужен: тянуть из базы
+    # мельче бессмысленно, крупнее — значит молча потерять чужой сигнал.
+    floor = min([f["params"]["min_value_rub"] for f in bfilters]
+                + ([BLOCK_ALERT_MIN_RUB] if legacy_users else []) or [BLOCK_ALERT_MIN_RUB])
+    rows = await asyncio.to_thread(pending_alerts, 50, floor)
+    if not rows:
+        return 0
+
     labels = await asyncio.to_thread(reg.labels_map)
     names = {v["isin"]: v.get("name") for v in _secmap["map"].values() if v.get("isin")}
-    users = [u["email"] for u in await asyncio.to_thread(list_users) if u.get("email")]
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
 
     # Знак двигаем по ВСЕМУ просмотренному куску, а не по разосланному: иначе
-    # пачка отфильтрованных фиксов подряд встала бы перед выборкой намертво и
-    # флоатер за ней никогда бы не позвонил (выборка ограничена limit).
+    # пачка отфильтрованных сделок подряд встала бы перед выборкой намертво и
+    # подходящая за ней никогда бы не позвонила (выборка ограничена limit).
     seen_till = max(r["trade_id"] for r in rows)
-    if BLOCK_ALERT_FLOATERS_ONLY:
-        rows = [r for r in rows
-                if (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES]
-    if not rows:
+
+    def _legacy_ok(r: dict) -> bool:
+        if (r.get("value") or 0) < BLOCK_ALERT_MIN_RUB:
+            return False
+        if not BLOCK_ALERT_FLOATERS_ONLY:
+            return True
+        return (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES
+
+    # (user, filter_id, filter_name, sound, desktop) → сделки
+    routed: dict[tuple, list[dict]] = {}
+    for r in rows:
+        meta = labels.get(r["isin"]) or {}
+        for u in legacy_users:
+            if _legacy_ok(r):
+                routed.setdefault((u, 0, "Крупная сделка", True, True), []).append(r)
+        for u, fs in by_user.items():
+            # первый подошедший фильтр забирает сделку: два письма об одном
+            # принте — шум, а не два разных события
+            for f in fs:
+                if signals.block_matches(r, meta, f["params"]):
+                    routed.setdefault((u, f["id"], f["name"], f["sound"],
+                                       f["desktop"]), []).append(r)
+                    break
+    if not routed:
         mark_alerted(seen_till)
         return 0
 
@@ -659,14 +706,15 @@ async def notify_blocks() -> int:
     # какому Y-IDX его забрали. Обычно он уже посчитан тем же тактом демона
     # (price_new_trades идёт сразу после sweep); досчитываем только хвост —
     # сделок в очереди звонка единицы, это дёшево.
-    if any(r.get("y_idx_bps") is None for r in rows):
+    hot = {r["trade_id"]: r for rs in routed.values() for r in rs}
+    todo = [r for r in hot.values() if r.get("y_idx_bps") is None]
+    if todo:
         from services import trade_yidx
-        await trade_yidx.for_rows([r for r in rows if r.get("y_idx_bps") is None])
+        await trade_yidx.for_rows(todo)
 
-    matches = []
-    for r in rows:
+    def _match(r: dict) -> dict:
         lb = labels.get(r["isin"]) or {}
-        matches.append({
+        return {
             "isin": r["isin"],
             "name": lb.get("name") or names.get(r["isin"]) or r["isin"],
             "price": r["price"], "money_rub": r["value"],
@@ -674,26 +722,28 @@ async def notify_blocks() -> int:
             "board": r["board"], "negotiated": r["market"] == "ndm",
             "side": r["side"], "ts": r["ts"], "reason": "block",
             "rating": lb.get("rating"), "fired_at": now,
-        })
+        }
+
+    payloads = {k: [_match(r) for r in rs] for k, rs in routed.items()}
 
     def _persist():
         with _lock, _connect() as c:
             c.executemany(
                 "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
                 "price,money_rub,val_bps,reason,fired_at,seen) "
-                "VALUES(0,?,?,?,?,?,?,?,'block',?,0)",
-                [(u, m["isin"], m["name"], m["side"], m["price"], m["money_rub"],
-                  m["val_bps"], now)
-                 for u in users for m in matches])
+                "VALUES(?,?,?,?,?,?,?,?,'block',?,0)",
+                [(fid, u, m["isin"], m["name"], m["side"], m["price"],
+                  m["money_rub"], m["val_bps"], now)
+                 for (u, fid, _n, _s, _d), ms in payloads.items() for m in ms])
     await asyncio.to_thread(_persist)
 
-    for u in users:
+    for (u, fid, fname, snd, desk), ms in payloads.items():
         await wsmod.manager.broadcast_signal(u, {
-            "type": "block", "filter_id": 0, "filter_name": "Крупная сделка",
-            "side": None, "sound": True, "desktop": True, "matches": matches,
+            "type": "block", "filter_id": fid, "filter_name": fname,
+            "side": None, "sound": bool(snd), "desktop": bool(desk), "matches": ms,
         })
     mark_alerted(seen_till)
-    return len(rows)
+    return len(hot)
 
 
 def db_stats() -> dict:

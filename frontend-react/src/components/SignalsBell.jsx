@@ -183,7 +183,10 @@ export default function SignalsBell() {
                       </span>
                     )}
                     <span className="sb-row-3">
-                      {e.reason === "block" ? "крупная сделка" : (e.filter_name || "фильтр удалён")}
+                      {/* у блока filter_name пустой, когда звонило умолчание
+                          (env-порог), а не заведённый пользователем фильтр */}
+                      {e.filter_name
+                        || (e.reason === "block" ? "крупная сделка" : "фильтр удалён")}
                       {" · "}{e.isin}</span>
                   </button>
                 );

@@ -69,6 +69,7 @@ def _blocks_stat() -> dict:
 @router.get("", tags=["Status"])
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
+    from services import trades_stream as tstream
     from auth import get_access_token, REFRESH_TOKEN
 
     # универсы
@@ -148,6 +149,9 @@ async def get_status():
                      f"с {blk['from'] or '—'} · последняя {blk['till'] or '—'}; "
                      f"дневных РПС-агрегатов {blk['days']} с {blk['days_from'] or '—'}"},
         ],
+        # живая лента: сколько бумаг идёт пушем Alor (у остальных сделки видны
+        # только через ISS, а он публично отдаёт с задержкой 15 минут)
+        "trades_stream": tstream.stats(),
         # что грузится ПРЯМО СЕЙЧАС: обход баров, прогрев после рестарта, дрейн
         # рейтингов, разовые бэкфилл-скрипты (см. services/progress.py)
         "jobs": progress.snapshot(),

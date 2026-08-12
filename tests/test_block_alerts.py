@@ -84,3 +84,39 @@ def test_below_threshold_never_rings(bt, monkeypatch):
     _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB - 1)])
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
+
+
+# ── фильтры пользователя (kind=block) вместо умолчания ──────────────────────
+
+@pytest.fixture()
+def sig(bt):
+    """services.signals на той же временной базе, что и block_trades."""
+    import importlib
+    import services.signals as s
+    return importlib.reload(s)
+
+
+def test_user_filter_overrides_default(bt, sig, monkeypatch):
+    """Свой фильтр важнее умолчания: порог ниже env-порога, база — фиксы."""
+    pdb, mod = bt
+    sig.create("u@x.ru", "мои фиксы",
+               {"bases": ["FIXED"], "min_value_rub": 5_000_000}, kind="block")
+    _seed(pdb, [(1, "RU000FIXED01", 6_000_000), (2, "RU000FLOAT01", 6_000_000)])
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [m["isin"] for p in sent for m in p["matches"]] == ["RU000FIXED01"]
+    # имя фильтра доезжает до колокольчика — иначе «фильтр удалён» в ленте
+    assert sent[0]["filter_name"] == "мои фиксы"
+    assert sent[0]["filter_id"] > 0
+    assert mod.get_cursor("alert") == 2
+
+
+def test_disabled_filter_does_not_fall_back_to_default(bt, sig, monkeypatch):
+    """Выключенный фильтр — не «нет фильтров»: умолчание не воскресает."""
+    pdb, mod = bt
+    f = sig.create("u@x.ru", "тихий", {"min_value_rub": 5_000_000}, kind="block")
+    sig.update("u@x.ru", f["id"], enabled=False)
+    _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB + 1)])
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0
+    assert mod.get_cursor("alert") == 1
