@@ -1006,6 +1006,14 @@ export default function ChartPage() {
           <span className="cp-name" title={row?.emitter_name || ""}>{name}</span>
           <span className="cp-isin">{isin}</span>
           {row?.rating && <span className="cp-rating">{row.rating}</span>}
+          {/* карточка выпуска со стаканом — тот же Drawer, что в МОНИТОРЕ:
+              он живёт вне Routes и открывается параметром ?isin= на любой
+              странице, поэтому график под ним остаётся на месте */}
+          <button type="button" className="cp-btn cp-reset cp-ob"
+            title="Карточка выпуска: стакан, параметры, купоны"
+            onClick={() => setParam({ isin, k: sKind === "g" ? "fixed" : null })}>
+            Стакан
+          </button>
         </div>
         <div className="cp-stats">
           {row?.emitter_name && stat("эмитент", row.emitter_name)}

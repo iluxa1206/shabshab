@@ -538,6 +538,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-isin { font: 11px var(--mono); color: var(--mut-2); }
 .cp-rating { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
   padding: 1px 5px; color: var(--mut); }
+/* кнопка карточки со стаканом стоит в строке имени — выравниваем по центру */
+.cp-ob { align-self: center; }
 .cp-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
 .cp-stat { display: inline-flex; align-items: baseline; gap: 5px; }
 .cp-stat-k { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--mut-2); }
