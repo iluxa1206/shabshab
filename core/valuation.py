@@ -386,12 +386,20 @@ def offer_kind(type_str: Optional[str]) -> str:
 
 
 def next_offer_info(offers: Optional[List[dict]],
-                    settle: date) -> Optional[tuple]:
+                    settle: date,
+                    maturity: Optional[date] = None) -> Optional[tuple]:
     """Ближайшая БУДУЩАЯ оферта любого вида из MOEX bondization offers:
     (date, type_str, kind∈{'put','call'}) или None. Состоявшиеся/исполненные
     отфильтрованы — не будущее событие, даже если дата распарсилась в будущее.
     В отличие от first_offer_date (горизонт оценки, только путы) — это
-    информационный флаг «у бумаги есть оферта», call тоже показываем."""
+    информационный флаг «у бумаги есть оферта», call тоже показываем.
+
+    maturity — дата погашения: записи НА НЕЁ И ПОЗЖЕ отбрасываются. У части
+    выпусков (ВЭБP-42) bondization содержит единственную строку «Оферта/
+    Погашение» с датой погашения — это техническая запись самого погашения, а
+    не опцион: держателю нечего предъявлять, альтернативного горизонта нет.
+    Без фильтра карточка рисовала «Оферта (пут)», таблица — маркер p, а
+    свитчер горизонта не появлялся (и правильно) — UI противоречил сам себе."""
     best = None
     for o in offers or []:
         typ = (o.get("type") or "").lower()
@@ -403,6 +411,8 @@ def next_offer_info(offers: Optional[List[dict]],
                 d = date.fromisoformat(d)
             except ValueError:
                 continue
+        if maturity is not None and isinstance(d, date) and d >= maturity:
+            continue                      # запись на дату погашения = само погашение
         if isinstance(d, date) and d > settle and (best is None or d < best[0]):
             best = (d, o.get("type"), offer_kind(typ))
     return best

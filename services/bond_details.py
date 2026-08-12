@@ -122,7 +122,11 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # различаем: только put — гарантированный горизонт держателя (см. offer_kind).
     from core.valuation import settle_date as _settle, next_offer_info
     _off_ref = _settle(calc_date) if calc_date else date.today()
-    next_offer = next_offer_info(sched_full.get("offers"), _off_ref)
+    # maturity отсекает техническую запись «Оферта/Погашение» на дату погашения:
+    # опциона нет, и рисовать в референсе «Оферта (пут)» без свитчера горизонта
+    # (его там нечему переключать) — прямое противоречие в карточке
+    next_offer = next_offer_info(sched_full.get("offers"), _off_ref,
+                                 ref_obj.maturity_date)
     if next_offer:
         ref_dict["offer_date"] = next_offer[0]
         ref_dict["offer_type"] = next_offer[1]

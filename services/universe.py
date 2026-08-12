@@ -92,7 +92,9 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     # put-горизонт из valuation приоритетен — он согласован с sm_to_offer.
     # Считается и без цены/кривых — флаг справочный.
     off_kind = None
-    _next_off = next_offer_info(offers, calc_date)
+    # maturity — чтобы техническая запись «Оферта/Погашение» на дату погашения
+    # не ставила ложный маркер p (у бумаги нет опциона, см. next_offer_info)
+    _next_off = next_offer_info(offers, calc_date, ref.maturity_date)
     # ±0.5пп вокруг расчётной цены — численная производная Y-IDX по цене (bps на
     # 1пп). Ею фронт переводит VWAP-цену тикета в Y-IDX, не гоняя reprice на 540
     # бумаг: Y-IDX(цена) на масштабе стакана (доли пп) практически линеен.

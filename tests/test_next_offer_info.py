@@ -41,3 +41,21 @@ def test_past_and_empty():
 def test_bad_date_ignored():
     assert next_offer_info([{"date": "мусор", "type": "Оферта"}, {"date": None}],
                            SETTLE) is None
+
+
+def test_offer_on_maturity_date_is_not_an_offer():
+    """«Оферта/Погашение» с датой погашения (ВЭБP-42) — техническая запись самого
+    погашения, а не опцион: маркер p и строка «Оферта (пут)» в карточке были бы
+    ложью, и свитчер горизонта на ней всё равно нечего переключать."""
+    mat = date(2029, 7, 30)
+    offers = [{"date": mat.isoformat(), "type": "Оферта/Погашение", "price": 100}]
+    assert next_offer_info(offers, SETTLE, mat) is None
+    # без maturity поведение прежнее (вызовы, где даты погашения нет под рукой)
+    assert next_offer_info(offers, SETTLE) is not None
+
+
+def test_offer_before_maturity_survives_filter():
+    mat = date(2034, 5, 26)
+    offers = [{"date": "2027-06-09", "type": "Оферта", "price": 100}]
+    d, _typ, kind = next_offer_info(offers, SETTLE, mat)
+    assert (d, kind) == (date(2027, 6, 9), "put")
