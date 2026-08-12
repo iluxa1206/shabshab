@@ -724,8 +724,8 @@ function Dashboard() {
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
         {/* Вкладка «Эмитенты» снята: агрегаты повторяли фильтр по эмитенту в
-            «Списке», а разрез по медианам спреда даёт «Аналитика» (распределение
-            R-spread по эмитентам). Старый путь ведёт в Список — на вкладку могли
+            «Мониторе», а разрез по медианам спреда даёт «Аналитика» (распределение
+            R-spread по эмитентам). Старый путь ведёт в Монитор — на вкладку могли
             остаться закладки. */}
         <Route path="/issuers" element={<Navigate to="/floaters" replace />} />
         <Route path="/reference" element={<Catalog user={user} />} />
