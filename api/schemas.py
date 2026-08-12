@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from datetime import date as _date   # для моделей, где поле называется date
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field
 
@@ -69,7 +70,9 @@ class BondMarketData(BaseModel):
 # RUONIA) считается до той же даты — иначе спред сравнивал бы бумагу с
 # депозитом другого срока.
 class HorizonMetrics(BaseModel):
-    date: Optional[date] = None
+    # _date, а не date: имя поля затеняет тип внутри тела класса, и аннотация
+    # Optional[date] разрешилась бы в само поле → pydantic принимал только None
+    date: Optional[_date] = None
     price_pct: Optional[float] = None            # цена выкупа на горизонте, % (обычно 100)
     sm_bps: Optional[int] = None
     disc_margin_bps: Optional[int] = None

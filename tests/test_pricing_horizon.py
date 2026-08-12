@@ -154,3 +154,24 @@ def test_metrics_above_par_call_selected(keyrate_curve, ruonia_curve, calc_date,
     assert m["preferred_horizon"] == "call"
     assert m["offer_date"] == CALL_DATE
     assert m["horizons"]["call"]["sm_bps"] is not None
+
+
+def test_reprice_response_serializes_horizons():
+    """Регрессия прода: поле date в HorizonMetrics затеняло тип date в аннотации,
+    и pydantic принимал только None → /reprice падал в 500 на любой бумаге с
+    офертой. Схема обязана принимать реальную дату горизонта."""
+    from api.schemas import RepriceResponse
+    payload = {
+        "clean_price_pct": 99.9, "dm_bps": None, "dm_label": None,
+        "yield_xirr_pct": 15.3, "index_yield_pct": 14.0, "yield_over_index_bps": 129,
+        "pricing_status": "SUCCESS", "preferred_horizon": "put",
+        "horizons": {
+            "maturity": {"date": date(2034, 5, 26), "price_pct": 100.0,
+                         "yield_over_index_bps": 108, "y_idx_by_price": {99.5: 110}},
+            "put": {"date": PUT_DATE, "price_pct": 100.0, "yield_over_index_bps": 129},
+        },
+    }
+    r = RepriceResponse(**payload)
+    assert r.horizons["maturity"].date == date(2034, 5, 26)
+    assert r.horizons["put"].date == PUT_DATE
+    assert r.horizons["maturity"].y_idx_by_price[99.5] == 110
