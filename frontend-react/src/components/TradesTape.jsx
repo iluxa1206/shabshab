@@ -6,6 +6,7 @@ import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import CouponFormula from "./CouponFormula.jsx";
+import { usePageStatus } from "../pageStatus.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
 //
