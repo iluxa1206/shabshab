@@ -436,6 +436,37 @@ def first_offer_date(offers: Optional[List[dict]], settle: date) -> Optional[dat
     return min(dates) if dates else None
 
 
+def first_call_date(offers: Optional[List[dict]], settle: date) -> Optional[date]:
+    """Первая будущая CALL-оферта (опцион эмитента) из MOEX bondization offers.
+
+    Зеркало first_offer_date: там горизонт держателя (пут), здесь — горизонт
+    ЭМИТЕНТА. Держатель call не форсирует, поэтому это не «худший» исход, а
+    ВЕРОЯТНЫЙ: эмитент выкупит, если занял дорого (цена бумаги выше цены выкупа
+    — правило колла, зеркальное правилу пута). Выбор горизонта по цене живёт в
+    services/valuation.preferred_horizon."""
+    dates = []
+    for o in offers or []:
+        typ = (o.get("type") or "").lower()
+        if "состоя" in typ or "исполн" in typ:
+            continue
+        if offer_kind(typ) != "call":
+            continue
+        d = o.get("date")
+        if isinstance(d, str):
+            try:
+                d = date.fromisoformat(d)
+            except ValueError:
+                continue
+        if isinstance(d, date) and d > settle:
+            dates.append(d)
+    return min(dates) if dates else None
+
+
+def offer_price_pct(offers: Optional[List[dict]], offer_date: date) -> float:
+    """Публичное имя _offer_price_pct (цена выкупа на дате оферты, % от номинала)."""
+    return _offer_price_pct(offers, offer_date)
+
+
 def _offer_price_pct(offers: Optional[List[dict]], offer_date: date) -> float:
     """Цена выкупа на оферте в % (обычно 100; MOEX может дать явную)."""
     for o in offers or []:
@@ -476,6 +507,7 @@ def build_cashflows_to_maturity(
     amorts: Optional[List[dict]] = None,
     offers: Optional[List[dict]] = None,
     to_offer: bool = False,
+    cut_date: Optional[date] = None,
     index_pct_fn=None,
     warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
@@ -545,7 +577,9 @@ def build_cashflows_to_maturity(
     # T+1: платежи с датой <= settle покупателю не достаются (ex-coupon, НКД=0)
     settle = settle_date(calc_date)
 
-    # Оферта. Два горизонта:
+    # Оферта. Три горизонта:
+    #  cut_date задан — режем РОВНО к этой дате (явный выбор горизонта: пут, call
+    #                   или ручной свитчер карточки). Приоритет над to_offer.
     #  to_offer=True  — yield-to-put: режем к ПЕРВОЙ будущей оферте безусловно
     #                   (выкуп остатка номинала по цене оферты). Для бумаг с
     #                   офертой это первостепенная цифра — рынок торгует к оферте.
@@ -553,7 +587,9 @@ def build_cashflows_to_maturity(
     #                   (пересмотр эмитентом — ref_data.cut_at_offer). Сохранено для
     #                   сверки с НРД (НРД считает спреды к погашению).
     put = None
-    if offers:
+    if cut_date is not None:
+        put = cut_date
+    elif offers:
         try:
             if to_offer:
                 put = first_offer_date(offers, settle)
@@ -768,6 +804,7 @@ def build_cashflows_with_spread(
     amorts: Optional[List[dict]] = None,
     offers: Optional[List[dict]] = None,
     to_offer: bool = False,
+    cut_date: Optional[date] = None,
     index_pct_fn=None,
     warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
@@ -785,7 +822,7 @@ def build_cashflows_with_spread(
     )
     return build_cashflows_to_maturity(bond_variant, curve, calc_date,
                                        explicit_periods=explicit_periods, amorts=amorts,
-                                       offers=offers, to_offer=to_offer,
+                                       offers=offers, to_offer=to_offer, cut_date=cut_date,
                                        index_pct_fn=index_pct_fn, warnings_out=warnings_out)
 
 

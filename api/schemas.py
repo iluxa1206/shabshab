@@ -64,6 +64,22 @@ class BondMarketData(BaseModel):
     prev_close_clean_pct: Optional[float] = None
     prev_close_dm_bps: Optional[int] = None
 
+# Метрики одного горизонта оценки (погашение / пут-оферта / call-оферта). Поток
+# режется к date, выкуп остатка идёт по price_pct, база Y-IDX (роллирование
+# RUONIA) считается до той же даты — иначе спред сравнивал бы бумагу с
+# депозитом другого срока.
+class HorizonMetrics(BaseModel):
+    date: Optional[date] = None
+    price_pct: Optional[float] = None            # цена выкупа на горизонте, % (обычно 100)
+    sm_bps: Optional[int] = None
+    disc_margin_bps: Optional[int] = None
+    yield_xirr_pct: Optional[float] = None
+    index_yield_pct: Optional[float] = None
+    yield_over_index_bps: Optional[int] = None
+    # {alt-цена: Y-IDX bps} — уровни стакана в метрике этого горизонта
+    y_idx_by_price: Dict[float, Optional[int]] = Field(default_factory=dict)
+
+
 # --- 5.3 BondValuation ---
 class BondValuation(BaseModel):
     clean_price_pct: float
@@ -90,14 +106,16 @@ class BondValuation(BaseModel):
     yield_over_index_bps: Optional[int]     # IRR бумаги − доходность роллирования RUONIA, bps
     pricing_status: str
     warnings: List[str] = Field(default_factory=list)
-    # ПОДСКАЗКА потребителю, какой горизонт показывать первым: "offer", если у
-    # бумаги есть будущая оферта (рынок торгует к ней), иначе "maturity".
+    # ГОРИЗОНТ, к которому бумага реально прайсится, по ПРАВИЛУ ЦЕНЫ:
+    # "put" (цена ниже цены пут-выкупа — держатель предъявит), "call" (цена выше
+    # цены call-выкупа — эмитент отзовёт), иначе "maturity".
     # ВАЖНО: это НЕ описание полей выше. sm_bps / disc_margin_bps / yield_xirr_pct
     # ВСЕГДА считаются к ПОГАШЕНИЮ (так сверяемся с НРД) независимо от значения
-    # этого поля; цифры к оферте лежат отдельно в *_to_offer. Прежнее имя
-    # valuation_horizon читалось как «горизонт, по которому посчитан этот объект»,
-    # что неверно. На 2026-07-20 фронт это поле не читает вовсе.
+    # этого поля; цифры каждого горизонта лежат в horizons (и legacy *_to_offer).
     preferred_horizon: str = "maturity"
+    # Полный набор метрик по каждому доступному горизонту: ключи maturity|put|call.
+    # Свитчер в карточке переключает отображение между ними без пересчёта.
+    horizons: Dict[str, HorizonMetrics] = Field(default_factory=dict)
     offer_date: Optional[date] = None
     offer_price_pct: Optional[float] = None
     sm_to_offer_bps: Optional[int] = None            # simple margin к оферте (yield-to-put)
@@ -290,9 +308,12 @@ class BondListItem(BaseModel):
     spread_dur_yrs: Optional[float] = None     # ≈ срок до погашения (лет) = spread duration
     days_to_refix: Optional[int] = None        # дни до следующего рефиксинга (watch)
     current_coupon_pct: Optional[float] = None # зафикс. ставка текущего купона, % (watch)
-    # оферта: подсказка, что показать первым. preferred_horizon="offer" → бумага
-    # имеет будущую оферту, осмысленно вывести sm_to_offer_bps. Поля dm_bps /
-    # disc_margin_bps этого объекта ВСЕГДА к погашению (см. BondValuation).
+    # ГОРИЗОНТ ПРАЙСИНГА по правилу цены: "put" (цена ниже цены пут-выкупа),
+    # "call" (цена выше цены call-выкупа), иначе "maturity". В ОТЛИЧИЕ от
+    # BondValuation, цено-зависимые поля ЭТОГО объекта (yield_xirr_pct /
+    # index_yield_pct / dm_bps / disc_margin_bps / yield_over_index_bps и Y-IDX
+    # стакана) посчитаны К ВЫБРАННОМУ ГОРИЗОНТУ — витрина сравнивает бумаги по
+    # той цифре, к которой рынок их реально прайсит.
     preferred_horizon: str = "maturity"
     # Маркер p/c у даты погашения в таблице. Два НЕЗАВИСИМЫХ факта из разных
     # источников: offer_date/offer_kind — ближайшая будущая оферта из MOEX
@@ -401,6 +422,7 @@ class OrderbookLevel(BaseModel):
     dm_bps: Optional[int] = None       # флоатеры: дисконт-маржа (вспом.)
     y_idx_bps: Optional[int] = None    # флоатеры: IRR − роллирование RUONIA — ПЕРВИЧНАЯ метрика
     g_spread_bps: Optional[int] = None # фиксы: g-спред к КБД
+    horizon: Optional[str] = None      # к чему посчитан уровень: maturity | put | call
 
 class OrderbookSnapshot(BaseModel):
     bids: List[OrderbookLevel]

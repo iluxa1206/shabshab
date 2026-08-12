@@ -380,6 +380,9 @@ td.px-stale { color: var(--mut); }
 /* серый, а не красный: --down/--up в этой таблице читаются как движение цены,
    и колл-маркером их семантику размывать нельзя */
 .offer-call { color: var(--mut); }
+/* активный горизонт: строка посчитана к ЭТОЙ оферте (правило цены) — маркер в
+   рамке, чтобы в скане таблицы было видно, к чему относится спред */
+.offer-mark-on { outline: 1px solid currentColor; outline-offset: 1px; border-radius: 2px; }
 
 /* фильтр по эмитенту */
 .issuer-filter { position: relative; display: inline-block; }
@@ -795,6 +798,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .pc-reset { font-size: 11px; color: var(--accent); background: none; border: none; cursor: pointer; padding: 2px 4px; font-family: var(--mono); }
 .pc-reset:hover { text-decoration: underline; }
 .pc-status { font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
+/* Свитчер горизонта прайсинга (погашение / оферта / call). Появляется только у
+   бумаг с будущей офертой; «Авто» = правило цены с бэка. */
+.hz-switch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.hz-switch-label { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.16em; }
+.hz-btn { font: 11px var(--mono); color: var(--mut); background: var(--bg); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; letter-spacing: 0.04em; }
+.hz-btn:hover { color: var(--fg); border-color: var(--accent); }
+.hz-btn-on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 /* конвенция расчёта под калькулятором: T0-цена → T+1 поставка/НКД */
 .pc-conv { font: 10.5px var(--mono); color: var(--mut); margin: -6px 0 12px; }
 .pc-conv b { color: var(--fg); font-weight: 700; }
@@ -1152,6 +1163,12 @@ body.col-resizing * { cursor: col-resize !important; }
 .admin-btn-sm { padding: 4px 8px; font-size: 11px; }
 .admin-btn-danger { color: var(--neg); border-color: var(--neg); }
 .admin-btn-danger:disabled { opacity: 0.4; cursor: default; }
+.admin-hint { font-size: 11px; color: var(--mut); }
+/* выданный пароль: показывается один раз после создания/сброса */
+.admin-issued { border: 1px solid var(--fg); padding: 10px; margin-bottom: 10px; }
+.admin-issued-head { font-size: 12px; color: var(--mut); margin-bottom: 8px; }
+.admin-issued-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.admin-issued-pw { font-family: var(--mono); font-size: 15px; letter-spacing: 1px; user-select: all; flex: 1 1 auto; }
 
 /* ===== Модуль «Фонды» ===== */
 .module-seg { margin-left: 18px; }

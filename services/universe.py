@@ -107,10 +107,19 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
                                             alt_prices=[p for p in (bid, ask) if p] + _probe)
-            dirty, dm, disc_dm = m.get("dirty_price_rub"), m.get("dm_bps"), m.get("disc_margin_bps")
-            yoi = m.get("yield_over_index_bps")
+            # ГОРИЗОНТ ПРАЙСИНГА по правилу цены (services.valuation._preferred_horizon):
+            # цена ниже цены пут-выкупа → бумага торгуется к оферте, выше цены
+            # call-выкупа → к коллу, иначе к погашению. Колонки таблицы (Y-IDX/YTM/
+            # SM/DM и Y-IDX стакана) берутся из ВЫБРАННОГО горизонта — иначе скринер
+            # сравнивал бы бумагу с офертой через год по потоку на десять лет.
+            hz = m.get("preferred_horizon", "maturity")
+            _hzm = (m.get("horizons") or {}).get(hz) or {}
+            dirty = m.get("dirty_price_rub")
+            dm = _hzm.get("sm_bps", m.get("dm_bps"))
+            disc_dm = _hzm.get("disc_margin_bps", m.get("disc_margin_bps"))
+            yoi = _hzm.get("yield_over_index_bps", m.get("yield_over_index_bps"))
             # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
-            _alt = m.get("y_idx_by_price") or {}
+            _alt = _hzm.get("y_idx_by_price") or m.get("y_idx_by_price") or {}
             yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
             # номинал и НКД РОВНО те, из которых собран dirty (амортизация учтена,
             # НКД на дату поставки) — фронт считает ими деньги уровня стакана
@@ -118,15 +127,17 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             _lo, _hi = _alt.get(_probe[0]), _alt.get(_probe[1])
             if _lo is not None and _hi is not None:
                 yoi_slope = round((_hi - _lo) / (2 * _dp), 2)
-            ytm, base_ytm = m.get("yield_xirr_pct"), m.get("index_yield_pct")
+            ytm = _hzm.get("yield_xirr_pct", m.get("yield_xirr_pct"))
+            base_ytm = _hzm.get("index_yield_pct", m.get("index_yield_pct"))
             implausible = bool(m.get("price_implausible"))
-            hz, off_d = m.get("preferred_horizon", "maturity"), m.get("offer_date")
+            off_d = m.get("offer_date")
+            off_kind = "call" if hz == "call" else ("put" if off_d is not None else None)
             sm_off, dm_off = m.get("sm_to_offer_bps"), m.get("disc_margin_to_offer_bps")
         except Exception as e:
             logger.warning(f"valuation error {isin}: {e}")
-    if off_d is not None:
+    if off_d is not None and off_kind is None:
         off_kind = "put"
-    elif _next_off is not None:
+    elif off_d is None and _next_off is not None:
         off_d, off_kind = _next_off[0], _next_off[2]
 
     next_cpn = None

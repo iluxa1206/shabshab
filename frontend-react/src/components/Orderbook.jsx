@@ -72,7 +72,7 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
 // Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
-export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx, onClose }) {
+export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx, horizon = "auto", onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
@@ -85,14 +85,17 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const wsTsRef = useRef(0);
   useEffect(() => {
     setWsData(null);
-    if (!isin || full) return undefined;
+    // WS-поток считает уровни ТОЛЬКО в авто-горизонте (канал общий на всех
+    // подписчиков, per-client горизонта в нём нет) — при ручном выборе уходим
+    // на HTTP-поллинг, иначе стакан и плитки карточки считали бы разное
+    if (!isin || full || horizon !== "auto") return undefined;
     const conn = connectOrderbookWs(isin, (data) => { wsTsRef.current = Date.now(); setWsData(data); });
     return () => conn.close();
-  }, [isin, full]);
+  }, [isin, full, horizon]);
 
   const q = useQuery({
-    queryKey: ["orderbook", isin, depth, full, kind],
-    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater" }, signal),
+    queryKey: ["orderbook", isin, depth, full, kind, horizon],
+    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater", horizon }, signal),
     enabled: !!isin,
     // WS живой → редкий фолбэк-поллинг (15с); иначе привычные 3с
     refetchInterval: () => (!full && Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),

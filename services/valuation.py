@@ -272,17 +272,20 @@ def calculate_valuation_metrics(
     except Exception as e:
         logger.warning(f"Discount margin error for {bond.isin}: {e}")
 
-    # К ОФЕРТЕ (yield-to-put): для бумаг с будущей офертой это первостепенная
-    # цифра — рынок торгует к ближайшей оферте. Режем поток к оферте безусловно
-    # (выкуп остатка по цене оферты). Основные поля выше — к погашению (сверка НРД).
-    # preferred_horizon — только ПОДСКАЗКА UI, что показать первым; на то, как
-    # посчитаны sm_bps/disc_margin_bps/yield_xirr_pct, он не влияет.
+    # ГОРИЗОНТЫ ОЦЕНКИ. Полный набор метрик считается к каждому доступному
+    # горизонту (погашение / пут-оферта / call-оферта), а preferred_horizon
+    # выбирается ПРАВИЛОМ ЦЕНЫ (см. _preferred_horizon). Базовые поля ответа
+    # (sm_bps/disc_margin_bps/yield_xirr_pct/yield_over_index_bps) остаются К
+    # ПОГАШЕНИЮ — это сверочная база с НРД и обратная совместимость; UI и
+    # universe берут цифры выбранного горизонта из блока "horizons".
     horizon = "maturity"
     offer_date = offer_price_pct = None
     sm_to_offer = dm_to_offer = y_to_offer = None
-    from core.valuation import first_offer_date as _fod, _offer_price_pct as _opp, settle_date as _sd2
+    from core.valuation import (first_offer_date as _fod, first_call_date as _fcd,
+                                _offer_price_pct as _opp, settle_date as _sd2)
     _settle = _sd2(calc_date)
     _put = _fod(offers, _settle) if offers else None
+    _call = _fcd(offers, _settle) if offers else None
 
     # ПРОПУЩЕННАЯ ОФЕРТА: купон после оферты у reset-бумаг не определён (эмитент
     # переставит), но MOEX часто отдаёт пустой OFFERDATE → оферта не распознана,
@@ -299,45 +302,122 @@ def calculate_valuation_metrics(
         except Exception:
             pass
 
-    if _put is not None and (bond.maturity_date is None or _put < bond.maturity_date):
-        horizon = "offer"
-        offer_date = _put
-        offer_price_pct = _opp(offers, _put)
-        try:
-            cfs_off = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
-                                                  explicit_periods=periods, amorts=amorts,
-                                                  offers=offers, to_offer=True,
-                                                  index_pct_fn=index_pct_fn, warnings_out=warnings)
-            y_off = xirr_yield_pct(dirty_rub, cfs_off, calc_date)
-            y_to_offer = round(y_off, 4) if y_off is not None else None
-            if curve and len(cfs_off) > 0:
-                sm_to_offer = solve_simple_margin_bps(bond, curve, cfs_off, calc_date, dirty_rub)
-            L2 = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
-                                   amorts=amorts, base=bond.base, hist=hist_pairs)
-            if L2 is not None:
-                flat2 = FlatForwardCurve(calc_date, L2)
-                flat_cfs_off = build_cashflows_with_spread(bond, flat2, calc_date, bond.spread_issue_bps,
-                                                           explicit_periods=periods, amorts=amorts,
-                                                           offers=offers, to_offer=True,
-                                                           index_pct_fn=index_pct_fn, warnings_out=warnings)
-                dm_to_offer = solve_discount_margin_bps(flat_cfs_off, calc_date, dirty_rub, L2)
-        except Exception as e:
-            logger.warning(f"to-offer valuation error for {bond.isin}: {e}")
-
     # SANITY-GUARD (C6): вывод вне разумных границ = плохой вход (кривая/параметры/
     # цена) → чистим метрику в None + помечаем, а не выдаём мусор в таблицу. Границы
     # широкие: ловят только явную дичь (SM −30000bps, ytm 900%), не режут дистресс.
+    # Стоит ДО сборки горизонтов: в horizons["maturity"] должны лечь уже чистые цифры.
     sm_bps = _sane_bps(sm_bps, warnings, "sm")
     disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
     yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
     y_idx_by_price = {p: _sane_bps(v, warnings, "yield_over_index_alt")
                       for p, v in y_idx_by_price.items()}
-    sm_to_offer = _sane_bps(sm_to_offer, warnings, "sm_to_offer")
-    dm_to_offer = _sane_bps(dm_to_offer, warnings, "disc_margin_to_offer")
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
-    y_to_offer = _sane_pct(y_to_offer, warnings, "yield_to_offer")
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
+
+    def _metrics_at(cut: date) -> Optional[dict]:
+        """Полный набор метрик к произвольному горизонту cut (дата оферты):
+        поток режется к cut с выкупом остатка по цене оферты, база Y-IDX
+        (роллирование RUONIA) — тоже до cut, иначе спред сравнивал бы бумагу с
+        депозитом другого срока."""
+        cfs_h = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
+                                            explicit_periods=periods, amorts=amorts,
+                                            offers=offers, cut_date=cut,
+                                            index_pct_fn=index_pct_fn, warnings_out=warnings)
+        if not cfs_h:
+            return None
+        y_h = xirr_yield_pct(dirty_rub, cfs_h, calc_date)
+        sm_h = (solve_simple_margin_bps(bond, curve, cfs_h, calc_date, dirty_rub)
+                if curve else None)
+        dm_h = None
+        L_h = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
+                               amorts=amorts, base=bond.base, hist=hist_pairs)
+        if L_h is not None:
+            flat_h = FlatForwardCurve(calc_date, L_h)
+            flat_cfs_h = build_cashflows_with_spread(bond, flat_h, calc_date, bond.spread_issue_bps,
+                                                     explicit_periods=periods, amorts=amorts,
+                                                     offers=offers, cut_date=cut,
+                                                     index_pct_fn=index_pct_fn, warnings_out=warnings)
+            dm_h = solve_discount_margin_bps(flat_cfs_h, calc_date, dirty_rub, L_h)
+        idx_y_h = None
+        if _ru_curve is not None:
+            try:
+                idx_y_h = ruonia_rolling_yield_pct(_ru_curve, calc_date, cut)
+            except Exception as e:
+                logger.warning(f"RUONIA rolling-yield to {cut} error for {bond.isin}: {e}")
+        # Y-IDX горизонта на альтернативных ценах (bid/ask/проба наклона): поток и
+        # base leg от цены не зависят — меняется только dirty на входе XIRR.
+        y_idx_alt_h = {}
+        _fut_h = sum(cf.amount_rub for cf in cfs_h if cf.pay_date > calc_date)
+        for _p in (alt_prices or []):
+            if _p is None or idx_y_h is None:
+                continue
+            try:
+                _d = dirty_price_rub(_pricing_face, _p, accrued)
+                if _d is None or _d <= 0 or _d > _fut_h * 1.0005:
+                    y_idx_alt_h[_p] = None
+                    continue
+                _y = xirr_yield_pct(_d, cfs_h, calc_date)
+                y_idx_alt_h[_p] = (_sane_bps(round((_y - idx_y_h) * 100.0), warnings,
+                                             "yield_over_index_alt_horizon")
+                                   if _y is not None else None)
+            except Exception as e:
+                logger.warning(f"alt-price horizon Y-IDX error {bond.isin} @{_p}: {e}")
+                y_idx_alt_h[_p] = None
+        return {
+            "y_idx_by_price": y_idx_alt_h,
+            "date": cut,
+            "price_pct": _opp(offers, cut),
+            "sm_bps": _sane_bps(sm_h, warnings, "sm_horizon"),
+            "disc_margin_bps": _sane_bps(dm_h, warnings, "disc_margin_horizon"),
+            "yield_xirr_pct": _sane_pct(round(y_h, 4) if y_h is not None else None,
+                                        warnings, "yield_horizon"),
+            "index_yield_pct": round(idx_y_h, 4) if idx_y_h is not None else None,
+            "yield_over_index_bps": (_sane_bps(round((y_h - idx_y_h) * 100.0), warnings,
+                                               "yield_over_index_horizon")
+                                     if (y_h is not None and idx_y_h is not None) else None),
+        }
+
+    horizons: Dict[str, Any] = {"maturity": {
+        "date": bond.maturity_date, "price_pct": 100.0,
+        "y_idx_by_price": y_idx_by_price,
+        "sm_bps": sm_bps, "disc_margin_bps": disc_margin_bps,
+        "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
+        "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,
+        "yield_over_index_bps": yield_over_index_bps,
+    }}
+    for _key, _dt in (("put", _put), ("call", _call)):
+        if _dt is None or (bond.maturity_date is not None and _dt >= bond.maturity_date):
+            continue
+        try:
+            _m = _metrics_at(_dt)
+            if _m:
+                horizons[_key] = _m
+        except Exception as e:
+            logger.warning(f"{_key}-horizon valuation error for {bond.isin}: {e}")
+
+    # ПРАВИЛО ЦЕНЫ: держатель предъявит пут, только если бумага торгуется НИЖЕ
+    # цены выкупа (сдать по 100 выгоднее, чем держать дешёвый актив); при цене
+    # выше выкупа он не сдаст — горизонт остаётся погашение. Call зеркально:
+    # эмитент выкупит дорогой для себя долг (цена ВЫШЕ выкупа), дешёвый оставит.
+    horizon = _preferred_horizon(price, horizons)
+    _sel = horizons.get(horizon if horizon != "maturity" else "", {})
+    if horizon != "maturity":
+        offer_date = _sel.get("date")
+        offer_price_pct = _sel.get("price_pct")
+    elif "put" in horizons:      # горизонт не выбран правилом, но оферта есть — показать в карточке
+        offer_date = horizons["put"]["date"]
+        offer_price_pct = horizons["put"]["price_pct"]
+    elif "call" in horizons:
+        offer_date = horizons["call"]["date"]
+        offer_price_pct = horizons["call"]["price_pct"]
+
+    # legacy-поля *_to_offer = пут-горизонт (их формат не меняем: universe/UI/
+    # алерты на них завязаны; call живёт только в блоке horizons)
+    if "put" in horizons:
+        sm_to_offer = horizons["put"]["sm_bps"]
+        dm_to_offer = horizons["put"]["disc_margin_bps"]
+        y_to_offer = horizons["put"]["yield_xirr_pct"]
 
     # гарант. номинальный убыток → цена битая, спред-метрики бессмысленны: чистим
     # (иначе −2221 DM лезет в топ). yield/dirty оставляем (факт от цены).
@@ -347,6 +427,8 @@ def calculate_valuation_metrics(
                         "вероятно стейл/тонкая цена неликвида; SM/DM/спред скрыты")
         sm_bps = disc_margin_bps = yield_over_index_bps = None
         sm_to_offer = dm_to_offer = None
+        for _h in horizons.values():
+            _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
 
     status = "SUCCESS" if sm_bps is not None else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
     if any(w.startswith("sanity:") for w in warnings):
@@ -372,12 +454,57 @@ def calculate_valuation_metrics(
         "pricing_status": status,
         "warnings": sorted(set(warnings)),
         "preferred_horizon": horizon,
+        "horizons": horizons,                  # {maturity|put|call: полный набор метрик}
         "offer_date": offer_date,
         "offer_price_pct": offer_price_pct,
         "sm_to_offer_bps": sm_to_offer,
         "disc_margin_to_offer_bps": dm_to_offer,
         "yield_to_offer_pct": y_to_offer,
     }
+
+
+def pick_horizon(m: Dict[str, Any], horizon: str = "auto") -> Dict[str, Any]:
+    """Метрики ВЫБРАННОГО горизонта из ответа calculate_valuation_metrics.
+
+    horizon: "auto" — тот, что выбрало правило цены (preferred_horizon),
+    иначе явный ключ "maturity" | "put" | "call" (свитчер карточки). Если
+    запрошенного горизонта у бумаги нет — молча падаем на погашение.
+    Возвращает плоский dict метрик + "horizon" (что реально выбрано)."""
+    hzs = m.get("horizons") or {}
+    key = m.get("preferred_horizon", "maturity") if horizon in (None, "", "auto") else horizon
+    if key not in hzs:
+        key = "maturity"
+    sel = dict(hzs.get(key) or {})
+    sel["horizon"] = key
+    return sel
+
+
+def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
+    """К ЧЕМУ ПРАЙСИТСЯ БУМАГА — правило цены vs цена выкупа.
+
+    ПУТ (опцион держателя): предъявит, только если бумага торгуется НИЖЕ цены
+    выкупа — сдать по 100 лучше, чем держать актив, который рынок оценил дешевле.
+    Дороже выкупа — держатель выгодно кэррится и оферту проигнорирует → горизонт
+    погашение.
+
+    CALL (опцион эмитента) — зеркально: эмитент отзовёт долг, который для него
+    ДОРОГ, т.е. когда бумага торгуется ВЫШЕ цены выкупа (занял дороже рынка);
+    дешёвый долг оставит висеть → горизонт погашение.
+
+    Оба сработали (редкая конфигурация put+call) → ближайшее по дате событие.
+    Цена неизвестна → консервативно к погашению.
+    """
+    if price is None:
+        return "maturity"
+    cands = []
+    put, call = horizons.get("put"), horizons.get("call")
+    if put and put.get("date") and price < (put.get("price_pct") or 100.0):
+        cands.append(("put", put["date"]))
+    if call and call.get("date") and price > (call.get("price_pct") or 100.0):
+        cands.append(("call", call["date"]))
+    if not cands:
+        return "maturity"
+    return min(cands, key=lambda c: c[1])[0]
 
 
 # Разумные границы вывода — ловят data-driven регрессии (плохой параметр → дичь),

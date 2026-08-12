@@ -41,7 +41,11 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
     face = getattr(ctx["ref_obj"], "face_value", None)
 
     def metrics_fn(price):
+        # горизонт уровня — по правилу цены (как в /orderbook и в карточке)
+        from services.valuation import pick_horizon
         m = reprice_at_price(ctx, price)
-        return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct"),
-                "y_idx_bps": m.get("yield_over_index_bps")}
+        h = pick_horizon(m, "auto")
+        return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
+                "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
+                "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps"))}
     return metrics_fn, ctx["calc_date"], face

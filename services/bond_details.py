@@ -13,7 +13,7 @@ from services.bonds import (
     create_bond_ref_data, extract_bond_reference_dict,
     build_ref_external, external_formula, reconcile_face, amort_remaining_face,
 )
-from services.valuation import calculate_valuation_metrics
+from services.valuation import calculate_valuation_metrics, pick_horizon
 from services.cashflow import build_cashflow_from_moex
 from services.zspread import project_cfs, solve_flat_y
 from services.exceptions import NotFoundException, CalculationException
@@ -240,15 +240,33 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             logger.warning(f"Floater risk error for {isin}: {e}")
 
     warnings = list(cf_warnings)   # деградация cashflow-таблицы (фолбэк на факты)
+    # ПРАВИЛО ЦЕНЫ (services.valuation._preferred_horizon) — объясняем в карточке,
+    # почему метрики показаны к тому горизонту, к которому показаны. Свитчер в
+    # карточке позволяет посмотреть любой горизонт вручную.
+    _hz = val_dict.get("preferred_horizon", "maturity")
+    _opx = val_dict.get("offer_price_pct")
     if next_offer and next_offer[2] == "put":
-        warnings.append(
-            f"Пут-оферта {next_offer[0].isoformat()}: первостепенны метрики к оферте "
-            "(sm/dm/yield_to_offer, yield-to-put); к погашению — вторичные "
-            "(sm_bps/disc_margin_bps)")
+        if _hz == "put":
+            warnings.append(
+                f"Пут-оферта {next_offer[0].isoformat()}: цена ниже цены выкупа "
+                f"({_opx if _opx is not None else 100}%) — держателю выгодно сдать, "
+                "метрики показаны К ОФЕРТЕ (yield-to-put)")
+        else:
+            warnings.append(
+                f"Пут-оферта {next_offer[0].isoformat()}: цена выше цены выкупа "
+                f"({_opx if _opx is not None else 100}%) — держатель выгодно кэррится и "
+                "оферту не предъявит, метрики показаны К ПОГАШЕНИЮ; к оферте — в свитчере")
     elif next_offer and next_offer[2] == "call":
-        warnings.append(
-            f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): держатель "
-            "её не форсирует — первостепенны метрики к ПОГАШЕНИЮ, к оферте лишь справочно")
+        if _hz == "call":
+            warnings.append(
+                f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): цена выше цены "
+                f"выкупа ({_opx if _opx is not None else 100}%) — эмитент занял дорого и, "
+                "вероятно, отзовёт выпуск, метрики показаны К CALL (yield-to-call); "
+                "гарантией это не является")
+        else:
+            warnings.append(
+                f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): цена ниже цены "
+                "выкупа — эмитенту отзывать невыгодно, метрики показаны К ПОГАШЕНИЮ")
 
     return {
         "reference": ref_dict,
@@ -384,7 +402,8 @@ _SOLVE_LO, _SOLVE_HI = 20.0, 200.0
 _SOLVE_STEP = 0.9   # шаг расширения скобки от старта (×/÷ по цене)
 
 
-async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict:
+async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict,
+                               horizon: str = "auto") -> dict:
     """Обратная задача калькулятора: спред Y-IDX → чистая цена + все метрики под
     ней. Y-IDX монотонно убывает по цене (дороже бумага — ниже доходность, значит
     и спред к базе), поэтому берётся бисекция по цене на ТЁПЛОМ ctx: каждая
@@ -397,8 +416,13 @@ async def solve_price_for_yidx(isin: str, y_idx_bps: float, cache: dict) -> dict
     Возвращает метрики reprice_bond плюс clean_price_pct найденной цены."""
     ctx = await load_reprice_ctx(isin, cache)
 
+    # ГОРИЗОНТ ФИКСИРУЕМ на всю бисекцию. Правило цены цено-зависимо: при
+    # "auto" функция Y-IDX(цена) рвалась бы на переходе через цену выкупа
+    # (левее — к оферте, правее — к погашению), а бисекция требует монотонной
+    # непрерывной функции. Карточка присылает уже разрешённый ключ горизонта.
     def yidx(p: float):
-        return reprice_at_price(ctx, p).get("yield_over_index_bps")
+        m = reprice_at_price(ctx, p)
+        return pick_horizon(m, horizon).get("yield_over_index_bps")
 
     lo = hi = 100.0
     y_lo = y_hi = yidx(lo)

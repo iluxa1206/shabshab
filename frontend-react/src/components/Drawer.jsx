@@ -25,8 +25,62 @@ function RefCell({ k, children }) {
 // оба калькулятора (под введённую цену и на прошлую дату) — подписи и порядок
 // не разъезжаются. Всё считается НА ДАТУ ПОСТАВКИ: цена — котировка своего дня,
 // деньги и НКД — T+1 раб. DM/SM убраны из карточки (первичная метрика — Y-IDX).
-export function ValCards({ v, priceDate, calc = false }) {
+// Метрики ГОРИЗОНТА поверх объекта оценки: цена/НКД/дата поставки от горизонта
+// не зависят, а доходности и спред — зависят (поток режется к оферте, база
+// Y-IDX роллируется до той же даты). sel: "auto" (правило цены на бэке) либо
+// явный ключ "maturity"|"put"|"call" — ручной свитчер карточки.
+const HZ_KEYS = ["sm_bps", "disc_margin_bps", "yield_xirr_pct",
+                 "index_yield_pct", "yield_over_index_bps"];
+
+export function horizonView(v, sel) {
+  const hzs = (v && v.horizons) || {};
+  let key = (!sel || sel === "auto") ? (v?.preferred_horizon || "maturity") : sel;
+  if (!hzs[key]) key = hzs.maturity ? "maturity" : key;
+  const h = hzs[key];
+  if (!h) return { v, key: "maturity", date: null, pricePct: null };
+  const out = { ...v };
+  for (const k of HZ_KEYS) out[k] = h[k] ?? null;
+  return { v: out, key, date: h.date || null, pricePct: h.price_pct ?? null };
+}
+
+const HZ_LABEL = { maturity: "к погашению", put: "к оферте (пут)", call: "к call" };
+
+// Свитчер горизонта прайсинга. По умолчанию «Авто» = правило цены: бумага ниже
+// цены пут-выкупа торгуется к оферте (держатель сдаст), выше цены call-выкупа —
+// к коллу (эмитент отзовёт), иначе к погашению. Показываем, только если у
+// бумаги вообще есть альтернативный горизонт.
+export function HorizonSwitch({ v, value, onChange }) {
+  const hzs = (v && v.horizons) || {};
+  const alts = ["put", "call"].filter((k) => hzs[k]);
+  if (!alts.length) return null;
+  const auto = v.preferred_horizon || "maturity";
+  const opts = [
+    { k: "auto", t: "Авто", title: `правило цены → ${HZ_LABEL[auto] || auto}` },
+    { k: "maturity", t: "Погашение", title: "поток до погашения" },
+    ...alts.map((k) => ({
+      k, t: k === "put" ? "Оферта" : "Call",
+      title: `${HZ_LABEL[k]} ${fmt.date(hzs[k].date) || ""} · выкуп ${hzs[k].price_pct ?? 100}%`,
+    })),
+  ];
+  return (
+    <div className="hz-switch">
+      <span className="hz-switch-label">Считать</span>
+      {opts.map((o) => (
+        <button key={o.k} type="button" title={o.title}
+          className={"hz-btn" + (value === o.k ? " hz-btn-on" : "")}
+          onClick={() => onChange(o.k)}>{o.t}</button>
+      ))}
+    </div>
+  );
+}
+
+export function ValCards({ v, priceDate, calc = false, hzKey, hzDate }) {
   const u = (t) => <span className="vc-u"> {t}</span>;
+  // к чему посчитаны цифры плиток — иначе «R-spread 320» к оферте и к погашению
+  // выглядят одинаково, а это разные числа
+  const hzNote = hzKey && hzKey !== "maturity"
+    ? `${HZ_LABEL[hzKey]}${hzDate ? " " + fmt.date(hzDate) : ""}`
+    : "к погашению";
   // копейки только пока число короткое: у бумаг с номиналом в миллионы
   // (RU000A1034Q5 — НКД 385 000 ₽) дробная часть не влезала в плитку
   const money = (x) => (x == null ? null : Math.abs(x) >= 1e5 ? fmt.num(x, 0) : fmt.num(x, 2));
@@ -36,12 +90,12 @@ export function ValCards({ v, priceDate, calc = false }) {
         <div className="vc-label">R-spread</div>
         <div className="vc-val" style={{ color: dmColor(v.yield_over_index_bps).color }}>
           {fmt.bps(v.yield_over_index_bps) ?? "—"}{u("bps")}</div>
-        <div className="vc-sub">спред: YTM − база</div>
+        <div className="vc-sub">спред: YTM − база · {hzNote}</div>
       </div>
       <div className="vc">
         <div className="vc-label">YTM</div>
         <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}{u("%")}</div>
-        <div className="vc-sub">XIRR бумаги</div>
+        <div className="vc-sub">XIRR бумаги · {hzNote}</div>
       </div>
       <div className="vc">
         <div className="vc-label">YTM база</div>
@@ -162,7 +216,12 @@ function PastCalc({ isin }) {
             : "дата в прошлом → метрики как-на-дату"}
         </span>
       </div>
-      {m && <ValCards v={m} priceDate={dateInput} calc />}
+      {m && (() => {
+        // as-of карточка тоже уважает правило цены той даты (ручного свитчера
+        // здесь нет — прошлые метрики смотрят в одном, авто-режиме)
+        const hv = horizonView(m, "auto");
+        return <ValCards v={hv.v} priceDate={dateInput} calc hzKey={hv.key} hzDate={hv.date} />;
+      })()}
       {/* деградации входов на дату (доначисленный НКД, ex-coupon, отсутствие
           расписания) — без них цифра выглядит точнее, чем есть */}
       {m?.warnings?.length > 0 && <div className="warn-box">{m.warnings.join(" · ")}</div>}
@@ -230,7 +289,7 @@ function ChartsBody({ isin, period, setPeriod, onClose }) {
   );
 }
 
-function Content({ d, charts }) {
+function Content({ d, charts, hzSel = "auto", setHzSel = () => {} }) {
   const r = d.reference, m = d.market;
   const baseVal = d.valuation;
 
@@ -257,6 +316,13 @@ function Content({ d, charts }) {
   const seqRef = useRef(0);
   useEffect(() => { isinRef.current = r.isin; }, [r.isin]);
 
+  // выбранный горизонт прайсинга (авто = правило цены с бэка). Считается до
+  // эффектов: решателю спреда нужен РАЗРЕШЁННЫЙ ключ, а не "auto" — иначе он
+  // подбирал бы цену под спред другого горизонта, чем показан в плитке.
+  const hzView = horizonView(repriced || baseVal, hzSel);
+  const v = hzView.v;
+  const hzKey = hzView.key;
+
   const repriceMut = useMutation({
     mutationFn: ({ isin, p }) => repriceBond(isin, p),
     onSuccess: (data, { isin, seq }) => {
@@ -269,7 +335,7 @@ function Content({ d, charts }) {
   // Решатель спреда: bps → цена (бисекция на бэке). Цена уезжает в левое поле,
   // метрики ответа — те же, что дал бы reprice по этой цене.
   const spreadMut = useMutation({
-    mutationFn: ({ isin, y }) => priceFromSpread(isin, y),
+    mutationFn: ({ isin, y, hz }) => priceFromSpread(isin, y, hz),
     onSuccess: (data, { isin, seq }) => {
       if (isin !== isinRef.current || seq !== seqRef.current) return;
       setSpreadErr("");
@@ -305,12 +371,12 @@ function Content({ d, charts }) {
     if (!raw) { setSpreadErr(""); return; }
     const y = parseFloat(raw);
     if (!Number.isFinite(y) || y < -5000 || y > 20000) return;
-    const t = setTimeout(() => solveSpread({ isin: r.isin, y, seq: ++seqRef.current }), 400);
+    const t = setTimeout(() => solveSpread({ isin: r.isin, y, hz: hzKey, seq: ++seqRef.current }), 400);
     return () => clearTimeout(t);
-  }, [spreadInput, r.isin, solveSpread]);
+  }, [spreadInput, r.isin, solveSpread, hzKey]);
 
   const isRepriced = repriced != null;
-  const v = repriced || baseVal;
+  const vRaw = repriced || baseVal;
   const warnings = [...(baseVal.warnings || []), ...(d.warnings || [])];
   const cf = d.cashflow || [];
   // МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК показывают «вчера»
@@ -348,7 +414,7 @@ function Content({ d, charts }) {
             id="pc-spread"
             className="pc-input pc-input-bps"
             inputMode="decimal"
-            placeholder={fmt.bps(baseVal.yield_over_index_bps) ?? "спред"}
+            placeholder={fmt.bps(horizonView(baseVal, hzSel).v.yield_over_index_bps) ?? "спред"}
             value={spreadInput}
             onChange={(e) => setSpreadInput(e.target.value)}
           />
@@ -366,7 +432,9 @@ function Content({ d, charts }) {
             : "рыночная цена"}
         </span>
       </div>
-      <ValCards v={v} priceDate={m.calc_date} calc={isRepriced} />
+      <HorizonSwitch v={vRaw} value={hzSel} onChange={setHzSel} />
+      <ValCards v={v} priceDate={m.calc_date} calc={isRepriced}
+        hzKey={hzView.key} hzDate={hzView.date} />
 
       {warnings.length > 0 && <div className="warn-box">{warnings.join(" · ")}</div>}
 
@@ -448,6 +516,10 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
   // кнопкой СТАКАН или крестиком панели. Опт-аут — ?ob=0 в адресе (autoOrderbook).
   const [showOb, setShowOb] = useState(true);
   useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
+  // Горизонт прайсинга живёт ЗДЕСЬ, а не в Content: его уважают и плитки
+  // карточки, и уровни стакана (соседняя панель) — иначе они считали бы разное.
+  const [hzSel, setHzSel] = useState("auto");
+  useEffect(() => { setHzSel("auto"); }, [isin]);
   const face = data?.reference?.face_value ?? null;
   // НКД на дату поставки — тот же, из которого бэк собрал грязную цену: подсветка
   // объёма сигнала в стакане должна считать деньги ровно как screener_core
@@ -561,7 +633,7 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">ЗАГРУЗКА</div>
                 : isFixed ? <FixedCard d={data} />
-                : <Content d={data} charts={charts} />}
+                : <Content d={data} charts={charts} hzSel={hzSel} setHzSel={setHzSel} />}
             </div>
           </motion.aside>
           {charts && (
@@ -586,7 +658,8 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
               transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
             >
               <Orderbook isin={isin} kind={kind} face={face} accrued={accrued}
-                sigVol={sigVol} sigSide={sigSide} sigPx={sigPx} onClose={() => setShowOb(false)} />
+                sigVol={sigVol} sigSide={sigSide} sigPx={sigPx} horizon={hzSel}
+                onClose={() => setShowOb(false)} />
             </motion.aside>
           )}
         </>

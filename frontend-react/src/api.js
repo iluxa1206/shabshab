@@ -84,8 +84,12 @@ export const changePassword = (currentPassword, newPassword) =>
 // --- Управление пользователями (только admin) ---
 export const adminListUsers = () => request("/api/auth/users").then((d) => d.users || []);
 
+// password=null → сервер сгенерирует и вернёт его в ответе (показать админу один раз)
 export const adminCreateUser = (email, password, role) =>
-  request("/api/auth/users", { method: "POST", json: { email, password, role } });
+  request("/api/auth/users", { method: "POST", json: { email, password: password || null, role } });
+
+export const adminResetPassword = (email) =>
+  request(`/api/auth/users/${encodeURIComponent(email)}/reset-password`, { method: "POST" });
 
 export const adminUpdateUser = (email, patch) =>
   request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "PATCH", json: patch });
@@ -335,13 +339,18 @@ export const repriceBond = (isin, price, signal) =>
 
 // Обратная задача: целевой спред Y-IDX (bps) → чистая цена + метрики под ней
 // (clean_price_pct — найденная цена)
-export const priceFromSpread = (isin, yIdx, signal) =>
-  request(`/api/bonds/${encodeURIComponent(isin)}/price_from_spread?y_idx=${encodeURIComponent(yIdx)}`, { signal });
+// horizon — в какой метрике задан целевой спред (маркер карточки: к погашению /
+// к оферте / к call), иначе подобранная цена не сойдётся с плиткой R-spread
+export const priceFromSpread = (isin, yIdx, horizon = "auto", signal) =>
+  request(`/api/bonds/${encodeURIComponent(isin)}/price_from_spread?y_idx=${encodeURIComponent(yIdx)}`
+    + `&horizon=${encodeURIComponent(horizon)}`, { signal });
 
 // Стакан выпуска (Alor snapshot): bids/asks с per-level SM/DM/YTM (тот же расчёт,
 // что калькулятор карточки, батчем по уровням). full=true — все уровни лестницы.
-export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater" } = {}, signal) =>
-  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}&kind=${kind}`, { signal });
+// horizon: auto|maturity|put|call — к чему прайсятся уровни (auto = правило цены)
+export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater", horizon = "auto" } = {}, signal) =>
+  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}&kind=${kind}`
+    + `&horizon=${encodeURIComponent(horizon)}`, { signal });
 
 // --- Алерты по стакану (per-user) ---
 export const fetchAlerts = () => request("/api/alerts").then((d) => d.alerts || []);

@@ -435,12 +435,18 @@ async def reprice_bond_valuation(
 async def price_from_spread(
     isin: str = Path(...),
     y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой R-spread, bps"),
+    horizon: str = Query("auto", description="maturity | put | call — горизонт, в котором "
+                                             "задан целевой спред (auto = правило цены)"),
 ):
     """Обратная задача калькулятора: спред Y-IDX → чистая цена и все метрики под
     ней. Бисекция по цене на тёплом контексте (без сетевых вызовов внутри цикла).
-    Цена возвращается в clean_price_pct."""
+    Цена возвращается в clean_price_pct.
+
+    horizon фиксирует, В КАКОЙ метрике задан целевой спред: карточка со свитчером
+    «к оферте» просит цену под спред к оферте, иначе цифра ответа не совпала бы
+    с плиткой, из которой пользователь её взял."""
     isin = _require_isin(isin)
     cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     from services.bond_details import solve_price_for_yidx
-    metrics = await solve_price_for_yidx(isin, y_idx, cache)
+    metrics = await solve_price_for_yidx(isin, y_idx, cache, horizon=horizon)
     return RepriceResponse(**metrics)

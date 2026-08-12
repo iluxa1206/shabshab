@@ -74,15 +74,24 @@ function qTitle(b, side) {
 // одинаково молчат: маркер утверждает наличие, а не отсутствие.
 function OfferMarks({ b }) {
   const put = b.offer_kind === "put" && b.offer_date;
-  const call = b.has_call === true;
+  const call = b.has_call === true || b.offer_kind === "call";
   if (!put && !call) return null;
+  // ЖИРНЫЙ маркер = метрики строки посчитаны к этому горизонту (правило цены:
+  // цена ниже цены пут-выкупа → к оферте, выше цены call-выкупа → к коллу).
+  const hz = b.preferred_horizon;
   return (
     <>
-      {put && <span className="offer-mark offer-put"
+      {put && <span className={"offer-mark offer-put" + (hz === "put" ? " offer-mark-on" : "")}
         title={"оферта-пут " + fmt.date(b.offer_date)
-          + ": держатель может предъявить бумагу к выкупу, рынок прайсит к этой дате"}>p</span>}
-      {call && <span className="offer-mark offer-call"
-        title="call-опцион эмитента (corpbonds): эмитент вправе выкупить досрочно; дата не известна — MOEX колл в расписании не различает">c</span>}
+          + ": держатель может предъявить бумагу к выкупу"
+          + (hz === "put"
+            ? " · цена ниже цены выкупа → спред и YTM строки посчитаны К ОФЕРТЕ"
+            : " · цена выше цены выкупа → держатель не сдаст, метрики К ПОГАШЕНИЮ")}>p</span>}
+      {call && <span className={"offer-mark offer-call" + (hz === "call" ? " offer-mark-on" : "")}
+        title={"call-опцион эмитента: вправе выкупить досрочно"
+          + (hz === "call"
+            ? " · цена выше цены выкупа → эмитенту выгодно отозвать, метрики К CALL"
+            : " · дата из corpbonds не известна либо отзыв невыгоден — метрики К ПОГАШЕНИЮ")}>c</span>}
     </>
   );
 }

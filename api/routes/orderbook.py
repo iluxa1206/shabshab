@@ -75,6 +75,8 @@ async def get_orderbook(
     depth: int = Query(10, ge=1, le=50),
     full: bool = Query(False, description="Все уровни лестницы (не только с заявками)"),
     kind: str = Query("floater", description="floater | fixed — набор метрик уровня"),
+    horizon: str = Query("auto", description="auto | maturity | put | call — горизонт "
+                                             "прайсинга уровней (auto = правило цены)"),
 ):
     # 1. Get Bond Data
     isin = (isin or "").strip().upper()
@@ -110,9 +112,16 @@ async def get_orderbook(
         calc_date = ctx["calc_date"]
 
         def metrics_fn(price):
+            # уровень стакана прайсится к тому же горизонту, что и карточка:
+            # правило цены применяется НА КАЖДОМ уровне (цена уровня своя, а
+            # значит и решение «сдам на оферту / держу до погашения» своё)
+            from services.valuation import pick_horizon
             m = reprice_at_price(ctx, price)
-            return {"dm_bps": m.get("disc_margin_bps"), "yield_pct": m.get("yield_xirr_pct"),
-                    "y_idx_bps": m.get("yield_over_index_bps")}
+            h = pick_horizon(m, horizon)
+            return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
+                    "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
+                    "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
+                    "horizon": h.get("horizon")}
 
     # 3. Fetch Snapshot
     snapshot = await fetch_alor_orderbook_snapshot(isin, depth)
