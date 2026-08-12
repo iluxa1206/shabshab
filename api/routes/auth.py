@@ -1,8 +1,10 @@
 """Авторизация дашборда: логин/пароль → JWT в httpOnly-cookie.
 
 Доступ к данным закрыт зависимостью require_user (см. api/main.py). Аккаунты
-создаёт админ через scripts/useradd.py — самостоятельной регистрации нет,
-поэтому чужие аккаунты попасть не могут.
+создаёт админ — в панели («Настройки доступа») или через scripts/useradd.py;
+самостоятельной регистрации нет, поэтому чужие аккаунты попасть не могут.
+Пароль генерит сервер (auth_users.generate_password) и отдаёт админу ровно один
+раз в ответе на создание/сброс — в хранилище лежит только bcrypt-хеш.
 """
 from __future__ import annotations
 
@@ -149,7 +151,8 @@ class PasswordBody(BaseModel):
 
 class CreateUserBody(BaseModel):
     email: str
-    password: str
+    # пусто → сервер сгенерирует пароль и вернёт его админу один раз в ответе
+    password: Optional[str] = None
     role: str = "user"
 
 
@@ -220,12 +223,36 @@ async def list_users(_admin: dict = Depends(require_admin)):
 
 
 @router.post("/users")
-async def create_user(body: CreateUserBody, _admin: dict = Depends(require_admin)):
+async def create_user(body: CreateUserBody, admin: dict = Depends(require_admin)):
+    generated = not (body.password or "").strip()
+    password = auth_users.generate_password() if generated else body.password
     try:
-        auth_users.add_user(body.email, body.password, role=body.role, overwrite=False)
+        auth_users.add_user(body.email, password, role=body.role, overwrite=False)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True}
+    logger.info("user created: %s (role=%s) by %s", body.email, body.role, admin["email"])
+    # пароль возвращается ОДИН раз (в хранилище только bcrypt-хеш) — админ передаёт
+    # его пользователю сам. В логи не пишем.
+    return {"ok": True, "email": body.email.strip().lower(),
+            "password": password if generated else None}
+
+
+@router.post("/users/{email}/reset-password")
+async def reset_password(email: str, admin: dict = Depends(require_admin)):
+    """Сброс пароля админом: генерит новый и возвращает его один раз.
+
+    Смена хеша меняет pv → все сессии этого юзера немедленно инвалидируются
+    (см. _decode_token), в т.ч. если пароль скомпрометирован."""
+    email = (email or "").strip().lower()
+    if not auth_users.get_user(email):
+        raise HTTPException(status_code=404, detail="Нет такого пользователя")
+    password = auth_users.generate_password()
+    try:
+        auth_users.set_password(email, password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info("password reset for %s by %s", email, admin["email"])
+    return {"ok": True, "email": email, "password": password}
 
 
 @router.patch("/users/{email}")

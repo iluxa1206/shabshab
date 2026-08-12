@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
-  setInstrumentParams, fetchInstrument, parseCouponFormula,
+  adminResetPassword, setInstrumentParams, fetchInstrument, parseCouponFormula,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
@@ -222,8 +222,41 @@ export function InstrumentForm({ isin, onSaved }) {
   );
 }
 
+// Пароль хранится только хешем — сервер отдаёт его один раз при создании/сбросе.
+// Плашка держит его на экране, пока админ не скопирует и не закроет.
+function IssuedPassword({ issued, onClose }) {
+  const [copied, setCopied] = useState(false);
+  if (!issued) return null;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(issued.password);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="admin-issued">
+      <div className="admin-issued-head">
+        Пароль для <b>{issued.email}</b> — покажется только сейчас, передайте пользователю:
+      </div>
+      <div className="admin-issued-row">
+        <code className="admin-issued-pw">{issued.password}</code>
+        <button className="btn admin-btn-sm" onClick={copy}>
+          {copied ? "Скопировано" : "Копировать"}
+        </button>
+        <button className="btn admin-btn-sm" onClick={onClose}>Скрыть</button>
+      </div>
+    </div>
+  );
+}
+
 function UsersSection({ me }) {
   const [err, setErr] = useState("");
+  const [issued, setIssued] = useState(null);   // {email, password} — показ один раз
   const q = useQuery({ queryKey: USERS_KEY, queryFn: adminListUsers });
   const users = q.data || [];
   const loadErr = q.isError ? (q.error?.message || "Не удалось загрузить список") : "";
@@ -232,6 +265,7 @@ function UsersSection({ me }) {
     <section className="admin-sec">
       <h3 className="admin-h">Пользователи</h3>
       {(err || loadErr) && <Msg err={err || loadErr} />}
+      <IssuedPassword issued={issued} onClose={() => setIssued(null)} />
       {q.isPending ? (
         <div className="admin-msg">Загрузка…</div>
       ) : (
@@ -241,24 +275,27 @@ function UsersSection({ me }) {
           </thead>
           <tbody>
             {users.map((u) => (
-              <UserRow key={u.email} u={u} me={me} setErr={setErr} />
+              <UserRow key={u.email} u={u} me={me} setErr={setErr} onIssued={setIssued} />
             ))}
           </tbody>
         </table>
       )}
-      <AddUserForm />
+      <AddUserForm onIssued={setIssued} />
     </section>
   );
 }
 
-function UserRow({ u, me, setErr }) {
+function UserRow({ u, me, setErr, onIssued }) {
   const qc = useQueryClient();
   const isSelf = u.email === me;
 
   const mut = useMutation({
     mutationFn: (fn) => fn(),
     onMutate: () => setErr(""),
-    onSuccess: () => qc.invalidateQueries({ queryKey: USERS_KEY }),
+    onSuccess: (r) => {
+      if (r?.password) onIssued({ email: r.email || u.email, password: r.password });
+      qc.invalidateQueries({ queryKey: USERS_KEY });
+    },
     onError: (ex) => setErr(ex.message || "Ошибка"),
   });
   const busy = mut.isPending;
@@ -266,10 +303,10 @@ function UserRow({ u, me, setErr }) {
   const toggleRole = () => mut.mutate(() =>
     adminUpdateUser(u.email, { role: u.role === "admin" ? "user" : "admin" }));
 
+  // Сброс: сервер генерит новый пароль и разлогинивает все сессии юзера
   const resetPw = () => {
-    const p = prompt(`Новый пароль для ${u.email} (мин. 8 символов):`);
-    if (p == null) return;
-    mut.mutate(() => adminUpdateUser(u.email, { password: p }));
+    if (!confirm(`Сбросить пароль ${u.email}? Текущие сессии этого пользователя будут завершены.`)) return;
+    mut.mutate(() => adminResetPassword(u.email));
   };
 
   const del = () => {
@@ -286,7 +323,7 @@ function UserRow({ u, me, setErr }) {
         </button>
       </td>
       <td className="admin-actions">
-        <button className="btn admin-btn-sm" onClick={resetPw} disabled={busy}>Пароль</button>
+        <button className="btn admin-btn-sm" onClick={resetPw} disabled={busy}>Сбросить пароль</button>
         <button className="btn admin-btn-sm admin-btn-danger" onClick={del} disabled={busy || isSelf}>
           Удалить
         </button>
@@ -295,19 +332,21 @@ function UserRow({ u, me, setErr }) {
   );
 }
 
-function AddUserForm() {
+// Регистрация: админ вводит только email, пароль генерит сервер и отдаёт один раз.
+function AddUserForm({ onIssued }) {
   const qc = useQueryClient();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
   const createMut = useMutation({
-    mutationFn: () => adminCreateUser(email.trim(), password, role),
-    onSuccess: () => {
-      setOk(`Добавлен ${email.trim()}`);
-      setEmail(""); setPassword(""); setRole("user");
+    mutationFn: () => adminCreateUser(email.trim(), null, role),
+    onSuccess: (r) => {
+      const created = r?.email || email.trim();
+      setOk(`Добавлен ${created}`);
+      if (r?.password) onIssued({ email: created, password: r.password });
+      setEmail(""); setRole("user");
       qc.invalidateQueries({ queryKey: USERS_KEY });
     },
     onError: (ex) => setErr(ex.message || "Ошибка"),
@@ -321,12 +360,11 @@ function AddUserForm() {
       <div className="admin-h admin-h-sm">Добавить пользователя</div>
       <input type="email" placeholder="email@example.com" value={email}
         autoComplete="off" onChange={(e) => setEmail(e.target.value)} required />
-      <input type="password" placeholder="Пароль (мин. 8)" value={password}
-        autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} required />
       <select value={role} onChange={(e) => setRole(e.target.value)}>
         <option value="user">пользователь</option>
         <option value="admin">админ</option>
       </select>
+      <div className="admin-hint">Пароль сгенерируется автоматически и покажется один раз.</div>
       <Msg err={err} ok={ok} />
       <button className="btn admin-btn-primary" type="submit" disabled={busy}>
         {busy ? "Добавление…" : "Добавить"}

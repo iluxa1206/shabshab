@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,18 @@ def _save(data: dict) -> None:
         _cache_mtime = USERS_FILE.stat().st_mtime
     except OSError:
         _cache_mtime = 0.0
+
+
+# Алфавит без визуально неотличимых символов (0/O, 1/l/I) — пароль диктуют
+# и переносят руками, опечатка дороже потерянной энтропии. 14 символов из 58 ≈ 82 бита.
+_PWD_ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def generate_password(length: int = 14) -> str:
+    """Криптостойкий пароль для нового юзера / сброса (secrets, не random)."""
+    if length < 8:
+        raise ValueError("пароль минимум 8 символов")
+    return "".join(secrets.choice(_PWD_ALPHABET) for _ in range(length))
 
 
 def hash_password(password: str) -> str:
