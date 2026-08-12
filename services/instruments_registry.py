@@ -392,8 +392,11 @@ def set_emitter(isin: str, emitter_id, emitter_name: str) -> None:
     """Записать эмитента (MOEX EMITTER_ID + имя). Статичен → кэш навсегда."""
     _ensure()
     with _lock, _conn() as c:
-        c.execute("UPDATE instruments SET emitter_id=?, emitter_name=?, updated_at=? WHERE isin=?",
-                  (emitter_id, emitter_name, _now(), isin))
+        # COALESCE: пометка sentinel'ом (id=0, имя не пришло) не должна стирать
+        # имя, уже добытое из corpbonds/ручного слоя
+        c.execute("UPDATE instruments SET emitter_id=?, emitter_name=COALESCE(?, emitter_name), "
+                  "updated_at=? WHERE isin=?",
+                  (emitter_id, emitter_name or None, _now(), isin))
 
 
 def set_rating(isin: str, rating: str) -> None:
@@ -404,6 +407,11 @@ def set_rating(isin: str, rating: str) -> None:
     with _lock, _conn() as c:
         c.execute("UPDATE instruments SET rating=?, updated_at=? WHERE isin=?",
                   (rating, _now(), isin))
+
+
+# Синтетический эмитент Минфина: MOEX EMITTER_ID у ОФЗ нет, а группа нужна.
+# Отрицательный — MOEX нумерует положительными, пересечься не может.
+_OFZ_EMITTER_ID = -1
 
 
 def normalize_ofz_pk() -> int:
@@ -433,18 +441,35 @@ def normalize_ofz_pk() -> int:
              "AND (rating IS NULL OR rating='')", (now,)),
             (f"UPDATE instruments SET emitter_name='Минфин России', updated_at=? WHERE active=1 AND {name_cond} "
              "AND (emitter_name IS NULL OR emitter_name='')", (now,)),
+            # MOEX не отдаёт EMITTER_ID для ОФЗ (description без поля) → своей
+            # группы у Минфина нет и канон имени на них не работает. Ставим
+            # синтетический отрицательный id: с MOEX-нумерацией (положительной)
+            # не столкнётся, а группа получается одна на всю серию.
+            (f"UPDATE instruments SET emitter_id={_OFZ_EMITTER_ID}, updated_at=? WHERE active=1 AND {name_cond} "
+             "AND (emitter_id IS NULL OR emitter_id=0)", (now,)),
         ):
             n = max(n, c.execute(sql, args).rowcount)
     return n
 
 
+_EMITTER_RETRY_DAYS = 7
+
+
 def isins_missing_emitter(limit: int = 40) -> list[str]:
-    """Активные бумаги без emitter_id — для постепенного бэкфилла в поллере."""
+    """Активные бумаги без emitter_id — для постепенного бэкфилла в поллере.
+
+    Кроме NULL берём и sentinel'ы (emitter_id=0, «MOEX не отдал EMITTER_ID»),
+    но не чаще раза в неделю: у свежих выпусков description на ISS доезжает с
+    лагом в недели (ТАЛК002P04 стоял нерезолвимым, а потом MOEX отдал 15252).
+    Окно по updated_at не даёт drain-loop крутить одни и те же нерезолвимые
+    (ОФЗ) внутри одного прохода — set_emitter обновляет метку времени."""
     _ensure()
+    stale = (datetime.now(timezone.utc) - timedelta(days=_EMITTER_RETRY_DAYS)).isoformat()
     with _conn() as c:
         rows = c.execute(
-            "SELECT isin FROM instruments WHERE active=1 AND emitter_id IS NULL LIMIT ?",
-            (limit,)).fetchall()
+            "SELECT isin FROM instruments WHERE active=1 AND "
+            "(emitter_id IS NULL OR (emitter_id=0 AND updated_at < ?)) LIMIT ?",
+            (stale, limit)).fetchall()
     return [r["isin"] for r in rows]
 
 
@@ -465,7 +490,9 @@ def canonical_emitter_names(rows) -> dict:
     freq: dict = {}
     for r in rows:
         eid, name = r["emitter_id"], (r["emitter_name"] or "").strip()
-        if eid is None or not name:
+        # 0 — sentinel «MOEX не отдал EMITTER_ID», а не юрлицо: под ним лежат
+        # чужие друг другу бумаги, склеивать их нельзя
+        if not eid or not name:
             continue
         freq.setdefault(eid, Counter())[name] += 1
     return {eid: min(c.items(), key=lambda kv: (-kv[1], len(kv[0]), kv[0]))[0]

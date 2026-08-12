@@ -751,7 +751,14 @@ class MarketDataService:
         """{isin: (emitter_id:int, emitter_name:str)} из MOEX /securities/{isin}
         description (EMITTER_ID + NAME). Эмитент статичен → вызывающий кэширует
         навсегда (реестр). Имя чистим от серии выпуска ('ВТБ Факторинг 001P-01'
-        → 'ВТБ Факторинг')."""
+        → 'ВТБ Факторинг').
+
+        В ответе РАЗЛИЧАЮТСЯ два исхода, иначе вызывающий не может решить, писать
+        ли sentinel: MOEX ответил, но EMITTER_ID в description нет (ОФЗ) →
+        (0, имя-или-None); MOEX не ответил (таймаут/429/5xx) → ISIN в словаре
+        ОТСУТСТВУЕТ, бумагу надо пробовать позже. Раньше оба случая выглядели
+        одинаково, и сетевой сбой на батче навсегда клеймил бумагу нерезолвимой
+        (ТАЛК002P04 висел с emitter_id=0, хотя MOEX отдаёт 15252)."""
         import re as _re
         out: Dict[str, tuple] = {}
         if not isins:
@@ -767,7 +774,7 @@ class MarketDataService:
                     client, f"https://iss.moex.com/iss/securities/{isin}.json",
                     params={"iss.only": "description", "iss.meta": "off"}, timeout=8)
                 if resp is None or resp.status_code != 200:
-                    return
+                    return   # сети не было — не помечаем, вернёмся к бумаге позже
                 desc = (await asyncio.to_thread(resp.json)).get("description", {})
                 cols, rows = desc.get("columns", []), desc.get("data", [])
                 if "name" not in cols or "value" not in cols:
@@ -776,8 +783,8 @@ class MarketDataService:
                 d = {r[ni]: r[vi] for r in rows}
                 eid = d.get("EMITTER_ID")
                 nm = _clean(d.get("NAME") or d.get("ISSUENAME") or "")
-                if eid is not None:
-                    out[isin] = (int(eid), nm or isin)
+                # ответ есть: либо реальный id, либо честное «поля нет» (0)
+                out[isin] = (int(eid), nm or isin) if eid is not None else (0, nm or None)
             except Exception:
                 pass
 
