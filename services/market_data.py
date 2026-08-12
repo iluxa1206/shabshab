@@ -383,9 +383,15 @@ class MarketDataService:
         now = time.time()
         if not force and now - cls._full_last_flush < 60:
             return
+        # СНИМОК словаря: сериализация уходит в поток, а параллельные фетчи всё
+        # это время продолжают писать в _full_mem — json.dumps по живому словарю
+        # падал «dictionary changed size during iteration», и ошибка вылетала
+        # наверх из fetch_bond_schedule_full, теряя уже скачанное расписание.
+        # dict(...) копирует под GIL целиком, гонки в самом снимке нет.
+        snapshot = dict(cls._full_mem)
         try:
             atomic_write_json(SCHEDULE_FULL_CACHE_FILE,
-                              {"date": cls._full_mem_date, "version": 2, "items": cls._full_mem})
+                              {"date": cls._full_mem_date, "version": 2, "items": snapshot})
             cls._full_last_flush = now
             cls._full_dirty = False
         except OSError:
