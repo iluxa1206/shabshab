@@ -142,29 +142,26 @@ export const COLS = [
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   // Два этажа: погашение с годами до него, под ним — дата оферты (если есть) с
-  // годами до неё, мелким и серым. Дата ГОРИЗОНТА ПРАЙСИНГА (той, к которой
-  // посчитан спред строки) подчёркнута — видно, какую из двух читает витрина.
+  // годами до неё, мелким и серым. Горизонт прайсинга по-прежнему читается по
+  // ЖИРНОМУ маркеру p/c (OfferMarks), отдельной пометки у даты не держим.
   // w=17: «p 10.10.2029 (4.2)» — ширина по МАКСИМУМУ формата, иначе появление
   // маркера или второго этажа у одной бумаги дёргает колонку.
   { key: "maturity_date", label: "MATURITY", sub: "(ЛЕТ) · ОФЕРТА", w: 17,
-    cell: (b) => {
-      const hz = b.preferred_horizon;
-      return (
-        <td className="num mat-cell" key="maturity_date">
-          <div className={"mat-main" + (hz === "maturity" ? " mat-hz" : "")}>
-            <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}
-            {yrsTo(b.maturity_date) != null && <span className="mat-yrs"> ({yrsTo(b.maturity_date)})</span>}
+    cell: (b) => (
+      <td className="num mat-cell" key="maturity_date">
+        <div className="mat-main">
+          <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}
+          {yrsTo(b.maturity_date) != null && <span className="mat-yrs"> ({yrsTo(b.maturity_date)})</span>}
+        </div>
+        {b.offer_date && (
+          <div className="mat-offer"
+            title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
+            {fmt.date(b.offer_date)}
+            {yrsTo(b.offer_date) != null && <span className="mat-yrs"> ({yrsTo(b.offer_date)})</span>}
           </div>
-          {b.offer_date && (
-            <div className={"mat-offer" + (hz === "put" || hz === "call" ? " mat-hz" : "")}
-              title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
-              {fmt.date(b.offer_date)}
-              {yrsTo(b.offer_date) != null && <span className="mat-yrs"> ({yrsTo(b.offer_date)})</span>}
-            </div>
-          )}
-        </td>
-      );
-    } },
+        )}
+      </td>
+    ) },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → R-spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
