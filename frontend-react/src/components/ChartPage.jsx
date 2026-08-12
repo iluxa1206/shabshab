@@ -14,7 +14,8 @@ import { Brush } from "../charts/index.js";
 
 // Полноэкранный график выпуска (своя вкладка, /chart/:isin).
 // Сверху — строка параметров бумаги, ниже — график на всю высоту окна:
-// цена (свечи/линия), объём и Y-IDX отдельными панелями с общей осью времени.
+// цена (свечи/линия) с объёмом внутри той же зоны и Y-IDX отдельной панелью
+// под ней — с общей осью времени.
 // Рисует lightweight-charts: zoom колесом, pan драгом, реальная временная ось —
 // свои SVG-графики этого не умеют, а писать заново дороже, чем взять готовое.
 
@@ -63,6 +64,16 @@ function periodFrom(key) {
 // ── тема ────────────────────────────────────────────────────────────────────
 // Цвета берём из тех же CSS-переменных, что и весь дашборд, чтобы график не
 // жил своей палитрой. Смена темы ловится наблюдателем за class на #app.
+// hex → rgba с заданной альфой: сетка должна быть еле заметной, а CSS-переменные
+// отдают непрозрачный цвет. Не-hex значения оставляем как есть.
+function alpha(c, a) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
+  if (!m) return c;
+  const h = m[1].length === 3 ? m[1].split("").map((x) => x + x).join("") : m[1];
+  const n = parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
 function readTheme(el) {
   const cs = getComputedStyle(el);
   const v = (n, f) => ((cs.getPropertyValue(n) || "").trim() || f);
@@ -491,7 +502,9 @@ export default function ChartPage() {
       height: Math.max(260, Math.round(el.clientHeight)),
       layout: { background: { color: theme.bg }, textColor: theme.mut, fontSize: 11,
         panes: { separatorColor: theme.line, separatorHoverColor: theme.line2 } },
-      grid: { vertLines: { color: theme.line2 }, horzLines: { color: theme.line2 } },
+      // сетка почти прозрачная: она ориентир, а не рисунок
+      grid: { vertLines: { color: alpha(theme.line2, 0.35) },
+              horzLines: { color: alpha(theme.line2, 0.35) } },
       rightPriceScale: { borderColor: theme.line },
       timeScale: { borderColor: theme.line, timeVisible: tf === "5m" || tf === "1h", secondsVisible: false },
       crosshair: { mode: CrosshairMode.Normal },
@@ -516,6 +529,8 @@ export default function ChartPage() {
     }
     seriesRef.current = {};
 
+    // priceLineVisible: false везде — пунктирный уровень последней цены/спреда
+    // тянулся через весь график и мешал читать сами серии
     const pxFmt = { type: "price", precision: 2, minMove: 0.01 };
     let price = null;
     if (type === "off") {
@@ -525,7 +540,7 @@ export default function ChartPage() {
       price = chart.addSeries(AreaSeries, {
         lineColor: theme.accent, lineWidth: 2,
         topColor: theme.accent + "33", bottomColor: theme.accent + "05",
-        priceFormat: pxFmt,
+        priceFormat: pxFmt, priceLineVisible: false,
       }, 0);
       price.setData(candles.map((c) => ({ time: toTime(c.t, tf), value: c.c })));
     } else if (type === "hlc") {
@@ -541,7 +556,7 @@ export default function ChartPage() {
       ]) {
         const s = chart.addSeries(LineSeries, {
           color, lineWidth: w, priceFormat: pxFmt,
-          priceLineVisible: key === "price", lastValueVisible: key === "price",
+          priceLineVisible: false, lastValueVisible: key === "price",
         }, 0);
         s.setData(candles.map((c) => ({ time: toTime(c.t, tf), value: c[field] })));
         seriesRef.current[key] = s;
@@ -552,21 +567,29 @@ export default function ChartPage() {
         upColor: theme.up, downColor: theme.down,
         borderUpColor: theme.up, borderDownColor: theme.down,
         wickUpColor: theme.up, wickDownColor: theme.down,
-        priceFormat: pxFmt,
+        priceFormat: pxFmt, priceLineVisible: false,
       }, 0);
       price.setData(candles.map((c) => ({
         time: toTime(c.t, tf), open: c.o, high: c.h, low: c.l, close: c.c })));
     }
     if (price) seriesRef.current.price = price;
 
+    // ── объём: не отдельная зона, а оверлей в НИЖНЕЙ ЧЕТВЕРТИ ценовой панели ──
+    // Своя невидимая шкала ("vol"): масштаб объёма не трогает шкалу цены, а
+    // scaleMargins прижимают гистограмму к низу. Цена сверху ужимается тем же
+    // способом — снизу остаётся полоса под столбики.
     const vol = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
-    }, 1);
+      priceScaleId: "vol",
+    }, 0);
     vol.setData(candles.map((c) => ({
       time: toTime(c.t, tf), value: c.v || 0,
-      color: (c.c >= c.o ? theme.up : theme.down) + "80",
+      color: (c.c >= c.o ? theme.up : theme.down) + "66",
     })));
+    vol.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     seriesRef.current.vol = vol;
+    const pxHost = seriesRef.current.price || seriesRef.current.hi;
+    if (pxHost) pxHost.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.24 } });
 
     // ── слой «средневзвес»: VWAP часа поверх свечей ──────────────────────────
     if (on("vwap")) {
@@ -613,12 +636,13 @@ export default function ChartPage() {
         if (!prev || (t.value || 0) > (prev.value || 0)) best.set(key, { ...t, time });
       }
       for (const t of best.values()) {
+        // точка, без подписи: числа над каждой свечой залепляли график, а объём
+        // сделки и так виден в ленте и в подсказке
         marks.push({
           time: t.time,
           position: t.side === "sell" ? "aboveBar" : "belowBar",
-          shape: t.side === "sell" ? "arrowDown" : "arrowUp",
+          shape: "circle",
           color: t.side === "sell" ? theme.down : theme.up,
-          text: `${Math.round((t.value || 0) / 1e6)}М`,
         });
       }
     }
@@ -637,7 +661,6 @@ export default function ChartPage() {
           position: "aboveBar",
           shape: "circle",
           color: theme.accent || theme.up,
-          text: `${Math.round((t.value || 0) / 1e6)}М ${t.board_title || "РПС"}`,
         });
       }
     }
@@ -665,8 +688,8 @@ export default function ChartPage() {
         ]) {
           const s = chart.addSeries(LineSeries, {
             color, lineWidth: w, priceFormat: spFmt,
-            priceLineVisible: key === "yidx", lastValueVisible: key === "yidx",
-          }, 2);
+            priceLineVisible: false, lastValueVisible: key === "yidx",
+          }, 1);
           s.setData(spreadPts.filter((p) => p[field] != null)
             .map((p) => ({ time: p.time, value: p[field] })));
           seriesRef.current[key] = s;
@@ -676,33 +699,31 @@ export default function ChartPage() {
           upColor: theme.up, downColor: theme.down,
           borderUpColor: theme.up, borderDownColor: theme.down,
           wickUpColor: theme.up, wickDownColor: theme.down,
-          priceFormat: spFmt,
-        }, 2);
+          priceFormat: spFmt, priceLineVisible: false,
+        }, 1);
         yidx.setData(spreadPts.filter((p) => p.o != null)
           .map((p) => ({ time: p.time, open: p.o, high: p.h, low: p.l, close: p.c })));
         seriesRef.current.yidx = yidx;
       } else {
         const yidx = chart.addSeries(LineSeries, {
           color: theme.fg, lineWidth: 2, priceFormat: spFmt,
-        }, 2);
+          priceLineVisible: false,
+        }, 1);
         yidx.setData(spreadPts.map((p) => ({ time: p.time, value: p.value })));
         seriesRef.current.yidx = yidx;
       }
     }
 
     setHasYidx(yidxDrawn);
-    // RVD-раскладка: цена сверху, спред — второй полноценный график под ней,
-    // объём между ними тонкой полосой (динамику спреда в узкой панели не видно)
+    // RVD-раскладка: цена (с объёмом внутри той же зоны) сверху, спред — второй
+    // полноценный график под ней, по половине экрана каждый
     const panes = chart.panes();
     // цена выключена и слоёв нет — верхняя панель пустая, схлопываем её
     const pane0Empty = !seriesRef.current.price && !seriesRef.current.vwap
       && !seriesRef.current.buy && !seriesRef.current.sell;
-    // раскладка по умолчанию: (цена+объём) и спред — по половине экрана
-    // (3.3 + 0.7 сверху против 4 снизу), чтобы спред открывался сразу в
-    // читаемом масштабе, а не узкой полоской
-    if (panes[0]) panes[0].setStretchFactor(pane0Empty ? 0.15 : (yidxDrawn ? 3.3 : 4));
-    if (panes[1]) panes[1].setStretchFactor(0.7);
-    if (panes[2]) panes[2].setStretchFactor(4);
+    // при выключенной цене в верхней зоне остаётся один объём — узкая полоса
+    if (panes[0]) panes[0].setStretchFactor(pane0Empty ? 0.7 : 4);
+    if (panes[1]) panes[1].setStretchFactor(4);
     // autoSize подхватывает ширину контейнера уже после текущего кадра — fitContent
     // сразу посчитал бы масштаб по нулевой ширине и данные сжались бы к правому краю
     chart.timeScale().fitContent();
@@ -735,15 +756,14 @@ export default function ChartPage() {
   const [distGeom, setDistGeom] = useState(null);
   const measureDistGeom = (chart) => {
     const s = seriesRef.current.yidx;
-    const pane = chart?.panes?.()[2];
+    const pane = chart?.panes?.()[1];
     if (!s || !pane) { setDistGeom(null); return; }
     const ph = pane.getHeight();
     const vTop = s.coordinateToPrice(0);
     const vBot = s.coordinateToPrice(ph);
     if (!ph || ph < 40 || vTop == null || vBot == null || vTop === vBot) return;
     const panes = chart.panes();
-    let top = 0;
-    for (let i = 0; i < 2; i++) top += (panes[i]?.getHeight() || 0) + 1; // +1 сепаратор
+    const top = (panes[0]?.getHeight() || 0) + 1;   // +1 сепаратор
     setDistGeom((g) => (g && g.top === top && g.h === ph
                         && g.vTop === vTop && g.vBot === vBot)
       ? g : { top, h: ph, vTop, vBot });
