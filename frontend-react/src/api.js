@@ -13,6 +13,14 @@ export const APP_BASENAME = `${API}/app`;
 export const cbondsUrl = (cbondsId) =>
   cbondsId ? `https://cbonds.ru/bonds/${cbondsId}/` : null;
 
+// Страница выпуска: cbonds, если он есть в bondsearch-выгрузке, иначе MOEX.
+// MOEX-адрес строим по SECID, а не по ISIN: у ОФЗ issue.aspx понимает только
+// SECID (SU29025RMFS2), по ISIN отдаёт редирект. Ни того ни другого нет →
+// null, кнопку не рисуем.
+export const issueUrl = (cbondsId, moexSecid) =>
+  cbondsUrl(cbondsId)
+  || (moexSecid ? `https://www.moex.com/ru/issue.aspx?code=${encodeURIComponent(moexSecid)}` : null);
+
 // Ошибка 401 — сессия истекла/отсутствует. Глобальный onError QueryClient → логин.
 export class UnauthorizedError extends Error {
   constructor() { super("unauthorized"); this.name = "UnauthorizedError"; }

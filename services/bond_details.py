@@ -38,7 +38,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         MarketDataService.fetch_coupon_schedules([isin]),                             # 2
         MarketDataService.get_curves(),                                               # 3
         MarketDataService.fetch_bond_schedule_full(isin),                             # 4
-        MarketDataService.fetch_moex_securities([isin]) if external else _aempty(),   # 5
+        MarketDataService.fetch_moex_securities([isin]),                              # 5
         MarketDataService.fetch_moex_shortnames() if external else _aempty(),         # 6
         MarketDataService.get_zspread_ctx(),                                          # 7
         return_exceptions=True,
@@ -86,6 +86,11 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         ref_dict["cbonds_id"] = (load_cbonds().get(isin) or {}).get("cbonds_id")
     except Exception as e:
         logger.warning(f"cbonds_id lookup failed for {isin}: {e}")
+    # SECID — для запасной ссылки на MOEX там, где cbonds_id нет (ОФЗ и свежие
+    # выпуски вне bondsearch-выгрузки). У ОФЗ issue.aspx понимает только SECID
+    # (SU29025RMFS2), по ISIN отдаёт редирект; у корпоратов SECID == ISIN.
+    # Справочник MOEX кэшируется на день, поэтому запрос почти всегда локальный.
+    ref_dict["moex_secid"] = (mo_map.get(isin) or {}).get("secid") or None
 
     last_price = market_prices.get(isin)
     prev_close_pct = snapshot.get(isin, {}).get("prev")

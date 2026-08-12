@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { baseLabel, couponsPerYear, fmt, dmColor } from "../format.js";
 import CouponFormula from "./CouponFormula.jsx";
-import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetchRepricePast, UnauthorizedError, cbondsUrl, APP_BASENAME } from "../api.js";
+import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetchRepricePast, UnauthorizedError, issueUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
@@ -547,9 +547,11 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
                 <span className="mono muted">
                   {isin}
-                  {cbondsUrl(data?.reference?.cbonds_id) && (
-                    <a className="cat-ext" title="страница выпуска на cbonds"
-                      href={cbondsUrl(data.reference.cbonds_id)}
+                  {issueUrl(data?.reference?.cbonds_id, data?.reference?.moex_secid) && (
+                    <a className="cat-ext"
+                      title={data?.reference?.cbonds_id
+                        ? "страница выпуска на cbonds" : "страница выпуска на MOEX"}
+                      href={issueUrl(data.reference.cbonds_id, data.reference.moex_secid)}
                       target="_blank" rel="noopener noreferrer">↗</a>
                   )}
                 </span>

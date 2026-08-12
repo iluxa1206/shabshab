@@ -49,6 +49,9 @@ class BondReference(BaseModel):
     # ID выпуска в Cbonds (из bondsearch-выгрузки) — единственный способ дать
     # прямую ссылку: поиска по ISIN на сайте нет. None → ссылки не будет.
     cbonds_id: Optional[int] = None
+    # SECID MOEX — запасная ссылка на страницу выпуска, когда cbonds_id нет
+    # (у ОФЗ issue.aspx понимает только SECID, по ISIN редиректит)
+    moex_secid: Optional[str] = None
 
 # --- 5.2 BondMarketData ---
 class BondMarketData(BaseModel):
