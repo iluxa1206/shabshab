@@ -82,16 +82,9 @@ function OfferMarks({ b }) {
   return (
     <>
       {put && <span className={"offer-mark offer-put" + (hz === "put" ? " offer-mark-on" : "")}
-        title={"оферта-пут " + fmt.date(b.offer_date)
-          + ": держатель может предъявить бумагу к выкупу"
-          + (hz === "put"
-            ? " · цена ниже цены выкупа → спред и YTM строки посчитаны К ОФЕРТЕ"
-            : " · цена выше цены выкупа → держатель не сдаст, метрики К ПОГАШЕНИЮ")}>p</span>}
+        title={"пут-оферта " + fmt.date(b.offer_date)}>p</span>}
       {call && <span className={"offer-mark offer-call" + (hz === "call" ? " offer-mark-on" : "")}
-        title={"call-опцион эмитента: вправе выкупить досрочно"
-          + (hz === "call"
-            ? " · цена выше цены выкупа → эмитенту выгодно отозвать, метрики К CALL"
-            : " · дата из corpbonds не известна либо отзыв невыгоден — метрики К ПОГАШЕНИЮ")}>c</span>}
+        title={b.offer_kind === "call" && b.offer_date ? "call-оферта " + fmt.date(b.offer_date) : "call-опцион"}>c</span>}
     </>
   );
 }

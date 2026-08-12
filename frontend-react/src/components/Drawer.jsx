@@ -55,11 +55,11 @@ export function HorizonSwitch({ v, value, onChange }) {
   if (!alts.length) return null;
   const auto = v.preferred_horizon || "maturity";
   const opts = [
-    { k: "auto", t: "Авто", title: `правило цены → ${HZ_LABEL[auto] || auto}` },
-    { k: "maturity", t: "Погашение", title: "поток до погашения" },
+    { k: "auto", t: "Авто", title: HZ_LABEL[auto] || auto },
+    { k: "maturity", t: "Погашение", title: fmt.date(hzs.maturity?.date) || "" },
     ...alts.map((k) => ({
       k, t: k === "put" ? "Оферта" : "Call",
-      title: `${HZ_LABEL[k]} ${fmt.date(hzs[k].date) || ""} · выкуп ${hzs[k].price_pct ?? 100}%`,
+      title: fmt.date(hzs[k].date) || "",
     })),
   ];
   return (
