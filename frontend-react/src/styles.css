@@ -309,11 +309,13 @@ td.mut { color: var(--mut); }
 .grid { width: 100%; border-collapse: collapse; }
 .grid thead th {
   position: sticky; top: 0; z-index: 2; background: var(--bg);
-  text-align: right; padding: 11px 16px; font-size: 11px; font-weight: 600; color: var(--mut);
+  text-align: center; padding: 11px 16px; font-size: 11px; font-weight: 600; color: var(--mut);
   text-transform: uppercase; letter-spacing: 0.14em; white-space: nowrap; cursor: pointer;
   border-bottom: 1px solid var(--fg);
 }
-.grid thead th.left { text-align: left; }
+/* заголовки во ВСЕХ таблицах по центру — выравнивание ячеек (.left/.num) шапки
+   не касается */
+.grid thead th.left { text-align: center; }
 .grid thead th:last-child { padding-right: 24px; }
 .grid thead th small { display: block; color: var(--mut-2); font-weight: 400; letter-spacing: 0.1em; margin-top: 2px; }
 .grid thead th.sorted { color: var(--fg); }
@@ -478,7 +480,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* Сторона стакана — сверхпрозрачной заливкой ячейки: бид зелёный, оффер
    красный. Альфа мелкая нарочно: подсказка глазу, а не раскраска таблицы. */
 .grid tbody td.q-bid { background: rgba(46, 204, 113, 0.07); }
-.grid tbody td.q-ask { background: rgba(231, 76, 60, 0.07); }
+/* OFFER — значения по левому краю (заголовок остаётся по центру, как везде):
+   пара BID|OFFER читается как «цены сходятся к середине» */
+.grid tbody td.q-ask { background: rgba(231, 76, 60, 0.07); text-align: left; }
 /* Y-IDX по стакану: цвет знака сохраняем (это та же метрика), но мельче и
    без стрелки — доминирует mid-чип. */
 
@@ -696,8 +700,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-row.ob-empty .ob-price, .ob-row.ob-empty .ob-qty { opacity: 0.4; }
 .ob-row.ob-empty td { background: transparent; }
 .ob-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.ob-table thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); font-weight: 700; padding: 4px 12px; text-align: right; border-bottom: 1px solid var(--line); }
-.ob-table thead th.left { text-align: left; }
+.ob-table thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); font-weight: 700; padding: 4px 12px; text-align: center; border-bottom: 1px solid var(--line); }
+.ob-table thead th.left { text-align: center; }
 .ob-table td { padding: 3px 12px; font-size: 12px; text-align: right; }
 .ob-price { text-align: left !important; font-weight: 700; }
 .ob-bid .ob-price { color: var(--up); }
@@ -878,8 +882,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .chart-box svg { width: 100%; display: block; }
 
 .cf-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-.cf-table th { text-align: right; font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.12em; padding: 8px 12px; border-bottom: 1px solid var(--fg); position: sticky; top: 0; background: var(--bg); }
-.cf-table th.left { text-align: left; }
+.cf-table th { text-align: center; font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.12em; padding: 8px 12px; border-bottom: 1px solid var(--fg); position: sticky; top: 0; background: var(--bg); }
+.cf-table th.left { text-align: center; }
 .cf-table td { padding: 6px 12px; font-size: 12px; text-align: right; border-bottom: 1px solid var(--line); }
 .cf-table td.left { text-align: left; }
 /* расчётный индекс базы: 7 знаков после запятой — разница между сб и вс сидит
@@ -1215,7 +1219,7 @@ body.col-resizing * { cursor: col-resize !important; }
 .admin-err { color: var(--neg); }
 .admin-ok { color: var(--pos); }
 .admin-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 4px; }
-.admin-table th { text-align: left; color: var(--mut); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 11px; text-transform: uppercase; }
+.admin-table th { text-align: center; color: var(--mut); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 11px; text-transform: uppercase; }
 .admin-table td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .admin-you { color: var(--mut); }
 .admin-role { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; text-transform: uppercase; }
