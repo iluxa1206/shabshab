@@ -47,15 +47,54 @@ const LAYERS = [
           + "в стакане и обезличенной ленте их нет вообще"],
 ];
 const BIG_THRESHOLDS = [1, 5, 10, 50, 100];   // млн ₽
-// Цвета точек сделок НЕ из палитры свечей: зелёная точка на зелёной свече не
-// видна вовсе. Три чужих для графика тона — их ни с чем не спутать, а сторона
-// читается по цвету, а не по положению относительно бара.
-const TRADE_DOT = {
-  buy: "#0ea5e9",    // покупка по аску — голубой
-  sell: "#f59e0b",   // продажа по биду — янтарный
-  rps: "#a855f7",    // адресная (РПС) — фиолетовый
-};
+// Крупные сделки — белые треугольники по цене принта: вверх покупка (агрессор
+// брал по аску), вниз продажа. Белая заливка не путается ни со свечами, ни с
+// линиями слоёв; форма несёт сторону, поэтому цвет тут ничего не кодирует.
+// Адресные (РПС) остаются точкой: у них агрессора нет, направление рисовать нечем.
+const TRADE_DOT = { rps: "#a855f7" };
 const TRADE_DOT_R = 4.5;
+const TRI_W = 4.5;    // половина основания треугольника, px
+const TRI_H = 7;      // высота, px
+
+// Треугольники рисуем своим примитивом: маркеры серии садятся НАД/ПОД баром, а
+// нужна ровно цена сделки; у point markers формы нет, только круг.
+function tradeMarksPrimitive(getMarks) {
+  let chart = null, series = null;
+  const view = {
+    zOrder: () => "top",
+    renderer: () => ({
+      draw: (target) => target.useMediaCoordinateSpace(({ context: ctx }) => {
+        if (!chart || !series) return;
+        const ts = chart.timeScale();
+        const { fill, stroke, marks } = getMarks();
+        ctx.save();
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1;
+        for (const m of marks) {
+          const x = ts.timeToCoordinate(m.time);
+          const y = series.priceToCoordinate(m.price);
+          if (x == null || y == null) continue;
+          const dir = m.side === "sell" ? -1 : 1;   // вниз / вверх
+          ctx.beginPath();
+          ctx.moveTo(x, y - dir * TRI_H / 2);           // вершина
+          ctx.lineTo(x - TRI_W, y + dir * TRI_H / 2);
+          ctx.lineTo(x + TRI_W, y + dir * TRI_H / 2);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.restore();
+      }),
+    }),
+  };
+  return {
+    attached: (p) => { chart = p.chart; series = p.series; },
+    detached: () => { chart = null; series = null; },
+    updateAllViews: () => {},
+    paneViews: () => [view],
+  };
+}
 const LAYER_MAX_DAYS = 730;                   // потолок окна баров у бэка
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -672,26 +711,28 @@ export default function ChartPage() {
       }
     }
 
-    // ── точки сделок: крупные безадресные + адресные (РПС) ──────────────────
-    // Не маркеры серии (те садятся НАД/ПОД баром), а свои серии-точки на той же
-    // ценовой шкале: кружок стоит ровно на цене сделки — видно, по какой стороне
-    // диапазона прошёл принт. Цифры сделки — в строке под курсором.
-    const dots = (key, rows, color) => {
-      if (!rows.length) return;
+    // ── отметки сделок: крупные безадресные + адресные (РПС) ────────────────
+    // Не маркеры серии (те садятся НАД/ПОД баром), а свои серии на той же
+    // ценовой шкале: отметка стоит ровно на цене сделки — видно, по какой
+    // стороне диапазона прошёл принт. Цифры сделки — в строке под курсором.
+    // dots — кружки (РПС), tri — белые треугольники (крупные, сторона формой).
+    const mkSeries = (key, rows, opts) => {
       const pts = rows
         .filter((t) => t.price != null)
         .map((t) => ({ time: t.time, value: t.price }))
         .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
-      if (!pts.length) return;
+      if (!pts.length) return null;
       const s = chart.addSeries(LineSeries, {
-        color, lineVisible: false, pointMarkersVisible: true,
-        pointMarkersRadius: TRADE_DOT_R,
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-        priceFormat: pxFmt,
+        lineVisible: false, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, priceFormat: pxFmt, ...opts,
       }, 0);
       s.setData(pts);
       seriesRef.current[key] = s;
+      return s;
     };
+    const dots = (key, rows, color) =>
+      mkSeries(key, rows, { color, pointMarkersVisible: true,
+                            pointMarkersRadius: TRADE_DOT_R });
     // одна точка на бар: в час приходит несколько крупных принтов, кружки легли
     // бы друг на друга — берём самый крупный (у безадресных — по каждой стороне)
     const pickBest = (rows, keyOf) => {
@@ -706,8 +747,20 @@ export default function ChartPage() {
     };
     const bigDots = on("big") ? pickBest(bigTrades, (time, t) => `${time}|${t.side}`) : [];
     const rpsDots = on("rps") ? pickBest(rpsTrades, (time) => time) : [];
-    dots("dotBuy", bigDots.filter((t) => t.side !== "sell"), TRADE_DOT.buy);
-    dots("dotSell", bigDots.filter((t) => t.side === "sell"), TRADE_DOT.sell);
+    // Крупные: серия-якорь без своей отрисовки (нужна ради автомасштаба и
+    // перевода цены в пиксели), поверх неё примитив рисует треугольники.
+    // у серии на одно время может быть только одна точка, а в баре есть и
+    // покупка, и продажа: якорю оставляем одну (обе цены внутри диапазона бара,
+    // масштаб от этого не меняется), треугольники рисуются по полному списку
+    const anchor = [...new Map(bigDots.map((t) => [String(t.time), t])).values()];
+    const bigHost = mkSeries("dotBig", anchor, { color: "rgba(0,0,0,0)" });
+    if (bigHost) {
+      const marks = bigDots.filter((t) => t.price != null)
+        .map((t) => ({ time: t.time, price: t.price, side: t.side }));
+      // обводка цветом текста: на светлой теме белое без контура пропадает
+      bigHost.attachPrimitive(tradeMarksPrimitive(
+        () => ({ fill: "#ffffff", stroke: theme.fg, marks })));
+    }
     dots("dotRps", rpsDots, TRADE_DOT.rps);
     // сделка под курсором — по времени бара: в легенде показываем цену и оборот
     tradeAtRef.current = {
@@ -1005,11 +1058,11 @@ export default function ChartPage() {
             </select>
           </label>
         )}
-        {/* что означает цвет точки — иначе три чужих цвета на графике надо угадывать */}
+        {/* что означает отметка: треугольник вверх/вниз — сторона агрессора */}
         {(on("big") || on("rps")) && (
           <span className="cp-layers-k cp-dot-key">
-            {on("big") && <i style={{ color: TRADE_DOT.buy }}>● покупка</i>}
-            {on("big") && <i style={{ color: TRADE_DOT.sell }}>● продажа</i>}
+            {on("big") && <i className="cp-tri">▲ покупка</i>}
+            {on("big") && <i className="cp-tri">▼ продажа</i>}
             {on("rps") && <i style={{ color: TRADE_DOT.rps }}>● РПС</i>}
           </span>
         )}
@@ -1092,9 +1145,10 @@ export default function ChartPage() {
                 : <> (по цене {fmt.pct(legend.yPx)}, {legend.yPxKind})</>)}
             {/* сделки, отмеченные точками на этом баре: цена принта и оборот */}
             {legend.trades?.map((t, i) => (
-              <span key={i} className="cp-legend-trade" style={{ color: TRADE_DOT[
-                t.negotiated ? "rps" : t.side === "sell" ? "sell" : "buy"] }}>
-                {" · "}●{" "}{t.negotiated ? (t.board_title || "РПС")
+              <span key={i} className={"cp-legend-trade" + (t.negotiated ? "" : " cp-tri")}
+                style={t.negotiated ? { color: TRADE_DOT.rps } : undefined}>
+                {" · "}{t.negotiated ? "● " : t.side === "sell" ? "▼ " : "▲ "}
+                {t.negotiated ? (t.board_title || "РПС")
                   : t.side === "sell" ? "продажа" : "покупка"}
                 {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
               </span>

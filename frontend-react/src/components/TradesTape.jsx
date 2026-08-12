@@ -162,6 +162,69 @@ function RowLinks({ isin, onOpen }) {
   );
 }
 
+/** Топ бумаг по обороту — выпадающим списком, а не строкой чипов: он нужен
+ *  изредка, а места занимал больше, чем сама лента над таблицей. Клик по строке
+ *  прикалывает бумагу (тот же pin, что раньше). */
+function TopTurnover({ top, pin, onPin }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => { if (!box.current?.contains(e.target)) setOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+  if (!top?.length) return null;
+  return (
+    <div className="fgroup tape-topbox" ref={box}>
+      <button className={"chip-btn" + (open || pin ? " on" : "")}
+        onClick={() => setOpen((v) => !v)}
+        title="Бумаги с наибольшим оборотом в окне; клик по строке — оставить в ленте только её">
+        топ оборота ▾
+      </button>
+      {open && (
+        <div className="tape-topmenu">
+          {top.slice(0, 10).map((t) => (
+            <button key={t.isin} className={"tape-topitem" + (pin === t.isin ? " on" : "")}
+              title={`${t.emitter || t.isin} · ${t.n} сделок`}
+              onClick={() => { onPin(pin === t.isin ? null : t.isin); setOpen(false); }}>
+              <span className="tt-name">{t.name}</span>
+              <span className="tt-val">{money(t.value)}</span>
+            </button>
+          ))}
+          {pin && (
+            <button className="tape-topitem tt-clear"
+              onClick={() => { onPin(null); setOpen(false); }}>снять бумагу</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Итоги окна — компактной строкой ПОД таблицей: цифры справочные, смотреть в
+ *  них постоянно не нужно, а сверху они съедали высоту у самой ленты. */
+function TapeFooter({ items, note, right }) {
+  return (
+    <div className="tape-foot">
+      {items.filter(Boolean).map(([k, v, cls]) => (
+        <span key={k} className="tape-fkpi">
+          <span className="tape-fk">{k}</span>
+          <span className={"tape-fv" + (cls ? " " + cls : "")}>{v}</span>
+        </span>
+      ))}
+      {note && <span className="tape-fnote">{note}</span>}
+      <span className="tape-fspace" />
+      {right}
+    </div>
+  );
+}
+
 export default function TradesTape() {
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
@@ -577,17 +640,8 @@ export default function TradesTape() {
             )}
           </div>
 
-
-        </div>
-        {/* вторая строка — только состояние данных, условия все в первой */}
-        <div className="ia-filters ia-meta">
-          {sum.archive_till && (
-            <span className="ia-flabel">данные до {sum.archive_till.slice(0, 16)}</span>
-          )}
-          {lastAt && (
-            <span className="ia-flabel" title="время последнего успешного запроса">
-              обновлено {lastAt.toLocaleTimeString("ru-RU")}
-            </span>
+          {!daysView && !isinReq && (
+            <TopTurnover top={sum.top} pin={pin} onPin={setPin} />
           )}
         </div>
       </div>
@@ -597,30 +651,6 @@ export default function TradesTape() {
 
       {!daysView && data && (
         <>
-          <div className="tape-sum">
-            {isinReq && <span className="tape-kpi"><span className="tape-k">БУМАГА</span>
-              <span className="tape-v">{rows[0]?.name || isinReq}</span></span>}
-            <span className="tape-kpi"><span className="tape-k">СДЕЛОК</span><span className="tape-v">{fmt.num(sum.n, 0)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">ОБОРОТ, МЛН</span><span className="tape-v">{money(sum.value)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">BUY, МЛН</span><span className="tape-v tape-buy">{money(sum.buy_value)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">SELL, МЛН</span><span className="tape-v tape-sell">{money(sum.sell_value)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">АДРЕСНЫЕ, МЛН</span><span className="tape-v">{money(byM.ndm?.value)}</span></span>
-            {sum.partial && <span className="ia-flabel">итоги по видимым строкам</span>}
-            {(sum.top || []).length > 0 && !isinReq && (
-              <span className="tape-top">
-                <span className="tape-k">ТОП ОБОРОТА, МЛН</span>
-                {(sum.top || []).slice(0, 5).map((t) => (
-                  <button key={t.isin} className={"chip-btn" + (pin === t.isin ? " on" : "")}
-                    title={`${t.emitter || t.isin} · ${t.n} сделок`}
-                    onClick={() => setPin((p) => (p === t.isin ? null : t.isin))}>
-                    {t.name} {money(t.value)}
-                  </button>
-                ))}
-              </span>
-            )}
-            {pin && <button className="btn" onClick={() => setPin(null)}>снять бумагу</button>}
-          </div>
-
           <div className="ia-table-wrap">
             <table className="grid tape-table packed cols-fixed">
               <colgroup>
@@ -694,27 +724,33 @@ export default function TradesTape() {
             {rows.length === 0 && status === "ready" && <div className="ia-empty">нет сделок под фильтром</div>}
           </div>
 
-          {more && (
-            <div className="tape-more">
-              показано {fmt.num(allRows.length, 0)}
-              {data.summary?.n ? ` из ${fmt.num(data.summary.n, 0)}` : ""}
+          <TapeFooter
+            items={[
+              isinReq && ["БУМАГА", rows[0]?.name || isinReq],
+              ["СДЕЛОК", fmt.num(sum.n, 0)],
+              ["ОБОРОТ, МЛН", money(sum.value)],
+              ["BUY", money(sum.buy_value), "tape-buy"],
+              ["SELL", money(sum.sell_value), "tape-sell"],
+              ["АДРЕСНЫЕ", money(byM.ndm?.value)],
+              ["ПОКАЗАНО", data.summary?.n
+                ? `${fmt.num(allRows.length, 0)} из ${fmt.num(data.summary.n, 0)}`
+                : fmt.num(allRows.length, 0)],
+            ]}
+            note={[sum.partial ? "итоги по видимым строкам" : null,
+                   sum.archive_till ? `данные до ${sum.archive_till.slice(0, 16)}` : null,
+                   lastAt ? `обновлено ${lastAt.toLocaleTimeString("ru-RU")}` : null]
+              .filter(Boolean).join(" · ")}
+            right={more && (
               <button className="btn" disabled={loadingMore} onClick={loadMore}>
                 {loadingMore ? "грузим…" : `показать ещё ${fmt.num(PAGE, 0)}`}
               </button>
-            </div>
-          )}
+            )}
+          />
         </>
       )}
 
       {daysView && dayData && (
         <>
-          <div className="tape-sum">
-            {isinReq && <span className="tape-kpi"><span className="tape-k">БУМАГА</span>
-              <span className="tape-v">{dayRows[0]?.name || isinReq}</span></span>}
-            <span className="tape-kpi"><span className="tape-k">БУМАГО-ДНЕЙ</span><span className="tape-v">{fmt.num(daySum.n, 0)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">СДЕЛОК</span><span className="tape-v">{fmt.num(daySum.trades, 0)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">ОБОРОТ, МЛН</span><span className="tape-v">{money(daySum.value)}</span></span>
-          </div>
           <div className="ia-table-wrap">
             <table className="grid tape-table">
               <thead>
