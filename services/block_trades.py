@@ -318,11 +318,17 @@ def unpriced(limit: int = 400) -> list[dict]:
     висит в ленте с прочерком всё это время. Дублей нет: тик берётся только
     когда его trade_id ещё не пришёл из ISS (там строка богаче — считаем по ней).
     """
+    # Тикам резервируем долю пачки. Иначе они голодают: один такт sweep приносит
+    # под две тысячи строк ISS, они забирают выборку целиком, и тик — ради
+    # которого всё и затевалось (спред СРАЗУ, а не через 15 минут) — не
+    # попадает в расчёт никогда.
+    tick_share = max(1, limit // 4)
     with _connect() as c:
         rows = c.execute(
             "SELECT trade_id, isin, price, 'block' AS src FROM block_trade "
             "WHERE metrics_at IS NULL AND price IS NOT NULL AND value >= ? "
-            "ORDER BY trade_id DESC LIMIT ?", (BLOCK_YIDX_MIN_RUB, limit)).fetchall()
+            "ORDER BY trade_id DESC LIMIT ?",
+            (BLOCK_YIDX_MIN_RUB, max(1, limit - tick_share))).fetchall()
         out = [dict(r) for r in rows]
         left = limit - len(out)
         if left > 0:
