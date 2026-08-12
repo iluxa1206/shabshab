@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume, yIdxAt } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
@@ -706,6 +707,7 @@ function Dashboard() {
   );
 
   return (
+    <PageStatusProvider>
     <div id="app" className={theme === "light" ? "" : "theme-" + theme}>
       <Topbar
         user={user}
@@ -763,6 +765,7 @@ function Dashboard() {
       <AlertsWatcher />
       <SignalsWatcher />
     </div>
+    </PageStatusProvider>
   );
 }
 

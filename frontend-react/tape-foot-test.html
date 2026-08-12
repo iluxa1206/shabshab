@@ -33,19 +33,27 @@
             <tbody></tbody>
           </table>
         </div>
-        <div class="tape-foot">
-          <span class="tape-fkpi"><span class="tape-fk">СДЕЛОК</span><span class="tape-fv">1 077</span></span>
-          <span class="tape-fkpi"><span class="tape-fk">ОБОРОТ, МЛН</span><span class="tape-fv">29 271,4</span></span>
-          <span class="tape-fkpi"><span class="tape-fk">BUY</span><span class="tape-fv tape-buy">6 845,8</span></span>
-          <span class="tape-fkpi"><span class="tape-fk">SELL</span><span class="tape-fv tape-sell">7 738,1</span></span>
-          <span class="tape-fkpi"><span class="tape-fk">АДРЕСНЫЕ</span><span class="tape-fv">14 687,5</span></span>
-          <span class="tape-fkpi"><span class="tape-fk">ПОКАЗАНО</span><span class="tape-fv">500 из 1 077</span></span>
-          <span class="tape-fnote">данные до 2026-08-12 18:38 · обновлено 18:39:26</span>
-          <span class="tape-fspace"></span>
-          <button class="btn">показать ещё 500</button>
-        </div>
+        <div class="tape-more"><button class="btn">показать ещё 500</button></div>
       </div>
-      <div class="statusbar"><span class="status-cell">статус-бар приложения</span></div>
+      <!-- общая полоса приложения: тема, итоги вкладки, даты, часы -->
+      <div class="statusbar">
+        <span class="status-cell theme-switch">
+          <button class="theme-dot" style="background:#fff"></button>
+          <button class="theme-dot" style="background:#c0c0c0"></button>
+          <button class="theme-dot on" style="background:#000"></button>
+        </span>
+        <span class="status-cell ps-cell"><span class="ps-k">СДЕЛОК</span><span class="ps-v">1 077</span></span>
+        <span class="status-cell ps-cell"><span class="ps-k">ОБОРОТ</span><span class="ps-v">29 271,4</span></span>
+        <span class="status-cell ps-cell"><span class="ps-k">BUY</span><span class="ps-v tape-buy">6 845,8</span></span>
+        <span class="status-cell ps-cell"><span class="ps-k">SELL</span><span class="ps-v tape-sell">7 738,1</span></span>
+        <span class="status-cell ps-cell"><span class="ps-k">РПС</span><span class="ps-v">14 687,5</span></span>
+        <span class="status-cell ps-cell"><span class="ps-k">ПОКАЗАНО</span><span class="ps-v">500/1 077</span></span>
+        <span class="status-cell ps-cell ps-opt"><span class="ps-k">ДО</span><span class="ps-v">08-12 18:38</span></span>
+        <span class="status-cell ps-cell ps-opt"><span class="ps-k">ОБНОВЛ.</span><span class="ps-v">18:39:26</span></span>
+        <span class="status-cell grow"></span>
+        <span class="status-cell meta-chip"><span class="meta-v">12.08.2026</span><span class="meta-sep">/</span><span class="meta-v">11.08.2026</span></span>
+        <span class="status-cell">18:39:29</span>
+      </div>
     </div>
     <script type="module">
       const tb = document.querySelector("#tbl tbody");

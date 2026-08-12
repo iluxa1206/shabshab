@@ -6,6 +6,7 @@ import { fmt } from "../format.js";
 import KpisInline from "./Kpis.jsx";
 import { IconBell, IconAlert, IconRefresh } from "./icons.jsx";
 import SignalsBell from "./SignalsBell.jsx";
+import { usePageStatusItems } from "../pageStatus.jsx";
 
 const mln = (v) => fmt.mln(v);   // ₽ → млн, единый формат проекта
 
@@ -154,6 +155,24 @@ function SourcesDot({ src }) {
   );
 }
 
+/** Итоги активной вкладки: их публикует сама вкладка (см. src/pageStatus).
+ *  Раньше у каждой была своя полоса над этой — две строки подряд. */
+function PageStatusCells() {
+  const items = usePageStatusItems();
+  if (!items.length) return null;
+  return (
+    <>
+      {items.map((it) => (
+        <span key={it.k} className={"status-cell ps-cell" + (it.opt ? " ps-opt" : "")}
+          title={it.title || undefined}>
+          <span className="ps-k">{it.k}</span>
+          <span className={"ps-v" + (it.cls ? " " + it.cls : "")}>{it.v}</span>
+        </span>
+      ))}
+    </>
+  );
+}
+
 export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sources = {}, theme, onSetTheme,
                                     meta = {}, onRefresh }) {
   // ALOR = живой WS-поток; CBONDS — из meta (кривые ставок построены)
@@ -171,6 +190,7 @@ export default function StatusBar({ count, bonds = [], kpiBonds = [], live, sour
         </span>
       )}
       {onFloaters && <KpisInline bonds={kpiBonds} />}
+      <PageStatusCells />
       <AlertsCell bonds={bonds} />
       <span className="status-cell grow" />
       {/* подписи РАСЧЁТ/СТАВКИ ушли в тултип — двух дат хватает, а строка не влезала */}

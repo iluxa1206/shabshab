@@ -207,24 +207,6 @@ function TopTurnover({ top, pin, onPin }) {
   );
 }
 
-/** Итоги окна — компактной строкой ПОД таблицей: цифры справочные, смотреть в
- *  них постоянно не нужно, а сверху они съедали высоту у самой ленты. */
-function TapeFooter({ items, note, right }) {
-  return (
-    <div className="tape-foot">
-      {items.filter(Boolean).map(([k, v, cls]) => (
-        <span key={k} className="tape-fkpi">
-          <span className="tape-fk">{k}</span>
-          <span className={"tape-fv" + (cls ? " " + cls : "")}>{v}</span>
-        </span>
-      ))}
-      {note && <span className="tape-fnote">{note}</span>}
-      <span className="tape-fspace" />
-      {right}
-    </div>
-  );
-}
-
 export default function TradesTape() {
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
@@ -388,6 +370,36 @@ export default function TradesTape() {
     for (const r of dayRows) { n += 1; value += r.value || 0; trades += r.numtrades || 0; }
     return { n, value, trades };
   }, [dayRows]);
+
+  // Итоги окна уходят в ОБЩУЮ нижнюю полосу приложения (там же тема, даты,
+  // часы) — своей строки у вкладки нет: две полосы подряд съедали высоту и
+  // выглядели как случайно вклиненная плашка.
+  usePageStatus(daysView
+    ? [
+      isinReq && { k: "БУМАГА", v: dayRows[0]?.name || isinReq },
+      { k: "БУМАГО-ДНЕЙ", v: fmt.num(daySum.n, 0) },
+      { k: "СДЕЛОК", v: fmt.num(daySum.trades, 0) },
+      { k: "ОБОРОТ", v: money(daySum.value), title: "млн ₽" },
+    ]
+    : [
+      isinReq && { k: "БУМАГА", v: rows[0]?.name || isinReq },
+      { k: "СДЕЛОК", v: fmt.num(sum.n, 0),
+        title: sum.partial ? "итоги по видимым строкам (текстовый поиск)" : "все сделки окна" },
+      { k: "ОБОРОТ", v: money(sum.value), title: "млн ₽, только рублёвые выпуски" },
+      { k: "BUY", v: money(sum.buy_value), cls: "tape-buy", title: "млн ₽" },
+      { k: "SELL", v: money(sum.sell_value), cls: "tape-sell", title: "млн ₽" },
+      { k: "РПС", v: money(byM.ndm?.value), title: "оборот адресных режимов, млн ₽" },
+      { k: "ПОКАЗАНО", v: data?.summary?.n
+        ? `${fmt.num(allRows.length, 0)}/${fmt.num(data.summary.n, 0)}`
+        : fmt.num(allRows.length, 0),
+        title: "строк в таблице / всего под фильтром" },
+      // opt — второстепенное: на узкой полосе прячется первым, чтобы часы и
+      // даты приложения не уезжали за край
+      sum.archive_till && { k: "ДО", v: sum.archive_till.slice(5, 16), opt: true,
+        title: "последняя сделка в архиве" },
+      lastAt && { k: "ОБНОВЛ.", v: lastAt.toLocaleTimeString("ru-RU"), opt: true,
+        title: "время последнего успешного запроса" },
+    ]);
 
   const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
 
@@ -724,28 +736,13 @@ export default function TradesTape() {
             {rows.length === 0 && status === "ready" && <div className="ia-empty">нет сделок под фильтром</div>}
           </div>
 
-          <TapeFooter
-            items={[
-              isinReq && ["БУМАГА", rows[0]?.name || isinReq],
-              ["СДЕЛОК", fmt.num(sum.n, 0)],
-              ["ОБОРОТ, МЛН", money(sum.value)],
-              ["BUY", money(sum.buy_value), "tape-buy"],
-              ["SELL", money(sum.sell_value), "tape-sell"],
-              ["АДРЕСНЫЕ", money(byM.ndm?.value)],
-              ["ПОКАЗАНО", data.summary?.n
-                ? `${fmt.num(allRows.length, 0)} из ${fmt.num(data.summary.n, 0)}`
-                : fmt.num(allRows.length, 0)],
-            ]}
-            note={[sum.partial ? "итоги по видимым строкам" : null,
-                   sum.archive_till ? `данные до ${sum.archive_till.slice(0, 16)}` : null,
-                   lastAt ? `обновлено ${lastAt.toLocaleTimeString("ru-RU")}` : null]
-              .filter(Boolean).join(" · ")}
-            right={more && (
+          {more && (
+            <div className="tape-more">
               <button className="btn" disabled={loadingMore} onClick={loadMore}>
                 {loadingMore ? "грузим…" : `показать ещё ${fmt.num(PAGE, 0)}`}
               </button>
-            )}
-          />
+            </div>
+          )}
         </>
       )}
 
@@ -782,15 +779,6 @@ export default function TradesTape() {
             </table>
             {dayRows.length === 0 && status === "ready" && <div className="ia-empty">нет дневных оборотов под фильтром</div>}
           </div>
-          <TapeFooter
-            items={[
-              isinReq && ["БУМАГА", dayRows[0]?.name || isinReq],
-              ["БУМАГО-ДНЕЙ", fmt.num(daySum.n, 0)],
-              ["СДЕЛОК", fmt.num(daySum.trades, 0)],
-              ["ОБОРОТ, МЛН", money(daySum.value)],
-            ]}
-            note={lastAt ? `обновлено ${lastAt.toLocaleTimeString("ru-RU")}` : ""}
-          />
         </>
       )}
     </div>

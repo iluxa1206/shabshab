@@ -890,6 +890,17 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .status-cell.grow { flex: 1; }
 .status-cell:last-child { border-right: none; }
 .counter { color: var(--fg); letter-spacing: 0.18em; }
+/* итоги активной вкладки в общей полосе (src/pageStatus): подпись мелкая
+   разрядкой, значение — читаемой цифрой, ячейки уже стандартных */
+.status-cell.ps-cell { padding: 0 9px; gap: 5px; }
+/* полоса одна на всё приложение: когда места мало, второстепенные цифры
+   вкладки уходят раньше, чем даты и часы начнут уезжать за край */
+@media (max-width: 1500px) { .status-cell.ps-opt { display: none; } }
+.ps-k { color: var(--mut-2); font-size: 9.5px; }
+.ps-v { color: var(--fg); font-size: 11.5px; letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums; }
+.ps-v.tape-buy { color: var(--up); }
+.ps-v.tape-sell { color: var(--down); }
 /* источники данных — одна точка + разбивка в тултипе (строка не влезала) */
 .status-cell.src-cell { padding: 0 12px; position: relative; color: var(--mut-2); }
 .src-pop { position: absolute; bottom: calc(100% + 6px); right: 8px; z-index: 40;
@@ -1477,30 +1488,10 @@ body.col-resizing * { cursor: col-resize !important; }
   padding: 4px 6px; font: inherit; font-size: 12px; width: 64px;
   font-variant-numeric: tabular-nums; }
 .tape-nin:focus { outline: none; border-color: var(--fg); }
-/* Подвал ленты: итоги окна одной строкой под таблицей. Липнет к низу СВОЕГО
-   скролл-контейнера (.issuer-agg), поэтому отрицательные поля гасят его
-   padding — иначе полоса висит в 18px от краёв и в 14px от низа, а в просвете
-   едут строки таблицы (выглядит как вклиненная посреди ленты плашка). */
-.tape-page { padding-bottom: 0; }
-.tape-foot { position: sticky; bottom: 0; z-index: 3;
-  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-  margin: 4px -18px 0; padding: 7px 18px;
-  background: var(--bg); border-top: 1px solid var(--line-2);
-  box-shadow: 0 -8px 14px -10px rgba(0, 0, 0, 0.55); }
-.theme-win .tape-foot { background: var(--face); }
-/* На малом экране (см. медиазапрос выше) скроллится вся страница, а не тело
-   вкладки: липкий подвал прилипал бы к низу ОКНА и висел поперёк таблицы.
-   Правило стоит ЗДЕСЬ, а не в общем блоке малого экрана, — иначе базовое
-   .tape-foot ниже по файлу перебивает его при равной специфичности. */
-@media (max-width: 760px), (max-height: 720px) {
-  .tape-foot { position: static; box-shadow: none; }
-}
-.tape-fkpi { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
-.tape-fk { font-size: 9.5px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.08em; }
-.tape-fv { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.tape-fnote { font-size: 10.5px; color: var(--mut); }
-.tape-fspace { flex: 1 1 auto; }
-.tape-foot .btn { padding: 2px 8px; font-size: 11px; }
+
+/* кнопка догрузки под таблицей — единственное, что осталось внизу ленты:
+   цифры уехали в общую полосу приложения */
+.tape-more { display: flex; justify-content: center; padding: 10px 0 14px; }
 
 /* Топ по обороту — выпадающим списком у фильтров */
 .tape-topbox { position: relative; }
