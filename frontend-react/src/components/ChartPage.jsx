@@ -121,6 +121,20 @@ function alpha(c, a) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
+// затемнение + альфа: тело свечи глушим, а контур и фитили остаются исходного
+// цвета — так свеча читается силуэтом, а не пятном, и линии слоёв поверх неё
+// не тонут в заливке
+const shade = (c, k, a) => {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
+  if (!m) return c;
+  const h = m[1].length === 3 ? m[1].split("").map((x) => x + x).join("") : m[1];
+  const n = parseInt(h, 16);
+  const d = (v) => Math.round(v * k);
+  return `rgba(${d((n >> 16) & 255)}, ${d((n >> 8) & 255)}, ${d(n & 255)}, ${a})`;
+};
+const BODY_K = 0.62;    // насколько темнее исходного цвета
+const BODY_A = 0.55;    // прозрачность тела
+
 function readTheme(el) {
   const cs = getComputedStyle(el);
   const v = (n, f) => ((cs.getPropertyValue(n) || "").trim() || f);
@@ -654,7 +668,9 @@ export default function ChartPage() {
       price = seriesRef.current.price;   // маркеры и легенда цепляются к close
     } else {
       price = chart.addSeries(CandlestickSeries, {
-        upColor: theme.up, downColor: theme.down,
+        // тело — приглушённая заливка, контур и фитили прежним цветом
+        upColor: shade(theme.up, BODY_K, BODY_A),
+        downColor: shade(theme.down, BODY_K, BODY_A),
         borderUpColor: theme.up, borderDownColor: theme.down,
         wickUpColor: theme.up, wickDownColor: theme.down,
         priceFormat: pxFmt, priceLineVisible: false,
@@ -794,7 +810,8 @@ export default function ChartPage() {
         }
       } else if (spreadOHLC && smode === "candles") {
         const yidx = chart.addSeries(CandlestickSeries, {
-          upColor: theme.up, downColor: theme.down,
+          upColor: shade(theme.up, BODY_K, BODY_A),
+          downColor: shade(theme.down, BODY_K, BODY_A),
           borderUpColor: theme.up, borderDownColor: theme.down,
           wickUpColor: theme.up, wickDownColor: theme.down,
           priceFormat: spFmt, priceLineVisible: false,
