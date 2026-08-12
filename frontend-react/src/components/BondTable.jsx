@@ -70,6 +70,16 @@ function qTitle(b, side) {
     + `; R-spread пересчитан на неё (линеаризация от верха стакана)`;
 }
 
+// Лет до даты, одна десятая. Календарные годы (365.25), а не торговые: цифра
+// рядом с датой — срок, а не duration. Прошедшая дата → null (скобок не будет).
+function yrsTo(iso) {
+  if (!iso) return null;
+  const t = Date.parse(iso + "T00:00:00Z");
+  if (!Number.isFinite(t)) return null;
+  const y = (t - Date.now()) / (365.25 * 864e5);
+  return y < 0 ? null : y.toFixed(1);
+}
+
 // Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
 // не взаимоисключающие: p — ближайшая будущая оферта из MOEX bondization (дата
 // известна, рынок прайсит бумагу к ней); c — call-опцион эмитента из corpbonds
@@ -131,11 +141,30 @@ export const COLS = [
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
-  // w=13: дата 10 симв. + до двух маркеров оферты («pc») с отбивкой. Ширина по
-  // МАКСИМУМУ формата, иначе появление маркера у одной бумаги дёргает колонку.
-  { key: "maturity_date", label: "MATURITY", w: 13,
-    cell: (b) => <td className="num" style={{ fontSize: 12 }} key="maturity_date">
-      <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}</td> },
+  // Два этажа: погашение с годами до него, под ним — дата оферты (если есть) с
+  // годами до неё, мелким и серым. Дата ГОРИЗОНТА ПРАЙСИНГА (той, к которой
+  // посчитан спред строки) подчёркнута — видно, какую из двух читает витрина.
+  // w=17: «p 10.10.2029 (4.2)» — ширина по МАКСИМУМУ формата, иначе появление
+  // маркера или второго этажа у одной бумаги дёргает колонку.
+  { key: "maturity_date", label: "MATURITY", sub: "(ЛЕТ) · ОФЕРТА", w: 17,
+    cell: (b) => {
+      const hz = b.preferred_horizon;
+      return (
+        <td className="num mat-cell" key="maturity_date">
+          <div className={"mat-main" + (hz === "maturity" ? " mat-hz" : "")}>
+            <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}
+            {yrsTo(b.maturity_date) != null && <span className="mat-yrs"> ({yrsTo(b.maturity_date)})</span>}
+          </div>
+          {b.offer_date && (
+            <div className={"mat-offer" + (hz === "put" || hz === "call" ? " mat-hz" : "")}
+              title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
+              {fmt.date(b.offer_date)}
+              {yrsTo(b.offer_date) != null && <span className="mat-yrs"> ({yrsTo(b.offer_date)})</span>}
+            </div>
+          )}
+        </td>
+      );
+    } },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → R-spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.

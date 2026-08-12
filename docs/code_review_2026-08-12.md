@@ -136,6 +136,49 @@ while current <= maturity_date:
 
 ---
 
+## Мусор / дубли / лишние фетчи
+
+### R1. 🔴 Лишний фетч — `fetch_coupon_schedules` дублирует `fetch_bond_schedule_full`
+
+**Файлы:** `services/market_data.py:1115` (`fetch_coupon_schedules`) и `services/market_data.py:469` (`fetch_bond_schedule_full`).
+
+Обе функции бьют **один** MOEX-эндпоинт `/bondization.json`; купоны идентичны (`start/end/value`), но пишут в **два разных day-кэша** (`schedule_cache.json` vs `schedule_full_cache.json`).
+
+```
+fetch_coupon_schedules(isin)   → coupons                 (iss.only=coupons)
+fetch_bond_schedule_full(isin) → coupons + amort + offers (iss.only=coupons,amortizations,offers)  ← уже содержит coupons
+```
+
+В `services/bond_details.py:38+40`, `services/bond_audit.py:264+266`, `services/backdate.py:345+347` **обе** вызываются в **одном `gather` для одного ISIN** — купоны прилетают дважды, из двух кэшей, за один запрос.
+
+**Колл-сайты `fetch_coupon_schedules` (5):** `api/routes/bonds.py:186`, `services/backdate.py:345`, `services/bond_details.py:38`, `services/bond_details.py:279`, `services/bond_audit.py:266`. Во всех рядом уже есть `fetch_bond_schedule_full`.
+
+**Рекомендация:** `fetch_coupon_schedules` сделать тонким адаптером над `fetch_bond_schedule_full` (маппинг `coupons` dict → `(start, end, value)`). Убирает лишний сетевой заход, файл `schedule_cache.json`, `_schedule_mem`, `_load_schedule_cache` / `_save_schedule_cache`.
+
+**Побочно (🟡):** в списке `/api/bonds` цена берётся из 3 источников — `MarketDataService.session_prices()` (`bonds.py:109`), `fetch_last_prices` (`bonds.py:180`), `fetch_moex_snapshot` (`bonds.py:181`). Freshness-merge намеренный, но `fetch_last_prices` (Alor) поверх уже свежего `session_prices` поллера — проверить, не холостой ли сетевой заход.
+
+### R2. 🪦 Мёртвый код (только определение, ноль вызовов)
+
+| Функция | Файл | Действие |
+|---------|------|----------|
+| `_last_obs_date(spec, start, end)` | `services/coupon_calib.py:645` | Удалить (динамических ссылок нет) |
+| `_rows(cur)` | `services/portfolio_db.py:341` | Удалить (динамических ссылок нет) |
+
+### R3. 🔁 Дубли-хелперы (одинаковая логика в нескольких копиях)
+
+| Хелпер | Копий | Где |
+|--------|-------|-----|
+| `_d` / `_pd` / `_to_date` — парс ISO-даты с None-guard | **9** | `metrics.py` (×2), `fixed_income`, `payments_calendar`, `instruments_validate`, `cashflow`, `zspread`, `core/valuation` (×2), `bonds` (`_to_date`) |
+| `_now()` — ISO-timestamp | **6** | `signals`, `alerts`, `tg_users`, `tg_screener`, `instruments_registry`, `progress` |
+| `_aempty()` — `async → {}` | **4** | `bond_audit`, `universe`, `backdate`, `bond_details` |
+| `load_cache` / `save_cache` — JSON-кэш | 3 варианта | `core/cashflow`, `core/last_prices`, `core/rates` |
+
+**Рекомендация:** один `services/util.py` (или `core/util.py`) — `parse_iso_date`, `now_iso`, `aempty`, generic `load_json_cache` / `save_json_cache`. ~20 строк вместо ~22 разбросанных копий. Низкий риск, много точек правки.
+
+**Примечание:** ~164 строки «комментарий, похожий на код» — в основном пояснительная проза (стиль проекта — густые комменты-обоснования), а не закомментированный код. Ложный сигнал, не трогать.
+
+---
+
 ## Что проверено и признано здоровым
 
 - **Авторизация:** все data-роутеры гейтятся `_gate=[Depends(require_user)]` на include-уровне (`api/main.py:789-802`). Публичны только `health`, `auth/login`, `ws` (cookie внутри хендлера), `tg/webhook` (secret-заголовок). Дырявых эндпоинтов нет.

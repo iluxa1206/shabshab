@@ -366,6 +366,14 @@ td.mut { color: var(--mut); }
 .isin-copy:hover { color: var(--fg); text-decoration: underline; }
 .isin-copy.ok { color: var(--up); text-decoration: none; }
 .isin-copy.err { color: var(--neg); text-decoration: none; }
+/* Колонка MATURITY в два этажа: погашение сверху, оферта под ним мелким серым
+   (тот же кегль, что ISIN под именем). Паддинги ужаты — строка не растёт. */
+.grid tbody td.mat-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; font-size: 12px; }
+.mat-offer { margin-top: 1px; font-size: 10px; letter-spacing: 0.02em; color: var(--mut-2); }
+.mat-yrs { color: var(--mut-2); }
+/* дата горизонта прайсинга — та, к которой посчитан спред строки */
+.mat-hz { text-decoration: underline; text-decoration-color: var(--mut-2);
+  text-underline-offset: 2px; }
 .bond-formula { color: var(--mut); font-size: 12px; }
 /* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
    ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */
