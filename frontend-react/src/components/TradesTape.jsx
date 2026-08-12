@@ -163,10 +163,12 @@ function RowLinks({ isin, onOpen }) {
   );
 }
 
-/** Топ бумаг по обороту — выпадающим списком, а не строкой чипов: он нужен
- *  изредка, а места занимал больше, чем сама лента над таблицей. Клик по строке
- *  прикалывает бумагу (тот же pin, что раньше). */
-function TopTurnover({ top, pin, onPin }) {
+/** Топ бумаг по обороту — выпадающим списком, а не строкой чипов: нужен
+ *  изредка, а места занимал больше самой ленты. Выбор бумаги ПИШЕТ её ISIN В
+ *  ПОИСК: одно поле — один способ сузить ленту, и сбрасывается фильтр там же,
+ *  где виден. Своего состояния у списка нет — прежний внутренний «пин» мог
+ *  спрятать саму кнопку, и снять фильтр было нечем. */
+function TopTurnover({ top, current, onPick }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
   useEffect(() => {
@@ -181,26 +183,27 @@ function TopTurnover({ top, pin, onPin }) {
     };
   }, [open]);
   if (!top?.length) return null;
+  const picked = current && top.find((t) => t.isin === current);
   return (
     <div className="fgroup tape-topbox" ref={box}>
-      <button className={"chip-btn" + (open || pin ? " on" : "")}
+      <button className={"chip-btn" + (open || picked ? " on" : "")}
         onClick={() => setOpen((v) => !v)}
-        title="Бумаги с наибольшим оборотом в окне; клик по строке — оставить в ленте только её">
-        топ оборота ▾
+        title="Бумаги с наибольшим оборотом в окне; выбор подставит ISIN в поиск">
+        {picked ? `${picked.name} ▾` : "топ оборота ▾"}
       </button>
       {open && (
         <div className="tape-topmenu">
           {top.slice(0, 10).map((t) => (
-            <button key={t.isin} className={"tape-topitem" + (pin === t.isin ? " on" : "")}
+            <button key={t.isin} className={"tape-topitem" + (current === t.isin ? " on" : "")}
               title={`${t.emitter || t.isin} · ${t.n} сделок`}
-              onClick={() => { onPin(pin === t.isin ? null : t.isin); setOpen(false); }}>
+              onClick={() => { onPick(current === t.isin ? "" : t.isin); setOpen(false); }}>
               <span className="tt-name">{t.name}</span>
               <span className="tt-val">{money(t.value)}</span>
             </button>
           ))}
-          {pin && (
+          {current && (
             <button className="tape-topitem tt-clear"
-              onClick={() => { onPin(null); setOpen(false); }}>снять бумагу</button>
+              onClick={() => { onPick(""); setOpen(false); }}>показать все бумаги</button>
           )}
         </div>
       )}
@@ -242,7 +245,6 @@ export default function TradesTape() {
   const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
   const watch = useMemo(() => readLS("watch", []) || [], []);
   const [ratingOpts, setRatingOpts] = useState([]);
-  const [pin, setPin] = useState(() => pick(savedFilters().pin, null));
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
   // адресных: у безадресных поштучный архив полный, агрегировать нечего.
   const [byDay, setByDay] = useState(() => pick(savedFilters().byDay, false));
@@ -276,17 +278,17 @@ export default function TradesTape() {
     const s = q.trim().toUpperCase();
     return ISIN_RE.test(s) ? s : null;
   }, [q]);
-  const isinReq = pin || qIsin;
+  const isinReq = qIsin;
   const scope = scopes.length === 1 ? scopes[0] : "market";
   const daysView = market === "ndm" && byDay;
 
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       minValue, side, market, emitters, scopes, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
+      ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
       onlyWatch }));
   }, [minValue, side, market, emitters, scopes, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
+      ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
       onlyWatch]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
@@ -365,6 +367,15 @@ export default function TradesTape() {
              archive_till: data?.summary?.archive_till, partial: true };
   }, [local, rows, data]);
   const byM = sum.by_market || {};
+
+  // Топ показываем ПОСЛЕДНИЙ ПОЛНЫЙ: как только лента сужена до одной бумаги,
+  // бэк присылает топ из неё же — список схлопывался в одну строку, и выбрать
+  // другую бумагу было нельзя.
+  const [topList, setTopList] = useState([]);
+  useEffect(() => {
+    const t = data?.summary?.top;
+    if (!isinReq && t?.length) setTopList(t);
+  }, [data, isinReq]);
 
   const daySum = useMemo(() => {
     let n = 0, value = 0, trades = 0;
@@ -653,9 +664,7 @@ export default function TradesTape() {
             )}
           </div>
 
-          {!daysView && !isinReq && (
-            <TopTurnover top={sum.top} pin={pin} onPin={setPin} />
-          )}
+          {!daysView && <TopTurnover top={topList} current={qIsin} onPick={setQ} />}
         </div>
       </div>
 
