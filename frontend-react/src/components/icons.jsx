@@ -60,6 +60,17 @@ export const IconChart = (p) => (
   </Svg>
 );
 
+// Карточка выпуска: лист с шапкой и строками — тем же контуром, что стакан
+// в карточке. Рядом с IconChart читается как «цифры», а не «ещё один график».
+export const IconCard = (p) => (
+  <Svg {...p}>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M3 9h18" />
+    <path d="M7 13h6" />
+    <path d="M7 17h10" />
+  </Svg>
+);
+
 export const IconColumns = (p) => (
   <Svg {...p}>
     <rect width="18" height="18" x="3" y="3" rx="2" />

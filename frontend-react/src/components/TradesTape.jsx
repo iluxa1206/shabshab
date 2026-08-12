@@ -5,6 +5,7 @@ import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
 import IssuerFilter from "./IssuerFilter.jsx";
+import { IconChart, IconCard } from "./icons.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
 //
@@ -59,18 +60,20 @@ function SideTag({ side }) {
 // перетаскиванием, тянутся за границу, кликом сортируются. Раскладка живёт в
 // localStorage, чтобы стол не собирал её заново каждое утро.
 const COLS = [
-  { key: "date",   label: "ДАТА",       align: "left", w: 6,  get: (r) => r.ts },
-  { key: "time",   label: "ВРЕМЯ",      align: "left", w: 8,  get: (r) => r.ts },
-  { key: "name",   label: "БУМАГА",     align: "left", w: 20, get: (r) => (r.name || "").toLowerCase() },
-  { key: "isin",   label: "ISIN",       align: "left", w: 14, get: (r) => r.isin },
-  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 11, get: (r) => r.maturity || "" },
-  { key: "board",  label: "РЕЖИМ",      align: "left", w: 9,  get: (r) => r.board_short || r.board || "" },
-  { key: "price",  label: "ЦЕНА, %",    align: "num",  w: 8,  get: (r) => r.price },
-  { key: "value",  label: "СУММА, МЛН", align: "num",  w: 11, get: (r) => r.value },
-  { key: "side",   label: "СТОРОНА",    align: "left", w: 8,  get: (r) => r.side || "" },
-  { key: "yidx",   label: "R-SPREAD, БП", align: "num", w: 12, get: (r) => r.y_idx_bps,
+  { key: "date",   label: "ДАТА",       align: "left", w: 5,  get: (r) => r.ts },
+  { key: "time",   label: "ВРЕМЯ",      align: "left", w: 7,  get: (r) => r.ts },
+  { key: "name",   label: "БУМАГА",     align: "left", w: 16, get: (r) => (r.name || "").toLowerCase() },
+  { key: "isin",   label: "ISIN",       align: "left", w: 13, get: (r) => r.isin },
+  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 10, get: (r) => r.maturity || "" },
+  { key: "board",  label: "РЕЖИМ",      align: "left", w: 8,  get: (r) => r.board_short || r.board || "" },
+  // единицы — второй строкой (sub), как в СПИСКЕ: заголовок «СУММА, МЛН» в
+  // одну строку не влезал в колонку и обрезался многоточием
+  { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 7,  get: (r) => r.price },
+  { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 8,  get: (r) => r.value },
+  { key: "side",   label: "СТОРОНА",           align: "left", w: 8,  get: (r) => r.side || "" },
+  { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 9, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
-  { key: "yld",    label: "ДОХ-ТЬ, %",  align: "num",  w: 8,  get: (r) => r.yld },
+  { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 7,  get: (r) => r.yld },
 ];
 const DEFAULT_COLS = COLS.map((c) => c.key);
 const LS_ORDER = "tapeCols";
@@ -113,9 +116,11 @@ function RowLinks({ isin, onOpen }) {
   return (
     <span className="tape-links">
       <button type="button" className="tape-link" title="График выпуска на весь экран"
-        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>◱</button>
+        aria-label="График выпуска"
+        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}><IconChart size={12} /></button>
       <button type="button" className="tape-link" title="Карточка бумаги со стаканом"
-        onClick={(e) => { stop(e); onOpen(isin, "card"); }}>▤</button>
+        aria-label="Карточка бумаги"
+        onClick={(e) => { stop(e); onOpen(isin, "card"); }}><IconCard size={12} /></button>
     </span>
   );
 }
@@ -462,12 +467,12 @@ export default function TradesTape() {
           </div>
 
           <div className="ia-table-wrap">
-            <table className="grid tape-table cols-fixed">
+            <table className="grid tape-table packed cols-fixed">
               <colgroup>
                 {cols.map((c) => <col key={c.key} style={colWidths[c.key]
                   ? { "--cw": colWidths[c.key] + "px" }
                   : { "--cw": (c.w || 8) + "ch" }} />)}
-                <col className="fill-col" />
+                <col className="col-fill" />
               </colgroup>
               <thead>
                 <tr>
