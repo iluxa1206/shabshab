@@ -914,9 +914,9 @@ export default function ChartPage() {
           ))}
         </span>
         {(on("big") || on("rps")) && (
-          <label className="cp-date">крупнее
+          <label className="cp-date">крупнее, млн ₽
             <select value={bigMln} onChange={(e) => setParam({ mv: e.target.value })}>
-              {BIG_THRESHOLDS.map((v) => <option key={v} value={v}>{v} млн ₽</option>)}
+              {BIG_THRESHOLDS.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </label>
         )}

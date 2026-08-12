@@ -21,8 +21,8 @@ import IssuerFilter from "./IssuerFilter.jsx";
 const WINDOWS = [[1, "сегодня"], [7, "7д"], [30, "30д"], [90, "90д"],
                  [180, "180д"], [400, "макс"]];
 // 0 = без порога: мельче 1 млн ₽ сделки есть только по юниверсу (тик-архив)
-const THRESHOLDS = [[0, "все"], [1e6, "1 млн"], [5e6, "5 млн"], [1e7, "10 млн"],
-                    [5e7, "50 млн"], [1e8, "100 млн"]];
+const THRESHOLDS = [[0, "все"], [1e6, "1"], [5e6, "5"], [1e7, "10"],
+                    [5e7, "50"], [1e8, "100"]];
 // РПС здесь = дневной агрегат адресных режимов (см. шапку файла)
 const MARKETS = [[null, "все"], ["bonds", "Т+"], ["ndm", "РПС"]];
 const SIDES = [[null, "любая"], ["buy", "buy"], ["sell", "sell"]];
@@ -33,14 +33,10 @@ const SCOPES = [["float", "флоатеры"], ["market", "весь рынок"]
 const LIMITS = [5000, 10000, 20000];
 const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 
-const money = (v) => {
-  if (v == null) return "—";
-  const a = Math.abs(v);
-  if (a >= 1e9) return fmt.num(v / 1e9, 2) + " млрд";
-  if (a >= 1e6) return fmt.num(v / 1e6, 1) + " млн";
-  if (a >= 1e3) return fmt.num(v / 1e3, 0) + " тыс";
-  return fmt.num(v, 0);
-};
+// Деньги везде в проекте — в МЛН ₽ голым числом (fmt.mln): единица подписана
+// один раз в шапке колонки. Прежний авто-масштаб (900 ₽ / 45 тыс / 1,05 млрд)
+// в одной колонке был несравним глазами.
+const money = (v) => (v == null ? "—" : fmt.mln(v));
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 8) || "—";
 const num = (s) => (s === "" || s == null ? null : Number(s));
@@ -170,7 +166,7 @@ export default function TradesTape() {
                 onClick={() => setDays(d)}>{label}</button>
             ))}
           </span>
-          <span className="ia-flabel">От</span>
+          <span className="ia-flabel">От, млн ₽</span>
           <span className="seg" role="tablist" aria-label="Порог суммы">
             {THRESHOLDS.map(([v, label]) => (
               <button key={v} className={"seg-btn" + (minValue === v ? " active" : "")}
@@ -265,14 +261,14 @@ export default function TradesTape() {
             {isinReq && <span className="tape-kpi"><span className="tape-k">БУМАГА</span>
               <span className="tape-v">{rows[0]?.name || isinReq}</span></span>}
             <span className="tape-kpi"><span className="tape-k">СДЕЛОК</span><span className="tape-v">{fmt.num(sum.n, 0)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">ОБОРОТ</span><span className="tape-v">{money(sum.value)} ₽</span></span>
-            <span className="tape-kpi"><span className="tape-k">BUY</span><span className="tape-v tape-buy">{money(sum.buy_value)} ₽</span></span>
-            <span className="tape-kpi"><span className="tape-k">SELL</span><span className="tape-v tape-sell">{money(sum.sell_value)} ₽</span></span>
-            <span className="tape-kpi"><span className="tape-k">АДРЕСНЫЕ</span><span className="tape-v">{money(byM.ndm?.value)} ₽</span></span>
+            <span className="tape-kpi"><span className="tape-k">ОБОРОТ, МЛН</span><span className="tape-v">{money(sum.value)}</span></span>
+            <span className="tape-kpi"><span className="tape-k">BUY, МЛН</span><span className="tape-v tape-buy">{money(sum.buy_value)}</span></span>
+            <span className="tape-kpi"><span className="tape-k">SELL, МЛН</span><span className="tape-v tape-sell">{money(sum.sell_value)}</span></span>
+            <span className="tape-kpi"><span className="tape-k">АДРЕСНЫЕ, МЛН</span><span className="tape-v">{money(byM.ndm?.value)}</span></span>
             {sum.partial && <span className="ia-flabel">итоги по видимым строкам</span>}
             {(sum.top || []).length > 0 && !isinReq && (
               <span className="tape-top">
-                <span className="tape-k">ТОП ОБОРОТА</span>
+                <span className="tape-k">ТОП ОБОРОТА, МЛН</span>
                 {(sum.top || []).slice(0, 5).map((t) => (
                   <button key={t.isin} className={"chip-btn" + (pin === t.isin ? " on" : "")}
                     title={`${t.emitter || t.isin} · ${t.n} сделок`}
@@ -294,7 +290,7 @@ export default function TradesTape() {
                   <th className="left">БУМАГА</th>
                   <th className="left">РЕЖИМ</th>
                   <th>ЦЕНА, %</th>
-                  <th>СУММА</th>
+                  <th>СУММА, МЛН</th>
                   <th className="left">СТОРОНА</th>
                   <th title="спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)">R-spread, бп</th>
                   <th>ДОХ-ТЬ, %</th>
@@ -326,7 +322,7 @@ export default function TradesTape() {
                       </td>
                       <td className="num">{fmt.pct(r.price)}</td>
                       <td className="num tape-val">
-                        {money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : " ₽"}
+                        {money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : ""}
                       </td>
                       <td className="left"><SideTag side={r.side} /></td>
                       <td className="num" style={r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
@@ -360,7 +356,7 @@ export default function TradesTape() {
               <span className="tape-v">{dayRows[0]?.name || isinReq}</span></span>}
             <span className="tape-kpi"><span className="tape-k">БУМАГО-ДНЕЙ</span><span className="tape-v">{fmt.num(daySum.n, 0)}</span></span>
             <span className="tape-kpi"><span className="tape-k">СДЕЛОК</span><span className="tape-v">{fmt.num(daySum.trades, 0)}</span></span>
-            <span className="tape-kpi"><span className="tape-k">ОБОРОТ</span><span className="tape-v">{money(daySum.value)} ₽</span></span>
+            <span className="tape-kpi"><span className="tape-k">ОБОРОТ, МЛН</span><span className="tape-v">{money(daySum.value)}</span></span>
           </div>
           <div className="ia-table-wrap">
             <table className="grid tape-table">
@@ -371,7 +367,7 @@ export default function TradesTape() {
                   <th className="left">РЕЖИМ</th>
                   <th>СДЕЛОК</th>
                   <th>СРЕДНЕВЗВЕС, %</th>
-                  <th>ОБОРОТ, ₽</th>
+                  <th>ОБОРОТ, МЛН</th>
                 </tr>
               </thead>
               <tbody>

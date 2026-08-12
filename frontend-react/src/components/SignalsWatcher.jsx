@@ -43,10 +43,8 @@ function desktopNotify(title, body) {
 const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
                  block: "блок" };
 
-const money = (v) =>
-  v == null ? null
-    : v >= 1e6 ? fmt.num(v / 1e6, 1) + " млн ₽"
-    : v >= 1e3 ? fmt.num(v / 1e3, 0) + " тыс ₽" : fmt.num(v, 0) + " ₽";
+// единая единица проекта — млн ₽ (см. fmt.mln)
+const money = (v) => (v == null ? null : fmt.mln(v) + " млн");
 
 /**
  * Глобальный приёмник сигналов: живёт рядом с AlertsWatcher, слушает WS-канал

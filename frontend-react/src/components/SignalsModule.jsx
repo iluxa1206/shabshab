@@ -16,10 +16,8 @@ const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];
 const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
                  block: "блок" };
 
-const money = (v) =>
-  v == null ? "—"
-    : v >= 1e6 ? fmt.num(v / 1e6, 1) + " млн"
-    : v >= 1e3 ? fmt.num(v / 1e3, 0) + " тыс" : fmt.num(v, 0);
+// единая единица проекта — млн ₽ голым числом (см. fmt.mln)
+const money = (v) => (v == null ? "—" : fmt.mln(v));
 
 const chLabel = (v) => (CHANGES.find(([x]) => x === v) || [null, v + " %"])[1];
 
@@ -47,9 +45,7 @@ const plural = (n, one, few, many) => {
 function describeBlock(p) {
   const bases = p.bases?.length
     ? p.bases.map((b) => labelOfPair(BASES, b)).join("/") : "любая база";
-  const money = p.min_value_rub >= 1e6
-    ? fmt.num(p.min_value_rub / 1e6, 1) + " млн" : fmt.num(p.min_value_rub, 0);
-  return `от ${money} ₽ · ${labelOfPair(MARKETS, p.markets)} · ${bases}`
+  return `от ${fmt.mln(p.min_value_rub)} млн · ${labelOfPair(MARKETS, p.markets)} · ${bases}`
     + (p.side !== "any" ? ` · ${labelOfPair(SIDES, p.side)}` : "");
 }
 
@@ -68,9 +64,8 @@ function describe(p) {
   else if (p.spread_max != null) range = `до ${p.spread_max} бп`;
   let moneyTxt = null;
   if (p.min_money_rub) {
-    const m = p.min_money_rub >= 1e6
-      ? fmt.num(p.min_money_rub / 1e6, 1) + " млн" : fmt.num(p.min_money_rub, 0);
-    moneyTxt = p.money_mode === "single" ? `заявка от ${m} ₽` : `набор от ${m} ₽`;
+    const m = fmt.mln(p.min_money_rub);
+    moneyTxt = p.money_mode === "single" ? `заявка от ${m} млн` : `набор от ${m} млн`;
   }
   let years = null;
   if (p.years_min != null && p.years_max != null) years = `${p.years_min}–${p.years_max} л`;
@@ -536,7 +531,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
                 <b>{preview.total}</b>{preview.capped ? "+" : ""}{" "}
                 {plural(preview.total, "сделка", "сделки", "сделок")}:{" "}
                 {preview.matches.slice(0, 4).map(
-                  (m) => `${m.name} (${money(m.money_rub)} ₽)`).join(", ")}
+                  (m) => `${m.name} (${money(m.money_rub)} млн)`).join(", ")}
                 {preview.total > 4 && ` и ещё ${preview.total - 4}`}</>}
         </div>
       )}
@@ -787,7 +782,7 @@ export default function SignalsModule() {
                         {h.side === "ask" ? "оффер" : "бид"}</span>}
                   {h.val_bps != null && <> <b>{fmt.num(h.val_bps, 0)} бп</b></>}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
-                  {h.money_rub != null && <> · {money(h.money_rub)} ₽</>}
+                  {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
                   {h.levels ? <> · {h.levels} ур</> : null}
                 </div>
                 <WhyLine h={h} />

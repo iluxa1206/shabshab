@@ -127,7 +127,7 @@ export default function FixedCard({ d }) {
         <Cell k="Convexity">{m.convexity != null ? fmt.num(m.convexity, 1) : null}</Cell>
         <Cell k="Дюрация Маколея">{m.mac_dur != null ? fmt.num(m.mac_dur, 2) + " лет" : null}</Cell>
         <Cell k="Номинал">{r.face != null ? fmt.num(r.face, 0) + " ₽" : null}</Cell>
-        <Cell k="Оборот">{mk.val_today != null ? (mk.val_today / 1e6).toFixed(1) + " млн ₽" : null}</Cell>
+        <Cell k="Оборот, млн ₽">{fmt.mln(mk.val_today)}</Cell>
         <Cell k="SECID">{r.secid}</Cell>
       </div>
 

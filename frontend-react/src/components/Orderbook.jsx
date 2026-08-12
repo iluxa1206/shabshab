@@ -48,9 +48,9 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
         + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")
         + (fill ? (fill.partial ? " ob-sig-part" : " ob-sig") : "")}
       onClick={onClick}
-      title={fill ? `В наборе сигнала: ${fmt.num(fill.money, 0)} ₽${fill.partial ? " (уровень взят частично)" : ""}` : armTitle}>
+      title={fill ? `В наборе сигнала: ${fmt.mln(fill.money)} млн ₽${fill.partial ? " (уровень взят частично)" : ""}` : armTitle}>
       <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? <IconAlert size={11} /> : <IconBell size={11} />}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
-      <td className="ob-qty" title={rub != null ? fmt.num(rub, 0) + " ₽" : undefined}>
+      <td className="ob-qty" title={rub != null ? fmt.mln(rub) + " млн ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
       </td>
       {isFixed ? (

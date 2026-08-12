@@ -5,10 +5,8 @@ import { clearSignalEvents, fetchSignalEvents, markSignalEventsSeen } from "../a
 import { fmt } from "../format.js";
 import { IconBell, IconAlert } from "./icons.jsx";
 
-const money = (v) =>
-  v == null ? "—"
-    : v >= 1e6 ? fmt.num(v / 1e6, 1) + " млн"
-    : v >= 1e3 ? fmt.num(v / 1e3, 0) + " тыс" : fmt.num(v, 0);
+// единая единица проекта — млн ₽ голым числом (см. fmt.mln)
+const money = (v) => (v == null ? "—" : fmt.mln(v));
 
 const REASON = {
   new: ["новая", "нашлась под условия"],
@@ -164,7 +162,7 @@ export default function SignalsBell() {
                       // у сделки нет ни спреда набора, ни стороны стакана —
                       // показываем то, что есть: сумма, цена и агрессор
                       <span className="sb-row-2 num">
-                        <b>{money(e.money_rub)} ₽</b>
+                        <b>{money(e.money_rub)} млн</b>
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         {e.side && (
                           <span className={e.side === "buy" ? "pos" : "neg"}>
@@ -178,7 +176,7 @@ export default function SignalsBell() {
                         <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />
-                        <span className="sb-vol">{money(e.money_rub)} ₽
+                        <span className="sb-vol">{money(e.money_rub)} млн
                           {e.levels ? ` · ${e.levels} ур` : ""}</span>
                       </span>
                     )}

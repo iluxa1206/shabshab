@@ -7,7 +7,7 @@ import KpisInline from "./Kpis.jsx";
 import { IconBell, IconAlert, IconRefresh } from "./icons.jsx";
 import SignalsBell from "./SignalsBell.jsx";
 
-const mln = (v) => (v != null ? (v / 1e6).toFixed(1) : null);   // ₽ → млн
+const mln = (v) => fmt.mln(v);   // ₽ → млн, единый формат проекта
 
 const THEMES = [["light", "#ffffff", "Светлая"], ["win", "#c0c0c0", "Old internet"], ["dark", "#000000", "Тёмная"]];
 
