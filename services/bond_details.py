@@ -78,6 +78,15 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             "accrued_interest": ref_obj.accrued_rub,
         }
 
+    # Cbonds ID для прямой ссылки на страницу выпуска (cbonds.ru/bonds/{id}/).
+    # Поиска по ISIN у cbonds нет — без id ссылку строить не из чего, поэтому
+    # None здесь означает «кнопку не показывать», а не «дать общий список».
+    try:
+        from services.ref_data import load_cbonds
+        ref_dict["cbonds_id"] = (load_cbonds().get(isin) or {}).get("cbonds_id")
+    except Exception as e:
+        logger.warning(f"cbonds_id lookup failed for {isin}: {e}")
+
     last_price = market_prices.get(isin)
     prev_close_pct = snapshot.get(isin, {}).get("prev")
     accrued_live = snapshot.get(isin, {}).get("accrued")

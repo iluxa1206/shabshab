@@ -547,9 +547,11 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
                 <span className="mono muted">
                   {isin}
-                  <a className="cat-ext" title="страница выпуска на cbonds"
-                    href={cbondsUrl(isin, data?.reference?.cbonds_id)}
-                    target="_blank" rel="noopener noreferrer">↗</a>
+                  {cbondsUrl(data?.reference?.cbonds_id) && (
+                    <a className="cat-ext" title="страница выпуска на cbonds"
+                      href={cbondsUrl(data.reference.cbonds_id)}
+                      target="_blank" rel="noopener noreferrer">↗</a>
+                  )}
                 </span>
               </div>
             </div>

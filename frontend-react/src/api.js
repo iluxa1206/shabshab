@@ -6,11 +6,12 @@ const API = location.pathname.replace(/\/app(\/.*)?$/, "");
 // Базовый путь SPA для react-router (учитывает возможный префикс перед /app).
 export const APP_BASENAME = `${API}/app`;
 
-// Ссылка на страницу выпуска на cbonds. С Cbonds ID — прямая; иначе — поиск
-// cbonds по ISIN (тоже остаётся на cbonds, находит выпуск).
-export const cbondsUrl = (isin, cbondsId) =>
-  cbondsId ? `https://cbonds.ru/bonds/${cbondsId}/`
-           : `https://cbonds.ru/bonds/?isin=${encodeURIComponent(isin || "")}`;
+// Ссылка на страницу выпуска на cbonds — ТОЛЬКО по Cbonds ID (bondsearch-выгрузка).
+// Поиска по ISIN у сайта нет: /bonds/?isin=… открывает общий список облигаций и
+// ничего не находит, /search/?text=… отдаёт 404. Поэтому без id ссылки нет —
+// вызывающий не рисует кнопку, а не ведёт юзера в никуда.
+export const cbondsUrl = (cbondsId) =>
+  cbondsId ? `https://cbonds.ru/bonds/${cbondsId}/` : null;
 
 // Ошибка 401 — сессия истекла/отсутствует. Глобальный onError QueryClient → логин.
 export class UnauthorizedError extends Error {

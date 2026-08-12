@@ -46,6 +46,9 @@ class BondReference(BaseModel):
     offer_date: Optional[date] = None
     offer_type: Optional[str] = None
     offer_kind: Optional[str] = None   # 'put' (держателя) | 'call' (эмитента)
+    # ID выпуска в Cbonds (из bondsearch-выгрузки) — единственный способ дать
+    # прямую ссылку: поиска по ISIN на сайте нет. None → ссылки не будет.
+    cbonds_id: Optional[int] = None
 
 # --- 5.2 BondMarketData ---
 class BondMarketData(BaseModel):

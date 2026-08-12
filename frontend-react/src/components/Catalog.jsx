@@ -257,9 +257,11 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
       <tr className={r.priceable ? "" : "cat-row-incomplete"}>
         <td className="cat-isin">
           {r.isin}
-          <a className="cat-ext" title="страница выпуска на cbonds"
-            href={cbondsUrl(r.isin, r.cbonds_id)}
-            target="_blank" rel="noopener noreferrer">↗</a>
+          {cbondsUrl(r.cbonds_id) && (
+            <a className="cat-ext" title="страница выпуска на cbonds"
+              href={cbondsUrl(r.cbonds_id)}
+              target="_blank" rel="noopener noreferrer">↗</a>
+          )}
           {r.manual_locked ? <span className="cat-lock" title="ручной lock — sync не затрёт">🔒</span> : null}
           {!r.reviewed ? <span className="cat-new" title="новая, не подтверждена">•</span> : null}
         </td>
