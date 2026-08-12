@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconFilter } from "./icons.jsx";
 
-// Кнопка «ФИЛЬТРЫ» → всплывающее окно: база (КС/RUONIA) и эмитент.
+// Кнопка «ФИЛЬТРЫ» (воронка) → всплывающее окно: база (КС/RUONIA), тип выпуска,
+// класс эмитента и эмитент.
 // Счётчик на кнопке — сколько фильтров активно ВСЕГО (не только тех, что внутри окна),
 // в пару к кнопке сброса в тулбаре.
 export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
+  hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
   activeCount,
 }) {
   const [open, setOpen] = useState(false);
@@ -33,7 +35,7 @@ export default function FiltersMenu({
     <div className="filters-menu" ref={ref}>
       <button className={"chip-btn" + (activeCount ? " on" : "")} onClick={() => setOpen((o) => !o)}
         aria-haspopup="true" aria-expanded={open} aria-label="Фильтры"
-        title="Фильтры: база, эмитент">
+        title="Фильтры: база, тип выпуска, класс эмитента, эмитент">
         <IconFilter size={12} />{activeCount ? String(activeCount) : ""}
       </button>
       {open && (
@@ -52,6 +54,35 @@ export default function FiltersMenu({
                 onClick={() => toggleBase("RUONIA")}>RUONIA</button>
             </div>
           </div>
+
+          {/* секции есть только там, где хост даёт обработчики (тест-страница таблицы — без них) */}
+          {setHideSub && <div className="fp-sec">
+            <div className="fp-head"><span className="fg-lbl">ТИП ВЫПУСКА</span></div>
+            <div className="fp-chips">
+              <button className={"chip-btn" + (hideSub ? " on" : "")} aria-pressed={!!hideSub}
+                title={"Убрать субординированные выпуски и перпы (СУБ / SUB / Т1 / ПЕРП в имени). "
+                  + "Другой класс риска: спред к ним не сравним с обычным старшим долгом. Включено по умолчанию."}
+                onClick={() => setHideSub(!hideSub)}>БЕЗ СУБОРДОВ</button>
+              <button className={"chip-btn" + (hideAmort ? " on" : "")} aria-pressed={!!hideAmort}
+                title={"Убрать амортизируемые выпуски (в графике MOEX больше одного транша погашения). "
+                  + "У них падающий номинал — спред и спред-дюрация не сопоставимы с bullet-выпусками."}
+                onClick={() => setHideAmort(!hideAmort)}>БЕЗ АМОРТ</button>
+            </div>
+          </div>}
+
+          {toggleCls && <div className="fp-sec">
+            <div className="fp-head"><span className="fg-lbl">КЛАСС</span></div>
+            <div className="fp-chips">
+              <button className={"chip-btn" + (clsSel?.includes("OFZ") ? " on" : "")}
+                aria-pressed={!!clsSel?.includes("OFZ")}
+                title="Только ОФЗ-ПК (суверен Минфина). Ни одна кнопка не нажата — показаны и ОФЗ, и корпораты."
+                onClick={() => toggleCls("OFZ")}>ОФЗ</button>
+              <button className={"chip-btn" + (clsSel?.includes("CORP") ? " on" : "")}
+                aria-pressed={!!clsSel?.includes("CORP")}
+                title="Только корпоративные выпуски (сюда же субфедеральные и муниципальные)."
+                onClick={() => toggleCls("CORP")}>КОРП</button>
+            </div>
+          </div>}
 
           <div className="fp-sec">
             <div className="fp-head">

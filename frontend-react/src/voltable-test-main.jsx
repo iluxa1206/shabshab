@@ -58,6 +58,10 @@ function Harness() {
   const [sort, setSort] = useState({ key: "y_idx_bid_bps", dir: "asc" });
   const [basesSel, setBasesSel] = useState([]);
   const [emittersSel, setEmittersSel] = useState([]);
+  // тип выпуска и класс эмитента — те же чипы, что в меню-воронке прода
+  const [hideSub, setHideSub] = useState(true);
+  const [hideAmort, setHideAmort] = useState(false);
+  const [clsSel, setClsSel] = useState([]);
   const ISSUERS = [{ name: "ТЕСТ", count: 3 }, { name: "РЖД", count: 12 }, { name: "ГТЛК", count: 7 }];
   const toggleIn = (setter) => (v) =>
     setter((a) => (a.includes(v) ? a.filter((x) => x !== v) : [...a, v]));
@@ -87,6 +91,9 @@ function Harness() {
           + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom ? 1 : 0) + (matTo ? 1 : 0) + (query ? 1 : 0)}
         onResetFilters={() => { setBasesSel([]); setEmittersSel([]); setTwoSided(false); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo(""); setQuery(""); }}
         twoSided={twoSided} setTwoSided={setTwoSided}
+        hideSub={hideSub} setHideSub={setHideSub}
+        hideAmort={hideAmort} setHideAmort={setHideAmort}
+        clsSel={clsSel} toggleCls={toggleIn(setClsSel)}
         volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
         volMode={volMode} setVolMode={setVolMode} depthTs={Date.now() / 1000} depthLoading={false}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}

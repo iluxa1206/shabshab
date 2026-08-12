@@ -72,6 +72,9 @@ export default function Toolbar({
           basesSel={basesSel} toggleBase={toggleBase} clearBases={clearBases}
           issuers={issuers || []} emittersSel={emittersSel || []}
           toggleEmitter={toggleEmitter} clearEmitters={clearEmitters}
+          hideSub={hideSub} setHideSub={setHideSub}
+          hideAmort={hideAmort} setHideAmort={setHideAmort}
+          clsSel={clsSel} toggleCls={toggleCls}
           activeCount={activeFilters}
         />
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}
@@ -79,26 +82,6 @@ export default function Toolbar({
           title="Снять все фильтры: watchlist, база, рейтинг, эмитент, BID×OFFER, объём, погашение, поиск">
           <IconX size={12} />
         </button>
-      </div>
-
-      {/* группа: тип выпуска (суборд/амортизация) и класс эмитента */}
-      <div className="fgroup">
-        <button className={"chip-btn" + (hideSub ? " on" : "")} aria-pressed={!!hideSub}
-          title={"Убрать субординированные выпуски и перпы (СУБ / SUB / Т1 / ПЕРП в имени). "
-            + "Другой класс риска: спред к ним не сравним с обычным старшим долгом. Включено по умолчанию."}
-          onClick={() => setHideSub(!hideSub)}>БЕЗ СУБОРДОВ</button>
-        <button className={"chip-btn" + (hideAmort ? " on" : "")} aria-pressed={!!hideAmort}
-          title={"Убрать амортизируемые выпуски (в графике MOEX больше одного транша погашения). "
-            + "У них падающий номинал — спред и спред-дюрация не сопоставимы с bullet-выпусками."}
-          onClick={() => setHideAmort(!hideAmort)}>БЕЗ АМОРТ</button>
-        <button className={"chip-btn" + (clsSel?.includes("OFZ") ? " on" : "")}
-          aria-pressed={!!clsSel?.includes("OFZ")}
-          title="Только ОФЗ-ПК (суверен Минфина). Ни одна кнопка не нажата — показаны и ОФЗ, и корпораты."
-          onClick={() => toggleCls("OFZ")}>ОФЗ</button>
-        <button className={"chip-btn" + (clsSel?.includes("CORP") ? " on" : "")}
-          aria-pressed={!!clsSel?.includes("CORP")}
-          title="Только корпоративные выпуски (сюда же субфедеральные и муниципальные)."
-          onClick={() => toggleCls("CORP")}>КОРП</button>
       </div>
 
       {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет */}
