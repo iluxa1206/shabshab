@@ -9,7 +9,7 @@ import SignalsBell from "./SignalsBell.jsx";
 
 const mln = (v) => (v != null ? (v / 1e6).toFixed(1) : null);   // ₽ → млн
 
-const THEMES = [["light", "#ffffff", "Светлая"], ["grey", "#3a3f47", "Серая"], ["dark", "#000000", "Тёмная"]];
+const THEMES = [["light", "#ffffff", "Светлая"], ["win", "#c0c0c0", "Old internet"], ["dark", "#000000", "Тёмная"]];
 
 function ThemeSwitch({ theme, onSetTheme }) {
   return (

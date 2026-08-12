@@ -137,7 +137,7 @@ function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const drawerIsin = searchParams.get("isin");
   const [showSettings, setShowSettings] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "light");
+  const [theme, setTheme] = useState(readTheme);
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch") || "[]"); } catch { return []; }
   });
@@ -769,10 +769,18 @@ function Dashboard() {
   );
 }
 
+// Тема из localStorage. Серая тема заменена на win (old internet) — у кого в
+// хранилище остался "grey", молча переезжает, иначе класса .theme-grey больше
+// нет и интерфейс падает в светлую.
+function readTheme() {
+  const t = localStorage.getItem("theme") || "light";
+  return t === "grey" ? "win" : t;
+}
+
 // Гейт авторизации: пока не проверили сессию — заглушка; нет сессии — Login; есть — дашборд.
 function AuthGate() {
   const { auth, onLogin } = useAuth();
-  const [theme] = useState(() => localStorage.getItem("theme") || "light");
+  const [theme] = useState(readTheme);
 
   const themeCls = theme === "light" ? "" : "theme-" + theme;
   if (auth === "checking") {

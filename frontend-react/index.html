@@ -21,9 +21,13 @@
   <script>
     // pre-paint: применяем тему до React, чтобы не мигало белым
     try {
-      if (localStorage.getItem("theme") === "dark") {
+      var t = localStorage.getItem("theme");
+      if (t === "dark") {
         document.documentElement.style.background = "#000";
         document.documentElement.style.colorScheme = "dark";
+      } else if (t === "win" || t === "grey") {
+        // grey заменена на win (old internet) — старое значение мигрируется в App
+        document.documentElement.style.background = "#c0c0c0";
       }
     } catch (e) {}
   </script>

@@ -1716,3 +1716,299 @@ body.col-resizing * { cursor: col-resize !important; }
 .sig-cancel:hover { border-color: var(--fg); color: var(--fg); }
 .sig-form.editing { border-color: var(--accent); }
 .sig-row-card.on-edit { border-left-color: var(--accent); background: var(--hover); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ТЕМА WIN — old internet core (Windows 95/98 GUI)
+
+   Блок ТОЛЬКО добавляет оверрайды под .theme-win, ни одно правило выше не
+   тронуто: выключение темы = удаление этой секции. Три приёма, из которых
+   собран весь вид эпохи:
+     1) бевел — рамка 1px двух цветов + inset-тень 1px. Итого «объём» в 2px:
+        снаружи светлый/чёрный, внутри белый/серый. Выпуклый = кнопка,
+        вдавленный = поле ввода, список, ячейка статусбара.
+     2) серебро в хроме (--face), белое в данных (--bg). Плотная таблица
+        остаётся на белом — читаемость не страдает.
+     3) ноль скруглений, ноль анимаций, жёсткие тени. Мгновенный отклик.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Шрифт: Tahoma — родной UI-шрифт Win98 и при этом с моноширинными цифрами,
+   поэтому колонки не разъезжаются. Данные всё равно оставляем на моноширинном
+   (ниже), иначе поплывут ширины колонок в ch. */
+.theme-win {
+  font-family: var(--ui);
+  letter-spacing: normal;
+  -webkit-font-smoothing: none;      /* пиксельные края вместо сглаживания */
+  text-rendering: geometricPrecision;
+}
+.theme-win, .theme-win * { border-radius: 0 !important; }
+/* эпоха без переходов: состояние меняется мгновенно */
+.theme-win *, .theme-win *::before, .theme-win *::after {
+  transition: none !important; text-shadow: none;
+}
+/* тракинг у капса сбавлен: разрядка 0.18em — язык 2020-х, не 1995-го */
+.theme-win .kpi-label, .theme-win .kpi-unit, .theme-win .status-cell,
+.theme-win .btn, .theme-win .seg-btn, .theme-win .chip-btn, .theme-win .hint,
+.theme-win .meta-chip, .theme-win .tagline, .theme-win .grid thead th,
+.theme-win .fg-lbl, .theme-win .modal-title, .theme-win .add-prefix {
+  letter-spacing: 0.02em;
+}
+
+/* ── Бевелы ──────────────────────────────────────────────────────────────── */
+.theme-win .btn, .theme-win .chip-btn, .theme-win .seg-btn, .theme-win .cp-btn,
+.theme-win .pchart-tab, .theme-win .fx-rt-chip, .theme-win .sb-clear,
+.theme-win .sig-cancel, .theme-win .ob-toggle, .theme-win .cp-reset,
+.theme-win .charts-full, .theme-win .add-opt, .theme-win .type-opt {
+  background: var(--face); color: var(--fg);
+  border: 1px solid; border-color: var(--bev-lt) var(--bev-dk) var(--bev-dk) var(--bev-lt);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+  font-family: var(--ui); font-weight: 400; text-decoration: none;
+}
+.theme-win .btn:hover, .theme-win .chip-btn:hover, .theme-win .seg-btn:hover,
+.theme-win .cp-btn:hover, .theme-win .pchart-tab:hover, .theme-win .add-opt:hover:not(:disabled),
+.theme-win .type-opt:hover, .theme-win .charts-full:hover {
+  background: var(--face); color: var(--fg); border-color: var(--bev-lt) var(--bev-dk) var(--bev-dk) var(--bev-lt);
+}
+/* нажато / активно — бевел выворачивается наизнанку */
+.theme-win .btn:active, .theme-win .chip-btn:active, .theme-win .seg-btn:active,
+.theme-win .cp-btn:active, .theme-win .chip-btn.on, .theme-win .seg-btn.active,
+.theme-win .cp-btn.on, .theme-win .pchart-tab.on, .theme-win .ob-toggle.on,
+.theme-win .fx-rt-chip.on, .theme-win .type-opt.on {
+  background: var(--face) !important; color: var(--fg) !important;
+  border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh) !important;
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+  font-weight: 700;
+}
+/* сдвиг содержимого на 1px — только на момент нажатия: у постоянного .on это
+   растило бы высоту кнопки и рвало выравнивание ряда в тулбаре */
+.theme-win .btn:active, .theme-win .chip-btn:active, .theme-win .seg-btn:active,
+.theme-win .cp-btn:active { text-indent: 1px; }
+/* выбранная вкладка/чип: вдавленный бевел + штриховка «активного» поля */
+.theme-win .seg-btn.active, .theme-win .chip-btn.on, .theme-win .cp-btn.on, .theme-win .pchart-tab.on {
+  background:
+    repeating-conic-gradient(var(--bev-hi) 0% 25%, var(--face) 0% 50%) 0 0 / 2px 2px !important;
+}
+.theme-win .btn:disabled, .theme-win .chip-btn:disabled, .theme-win .cp-btn[disabled] {
+  color: var(--bev-sh); opacity: 1;
+  text-shadow: 1px 1px 0 var(--bev-hi);       /* «выгравированный» серый — как в Win95 */
+}
+/* сброс фильтров: красной заливки в палитре 95-го нет — только красный текст */
+.theme-win .reset-btn:not(:disabled) { background: var(--face); color: var(--neg); font-weight: 700; }
+
+/* ── Поля ввода: вдавленные, всегда белые ────────────────────────────────── */
+.theme-win .search, .theme-win .add-input, .theme-win .num-input, .theme-win .date-input,
+.theme-win .fx-search, .theme-win .issuer-search, .theme-win .cp-date input,
+.theme-win .cp-date select, .theme-win input[type="text"], .theme-win input[type="number"],
+.theme-win input[type="date"], .theme-win select, .theme-win textarea {
+  background: var(--bg); color: var(--fg); font-family: var(--mono);
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+  padding: 3px 4px; letter-spacing: normal; text-transform: none;
+}
+.theme-win .search:focus, .theme-win .add-input:focus, .theme-win .num-input:focus,
+.theme-win .date-input:focus, .theme-win .issuer-search:focus {
+  border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh); outline: none;
+}
+.theme-win ::placeholder { color: var(--bev-sh); text-transform: none; letter-spacing: normal; }
+/* флажок: вдавленный белый квадрат с чёрной галкой */
+.theme-win .toggle input {
+  width: 13px; height: 13px; background: var(--bg);
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+}
+.theme-win .toggle input:checked { background: var(--bg); }
+.theme-win .toggle input:checked::after {
+  content: "✔"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: 700 10px/1 var(--ui); color: var(--fg);
+}
+/* фокус клавиатурой — пунктирный прямоугольник внутри контрола, не синий ореол */
+.theme-win button:focus-visible, .theme-win a:focus-visible,
+.theme-win select:focus-visible, .theme-win [role="button"]:focus-visible {
+  outline: 1px dotted var(--fg); outline-offset: -4px;
+}
+
+/* ── Хром окна: меню, тулбары, KPI ───────────────────────────────────────── */
+.theme-win .menubar, .theme-win .toolbar, .theme-win .addbar, .theme-win .fx-toolbar,
+.theme-win .kpis, .theme-win .statusbar, .theme-win .cp-ctl, .theme-win .pchart-ctl {
+  background: var(--face);
+}
+.theme-win .menubar {
+  height: 44px; flex: 0 0 44px; padding: 0 6px; gap: 10px;
+  border-bottom: 1px solid var(--bev-sh); box-shadow: 0 1px 0 var(--bev-hi);
+}
+.theme-win .wordmark { font-size: 13px; font-weight: 700; }
+.theme-win .tagline { font-size: 10px; }
+.theme-win .toolbar, .theme-win .addbar {
+  border-bottom: 1px solid var(--bev-sh); box-shadow: 0 1px 0 var(--bev-hi);
+  padding: 5px 6px; min-height: 0;
+}
+/* группы фильтров — вертикальный разделитель-бевел, как в тулбарах Office 97 */
+.theme-win .fgroup {
+  border-left: 1px solid var(--bev-sh); box-shadow: -1px 0 0 var(--bev-hi) inset;
+  padding-left: 8px; margin-left: 4px;
+}
+/* KPI-полоса = ряд group box'ов: каждый вдавлен в серебро */
+.theme-win .kpis { gap: 3px; padding: 3px; border-bottom: 1px solid var(--bev-sh); }
+.theme-win .kpi {
+  padding: 8px 12px; border-right: none; background: var(--face);
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+}
+.theme-win .kpi-val { font-family: var(--mono); font-size: 22px; letter-spacing: normal; }
+.theme-win .kpi-val.sm { font-size: 13px; }
+
+/* ── Тайтлбары панелей: градиент navy→голубой, белый жирный текст ────────── */
+.theme-win .drawer-head, .theme-win .modal-head, .theme-win .ob-head,
+.theme-win .charts-head, .theme-win .sb-pop-h {
+  background: linear-gradient(90deg, var(--title-a), var(--title-b));
+  color: var(--bev-hi); border-bottom: none; padding: 3px 3px 3px 6px;
+}
+.theme-win .drawer-head { gap: 0; }
+.theme-win .drawer-head h2, .theme-win .modal-title, .theme-win .ob-title,
+.theme-win .charts-title, .theme-win .sb-pop-h {
+  font-family: var(--ui); font-size: 12px; font-weight: 700; color: var(--bev-hi);
+  letter-spacing: normal; text-transform: none;
+}
+.theme-win .drawer-head .mono, .theme-win .dh-dates, .theme-win .sb-pop-sub {
+  color: #cfd8ff;
+}
+.theme-win .dh-offer { color: #9fe0ff; }
+/* ряд кнопок карточки уезжает из тайтлбара на серебряную полосу под ним */
+.theme-win .dh-actions {
+  background: var(--face); margin: 3px -3px -3px -6px; padding: 4px 6px;
+  border-top: 1px solid var(--bev-hi);
+}
+.theme-win .drawer-head { flex-direction: column-reverse; }
+/* «Закрыть» — квадратная кнопка [X] в правом углу тайтлбара */
+.theme-win .dh-close, .theme-win .ob-close, .theme-win .modal-head .btn:last-child {
+  min-width: 18px; height: 16px; padding: 0 4px; font-size: 10px; line-height: 14px;
+}
+
+/* ── Панели и всплывашки: серебро + жёсткая тень ─────────────────────────── */
+.theme-win .drawer, .theme-win .ob-panel, .theme-win .charts-panel, .theme-win .modal-card,
+.theme-win .filters-pop, .theme-win .issuer-pop, .theme-win .sb-pop, .theme-win .add-drop,
+.theme-win .type-drop, .theme-win .src-pop, .theme-win .cal-pop {
+  background: var(--face); color: var(--fg);
+  border: 1px solid; border-color: var(--bev-lt) var(--bev-dk) var(--bev-dk) var(--bev-lt);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh),
+              3px 3px 0 rgba(0,0,0,.35);
+  padding: 3px;
+}
+.theme-win .drawer-body, .theme-win .ob-panel-inner, .theme-win .modal-body,
+.theme-win .issuer-list, .theme-win .sb-list, .theme-win .add-drop {
+  background: var(--face);
+}
+/* диалоги эпохи затемнения не давали — оставляем лёгкое, иначе теряется фокус */
+.theme-win .overlay, .theme-win .modal-overlay { background: rgba(0,0,0,.25); }
+
+/* ── Таблица: вдавленный белый listview с кнопочной шапкой ───────────────── */
+.theme-win .table-wrap, .theme-win .fx-table-wrap, .theme-win .ia-table-wrap {
+  background: var(--bg);
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk);
+}
+/* белое поле данных задаём самой таблице: она встречается и вне .table-wrap
+   (списки в модалках, агрегаты по эмитентам) — там фон иначе остаётся серебряным */
+.theme-win .grid { font-family: var(--mono); background: var(--bg); }
+.theme-win .grid thead th {
+  background: var(--face); color: var(--fg); font-family: var(--ui); font-weight: 400;
+  padding: 4px 8px; border-bottom: 1px solid var(--bev-sh);
+  border-right: 1px solid var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+}
+.theme-win .grid thead th.sorted { font-weight: 700; }
+.theme-win .grid thead th:active {
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+}
+.theme-win .grid tbody td {
+  padding: 3px 8px; border-bottom: 1px solid #ededed; font-size: 12px;
+}
+.theme-win .grid th.star-col, .theme-win .grid td.star-col,
+.theme-win .grid thead th:nth-child(2), .theme-win .grid tbody td:nth-child(2) {
+  background: var(--bg);
+}
+.theme-win .grid thead th.star-col, .theme-win .grid thead th:nth-child(2) { background: var(--face); }
+.theme-win .grid tbody tr:hover td,
+.theme-win .grid tbody tr:hover td.star-col,
+.theme-win .grid tbody tr:hover td:nth-child(2) { background: var(--hover); }
+.theme-win .grid tbody tr:focus-visible { outline: 1px dotted var(--fg); outline-offset: -2px; }
+/* колонки в ch считаются по Lucida Console — она уже Martian Mono, добавляем запас */
+.theme-win .grid.cols-fixed col { width: calc(var(--cw, 8ch) * 1.12 + 24px); }
+/* тик по WS: в 95-м мигали инверсией выделения, не заливкой цветом */
+.theme-win .grid tbody tr.flash td { animation: win-flash .5s steps(1, end); }
+@keyframes win-flash { 0%, 99% { background: var(--inv-bg); color: var(--inv-fg); } }
+.theme-win .badge, .theme-win .badge-stale, .theme-win .badge-thin, .theme-win .fx-cls,
+.theme-win .cp-rating, .theme-win .sb-tag {
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  font-family: var(--ui); letter-spacing: normal;
+}
+
+/* ── Статусбар: ряд вдавленных полей, как у окна проводника ──────────────── */
+.theme-win .statusbar {
+  height: 24px; gap: 2px; padding: 2px; border-top: 1px solid var(--bev-hi);
+  box-shadow: inset 0 1px 0 var(--bev-hi);
+}
+.theme-win .status-cell {
+  padding: 0 6px; height: 100%; font-size: 11px; text-transform: none; color: var(--fg);
+  border-right: none;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+}
+.theme-win .statusbar .status-cell { height: 20px; }
+.theme-win .kpi-cell-val, .theme-win .counter, .theme-win .meta-v { font-family: var(--mono); }
+/* точки-переключатели темы — квадратные образцы цвета в рамке */
+.theme-win .theme-dot {
+  width: 14px; height: 14px;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+}
+.theme-win .theme-dot.on { box-shadow: 0 0 0 1px var(--fg); }
+.theme-win .src-dot { box-shadow: none; border: 1px solid var(--bev-sh); }
+@media (max-width: 1100px) { .theme-win .statusbar { height: auto; min-height: 24px; } }
+
+/* ── Ссылки: синие подчёркнутые, посещённые — фиолетовые ─────────────────── */
+.theme-win a, .theme-win .link { color: #0000ee; text-decoration: underline; }
+.theme-win a:visited { color: #551a8b; }
+.theme-win a.btn, .theme-win a.seg-btn, .theme-win a.chip-btn, .theme-win a.charts-full { color: var(--fg); }
+
+/* ── Скроллбары: дизеринг в дорожке + выпуклый ползунок и кнопки ─────────── */
+.theme-win ::-webkit-scrollbar { width: 16px; height: 16px; }
+.theme-win ::-webkit-scrollbar-track {
+  background: repeating-conic-gradient(var(--bev-hi) 0% 25%, var(--face) 0% 50%) 0 0 / 2px 2px;
+}
+.theme-win ::-webkit-scrollbar-thumb {
+  background: var(--face);
+  border: 1px solid; border-color: var(--bev-lt) var(--bev-dk) var(--bev-dk) var(--bev-lt);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+}
+.theme-win ::-webkit-scrollbar-thumb:hover { background: var(--face); }
+.theme-win ::-webkit-scrollbar-button:single-button {
+  display: block; height: 16px; width: 16px; background: var(--face);
+  border: 1px solid; border-color: var(--bev-lt) var(--bev-dk) var(--bev-dk) var(--bev-lt);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+}
+.theme-win ::-webkit-scrollbar-corner { background: var(--face); }
+.theme-win ::selection { background: var(--inv-bg); color: var(--inv-fg); }
+
+/* ── Мелочи, добивающие эпоху ────────────────────────────────────────────── */
+.theme-win .skel { background: var(--face); }
+.theme-win .skel::after { animation: none; }
+.theme-win .loading { text-transform: none; letter-spacing: normal; font-size: 12px; }
+/* стакан и лента сделок — тоже клиентская область: белое поле во вдавленной рамке */
+.theme-win .ob-scroll, .theme-win .tape-scroll {
+  background: var(--bg); margin: 0 3px;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk);
+}
+.theme-win .ob-table { background: var(--bg); font-family: var(--mono); }
+.theme-win .ob-table thead th {
+  background: var(--face); font-family: var(--ui); font-weight: 400;
+  border-right: 1px solid var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+}
+.theme-win .ob-status, .theme-win .ob-note, .theme-win .ob-warn, .theme-win .ob-ctl { padding-left: 6px; }
+.theme-win .cp-chart, .theme-win .cp-dist, .theme-win .pchart-empty {
+  background: var(--bg);
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk);
+}
+.theme-win .chart-page { background: var(--face); }
+.theme-win .status-page, .theme-win .issuer-agg { background: var(--face); }
