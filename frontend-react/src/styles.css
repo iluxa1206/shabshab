@@ -1506,10 +1506,13 @@ body.col-resizing * { cursor: col-resize !important; }
 .calc-row-mine td { font-weight: 700; background: var(--line-2); }
 
 /* ---- Сигналы ---- */
-.sig-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0;
-            flex: 1; min-height: 0; overflow: hidden; }
+/* Три колонки: фильтры стакана │ фильтры крупных сделок │ лента. Два вида
+   сигналов живут рядом, а не под переключателем — их сравнивают глазами. */
+.sig-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 340px;
+            gap: 0; flex: 1; min-height: 0; overflow: hidden; }
 .sig-col { padding: 20px 24px; overflow-y: auto; min-width: 0; }
-.sig-feed-col { border-left: 1px solid var(--line); background: var(--hover); }
+.sig-col + .sig-col { border-left: 1px solid var(--line); }
+.sig-feed-col { background: var(--hover); }
 .sig-head { display: flex; align-items: baseline; gap: 12px; font-size: 13px; font-weight: 800;
             text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 16px; }
 .sig-head-sub { font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0;
@@ -1632,9 +1635,14 @@ body.col-resizing * { cursor: col-resize !important; }
 .sig-toast-x { position: absolute; top: 0; right: 0; background: transparent; border: 0;
                color: var(--mut); cursor: pointer; font-size: 12px; padding: 9px 11px; }
 
+/* Узко для трёх колонок — лента уходит под формы, оставляя им половины */
+@media (max-width: 1500px) {
+  .sig-wrap { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .sig-feed-col { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+}
 @media (max-width: 1100px) {
   .sig-wrap { grid-template-columns: minmax(0, 1fr); }
-  .sig-feed-col { border-left: 0; border-top: 1px solid var(--line); }
+  .sig-col + .sig-col { border-left: 0; border-top: 1px solid var(--line); }
 }
 .sig-check-line { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
                   cursor: pointer; }
@@ -1703,8 +1711,6 @@ body.col-resizing * { cursor: col-resize !important; }
 .sb-money { color: var(--mut); }
 /* рыночное событие, а не фильтр — отдельный цвет, чтобы не путать с сигналами */
 .sb-block { color: var(--accent); }
-/* выбор типа создаваемого сигнала — стоит над формой, отбивка как у формы */
-.sig-kind { margin-top: 14px; }
 .sb-delta { font-family: var(--mono); font-size: 10.5px; }
 
 /* уровни стакана, из которых собран объём сигнала */

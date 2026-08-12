@@ -78,9 +78,14 @@ async def create_filter(body: SignalCreate, user: dict = Depends(require_user)):
 
 
 @router.delete("/all", tags=["Signals"])
-async def delete_all_filters(user: dict = Depends(require_user)):
-    """Снести все фильтры пользователя разом (вместе с их событиями в ленте)."""
-    return {"deleted": signals.delete_all(user["email"])}
+async def delete_all_filters(kind: Optional[str] = None,
+                             user: dict = Depends(require_user)):
+    """Снести все фильтры пользователя разом (вместе с их событиями в ленте).
+    kind=book|block — только свой вид; без него сносится всё."""
+    try:
+        return {"deleted": signals.delete_all(user["email"], kind=kind)}
+    except signals.FilterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/preview", tags=["Signals"])

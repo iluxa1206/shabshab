@@ -469,8 +469,9 @@ export const patchSignalFilter = (id, json) =>
   request(`/api/signals/${id}`, { method: "PATCH", json });
 export const deleteSignalFilter = (id) =>
   request(`/api/signals/${id}`, { method: "DELETE" });
-export const deleteAllSignalFilters = () =>
-  request("/api/signals/all", { method: "DELETE" });
+// kind: book | block — сносим только свой вид, вторая колонка не страдает
+export const deleteAllSignalFilters = (kind) =>
+  request("/api/signals/all" + (kind ? `?kind=${kind}` : ""), { method: "DELETE" });
 export const previewSignalFilter = (json) =>
   request("/api/signals/preview", { method: "POST", json });
 // у блок-фильтра «набора сейчас» нет — превью считает сегодняшние сделки

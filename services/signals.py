@@ -168,18 +168,26 @@ def delete(user_email: str, fid: int) -> bool:
         return cur.rowcount > 0
 
 
-def delete_all(user_email: str) -> int:
-    """Сносит ВСЕ фильтры пользователя разом — вместе с их состоянием и их
-    событиями в ленте, ровно как поштучный delete()."""
+def delete_all(user_email: str, kind: Optional[str] = None) -> int:
+    """Сносит фильтры пользователя разом — вместе с их состоянием и их
+    событиями в ленте, ровно как поштучный delete().
+
+    kind ограничивает вид (book|block): колонки в UI сносятся раздельно,
+    «удалить все» в одной не должно тронуть вторую."""
+    kind = _check_kind(kind) if kind else None
     with _lock, _connect() as c:
-        ids = [r["id"] for r in c.execute(
-            "SELECT id FROM signal_filters WHERE user_email=?", (user_email,)).fetchall()]
+        q = "SELECT id FROM signal_filters WHERE user_email=?"
+        args = [user_email]
+        if kind:
+            q += " AND COALESCE(kind,'book')=?"
+            args.append(kind)
+        ids = [r["id"] for r in c.execute(q, args).fetchall()]
         if not ids:
             return 0
         marks = ",".join("?" * len(ids))
         c.execute(f"DELETE FROM signal_state WHERE filter_id IN ({marks})", ids)
         c.execute(f"DELETE FROM signal_events WHERE filter_id IN ({marks})", ids)
-        c.execute("DELETE FROM signal_filters WHERE user_email=?", (user_email,))
+        c.execute(f"DELETE FROM signal_filters WHERE id IN ({marks})", ids)
     return len(ids)
 
 

@@ -600,10 +600,41 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
   );
 }
 
+/** Колонка одного вида сигналов: список фильтров + своя форма под ним.
+ *  Виды не переключаются табом — они стоят рядом, потому что настраивают их
+ *  вместе (порог блока смотрят на условия стакана и наоборот). */
+function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loading,
+                        busy, onToggle, onEdit, onDelete, onCancel, onSubmit,
+                        onDeleteAll }) {
+  return (
+    <div className="sig-col">
+      <div className="sig-head">
+        {title}
+        <span className="sig-head-sub">{hint}</span>
+        {rows.length > 0 && (
+          <button className="btn sig-clear"
+            onClick={() => onDeleteAll(rows.length)}>Удалить все</button>
+        )}
+      </div>
+
+      {loading ? <div className="muted">Загрузка…</div>
+        : rows.length === 0
+          ? <div className="sig-empty">{empty}</div>
+          : rows.map((f) => (
+              <FilterRow key={f.id} f={f} editing={editing?.id === f.id}
+                onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />
+            ))}
+
+      {/* key переинициализирует поля при смене правимого фильтра */}
+      <Form key={editing?.id ?? formKey} edit={editing} busy={busy}
+        onCancel={onCancel} onSubmit={onSubmit} />
+    </div>
+  );
+}
+
 export default function SignalsModule() {
   const qc = useQueryClient();
   const [editId, setEditId] = useState(null);
-  const [newKind, setNewKind] = useState("book");   // тип создаваемого фильтра
   const filters = useQuery({ queryKey: ["signal-filters"], queryFn: fetchSignalFilters });
   const events = useQuery({
     queryKey: ["signal-events"], queryFn: () => fetchSignalEvents(100), refetchInterval: 30000,
@@ -655,63 +686,42 @@ export default function SignalsModule() {
   const rows = filters.data?.filters || [];
   const feed = events.data?.events || [];
   const editing = rows.find((f) => f.id === editId) || null;
+  // два вида сигналов — две колонки; правка живёт в колонке своего вида
+  const bookRows = rows.filter((f) => f.kind !== "block");
+  const blockRows = rows.filter((f) => f.kind === "block");
+
+  const colProps = (kind) => ({
+    rows: kind === "block" ? blockRows : bookRows,
+    editing: editing && (editing.kind === "block") === (kind === "block") ? editing : null,
+    loading: filters.isLoading,
+    busy: editing ? save.isPending : create.isPending,
+    onToggle: (x) => patch.mutate({ id: x.id, body: { enabled: !x.enabled } }),
+    onEdit: (x) => setEditId(editId === x.id ? null : x.id),
+    onDelete: (id) => { if (editId === id) setEditId(null); del.mutate(id); },
+    onCancel: () => setEditId(null),
+    onSubmit: (body) => (editing && (editing.kind === "block") === (kind === "block")
+      ? save.mutateAsync({ id: editing.id, body })
+      : create.mutateAsync(body)),
+    onDeleteAll: (n) => {
+      if (window.confirm(`Удалить все фильтры этого вида (${n})? Их события в ленте тоже уйдут.`))
+        delAll.mutate(kind);
+    },
+  });
 
   return (
     <div className="sig-wrap">
-      <div className="sig-col">
-        <div className="sig-head">
-          Сигналы
-          <span className="sig-head-sub">
-            бот проверяет рынок в торговые часы и показывает бумаги, попавшие под условия</span>
-          {rows.length > 0 && (
-            <button className="btn sig-clear"
-              onClick={() => {
-                if (window.confirm(`Удалить все фильтры (${rows.length})? Их события в ленте тоже уйдут.`))
-                  delAll.mutate();
-              }}>Удалить все</button>
-          )}
-        </div>
+      <FilterColumn
+        title="Сигналы стакана"
+        hint="бот проверяет рынок в торговые часы и показывает бумаги, попавшие под условия"
+        empty="Сигналов по стакану нет. Опиши условия — при совпадении придёт
+               всплывающее окно, звук и запись в ленту."
+        Form={FilterForm} formKey="new" {...colProps("book")} />
 
-        {filters.isLoading ? <div className="muted">Загрузка…</div>
-          : rows.length === 0
-            ? <div className="sig-empty">Сигналов нет. Опиши условия — при совпадении
-                придёт всплывающее окно, звук и запись в ленту справа.</div>
-            : rows.map((f) => (
-                <FilterRow key={f.id} f={f} editing={editId === f.id}
-                  onToggle={(x) => patch.mutate({ id: x.id, body: { enabled: !x.enabled } })}
-                  onEdit={(x) => setEditId(editId === x.id ? null : x.id)}
-                  onDelete={(id) => { if (editId === id) setEditId(null); del.mutate(id); }} />
-              ))}
-
-        {/* Тип нового фильтра: условия стакана — это состояние рынка, крупная
-            сделка — факт в ленте. Поля общие только по отбору бумаг. */}
-        {!editing && (
-          <div className="sig-field sig-kind">
-            <label className="sig-label">Тип сигнала</label>
-            <div className="sig-seg">
-              <button type="button" className={newKind === "book" ? "on" : ""}
-                onClick={() => setNewKind("book")}>Стакан</button>
-              <button type="button" className={newKind === "block" ? "on" : ""}
-                onClick={() => setNewKind("block")}>Крупная сделка</button>
-            </div>
-          </div>
-        )}
-
-        {/* key переинициализирует поля при смене правимого фильтра */}
-        {(editing ? editing.kind === "block" : newKind === "block")
-          ? <BlockForm key={editing?.id ?? "new-block"} edit={editing}
-              busy={editing ? save.isPending : create.isPending}
-              onCancel={() => setEditId(null)}
-              onSubmit={(body) => (editing
-                ? save.mutateAsync({ id: editing.id, body })
-                : create.mutateAsync(body))} />
-          : <FilterForm key={editing?.id ?? "new"} edit={editing}
-              busy={editing ? save.isPending : create.isPending}
-              onCancel={() => setEditId(null)}
-              onSubmit={(body) => (editing
-                ? save.mutateAsync({ id: editing.id, body })
-                : create.mutateAsync(body))} />}
-      </div>
+      <FilterColumn
+        title="Крупные сделки"
+        hint="звонит на факт сделки в ленте, включая адресные — в стакане их не видно"
+        empty="Фильтров крупных сделок нет — звонит умолчание: от 100 млн ₽ и только флоатеры."
+        Form={BlockForm} formKey="new-block" {...colProps("block")} />
 
       <div className="sig-col sig-feed-col">
         <div className="sig-head">

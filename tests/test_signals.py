@@ -413,3 +413,15 @@ def test_single_mode_no_spread_bounds_keeps_bond_without_slope():
 def test_money_mode_validated():
     with pytest.raises(core.FilterError):
         core.normalize_params({"min_money_rub": 1e6, "money_mode": "мусор"})
+
+
+def test_delete_all_by_kind_keeps_other_column():
+    """«Удалить все» в одной колонке UI не должно снести вторую."""
+    book = signals.create(USER, "стакан", {"side": "ask", "spread_min": 100})
+    blk = signals.create(USER, "блоки", {"min_value_rub": 5_000_000}, kind="block")
+    assert signals.delete_all(USER, kind="block") == 1
+    left = signals.list_for_user(USER)
+    assert [f["id"] for f in left] == [book["id"]]
+    assert signals.get(blk["id"]) is None
+    assert signals.delete_all(USER, kind="book") == 1
+    assert signals.list_for_user(USER) == []
