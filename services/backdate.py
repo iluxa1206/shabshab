@@ -282,6 +282,29 @@ def _accrue_to_date(accint_fact: float, trade_date: date, d: date, periods,
     sched = _accrued_from_periods(periods, d, face)
     if sched is not None:
         return round(sched, 4), note + " (по графику купонов: в промежутке выплата)"
+    if p_d is not None:
+        # период сменился, а купон НОВОГО периода ещё не опубликован (value=None,
+        # обычный случай флоатера в день выплаты). Оставить факт нельзя: это НКД
+        # СТАРОГО периода почти в полный купон — dirty завышался на купон, и
+        # ex-coupon ветка accrue_to_settle уже не срабатывала (calc и settle
+        # лежат в одном новом периоде) → YTM проваливался в ноль
+        # (ФосАгро П2 @ 2026-08-09: 11.74₽ вместо ~0.4₽, R-spread −1453bps).
+        s2 = p_d[0]
+        k = (d - s2).days
+        if k <= 0:
+            return 0.0, note + " (день выплаты купона: новый период начался, НКД обнулён)"
+        if p_t is not None:
+            sc, ec, vc = p_t
+            if vc is not None:
+                daily = float(vc) / ((ec - sc).days or 1)
+            elif (trade_date - sc).days > 0:
+                daily = accint_fact / (trade_date - sc).days
+            else:
+                daily = None
+            if daily is not None:
+                return round(daily * k, 4), note + (
+                    " (в промежутке выплата, новый купон не опубликован — "
+                    "начислено по дневной ставке прошлого купона)")
     return accint_fact, ("НКД не удалось доначислить до даты расчёта — взят факт "
                          f"на {trade_date.isoformat()}, занижен на {gap} дн")
 

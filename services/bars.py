@@ -214,7 +214,12 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #   1    — прошлые дни честным as-of (asof_bar_metrics), сегодня живой моделью
 #   2    — realized-гибрид якорится на первую архивную кривую (скачок на
 #          границе архива котировок убран; HONEST_ENGINE_VERSION=4)
-BARS_METRICS_VERSION = 2
+#   3    — 2026-08-12: бары ВЫХОДНОЙ СЕССИИ в день выплаты купона считались с
+#          НКД старого периода почти в полный купон (history-строки за выходной
+#          нет, _accrue_to_date при смене периода с неопубликованным купоном
+#          оставлял факт пятницы) → dirty завышен на купон, спред улетал в минус
+#          на сотни bps. 495 бумаг / 3152 бара в окне 95 дней
+BARS_METRICS_VERSION = 3
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",

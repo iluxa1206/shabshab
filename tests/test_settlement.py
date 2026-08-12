@@ -216,3 +216,23 @@ def test_irr_matches_analytic_effective_rate(keyrate_curve, calc_date, flat_inde
     y = xirr_yield_pct(dirty_price_rub(bond.face_value, 100.0, 0.0), cfs, calc_date)
     eff = ((1 + (15.0 + margin / 100.0) / 100 / 4) ** 4 - 1) * 100
     assert y == pytest.approx(eff, abs=0.02), f"IRR={y:.4f}% != аналитика {eff:.4f}%"
+
+
+def test_asof_accrual_resets_on_coupon_payment_date():
+    """As-of на день выплаты купона (выходной): факт биржи — с последних торгов,
+    ещё СТАРОГО периода почти в полный купон. Новый купон флоатера не опубликован,
+    поэтому график НКД не даёт — раньше факт оставался как есть и dirty был завышен
+    на целый купон (ФосАгро П2 @ 2026-08-09: 11.74₽, YTM 0.29%, R-spread −1453bps).
+    Купон 09.08 → на 09.08 НКД = 0, на 10.08 = один день нового периода."""
+    from datetime import date as _d
+    from services.backdate import _accrue_to_date
+    periods = [(_d(2026, 5, 9), _d(2026, 8, 9), 34.11),
+               (_d(2026, 8, 9), _d(2026, 11, 9), None)]
+
+    acc, note = _accrue_to_date(11.74, _d(2026, 8, 7), _d(2026, 8, 9), periods, 1000.0)
+    assert acc == 0.0, "в день выплаты НКД нового периода = 0"
+    assert "не удалось" not in (note or "")
+
+    acc2, _ = _accrue_to_date(11.74, _d(2026, 8, 7), _d(2026, 8, 10), periods, 1000.0)
+    daily = 34.11 / (_d(2026, 8, 9) - _d(2026, 5, 9)).days
+    assert acc2 == pytest.approx(daily, abs=1e-3), "один день нового периода"
