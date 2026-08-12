@@ -441,7 +441,6 @@ td.px-stale { color: var(--mut); }
 .ia-empty { color: var(--mut); padding: 40px; text-align: center; }
 .ia-table-wrap { overflow-x: auto; }
 .ia-table th { user-select: none; }
-.ia-row:hover td { background: var(--line-2); }
 .ia-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .ia-flabel { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.1em; margin-right: 4px; }
 td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }

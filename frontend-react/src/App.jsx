@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { applyVolume, yIdxAt } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
@@ -16,7 +16,6 @@ import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
-import IssuerAggregates from "./components/IssuerAggregates.jsx";
 import FixedModule from "./components/FixedModule.jsx";
 import CalcModule from "./components/CalcModule.jsx";
 import EuroStub from "./components/EuroStub.jsx";
@@ -642,13 +641,7 @@ function Dashboard() {
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
 
-  const navigate = useNavigate();
   const onFloaters = useLocation().pathname.startsWith("/floaters");
-  // из агрегатов эмитента → фильтр «Флоатеры» по этому эмитенту
-  const pickIssuer = useCallback((name) => {
-    setEmittersSel([name]);
-    navigate("/floaters");
-  }, [navigate]);
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
@@ -730,7 +723,11 @@ function Dashboard() {
       <Routes>
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
-        <Route path="/issuers" element={<IssuerAggregates bonds={bonds} onPickIssuer={pickIssuer} />} />
+        {/* Вкладка «Эмитенты» снята: агрегаты повторяли фильтр по эмитенту в
+            «Списке», а разрез по медианам спреда даёт «Аналитика» (распределение
+            R-spread по эмитентам). Старый путь ведёт в Список — на вкладку могли
+            остаться закладки. */}
+        <Route path="/issuers" element={<Navigate to="/floaters" replace />} />
         <Route path="/reference" element={<Catalog user={user} />} />
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/calc" element={<CalcModule />} />
