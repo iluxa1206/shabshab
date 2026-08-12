@@ -143,8 +143,9 @@ export const COLS = [
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   // Два этажа: погашение с годами до него, под ним — дата оферты (если есть) с
   // годами до неё, мелким и серым. Дата ГОРИЗОНТА ПРАЙСИНГА (той, к которой
-  // посчитан спред строки) — СИНИМ, но только когда выбор реально был: без
-  // оферты и колла горизонт один, и подсветка каждой строки ничего не значит.
+  // посчитан спред строки) помечена СИНИМИ ГОДАМИ в скобках — но только когда
+  // выбор реально был: без оферты и колла горизонт один, и подсветка каждой
+  // строки ничего не сообщает.
   // w=17: «p 10.10.2029 (4.2)» — ширина по МАКСИМУМУ формата, иначе появление
   // маркера или второго этажа у одной бумаги дёргает колонку.
   { key: "maturity_date", label: "MATURITY", sub: "(ЛЕТ) · ОФЕРТА", w: 17,
@@ -153,15 +154,21 @@ export const COLS = [
       const hasChoice = !!b.offer_date || b.has_call === true;
       return (
         <td className="num mat-cell" key="maturity_date">
-          <div className={"mat-main" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
+          <div className="mat-main">
             <OfferMarks b={b} />{fmt.date(b.maturity_date) ?? <D />}
-            {yrsTo(b.maturity_date) != null && <span className="mat-yrs"> ({yrsTo(b.maturity_date)})</span>}
+            {yrsTo(b.maturity_date) != null && (
+              <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
+                {" (" + yrsTo(b.maturity_date) + ")"}</span>
+            )}
           </div>
           {b.offer_date && (
-            <div className={"mat-offer" + (hz === "put" || hz === "call" ? " mat-hz" : "")}
+            <div className="mat-offer"
               title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
               {fmt.date(b.offer_date)}
-              {yrsTo(b.offer_date) != null && <span className="mat-yrs"> ({yrsTo(b.offer_date)})</span>}
+              {yrsTo(b.offer_date) != null && (
+                <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
+                  {" (" + yrsTo(b.offer_date) + ")"}</span>
+              )}
             </div>
           )}
         </td>
