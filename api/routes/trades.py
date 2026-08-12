@@ -38,8 +38,14 @@ def _rating_isins(labels: dict, isins: Optional[list[str]],
     want = {r.strip().upper() for r in (rating or []) if r and r.strip()}
     if not want:
         return isins
+    nr = "NR" in want          # NR — «без рейтинга», отдельный бакет, как в СПИСКЕ
     pool = isins if isins is not None else labels.keys()
-    return [i for i in pool if ((labels.get(i) or {}).get("rating") or "").upper() in want]
+    out = []
+    for i in pool:
+        rt = ((labels.get(i) or {}).get("rating") or "").strip().upper()
+        if (rt in want) or (nr and not rt):
+            out.append(i)
+    return out
 
 
 def _ttm_isins(labels: dict, isins: Optional[list[str]],
@@ -119,6 +125,8 @@ async def tape(
     scope: str = Query("market", description="market | universe | float | fixed"),
     issuer: Optional[list[str]] = Query(None, description="эмитенты (можно повторять параметр)"),
     isin: Optional[str] = Query(None, description="одна бумага"),
+    isins: Optional[list[str]] = Query(None, description="набор бумаг (избранное), можно повторять"),
+    max_value: Optional[float] = Query(None, ge=0, description="порог суммы сделки до, ₽"),
     spread_min: Optional[float] = Query(None, description="R-spread сделки от, бп"),
     spread_max: Optional[float] = Query(None, description="R-spread сделки до, бп"),
     ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
@@ -149,9 +157,13 @@ async def tape(
     # секундами (замер на проде: до 2.2с) — в event loop это встало бы ВСЁ
     # приложение, включая WS-пуши. Отсюда и ниже — только через to_thread.
     labels = await asyncio.to_thread(_labels)
+    watch = [i.strip().upper() for i in (isins or []) if i and i.strip()]
     isins: Optional[list[str]] = None
     if isin:
         isins = [isin]
+    elif watch:
+        # избранное: набор ISIN приходит с фронта (watchlist живёт в браузере)
+        isins = watch
     elif issuer:
         want = {e for e in issuer if e}
         isins = [k for k, v in labels.items() if (v.get("emitter") or "") in want]
@@ -186,13 +198,13 @@ async def tape(
     rows, summary = await asyncio.gather(
         asyncio.to_thread(tape_svc.read_tape, frm=frm, min_value=min_value, side=side,
                           market=market, boards=board, isins=isins, limit=limit,
-                          y_min=spread_min, y_max=spread_max,
+                          y_min=spread_min, y_max=spread_max, max_value=max_value,
                           before_ts=before_ts, before_id=before_id),
         # Итоги — по ВСЕМУ окну, поэтому считаются один раз, на первой странице:
         # догрузка следующей порции их не меняет, а стоит агрегат секунд.
         asyncio.to_thread(tape_svc.tape_stats, frm=frm, min_value=min_value, side=side,
                           market=market, boards=board, isins=isins,
-                          y_min=spread_min, y_max=spread_max)
+                          y_min=spread_min, y_max=spread_max, max_value=max_value)
         if not before_ts else asyncio.sleep(0, result={}))
     moex = await asyncio.to_thread(_moex_names)
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
@@ -248,9 +260,11 @@ async def ratings():
     counts: dict[str, int] = {}
     for v in (await asyncio.to_thread(_labels)).values():
         rt = (v.get("rating") or "").strip().upper()
-        if rt:
-            counts[rt] = counts.get(rt, 0) + 1
-    order = {r: i for i, r in enumerate(("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"))}
+        # NR — отдельный бакет «рейтинга нет», как в МОНИТОРЕ: без него такие
+        # бумаги нельзя ни выбрать, ни понять, сколько их
+        counts[rt or "NR"] = counts.get(rt or "NR", 0) + 1
+    order = {r: i for i, r in enumerate(
+        ("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D", "NR"))}
     items = [{"name": k, "count": v} for k, v in counts.items()]
     items.sort(key=lambda x: (order.get(x["name"], 99), x["name"]))
     return {"ratings": items}

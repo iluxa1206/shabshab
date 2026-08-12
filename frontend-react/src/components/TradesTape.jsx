@@ -92,6 +92,11 @@ const readLS = (k, fallback) => {
   catch { return fallback; }
 };
 const savedFilters = () => readLS(LS_FILTERS, {}) || {};
+// поля объёма — в млн ₽; в состоянии и в API по-прежнему рубли
+const mlnToRub = (v) => {
+  const n = parseFloat(String(v).replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1e6) : 0;
+};
 const pick = (v, fallback) => (v === undefined || v === null ? fallback : v);
 
 /** ISIN с копированием по клику: в ленте он нужен, чтобы утащить бумагу в
@@ -155,6 +160,11 @@ export default function TradesTape() {
   const [cls, setCls] = useState(() => pick(savedFilters().cls, []));
   const [hideSub, setHideSub] = useState(() => pick(savedFilters().hideSub, false));
   const [hideAmort, setHideAmort] = useState(() => pick(savedFilters().hideAmort, false));
+  const [maxValue, setMaxValue] = useState(() => pick(savedFilters().maxValue, 0));
+  // Избранное общее со СПИСКОМ: watchlist живёт в localStorage под ключом
+  // "watch", своей копии у ленты нет — звезда там и здесь означает одно и то же.
+  const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
+  const watch = useMemo(() => readLS("watch", []) || [], []);
   const [ratingOpts, setRatingOpts] = useState([]);
   const [pin, setPin] = useState(() => pick(savedFilters().pin, null));
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
@@ -196,9 +206,11 @@ export default function TradesTape() {
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       minValue, side, market, emitters, scope, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort }));
+      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
+      maxValue, onlyWatch }));
   }, [minValue, side, market, emitters, scope, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort]);
+      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
+      maxValue, onlyWatch]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
   useEffect(() => {
@@ -220,12 +232,13 @@ export default function TradesTape() {
                           isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-                          hideSubord: hideSub, hideAmort }, ac.signal)
+                          hideSubord: hideSub, hideAmort, maxValue,
+                          isins: onlyWatch ? watch : undefined }, ac.signal)
         .then((d) => { setData(d); setPages([]); setMore(!!d.has_more); });
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [minValue, side, market, daysView, emitters, isinReq, scope,
+  }, [minValue, maxValue, side, market, daysView, emitters, isinReq, scope, onlyWatch,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
@@ -296,7 +309,9 @@ export default function TradesTape() {
         days: MAX_DAYS, minValue, side, market, issuer: emitters, isin: isinReq,
         scope, limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
         ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-        hideSubord: hideSub, hideAmort, beforeTs: last.ts, beforeId: last.trade_id });
+        hideSubord: hideSub, hideAmort, maxValue,
+        isins: onlyWatch ? watch : undefined,
+        beforeTs: last.ts, beforeId: last.trade_id });
       setPages((ps) => [...ps, d.trades || []]);
       setMore(!!d.has_more);
     } catch (e) {
@@ -309,13 +324,15 @@ export default function TradesTape() {
   // Счётчик на воронке — сколько условий включено ВСЕГО (как в СПИСКЕ), в пару
   // к кнопке сброса: иначе спрятанный в меню фильтр молча режет ленту.
   const activeFilters = bases.length + cls.length + emitters.length + ratings.length
-    + (hideSub ? 1 : 0) + (hideAmort ? 1 : 0)
+    + (hideSub ? 1 : 0) + (hideAmort ? 1 : 0) + (onlyWatch ? 1 : 0) + (side ? 1 : 0)
+    + (market ? 1 : 0) + (minValue ? 1 : 0) + (maxValue ? 1 : 0)
     + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0);
 
   const resetFilters = () => {
     setSpreadMin(""); setSpreadMax(""); setTtmMin(""); setTtmMax("");
     setRatings([]); setBases([]); setCls([]); setEmitters([]);
-    setHideSub(false); setHideAmort(false);
+    setHideSub(false); setHideAmort(false); setOnlyWatch(false);
+    setSide(null); setMarket(null); setMinValue(0); setMaxValue(0);
   };
 
   // ── колонки: порядок, ширина, сортировка ─────────────────────────────────
@@ -379,62 +396,109 @@ export default function TradesTape() {
       <div className="ia-head">
         <h2 className="ia-title">Лента сделок</h2>
         <div className="ia-filters">
-          {/* Порядок как в СПИСКЕ: сперва поиск, следом воронка со всем
-              «какие бумаги», дальше числовые условия сделки. */}
+          {/* Группы и порядок — как в тулбаре МОНИТОРА: поиск, избранное,
+              воронка со сбросом, рейтинги, объём, срок, спред. */}
           <input className="tape-search" placeholder="бумага / ISIN…" value={q}
             onChange={(e) => setQ(e.target.value)} />
-          {/* та же воронка, что в СПИСКЕ: база, тип выпуска, класс, эмитент,
-              плюс режим торгов — он тоже про «какие сделки», а не про числа */}
-          <FiltersMenu
-            basesSel={bases} toggleBase={(b) => setBases((a) => toggle(a, b))}
-            clearBases={() => setBases([])}
-            issuers={issuers} emittersSel={emitters}
-            toggleEmitter={(n) => setEmitters((a) => toggle(a, n))}
-            clearEmitters={() => setEmitters([])}
-            hideSub={hideSub} setHideSub={setHideSub}
-            hideAmort={hideAmort} setHideAmort={setHideAmort}
-            clsSel={cls} toggleCls={(c) => setCls((a) => toggle(a, c))}
-            activeCount={activeFilters}
-            extra={(
-              <div className="fp-sec">
-                <div className="fp-head"><span className="fg-lbl">РЕЖИМ ТОРГОВ</span></div>
-                <div className="fp-chips">
-                  {MARKETS.map(([v, label]) => (
-                    <button key={label} className={"chip-btn" + (market === v ? " on" : "")}
-                      onClick={() => setMarket(v)}
-                      title={v === "ndm" ? "адресные режимы: РПС, РПС с ЦК, размещения, выкупы"
-                        : v === "bonds" ? "безадресный стакан" : "все режимы"}>{label}</button>
-                  ))}
-                  {market === "ndm" && (
-                    <button className={"chip-btn" + (byDay ? " on" : "")}
-                      onClick={() => setByDay((v) => !v)}
-                      title="агрегат бумага/режим/день из ISS. За дни до старта поштучного сбора это ЕДИНСТВЕННЫЙ след адресных сделок">
-                      по дням
-                    </button>
-                  )}
-                </div>
-              </div>
-            )} />
-          {activeFilters > 0 && (
-            <button className="btn" onClick={resetFilters}>сбросить {activeFilters}</button>
-          )}
-          <span className="ia-flabel">Объём от, млн ₽</span>
-          <input className="tape-nin" type="number" step="0.5" min="0" placeholder="все"
-            value={minValue ? String(minValue / 1e6) : ""}
-            onChange={(e) => {
-              const v = parseFloat(String(e.target.value).replace(",", "."));
-              setMinValue(Number.isFinite(v) && v > 0 ? Math.round(v * 1e6) : 0);
-            }} />
-          {!daysView && (
-            <span className="seg" role="tablist" aria-label="Сторона">
-              {SIDES.map(([v, label]) => (
-                <button key={label} className={"seg-btn" + (side === v ? " active" : "")}
-                  onClick={() => setSide(v)}
-                  title="агрессор — сторона, забравшая заявку; у адресных сделок его нет">
-                  {label}</button>
-              ))}
-            </span>
-          )}
+
+          <div className="fgroup">
+            <button className={"chip-btn" + (onlyWatch ? " on" : "")}
+              onClick={() => setOnlyWatch((v) => !v)}
+              title="Только избранные бумаги — тот же watchlist, что в МОНИТОРЕ">
+              ★ {watch.length}
+            </button>
+          </div>
+
+          <div className="fgroup">
+            {/* воронка: база, тип выпуска, класс, режим торгов, сторона, эмитент */}
+            <FiltersMenu
+              basesSel={bases} toggleBase={(b) => setBases((a) => toggle(a, b))}
+              clearBases={() => setBases([])}
+              issuers={issuers} emittersSel={emitters}
+              toggleEmitter={(n) => setEmitters((a) => toggle(a, n))}
+              clearEmitters={() => setEmitters([])}
+              hideSub={hideSub} setHideSub={setHideSub}
+              hideAmort={hideAmort} setHideAmort={setHideAmort}
+              clsSel={cls} toggleCls={(c) => setCls((a) => toggle(a, c))}
+              activeCount={activeFilters}
+              extra={(
+                <>
+                  <div className="fp-sec">
+                    <div className="fp-head"><span className="fg-lbl">РЕЖИМ ТОРГОВ</span></div>
+                    <div className="fp-chips">
+                      {MARKETS.map(([v, label]) => (
+                        <button key={label} className={"chip-btn" + (market === v ? " on" : "")}
+                          onClick={() => setMarket(v)}
+                          title={v === "ndm" ? "адресные режимы: РПС, РПС с ЦК, размещения, выкупы"
+                            : v === "bonds" ? "безадресный стакан" : "все режимы"}>{label}</button>
+                      ))}
+                      {market === "ndm" && (
+                        <button className={"chip-btn" + (byDay ? " on" : "")}
+                          onClick={() => setByDay((v) => !v)}
+                          title="агрегат бумага/режим/день из ISS — единственный след адресных сделок за прошлые сессии">
+                          по дням
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="fp-sec">
+                    <div className="fp-head"><span className="fg-lbl">СТОРОНА</span></div>
+                    <div className="fp-chips">
+                      {SIDES.map(([v, label]) => (
+                        <button key={label} className={"chip-btn" + (side === v ? " on" : "")}
+                          onClick={() => setSide(v)}
+                          title="агрессор — сторона, забравшая заявку; у адресных сделок его нет">
+                          {label}</button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )} />
+            <button className="chip-btn reset-btn" disabled={!activeFilters}
+              onClick={resetFilters} aria-label="Сбросить все фильтры"
+              title="Снять все фильтры ленты">✕</button>
+          </div>
+
+          <div className="fgroup">
+            {ratingOpts.map((r) => (
+              <button key={r.name} className={"chip-btn" + (ratings.includes(r.name) ? " on" : "")}
+                style={ratings.includes(r.name) ? undefined : { color: ratingColor(r.name) }}
+                title={`${r.count} бумаг в справочниках`}
+                onClick={() => setRatings((a) => toggle(a, r.name))}>{r.name}</button>
+            ))}
+          </div>
+
+          <div className="fgroup" title="Сумма сделки в интервале [от, до], млн ₽">
+            <span className="fg-lbl">ОБЪЁМ, МЛН</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
+              aria-label="Объём сделки — от, млн ₽"
+              value={minValue ? String(minValue / 1e6) : ""}
+              onChange={(e) => setMinValue(mlnToRub(e.target.value))} />
+            <span className="fg-lbl">—</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
+              aria-label="Объём сделки — до, млн ₽"
+              value={maxValue ? String(maxValue / 1e6) : ""}
+              onChange={(e) => setMaxValue(mlnToRub(e.target.value))} />
+          </div>
+
+          <div className="fgroup" title="Лет до погашения в интервале [от, до]; бумаги без даты погашения при заданной границе скрыты">
+            <span className="fg-lbl">MAT, Y</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
+              value={ttmMin} onChange={(e) => setTtmMin(e.target.value)} />
+            <span className="fg-lbl">—</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
+              value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
+          </div>
+
+          <div className="fgroup" title="R-spread сделки в интервале [от, до], бп; сделки без посчитанного спреда при заданной границе скрыты">
+            <span className="fg-lbl">R-SPREAD</span>
+            <input className="num-input" type="number" step="10" placeholder="от"
+              value={spreadMin} onChange={(e) => setSpreadMin(e.target.value)} />
+            <span className="fg-lbl">—</span>
+            <input className="num-input" type="number" step="10" placeholder="до"
+              value={spreadMax} onChange={(e) => setSpreadMax(e.target.value)} />
+          </div>
+
           <span className="seg" role="tablist" aria-label="Охват">
             {SCOPES.map(([v, label]) => (
               <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
@@ -449,37 +513,8 @@ export default function TradesTape() {
           </button>
           <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>
         </div>
-        <div className="ia-filters">
-          {!daysView && (
-            <>
-              <span className="ia-flabel" title="R-spread сделки к индексу; строки без спреда фильтр отсекает">
-                Спред, бп
-              </span>
-              <input className="tape-nin" type="number" placeholder="от" value={spreadMin}
-                onChange={(e) => setSpreadMin(e.target.value)} />
-              <input className="tape-nin" type="number" placeholder="до" value={spreadMax}
-                onChange={(e) => setSpreadMax(e.target.value)} />
-            </>
-          )}
-          <span className="ia-flabel" title="рейтинг по реестру; бумаги без рейтинга под фильтр не попадают">
-            Рейтинг
-          </span>
-          {ratingOpts.map((r) => (
-            <button key={r.name} className={"chip-btn" + (ratings.includes(r.name) ? " on" : "")}
-              style={ratings.includes(r.name) ? undefined : { color: ratingColor(r.name) }}
-              title={`${r.count} бумаг в справочниках`}
-              onClick={() => setRatings((a) => toggle(a, r.name))}>{r.name}</button>
-          ))}
-          <span className="ia-flabel" title="срок до погашения по реестру; бумаги без даты погашения под фильтр не попадают">
-            Срок, лет
-          </span>
-          <input className="tape-nin" type="number" step="0.5" min="0" placeholder="от"
-            value={ttmMin} onChange={(e) => setTtmMin(e.target.value)} />
-          <input className="tape-nin" type="number" step="0.5" min="0" placeholder="до"
-            value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
-          {activeFilters > 0 && (
-            <button className="btn" onClick={resetFilters}>сбросить {activeFilters}</button>
-          )}
+        {/* вторая строка — только состояние данных, условия все в первой */}
+        <div className="ia-filters ia-meta">
           {sum.archive_till && (
             <span className="ia-flabel">данные до {sum.archive_till.slice(0, 16)}</span>
           )}

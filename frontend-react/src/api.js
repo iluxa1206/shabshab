@@ -261,7 +261,7 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   issuer, isin, scope = "market", limit = 500,
                                   spreadMin, spreadMax, ttmMin, ttmMax, rating,
                                   base, cls, hideSubord, hideAmort,
-                                  beforeTs, beforeId } = {},
+                                  beforeTs, beforeId, isins, maxValue } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
@@ -285,6 +285,9 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
   // это как «фильтр задан, но ничего не подошло» и вернёт пустую ленту)
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
   if (isin) p.set("isin", isin);
+  // избранное: watchlist живёт в браузере, поэтому набор ISIN уезжает списком
+  for (const i of [].concat(isins || [])) if (i) p.append("isins", i);
+  if (maxValue != null && maxValue !== "" && maxValue > 0) p.set("max_value", maxValue);
   return request(`/api/trades?${p}`, { signal });
 };
 

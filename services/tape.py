@@ -34,7 +34,8 @@ MARKETS = ("bonds", "ndm")
 
 def _cond(frm: Optional[str], till: Optional[str], min_value: float,
           boards: Optional[list[str]], isins: Optional[list[str]],
-          side: Optional[str], tmp: bool, alias: str = "") -> tuple[str, list]:
+          side: Optional[str], tmp: bool, alias: str = "",
+          max_value: Optional[float] = None) -> tuple[str, list]:
     """Общая часть WHERE — одинаковая для обеих таблиц (колонки совпадают)."""
     p = f"{alias}." if alias else ""
     q, args = "", []
@@ -47,6 +48,9 @@ def _cond(frm: Optional[str], till: Optional[str], min_value: float,
     if min_value:
         q += f" AND {p}value >= ?"
         args.append(min_value)
+    if max_value:
+        q += f" AND {p}value <= ?"
+        args.append(max_value)
     if boards:
         q += f" AND {p}board IN ({','.join('?' * len(boards))})"
         args.extend(boards)
@@ -61,15 +65,18 @@ def _cond(frm: Optional[str], till: Optional[str], min_value: float,
     return q, args
 
 
-def _union(frm, till, min_value, market, boards, isins, side, tmp) -> tuple[str, list]:
+def _union(frm, till, min_value, market, boards, isins, side, tmp,
+           max_value=None) -> tuple[str, list]:
     """Подзапрос «объединённая лента»: block_trade + тики, которых там нет.
 
     Порядок веток важен только для читаемости — дедуп делает NOT EXISTS по
     первичному ключу block_trade, то есть индексным поиском на каждую строку
     тика, а не вложенным сканом.
     """
-    b_cond, b_args = _cond(frm, till, min_value, boards, isins, side, tmp)
-    t_cond, t_args = _cond(frm, till, min_value, boards, isins, side, tmp, alias="t")
+    b_cond, b_args = _cond(frm, till, min_value, boards, isins, side, tmp,
+                           max_value=max_value)
+    t_cond, t_args = _cond(frm, till, min_value, boards, isins, side, tmp, alias="t",
+                           max_value=max_value)
 
     blocks = ("SELECT trade_id, isin, ts, price, qty, value, side, board, market, "
               "yld, cur, secid, y_idx_bps, dm_bps FROM block_trade WHERE 1=1" + b_cond)
@@ -112,7 +119,8 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
               side: Optional[str] = None, limit: int = 500,
               y_min: Optional[float] = None, y_max: Optional[float] = None,
               before_ts: Optional[str] = None,
-              before_id: Optional[int] = None) -> list[dict]:
+              before_id: Optional[int] = None,
+              max_value: Optional[float] = None) -> list[dict]:
     """Лента сделок, новые сверху.
 
     before_ts/before_id — КУРСОР пагинации: «строго раньше вот этой сделки».
@@ -130,7 +138,8 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
             cur_args = [before_ts]
     with _connect() as c:
         tmp = _bind_isins(c, isins)
-        sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp)
+        sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp,
+                           max_value=max_value)
         yq, yargs = _spread_clause(y_min, y_max)
         rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
                          f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
@@ -147,7 +156,8 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                min_value: float = 0, market: Optional[str] = None,
                boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
                side: Optional[str] = None, top: int = 10,
-               y_min: Optional[float] = None, y_max: Optional[float] = None) -> dict:
+               y_min: Optional[float] = None, y_max: Optional[float] = None,
+               max_value: Optional[float] = None) -> dict:
     """Итоги окна по ВСЕМ подходящим сделкам, а не по срезанным лимитом.
 
     Обороты — только по рублёвым выпускам: у валютных VALUE приходит в валюте
@@ -155,7 +165,8 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
     _V = "SUM(CASE WHEN cur IS NULL OR cur='SUR' THEN value ELSE 0 END)"
     with _connect() as c:
         tmp = _bind_isins(c, isins)
-        sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp)
+        sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp,
+                           max_value=max_value)
         yq, yargs = _spread_clause(y_min, y_max)
         if yq:
             sub, args = f"(SELECT * FROM {sub} WHERE 1=1{yq})", [*args, *yargs]
