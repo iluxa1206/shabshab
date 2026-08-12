@@ -498,6 +498,16 @@ class MarketDataService:
                         params={"iss.only": "coupons,amortizations,offers",
                                 "limit": PAGE, "start": start}, timeout=10)
                     if resp is None or resp.status_code != 200:
+                        # ОБРЫВ ПАГИНАЦИИ, а не конец данных. Раньше тут стоял
+                        # break, и наверх уходил ОБРЕЗАННЫЙ график — он же
+                        # кэшировался на день. Последствия молчаливые: поток без
+                        # хвоста купонов (метрики врут) и ложный вердикт «ставка
+                        # не менялась ⇒ фикс» в классификаторе, который так
+                        # переклассифицировал 21 живой флоатер, включая ОФЗ-ПК.
+                        # Лучше отдать ошибку и повторить позже.
+                        if start > 0 or out["coupons"]:
+                            raise RuntimeError(
+                                f"bondization {sec}: обрыв на странице start={start}")
                         break
                     j = (await asyncio.to_thread(resp.json))
                     cp = j.get("coupons", {})
