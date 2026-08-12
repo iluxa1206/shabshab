@@ -782,6 +782,15 @@ export default function TradesTape() {
             </table>
             {dayRows.length === 0 && status === "ready" && <div className="ia-empty">нет дневных оборотов под фильтром</div>}
           </div>
+          <TapeFooter
+            items={[
+              isinReq && ["БУМАГА", dayRows[0]?.name || isinReq],
+              ["БУМАГО-ДНЕЙ", fmt.num(daySum.n, 0)],
+              ["СДЕЛОК", fmt.num(daySum.trades, 0)],
+              ["ОБОРОТ, МЛН", money(daySum.value)],
+            ]}
+            note={lastAt ? `обновлено ${lastAt.toLocaleTimeString("ru-RU")}` : ""}
+          />
         </>
       )}
     </div>
