@@ -117,7 +117,7 @@ const savedFilters = () => readLS(LS_FILTERS, {}) || {};
 // субордов. Он же встаёт по кнопке сброса. Заодно бережёт бэк: «весь рынок без
 // порога» — это агрегат по миллиону с лишним сделок на каждый запрос.
 const DEFAULTS = {
-  minValue: 10e6, maxValue: 0, scopes: ["float"], hideSub: true, hideAmort: false,
+  minValue: 10e6, scopes: ["float"], hideSub: true, hideAmort: false,
   side: null, market: null, ratings: [], bases: [], cls: [], emitters: [],
   onlyWatch: false, spreadMin: "", spreadMax: "", ttmMin: "", ttmMax: "",
 };
@@ -191,7 +191,6 @@ export default function TradesTape() {
   const [cls, setCls] = useState(() => pick(savedFilters().cls, []));
   const [hideSub, setHideSub] = useState(() => pick(savedFilters().hideSub, DEFAULTS.hideSub));
   const [hideAmort, setHideAmort] = useState(() => pick(savedFilters().hideAmort, false));
-  const [maxValue, setMaxValue] = useState(() => pick(savedFilters().maxValue, DEFAULTS.maxValue));
   // Избранное общее со СПИСКОМ: watchlist живёт в localStorage под ключом
   // "watch", своей копии у ленты нет — звезда там и здесь означает одно и то же.
   const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
@@ -239,10 +238,10 @@ export default function TradesTape() {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
-      maxValue, onlyWatch }));
+      onlyWatch }));
   }, [minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
-      maxValue, onlyWatch]);
+      onlyWatch]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
   useEffect(() => {
@@ -264,13 +263,13 @@ export default function TradesTape() {
                           isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-                          hideSubord: hideSub, hideAmort, maxValue,
+                          hideSubord: hideSub, hideAmort,
                           isins: onlyWatch ? watch : undefined }, ac.signal)
         .then((d) => { setData(d); setPages([]); setMore(!!d.has_more); });
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [minValue, maxValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch,
+  }, [minValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
@@ -341,7 +340,7 @@ export default function TradesTape() {
         days: MAX_DAYS, minValue, side, market, issuer: emitters, isin: isinReq,
         scope, limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
         ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-        hideSubord: hideSub, hideAmort, maxValue,
+        hideSubord: hideSub, hideAmort,
         isins: onlyWatch ? watch : undefined,
         beforeTs: last.ts, beforeId: last.trade_id });
       setPages((ps) => [...ps, d.trades || []]);
@@ -360,7 +359,7 @@ export default function TradesTape() {
   const activeFilters = bases.length + cls.length + emitters.length + ratings.length
     + (hideSub === DEFAULTS.hideSub ? 0 : 1) + (hideAmort === DEFAULTS.hideAmort ? 0 : 1)
     + (onlyWatch ? 1 : 0) + (side ? 1 : 0) + (market ? 1 : 0)
-    + (minValue === DEFAULTS.minValue ? 0 : 1) + (maxValue ? 1 : 0)
+    + (minValue === DEFAULTS.minValue ? 0 : 1)
     + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0)
     + (scopes.length === 1 && scopes[0] === DEFAULTS.scopes[0] ? 0 : 1);
 
@@ -373,7 +372,7 @@ export default function TradesTape() {
     setEmitters(DEFAULTS.emitters); setOnlyWatch(DEFAULTS.onlyWatch);
     setHideSub(DEFAULTS.hideSub); setHideAmort(DEFAULTS.hideAmort);
     setSide(DEFAULTS.side); setMarket(DEFAULTS.market);
-    setMinValue(DEFAULTS.minValue); setMaxValue(DEFAULTS.maxValue);
+    setMinValue(DEFAULTS.minValue);
     setScopes(DEFAULTS.scopes);
   };
 
@@ -540,20 +539,15 @@ export default function TradesTape() {
             ))}
           </div>
 
-          <div className="fgroup" title="Сумма сделки в интервале [от, до], млн ₽">
-            <span className="fg-lbl">ОБЪЁМ, МЛН</span>
-            <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
-              aria-label="Объём сделки — от, млн ₽"
+          <div className="fgroup" title="Нижний порог суммы сделки, млн ₽. Верхней границы нет: крупные принты — то, ради чего лента и открыта.">
+            <span className="fg-lbl">ОБЪЁМ ОТ, МЛН</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="все"
+              aria-label="Объём сделки от, млн ₽"
               value={minValue ? String(minValue / 1e6) : ""}
               onChange={(e) => setMinValue(mlnToRub(e.target.value))} />
-            <span className="fg-lbl">—</span>
-            <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
-              aria-label="Объём сделки — до, млн ₽"
-              value={maxValue ? String(maxValue / 1e6) : ""}
-              onChange={(e) => setMaxValue(mlnToRub(e.target.value))} />
-            {(minValue || maxValue) && (
-              <button className="chip-btn" title="Сбросить окно объёма"
-                onClick={() => { setMinValue(0); setMaxValue(0); }}>×</button>
+            {minValue !== DEFAULTS.minValue && (
+              <button className="chip-btn" title="Вернуть порог по умолчанию"
+                onClick={() => setMinValue(DEFAULTS.minValue)}>×</button>
             )}
           </div>
 
