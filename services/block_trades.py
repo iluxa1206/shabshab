@@ -356,21 +356,34 @@ def unpriced_count() -> int:
 
 
 def save_metrics(vals: list[tuple], table: str = "block_trade") -> int:
-    """[(y_idx, dm, trade_id)] → в базу. metrics_at ставится всегда, даже когда
-    спред посчитать нечем (фикс, бумага вне реестра): иначе такие строки
+    """[(y_idx, dm, trade_id[, isin])] → в базу. metrics_at ставится всегда, даже
+    когда спред посчитать нечем (фикс, бумага вне реестра): иначе такие строки
     возвращались бы в очередь на каждом такте демона.
 
-    table — block_trade (ISS) или trade_tick (Alor): колонки метрик одинаковы."""
+    table — block_trade (ISS) или trade_tick (Alor). У block_trade trade_id и
+    есть первичный ключ, а у тика ключ составной (isin, trade_id): апдейт по
+    одному trade_id сканировал бы всю многомиллионную таблицу, держа writer-лок
+    и сталкиваясь с живым потоком тиков («database is locked»)."""
     if not vals:
         return 0
     if table not in ("block_trade", "trade_tick"):
         raise ValueError(f"неизвестная таблица: {table}")
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
-    with _lock, _connect() as c:
-        cur = c.executemany(
-            f"UPDATE {table} SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE trade_id=?",
-            [(y, d, now, tid) for y, d, tid in vals])
-        return cur.rowcount or 0
+    if table == "trade_tick":
+        q = "UPDATE trade_tick SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE isin=? AND trade_id=?"
+        args = [(y, d, now, isin, tid) for y, d, tid, isin in vals]
+    else:
+        q = "UPDATE block_trade SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE trade_id=?"
+        args = [(y, d, now, tid) for y, d, tid, *_ in vals]
+    for attempt in range(5):
+        try:
+            with _lock, _connect() as c:
+                return c.executemany(q, args).rowcount or 0
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or attempt == 4:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    return 0
 
 
 def reset_metrics(isins: list[str]) -> int:
@@ -436,13 +449,13 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
 
     if others:
         done += await asyncio.to_thread(
-            _by_table, others, lambda r: (None, None, r["trade_id"]))
+            _by_table, others, lambda r: (None, None, r["trade_id"], r["isin"]))
     if floats:
         floats = floats[:limit]
         await trade_yidx.enrich(floats, labels, max_isins=limit)
         done += await asyncio.to_thread(
             _by_table, floats,
-            lambda r: (r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"]))
+            lambda r: (r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"], r["isin"]))
     return done
 
 
