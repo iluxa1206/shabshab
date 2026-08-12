@@ -9,7 +9,7 @@ export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
   hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
-  activeCount,
+  activeCount, extra,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -83,6 +83,10 @@ export default function FiltersMenu({
                 onClick={() => toggleCls("CORP")}>КОРП</button>
             </div>
           </div>}
+
+          {/* секция хоста: у ленты сделок это режим торгов — тоже «какие
+              сделки», и в общей строке фильтров ему тесно */}
+          {extra}
 
           <div className="fp-sec">
             <div className="fp-head">

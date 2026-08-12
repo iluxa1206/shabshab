@@ -128,6 +128,8 @@ async def tape(
     cls: Optional[list[str]] = Query(None, description="класс: OFZ | CORP"),
     hide_subord: bool = Query(False, description="убрать суборды и перпы"),
     hide_amort: bool = Query(False, description="убрать амортизируемые выпуски"),
+    before_ts: Optional[str] = Query(None, description="курсор пагинации: ts последней показанной сделки"),
+    before_id: Optional[int] = Query(None, description="курсор пагинации: её trade_id"),
     limit: int = Query(500, ge=1, le=20000),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
@@ -184,10 +186,14 @@ async def tape(
     rows, summary = await asyncio.gather(
         asyncio.to_thread(tape_svc.read_tape, frm=frm, min_value=min_value, side=side,
                           market=market, boards=board, isins=isins, limit=limit,
-                          y_min=spread_min, y_max=spread_max),
+                          y_min=spread_min, y_max=spread_max,
+                          before_ts=before_ts, before_id=before_id),
+        # Итоги — по ВСЕМУ окну, поэтому считаются один раз, на первой странице:
+        # догрузка следующей порции их не меняет, а стоит агрегат секунд.
         asyncio.to_thread(tape_svc.tape_stats, frm=frm, min_value=min_value, side=side,
                           market=market, boards=board, isins=isins,
-                          y_min=spread_min, y_max=spread_max))
+                          y_min=spread_min, y_max=spread_max)
+        if not before_ts else asyncio.sleep(0, result={}))
     moex = await asyncio.to_thread(_moex_names)
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
     # block_trades.price_new_trades): цена в % номинала между выпусками
@@ -215,7 +221,11 @@ async def tape(
 
     return {"from": frm, "days": days, "min_value": min_value, "side": side,
             "market": market, "board": board, "scope": scope,
-            "truncated": len(rows) >= limit and summary["n"] > len(rows),
+            # has_more — есть ли следующая страница: на страницах пагинации
+            # итогов нет (их считает только первый запрос), поэтому полный
+            # лимит строк сам по себе означает «дальше ещё есть»
+            "truncated": len(rows) >= limit and (not summary or summary.get("n", 0) > len(rows)),
+            "has_more": len(rows) >= limit,
             "y_idx_rows": priced,      # по скольким строкам спред посчитан
             "trades": rows, "summary": summary}
 

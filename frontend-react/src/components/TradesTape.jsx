@@ -22,19 +22,20 @@ import CouponFormula from "./CouponFormula.jsx";
 // сделок за прошлые сессии ISS не отдаёт вообще, и за дни до старта нашего
 // сбора агрегат — единственный след блока.
 
-const WINDOWS = [[1, "сегодня"], [7, "7д"], [30, "30д"], [90, "90д"],
-                 [180, "180д"], [400, "макс"]];
-// 0 = без порога: мельче 1 млн ₽ сделки есть только по юниверсу (тик-архив)
-const THRESHOLDS = [[0, "все"], [1e6, "1"], [5e6, "5"], [1e7, "10"],
-                    [5e7, "50"], [1e8, "100"]];
+// Окна периода в фильтрах больше нет: лента всегда открыта на всю глубину
+// архива, а вниз идёт страницами (курсор before_ts/before_id).
+const MAX_DAYS = 400;
+const PAGE = 500;
 // РПС здесь = дневной агрегат адресных режимов (см. шапку файла)
 const MARKETS = [[null, "все"], ["bonds", "Т+"], ["ndm", "РПС"]];
 const SIDES = [[null, "любая"], ["buy", "buy"], ["sell", "sell"]];
 // Охват. Дефолт — флоатеры: стол про них, а крупняк рынка в рублёвом объёме
 // это почти целиком ОФЗ-ПД, и без фильтра лента вырождалась в ленту фиксов.
 // «Весь рынок» остаётся как контекст (там же фиксы и бумаги вне реестра).
-const SCOPES = [["float", "флоатеры"], ["market", "весь рынок"]];
-const LIMITS = [5000, 10000, 20000];
+// Охват: два регистра бумаг. «Фиксы» — облигации с постоянным купоном
+// (scope=fixed), а не «весь рынок»: рынок целиком в ленте всё равно виден
+// поиском по конкретной бумаге.
+const SCOPES = [["float", "флоатеры"], ["fixed", "фиксы"]];
 // Такт автообновления. Безадресные сделки юниверса приходят тиком Alor почти
 // сразу, адресные — из ISS с её задержкой ~15 мин, так что чаще смысла нет:
 // запрос стоит агрегата по всему окну на стороне бэка.
@@ -63,7 +64,7 @@ function SideTag({ side }) {
 const COLS = [
   { key: "date",   label: "ДАТА",       align: "left", w: 6,  get: (r) => r.ts },
   { key: "time",   label: "ВРЕМЯ",      align: "left", w: 8,  get: (r) => r.ts },
-  { key: "name",   label: "БУМАГА",     align: "left", w: 18, get: (r) => (r.name || "").toLowerCase() },
+  { key: "name",   label: "БУМАГА",     align: "left", w: 20, get: (r) => (r.name || "").toLowerCase() },
   // формула купона — отдельной колонкой, как в СПИСКЕ: части выстраиваются
   // друг под другом («КС + 2,50% (12)»), а в имени выпуска ей тесно
   { key: "formula", label: "ФОРМУЛА",   align: "left", w: 15, get: (r) => r.margin_bps },
@@ -76,6 +77,9 @@ const COLS = [
   { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
+  // график и карточка — последней колонкой: у имени они перетягивали взгляд,
+  // а место в колонке БУМАГА нужнее самому имени
+  { key: "act",    label: "",           align: "left", w: 5,  get: () => null },
 ];
 const DEFAULT_COLS = COLS.map((c) => c.key);
 const LS_ORDER = "tapeCols";
@@ -131,13 +135,16 @@ export default function TradesTape() {
   const [sp, setSp] = useSearchParams();
   // дефолт — рабочий срез: неделя и крупняк от 1 млн ₽. Максимум («макс» +
   // «все») лента тянет, но агрегат по миллиону сделок считается секундами.
-  const [days, setDays] = useState(() => pick(savedFilters().days, 7));
+
   const [minValue, setMinValue] = useState(() => pick(savedFilters().minValue, 1e6));
   const [side, setSide] = useState(() => pick(savedFilters().side, null));
   const [market, setMarket] = useState(() => pick(savedFilters().market, null));
   const [emitters, setEmitters] = useState(() => pick(savedFilters().emitters, []));
   const [scope, setScope] = useState(() => pick(savedFilters().scope, "float"));
-  const [limit, setLimit] = useState(() => pick(savedFilters().limit, LIMITS[0]));
+  // страницы: rows копятся, курсор — последняя показанная сделка
+  const [pages, setPages] = useState([]);       // догруженные порции
+  const [more, setMore] = useState(false);      // есть ли ещё
+  const [loadingMore, setLoadingMore] = useState(false);
   const [spreadMin, setSpreadMin] = useState(() => pick(savedFilters().spreadMin, ""));
   const [spreadMax, setSpreadMax] = useState(() => pick(savedFilters().spreadMax, ""));
   const [ttmMin, setTtmMin] = useState(() => pick(savedFilters().ttmMin, ""));
@@ -188,9 +195,9 @@ export default function TradesTape() {
 
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
-      days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
+      minValue, side, market, emitters, scope, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort }));
-  }, [days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
+  }, [minValue, side, market, emitters, scope, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
@@ -205,20 +212,20 @@ export default function TradesTape() {
     abort.current = ac;
     setStatus("loading");
     const req = daysView
-      ? fetchBlockDays({ isin: isinReq, days, minValue: minValue || 1e6,
+      ? fetchBlockDays({ isin: isinReq, days: MAX_DAYS, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
-                         ttmMax: num(ttmMax), rating: ratings, limit }, ac.signal)
+                         ttmMax: num(ttmMax), rating: ratings, limit: PAGE }, ac.signal)
         .then((d) => { setDayData(d); })
-      : fetchMarketTape({ days, minValue, side, market, issuer: emitters,
-                          isin: isinReq, scope, limit, spreadMin: num(spreadMin),
+      : fetchMarketTape({ days: MAX_DAYS, minValue, side, market, issuer: emitters,
+                          isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
                           hideSubord: hideSub, hideAmort }, ac.signal)
-        .then((d) => { setData(d); });
+        .then((d) => { setData(d); setPages([]); setMore(!!d.has_more); });
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [days, minValue, side, market, daysView, emitters, isinReq, scope, limit,
+  }, [minValue, side, market, daysView, emitters, isinReq, scope,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
@@ -242,7 +249,9 @@ export default function TradesTape() {
     return (r.name || "").toLowerCase().includes(s) || r.isin.toLowerCase().includes(s)
         || (r.emitter || "").toLowerCase().includes(s);
   };
-  const rows = useMemo(() => (data?.trades || []).filter(match), [data, q, qIsin]);
+  const allRows = useMemo(
+    () => [...(data?.trades || []), ...pages.flat()], [data, pages]);
+  const rows = useMemo(() => allRows.filter(match), [allRows, q, qIsin]);
   const dayRows = useMemo(() => (dayData?.rows || []).filter(match), [dayData, q, qIsin]);
 
   // Итоги. Пока фильтр серверный (ISIN/эмитент/спред/срок) — берём агрегат бэка:
@@ -274,6 +283,28 @@ export default function TradesTape() {
   }, [dayRows]);
 
   const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+
+  // Следующая страница: курсор — последняя УЖЕ показанная сделка. Страницы
+  // копятся в pages, потому что лента живая: перезапрос с бОльшим лимитом
+  // сдвинул бы всё, что успело прийти сверху.
+  const loadMore = async () => {
+    const last = allRows[allRows.length - 1];
+    if (!last || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const d = await fetchMarketTape({
+        days: MAX_DAYS, minValue, side, market, issuer: emitters, isin: isinReq,
+        scope, limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
+        ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
+        hideSubord: hideSub, hideAmort, beforeTs: last.ts, beforeId: last.trade_id });
+      setPages((ps) => [...ps, d.trades || []]);
+      setMore(!!d.has_more);
+    } catch (e) {
+      setErrMsg(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   // Счётчик на воронке — сколько условий включено ВСЕГО (как в СПИСКЕ), в пару
   // к кнопке сброса: иначе спрятанный в меню фильтр молча режет ленту.
@@ -348,35 +379,52 @@ export default function TradesTape() {
       <div className="ia-head">
         <h2 className="ia-title">Лента сделок</h2>
         <div className="ia-filters">
-          <span className="ia-flabel">Окно</span>
-          <span className="seg" role="tablist" aria-label="Окно">
-            {WINDOWS.map(([d, label]) => (
-              <button key={d} className={"seg-btn" + (days === d ? " active" : "")}
-                onClick={() => setDays(d)}>{label}</button>
-            ))}
-          </span>
-          <span className="ia-flabel">От, млн ₽</span>
-          <span className="seg" role="tablist" aria-label="Порог суммы">
-            {THRESHOLDS.map(([v, label]) => (
-              <button key={v} className={"seg-btn" + (minValue === v ? " active" : "")}
-                onClick={() => setMinValue(v)}>{label}</button>
-            ))}
-          </span>
-          <span className="seg" role="tablist" aria-label="Режим">
-            {MARKETS.map(([v, label]) => (
-              <button key={label} className={"seg-btn" + (market === v ? " active" : "")}
-                onClick={() => setMarket(v)}
-                title={v === "ndm" ? "адресные режимы: РПС, РПС с ЦК, размещения, выкупы"
-                  : v === "bonds" ? "безадресный стакан" : "все режимы"}>{label}</button>
-            ))}
-          </span>
-          {market === "ndm" && (
-            <button className={"chip-btn" + (byDay ? " on" : "")}
-              onClick={() => setByDay((v) => !v)}
-              title="агрегат бумага/режим/день из ISS. За дни до старта поштучного сбора это ЕДИНСТВЕННЫЙ след адресных сделок — поштучно биржа их за прошлые сессии не отдаёт">
-              по дням
-            </button>
+          {/* Порядок как в СПИСКЕ: сперва поиск, следом воронка со всем
+              «какие бумаги», дальше числовые условия сделки. */}
+          <input className="tape-search" placeholder="бумага / ISIN…" value={q}
+            onChange={(e) => setQ(e.target.value)} />
+          {/* та же воронка, что в СПИСКЕ: база, тип выпуска, класс, эмитент,
+              плюс режим торгов — он тоже про «какие сделки», а не про числа */}
+          <FiltersMenu
+            basesSel={bases} toggleBase={(b) => setBases((a) => toggle(a, b))}
+            clearBases={() => setBases([])}
+            issuers={issuers} emittersSel={emitters}
+            toggleEmitter={(n) => setEmitters((a) => toggle(a, n))}
+            clearEmitters={() => setEmitters([])}
+            hideSub={hideSub} setHideSub={setHideSub}
+            hideAmort={hideAmort} setHideAmort={setHideAmort}
+            clsSel={cls} toggleCls={(c) => setCls((a) => toggle(a, c))}
+            activeCount={activeFilters}
+            extra={(
+              <div className="fp-sec">
+                <div className="fp-head"><span className="fg-lbl">РЕЖИМ ТОРГОВ</span></div>
+                <div className="fp-chips">
+                  {MARKETS.map(([v, label]) => (
+                    <button key={label} className={"chip-btn" + (market === v ? " on" : "")}
+                      onClick={() => setMarket(v)}
+                      title={v === "ndm" ? "адресные режимы: РПС, РПС с ЦК, размещения, выкупы"
+                        : v === "bonds" ? "безадресный стакан" : "все режимы"}>{label}</button>
+                  ))}
+                  {market === "ndm" && (
+                    <button className={"chip-btn" + (byDay ? " on" : "")}
+                      onClick={() => setByDay((v) => !v)}
+                      title="агрегат бумага/режим/день из ISS. За дни до старта поштучного сбора это ЕДИНСТВЕННЫЙ след адресных сделок">
+                      по дням
+                    </button>
+                  )}
+                </div>
+              </div>
+            )} />
+          {activeFilters > 0 && (
+            <button className="btn" onClick={resetFilters}>сбросить {activeFilters}</button>
           )}
+          <span className="ia-flabel">Объём от, млн ₽</span>
+          <input className="tape-nin" type="number" step="0.5" min="0" placeholder="все"
+            value={minValue ? String(minValue / 1e6) : ""}
+            onChange={(e) => {
+              const v = parseFloat(String(e.target.value).replace(",", "."));
+              setMinValue(Number.isFinite(v) && v > 0 ? Math.round(v * 1e6) : 0);
+            }} />
           {!daysView && (
             <span className="seg" role="tablist" aria-label="Сторона">
               {SIDES.map(([v, label]) => (
@@ -392,22 +440,9 @@ export default function TradesTape() {
               <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
                 onClick={() => setScope(v)}
                 title={v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
-                  : "все облигации MOEX, включая фиксы и бумаги вне реестра"}>{label}</button>
+                  : "фиксы: облигации с постоянным купоном"}>{label}</button>
             ))}
           </span>
-          {/* та же воронка, что в СПИСКЕ: база, тип выпуска, класс, эмитент */}
-          <FiltersMenu
-            basesSel={bases} toggleBase={(b) => setBases((a) => toggle(a, b))}
-            clearBases={() => setBases([])}
-            issuers={issuers} emittersSel={emitters}
-            toggleEmitter={(n) => setEmitters((a) => toggle(a, n))}
-            clearEmitters={() => setEmitters([])}
-            hideSub={hideSub} setHideSub={setHideSub}
-            hideAmort={hideAmort} setHideAmort={setHideAmort}
-            clsSel={cls} toggleCls={(c) => setCls((a) => toggle(a, c))}
-            activeCount={activeFilters} />
-          <input className="tape-search" placeholder="бумага / ISIN…" value={q}
-            onChange={(e) => setQ(e.target.value)} />
           <button className={"chip-btn" + (live ? " on" : "")} onClick={() => setLive((v) => !v)}
             title={`лента дотягивается сама раз в ${LIVE_MS / 1000} с; во вкладке в фоне опрос не идёт`}>
             {live ? "лайв" : "пауза"}
@@ -509,7 +544,6 @@ export default function TradesTape() {
                     time: <span className="tape-ts">{tpart(r.ts)}</span>,
                     name: (
                       <span className="tape-name-cell">
-                        <RowLinks isin={r.isin} onOpen={openBond} />
                         {r.name}
                         {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
                       </span>
@@ -531,6 +565,7 @@ export default function TradesTape() {
                     side: <SideTag side={r.side} />,
                     yidx: r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—",
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
+                    act: <RowLinks isin={r.isin} onOpen={openBond} />,
                   };
                   return (
                     <tr key={r.trade_id}
@@ -556,12 +591,13 @@ export default function TradesTape() {
             {rows.length === 0 && status === "ready" && <div className="ia-empty">нет сделок под фильтром</div>}
           </div>
 
-          {data.truncated && (
+          {more && (
             <div className="tape-more">
-              показаны последние {fmt.num(rows.length, 0)} из {fmt.num(data.summary?.n, 0)}
-              {LIMITS.filter((l) => l > limit).slice(0, 1).map((l) => (
-                <button key={l} className="btn" onClick={() => setLimit(l)}>показать {fmt.num(l, 0)}</button>
-              ))}
+              показано {fmt.num(allRows.length, 0)}
+              {data.summary?.n ? ` из ${fmt.num(data.summary.n, 0)}` : ""}
+              <button className="btn" disabled={loadingMore} onClick={loadMore}>
+                {loadingMore ? "грузим…" : `показать ещё ${fmt.num(PAGE, 0)}`}
+              </button>
             </div>
           )}
         </>

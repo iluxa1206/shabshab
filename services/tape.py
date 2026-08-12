@@ -110,15 +110,31 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
               min_value: float = 0, market: Optional[str] = None,
               boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
               side: Optional[str] = None, limit: int = 500,
-              y_min: Optional[float] = None, y_max: Optional[float] = None) -> list[dict]:
-    """Лента сделок, новые сверху."""
+              y_min: Optional[float] = None, y_max: Optional[float] = None,
+              before_ts: Optional[str] = None,
+              before_id: Optional[int] = None) -> list[dict]:
+    """Лента сделок, новые сверху.
+
+    before_ts/before_id — КУРСОР пагинации: «строго раньше вот этой сделки».
+    Пара, а не одно время: в одну секунду проходят десятки сделок, и по
+    `ts <` страница теряла бы хвост секунды, а по `ts <=` зациклилась бы на
+    ней. Курсор совпадает с порядком сортировки (ts DESC, trade_id DESC),
+    поэтому страницы стыкуются без дублей и дыр даже на живой ленте."""
+    cur_q, cur_args = "", []
+    if before_ts:
+        if before_id is not None:
+            cur_q = " AND (ts < ? OR (ts = ? AND trade_id < ?))"
+            cur_args = [before_ts, before_ts, before_id]
+        else:
+            cur_q = " AND ts < ?"
+            cur_args = [before_ts]
     with _connect() as c:
         tmp = _bind_isins(c, isins)
         sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp)
         yq, yargs = _spread_clause(y_min, y_max)
-        rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq} "
+        rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
                          f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
-                         [*args, *yargs, limit]).fetchall()
+                         [*args, *yargs, *cur_args, limit]).fetchall()
     out = []
     for r in rows:
         d = dict(r)
