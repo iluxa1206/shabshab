@@ -30,6 +30,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -381,14 +383,24 @@ def reset_metrics(isins: list[str]) -> int:
     if not ids:
         return 0
     done = 0
-    with _lock, _connect() as c:
-        for i in range(0, len(ids), 400):     # потолок переменных SQLite
-            chunk = ids[i:i + 400]
-            cur = c.execute(
-                f"UPDATE block_trade SET metrics_at=NULL WHERE y_idx_bps IS NULL "
-                f"AND value >= ? AND isin IN ({','.join('?' * len(chunk))})",
-                [BLOCK_YIDX_MIN_RUB, *chunk])
-            done += cur.rowcount or 0
+    # По одной пачке на транзакцию и с ретраями: на проде архив пишут демоны, и
+    # длинный UPDATE по многомиллионной таблице упирался в чужой writer-лок
+    # («database is locked») — весь батч терялся из-за одной занятой секунды.
+    for i in range(0, len(ids), 200):         # потолок переменных SQLite
+        chunk = ids[i:i + 200]
+        for attempt in range(5):
+            try:
+                with _lock, _connect() as c:
+                    cur = c.execute(
+                        f"UPDATE block_trade SET metrics_at=NULL WHERE y_idx_bps IS NULL "
+                        f"AND value >= ? AND isin IN ({','.join('?' * len(chunk))})",
+                        [BLOCK_YIDX_MIN_RUB, *chunk])
+                    done += cur.rowcount or 0
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt == 4:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
     return done
 
 
