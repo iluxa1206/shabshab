@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers } from "../api.js";
+import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 
@@ -67,6 +67,8 @@ export default function TradesTape() {
   const [spreadMax, setSpreadMax] = useState("");
   const [ttmMin, setTtmMin] = useState("");
   const [ttmMax, setTtmMax] = useState("");
+  const [ratings, setRatings] = useState([]);       // выбранные грейды
+  const [ratingOpts, setRatingOpts] = useState([]);
   const [pin, setPin] = useState(null);
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
   // адресных: у безадресных поштучный архив полный, агрегировать нечего.
@@ -92,6 +94,7 @@ export default function TradesTape() {
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
+    fetchTapeRatings().then(setRatingOpts).catch(() => setRatingOpts([]));
   }, []);
 
   useEffect(() => {
@@ -102,18 +105,18 @@ export default function TradesTape() {
     const req = daysView
       ? fetchBlockDays({ isin: isinReq, days, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
-                         ttmMax: num(ttmMax), limit }, ac.signal)
+                         ttmMax: num(ttmMax), rating: ratings, limit }, ac.signal)
         .then((d) => { setDayData(d); })
       : fetchMarketTape({ days, minValue, side, market, issuer: emitters,
                           isin: isinReq, scope, limit, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
-                          ttmMax: num(ttmMax) }, ac.signal)
+                          ttmMax: num(ttmMax), rating: ratings }, ac.signal)
         .then((d) => { setData(d); });
     req.then(() => setStatus("ready"))
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
   }, [days, minValue, side, market, daysView, emitters, isinReq, scope, limit,
-      spreadMin, spreadMax, ttmMin, ttmMax, tick]);
+      spreadMin, spreadMax, ttmMin, ttmMax, ratings, tick]);
 
   // текстовый поиск (не ISIN) — фильтр по уже загруженным строкам
   const match = (r) => {
@@ -225,6 +228,15 @@ export default function TradesTape() {
                 onChange={(e) => setSpreadMax(e.target.value)} />
             </>
           )}
+          <span className="ia-flabel" title="рейтинг по реестру; бумаги без рейтинга под фильтр не попадают">
+            Рейтинг
+          </span>
+          {ratingOpts.map((r) => (
+            <button key={r.name} className={"chip-btn" + (ratings.includes(r.name) ? " on" : "")}
+              style={ratings.includes(r.name) ? undefined : { color: ratingColor(r.name) }}
+              title={`${r.count} бумаг в справочниках`}
+              onClick={() => setRatings((a) => toggle(a, r.name))}>{r.name}</button>
+          ))}
           <span className="ia-flabel" title="срок до погашения по реестру; бумаги без даты погашения под фильтр не попадают">
             Срок, лет
           </span>
@@ -232,9 +244,10 @@ export default function TradesTape() {
             value={ttmMin} onChange={(e) => setTtmMin(e.target.value)} />
           <input className="tape-nin" type="number" step="0.5" min="0" placeholder="до"
             value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
-          {(spreadMin || spreadMax || ttmMin || ttmMax) && (
+          {(spreadMin || spreadMax || ttmMin || ttmMax || ratings.length > 0) && (
             <button className="btn" onClick={() => {
               setSpreadMin(""); setSpreadMax(""); setTtmMin(""); setTtmMax("");
+              setRatings([]);
             }}>сбросить</button>
           )}
           {sum.archive_till && (

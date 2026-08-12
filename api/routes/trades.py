@@ -31,6 +31,17 @@ router = APIRouter()
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 
+def _rating_isins(labels: dict, isins: Optional[list[str]],
+                  rating: Optional[list[str]]) -> Optional[list[str]]:
+    """Сузить охват рейтингами (в реестре они грубые: AAA/AA/A/BBB/BB/B).
+    Бумаги без рейтинга под фильтр не попадают — рейтинг неизвестен, а не любой."""
+    want = {r.strip().upper() for r in (rating or []) if r and r.strip()}
+    if not want:
+        return isins
+    pool = isins if isins is not None else labels.keys()
+    return [i for i in pool if ((labels.get(i) or {}).get("rating") or "").upper() in want]
+
+
 def _ttm_isins(labels: dict, isins: Optional[list[str]],
                ttm_min: Optional[float], ttm_max: Optional[float]) -> Optional[list[str]]:
     """Сузить охват сроком до погашения (годы). Бумаги без даты погашения в
@@ -71,6 +82,7 @@ async def tape(
     spread_max: Optional[float] = Query(None, description="R-spread сделки до, бп"),
     ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
     ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
     limit: int = Query(500, ge=1, le=20000),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
@@ -112,12 +124,12 @@ async def tape(
                     "warning": "справочники ещё не прогреты — охват пуст"}
 
     if not isin:
-        isins = _ttm_isins(labels, isins, ttm_min, ttm_max)
+        isins = _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating)
         if isins is not None and not isins:
             return {"from": None, "trades": [], "scope": scope,
                     "summary": {"n": 0, "value": 0, "buy_value": 0, "sell_value": 0,
                                 "by_market": {}, "top": [], "archive_till": None},
-                    "warning": "под фильтр срока до погашения бумаг нет"}
+                    "warning": "под фильтры срока/рейтинга бумаг нет"}
 
     frm = (date.today() - timedelta(days=days - 1)).isoformat()
     # строки и агрегат независимы — читаем параллельно (WAL допускает
@@ -166,6 +178,21 @@ async def boards(days: int = Query(30, ge=1, le=400)):
     for r in rows:
         r["title"] = BOARD_TITLES.get(r["board"] or "", r["board"])
     return {"days": days, "boards": rows}
+
+
+@router.get("/ratings", tags=["Trades"])
+async def ratings():
+    """Рейтинги для фильтра — из справочников (в реестре шкала грубая:
+    AAA/AA/A/BBB/BB/B), с числом бумаг на грейд. Порядок — от старшего."""
+    counts: dict[str, int] = {}
+    for v in (await asyncio.to_thread(_labels)).values():
+        rt = (v.get("rating") or "").strip().upper()
+        if rt:
+            counts[rt] = counts.get(rt, 0) + 1
+    order = {r: i for i, r in enumerate(("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"))}
+    items = [{"name": k, "count": v} for k, v in counts.items()]
+    items.sort(key=lambda x: (order.get(x["name"], 99), x["name"]))
+    return {"ratings": items}
 
 
 @router.get("/issuers", tags=["Trades"])

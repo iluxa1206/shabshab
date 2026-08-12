@@ -200,6 +200,7 @@ async def days_agg(
     issuer: Optional[list[str]] = Query(None, description="эмитенты (по реестру)"),
     ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
     ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
     limit: int = Query(1000, ge=1, le=20000),
 ):
     """Дневные РПС-обороты (ISS history market=ndm).
@@ -212,7 +213,7 @@ async def days_agg(
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
     if scope not in SCOPES:
         raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
-    from api.routes.trades import _ttm_isins
+    from api.routes.trades import _rating_isins, _ttm_isins
     from services import block_trades as bt
     labels = await asyncio.to_thread(_labels)
     isins: Optional[list[str]] = None
@@ -222,7 +223,7 @@ async def days_agg(
             isins = [k for k, v in labels.items() if (v.get("emitter") or "") in want]
         else:
             isins = _scope_isins(scope, labels)
-        isins = _ttm_isins(labels, isins, ttm_min, ttm_max)
+        isins = _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating)
         if isins is not None and not isins:
             return {"from": None, "days": days, "rows": []}
     frm = (date.today() - timedelta(days=days)).isoformat()

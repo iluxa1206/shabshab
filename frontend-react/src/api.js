@@ -259,9 +259,10 @@ export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
 // market: bonds (безадресные) | ndm (адресные, РПС)
 export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   issuer, isin, scope = "market", limit = 500,
-                                  spreadMin, spreadMax, ttmMin, ttmMax } = {},
+                                  spreadMin, spreadMax, ttmMin, ttmMax, rating } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
+  for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
   for (const [k, v] of [["spread_min", spreadMin], ["spread_max", spreadMax],
                         ["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
     if (v != null && v !== "") p.set(k, v);
@@ -279,6 +280,9 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
 export const fetchTapeIssuers = () =>
   request("/api/trades/issuers").then((d) => d.issuers || []);
 
+export const fetchTapeRatings = () =>
+  request("/api/trades/ratings").then((d) => d.ratings || []);
+
 export const fetchTapeBoards = (days = 30) =>
   request(`/api/trades/boards?days=${days}`).then((d) => d.boards || []);
 
@@ -293,11 +297,12 @@ export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500 }
 
 // дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
 export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
-                                 scope, issuer, ttmMin, ttmMax } = {}, signal) => {
+                                 scope, issuer, ttmMin, ttmMax, rating } = {}, signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit });
   if (isin) p.set("isin", isin);
   if (scope) p.set("scope", scope);
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
+  for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
   for (const [k, v] of [["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
     if (v != null && v !== "") p.set(k, v);
   }
