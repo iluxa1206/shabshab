@@ -573,6 +573,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-legend { font: 11px var(--mono); color: var(--fg); height: 16px; line-height: 16px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cp-legend-hint { color: var(--mut-2); }
+/* сделки под точками: цветом стороны, как сами точки на графике */
+.cp-legend-trade.up { color: var(--up); }
+.cp-legend-trade.down { color: var(--down); }
+.cp-legend-trade.rps { color: var(--accent); }
 /* график + панель распределения справа (RVD-раскладка) */
 .cp-row { display: flex; gap: 8px; align-items: stretch; }
 .cp-chart { flex: 1 1 auto; min-width: 0; height: 100%;

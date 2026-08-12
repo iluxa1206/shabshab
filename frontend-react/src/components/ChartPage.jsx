@@ -3,7 +3,6 @@ import { useParams, useSearchParams, useNavigate, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query";
 import {
   createChart, CandlestickSeries, LineSeries, HistogramSeries, AreaSeries, CrosshairMode,
-  createSeriesMarkers,
 } from "lightweight-charts";
 import {
   fetchCandles, fetchSpreadHistory, fetchBondDetails, fetchBondRow,
@@ -355,15 +354,22 @@ export default function ChartPage() {
     enabled: barsOn,
     staleTime: 300_000,
   });
+  // refresh: false — дренить тики Alor тут не надо: тот же архив уже дотянул
+  // запрос часовых баров выше (он делает ta.drain на те же 30 дней), а оба
+  // запроса на бэке идут под одним замком по ISIN — и слой сделок ЖДАЛ конца
+  // второго, уже лишнего, дрейна. Порог берём в ключ, но старые точки держим на
+  // экране (placeholderData), чтобы переключение «крупнее, млн ₽» не мигало.
+  const keepPrev = (prev) => prev;
   const qTrades = useQuery({
     queryKey: ["big-trades", isin, layerDays, bigMln],
     // order=value: с сортировкой по времени лимит срезал дальнюю половину окна
     // и маркеры обрывались на середине графика без всякого следа
     queryFn: () => fetchTrades(isin, { days: Math.min(layerDays, 400),
                                        minValue: bigMln * 1e6, limit: 400,
-                                       order: "value" }),
+                                       order: "value", refresh: !barsOn }),
     enabled: on("big"),
     staleTime: 300_000,
+    placeholderData: keepPrev,
   });
   const qBlocks = useQuery({
     queryKey: ["rps-blocks", isin, layerDays, bigMln],
@@ -371,6 +377,7 @@ export default function ChartPage() {
                                              minValue: bigMln * 1e6, limit: 400 }),
     enabled: on("rps"),
     staleTime: 300_000,
+    placeholderData: keepPrev,
   });
 
   // Тип метрики спреда узнаём по самим барам: страница открывается по ISIN и
@@ -463,6 +470,8 @@ export default function ChartPage() {
   const hostRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef({});
+  // сделки под точками: время бара → сама сделка (цена, оборот, режим) для легенды
+  const tradeAtRef = useRef({ buy: new Map(), sell: new Map(), rps: new Map() });
   const theme = useThemeVars(wrapRef);
   const [legend, setLegend] = useState(null);
   const [hasYidx, setHasYidx] = useState(false);
@@ -523,8 +532,7 @@ export default function ChartPage() {
 
     for (const [k, s] of Object.entries(seriesRef.current)) {
       try {
-        if (k === "marks") s.detach();     // плагин маркеров, не серия
-        else chart.removeSeries(s);
+        chart.removeSeries(s);
       } catch { /* серия уже снята */ }
     }
     seriesRef.current = {};
@@ -621,55 +629,48 @@ export default function ChartPage() {
       }
     }
 
-    // ── маркеры сделок: крупные безадресные + адресные (РПС) ────────────────
-    // Оба слоя садятся на ОДНУ серию, поэтому маркеры собираем вместе: два
-    // вызова createSeriesMarkers по одному хосту затирают друг друга.
-    const marks = [];
-    if (on("big") && bigTrades.length) {
-      // одна цена — один маркер: в час может прийти несколько крупных принтов,
-      // накладываясь друг на друга; берём самый крупный в баре
+    // ── точки сделок: крупные безадресные + адресные (РПС) ──────────────────
+    // Не маркеры серии (те садятся НАД/ПОД баром), а свои серии-точки на той же
+    // ценовой шкале: кружок стоит ровно на цене сделки — видно, по какой стороне
+    // диапазона прошёл принт. Цифры сделки — в строке под курсором.
+    const dots = (key, rows, color) => {
+      if (!rows.length) return;
+      const pts = rows
+        .filter((t) => t.price != null)
+        .map((t) => ({ time: t.time, value: t.price }))
+        .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
+      if (!pts.length) return;
+      const s = chart.addSeries(LineSeries, {
+        color, lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 3.5,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        priceFormat: pxFmt,
+      }, 0);
+      s.setData(pts);
+      seriesRef.current[key] = s;
+    };
+    // одна точка на бар: в час приходит несколько крупных принтов, кружки легли
+    // бы друг на друга — берём самый крупный (у безадресных — по каждой стороне)
+    const pickBest = (rows, keyOf) => {
       const best = new Map();
-      for (const t of bigTrades) {
+      for (const t of rows) {
         const time = tradeTime(t.ts, tf);
-        const key = `${time}|${t.side}`;
-        const prev = best.get(key);
-        if (!prev || (t.value || 0) > (prev.value || 0)) best.set(key, { ...t, time });
+        const k = keyOf(time, t);
+        const prev = best.get(k);
+        if (!prev || (t.value || 0) > (prev.value || 0)) best.set(k, { ...t, time });
       }
-      for (const t of best.values()) {
-        // точка, без подписи: числа над каждой свечой залепляли график, а объём
-        // сделки и так виден в ленте и в подсказке
-        marks.push({
-          time: t.time,
-          position: t.side === "sell" ? "aboveBar" : "belowBar",
-          shape: "circle",
-          color: t.side === "sell" ? theme.down : theme.up,
-        });
-      }
-    }
-    if (on("rps") && rpsTrades.length) {
-      // у адресной сделки нет агрессора — ни стрелки, ни цвета стороны:
-      // кружок акцентным цветом над баром, подпись «объём + режим»
-      const best = new Map();
-      for (const t of rpsTrades) {
-        const time = tradeTime(t.ts, tf);
-        const prev = best.get(time);
-        if (!prev || (t.value || 0) > (prev.value || 0)) best.set(time, { ...t, time });
-      }
-      for (const t of best.values()) {
-        marks.push({
-          time: t.time,
-          position: "aboveBar",
-          shape: "circle",
-          color: theme.accent || theme.up,
-        });
-      }
-    }
-    if (marks.length) {
-      marks.sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
-      // ценовой график может быть выключен — маркеры сажаем на средневзвес
-      const host = price || seriesRef.current.vwap;
-      if (host) seriesRef.current.marks = createSeriesMarkers(host, marks);
-    }
+      return [...best.values()];
+    };
+    const bigDots = on("big") ? pickBest(bigTrades, (time, t) => `${time}|${t.side}`) : [];
+    const rpsDots = on("rps") ? pickBest(rpsTrades, (time) => time) : [];
+    dots("dotBuy", bigDots.filter((t) => t.side !== "sell"), theme.up);
+    dots("dotSell", bigDots.filter((t) => t.side === "sell"), theme.down);
+    dots("dotRps", rpsDots, theme.accent || theme.up);
+    // сделка под курсором — по времени бара: в легенде показываем цену и оборот
+    tradeAtRef.current = {
+      buy: new Map(bigDots.filter((t) => t.side !== "sell").map((t) => [String(t.time), t])),
+      sell: new Map(bigDots.filter((t) => t.side === "sell").map((t) => [String(t.time), t])),
+      rps: new Map(rpsDots.map((t) => [String(t.time), t])),
+    };
 
     let yidxDrawn = false;
     if (spreadPaneOn && spreadPts.length > 1) {
@@ -845,6 +846,13 @@ export default function ChartPage() {
         yo: yd?.open ?? pt?.o,
         yh: yd?.high ?? val(s.yhi), yl: yd?.low ?? val(s.ylo),
         w: val(s.vwap), b: val(s.buy), sl: val(s.sell),
+        // сделки под точками этого бара: цена и оборот — подписей на графике
+        // больше нет, цифры живут здесь
+        trades: [
+          tradeAtRef.current.buy.get(String(param.time)),
+          tradeAtRef.current.sell.get(String(param.time)),
+          tradeAtRef.current.rps.get(String(param.time)),
+        ].filter(Boolean),
       });
     };
     chart.subscribeCrosshairMove(onMove);
@@ -1012,6 +1020,15 @@ export default function ChartPage() {
                   {legend.yh != null && legend.yl != null && legend.yh !== legend.yl &&
                     <> · день {Math.round(legend.yl)} … {Math.round(legend.yh)}</>}</>
               : <> · {sLabel} {Math.round(legend.y)} bps</>)}
+            {/* сделки, отмеченные точками на этом баре: цена принта и оборот */}
+            {legend.trades?.map((t, i) => (
+              <span key={i} className={"cp-legend-trade "
+                + (t.negotiated ? "rps" : t.side === "sell" ? "down" : "up")}>
+                {" · "}{t.negotiated ? (t.board_title || "РПС")
+                  : t.side === "sell" ? "продажа" : "покупка"}
+                {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
+              </span>
+            ))}
           </>
         ) : <span className="cp-legend-hint">наведи курсор на график — здесь будут цифры бара</span>}
       </div>
