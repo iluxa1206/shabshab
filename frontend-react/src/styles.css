@@ -482,6 +482,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .dh-close { margin-left: auto; }
 /* имя занимает всю ширину строки и переносится целиком — эллипсис не нужен */
 .dh-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+/* срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл) */
+.dh-dates { display: inline-flex; gap: 10px; font-size: 12px; color: var(--mut); }
+.dh-offer { color: var(--accent); }
+.dh-offer-call { color: var(--mut); }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
 .drawer-head .btn { flex-shrink: 0; white-space: nowrap; }

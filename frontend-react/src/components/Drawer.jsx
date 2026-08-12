@@ -149,10 +149,6 @@ function FloaterSection({ f, base }) {
         <RefCell k="Convexity">{fmt.num(f.convexity, 4)}</RefCell>
         <RefCell k="PVBP ₽/bp (spread)">{fmt.num(f.pvbp, 4)}</RefCell>
       </div>
-      <div className="fnote">
-        Rate duration мала — цена устойчива к параллельному сдвигу ставки; основной риск —
-        spread duration ({fmt.num(f.spread_duration_yrs, 2) ?? "—"} лет) на изменение кредитного спреда.
-      </div>
     </>
   );
 }
@@ -627,6 +623,19 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                       target="_blank" rel="noopener noreferrer">↗</a>
                   )}
                 </span>
+                {/* срок бумаги прямо в шапке: погашение всегда, оферта — если она
+                    есть (её дата и есть горизонт, к которому бумага прайсится) */}
+                {data?.reference?.maturity_date && (
+                  <span className="dh-dates mono">
+                    <span title="Дата погашения">M {fmt.date(data.reference.maturity_date)}</span>
+                    {data?.reference?.offer_date && (
+                      <span className={"dh-offer" + (data.reference.offer_kind === "call" ? " dh-offer-call" : "")}
+                        title={(data.reference.offer_kind === "call" ? "Call-оферта (опцион эмитента)" : "Пут-оферта")}>
+                        {data.reference.offer_kind === "call" ? "C " : "P "}{fmt.date(data.reference.offer_date)}
+                      </span>
+                    )}
+                  </span>
+                )}
               </div>
             </div>
             <div className="drawer-body">

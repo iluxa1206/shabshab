@@ -248,29 +248,10 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     # почему метрики показаны к тому горизонту, к которому показаны. Свитчер в
     # карточке позволяет посмотреть любой горизонт вручную.
     _hz = val_dict.get("preferred_horizon", "maturity")
-    _opx = val_dict.get("offer_price_pct")
-    if next_offer and next_offer[2] == "put":
-        if _hz == "put":
-            warnings.append(
-                f"Пут-оферта {next_offer[0].isoformat()}: цена ниже цены выкупа "
-                f"({_opx if _opx is not None else 100}%) — держателю выгодно сдать, "
-                "метрики показаны К ОФЕРТЕ (yield-to-put)")
-        else:
-            warnings.append(
-                f"Пут-оферта {next_offer[0].isoformat()}: цена выше цены выкупа "
-                f"({_opx if _opx is not None else 100}%) — держатель выгодно кэррится и "
-                "оферту не предъявит, метрики показаны К ПОГАШЕНИЮ; к оферте — в свитчере")
-    elif next_offer and next_offer[2] == "call":
-        if _hz == "call":
-            warnings.append(
-                f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): цена выше цены "
-                f"выкупа ({_opx if _opx is not None else 100}%) — эмитент занял дорого и, "
-                "вероятно, отзовёт выпуск, метрики показаны К CALL (yield-to-call); "
-                "гарантией это не является")
-        else:
-            warnings.append(
-                f"Call-оферта {next_offer[0].isoformat()} (опцион эмитента): цена ниже цены "
-                "выкупа — эмитенту отзывать невыгодно, метрики показаны К ПОГАШЕНИЮ")
+    _to = {"put": "ОФЕРТЕ", "call": "CALL"}.get(_hz, "ПОГАШЕНИЮ")
+    if next_offer:
+        _kind = "Call-оферта" if next_offer[2] == "call" else "Пут-оферта"
+        warnings.append(f"{_kind} {next_offer[0].isoformat()}, расчёт к {_to}")
 
     return {
         "reference": ref_dict,
