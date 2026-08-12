@@ -1473,15 +1473,16 @@ body.col-resizing * { cursor: col-resize !important; }
 .tape-rt, .tape-base { font-size: 9.5px; margin-left: 6px; color: var(--mut); }
 .tape-name-cell { display: inline-flex; align-items: center; gap: 4px;
                   font-weight: 600; white-space: nowrap; }
-/* Кнопки у названия: график и карточка. Бледные до наведения на строку —
-   в плотной ленте две иконки на строку иначе перетягивают взгляд с цифр. */
-.tape-links { display: inline-flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+/* Кнопки строки: «график» и «стакан». Подписаны словами и потому видны всегда
+   (иконки прятались до наведения, но пустая колонка со словами читается как
+   недогрузившаяся); приглушены, на наведении строки — в полную силу. */
+.tape-links { display: inline-flex; gap: 3px; opacity: .55; transition: opacity .12s; }
 tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .tape-link { display: inline-flex; align-items: center; justify-content: center;
              background: transparent; border: 1px solid var(--line-2); color: var(--mut);
-             line-height: 1; padding: 2px 3px; cursor: pointer; }
+             font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+             text-transform: uppercase; line-height: 1; padding: 3px 6px; cursor: pointer; }
 .tape-link:hover { color: var(--fg); border-color: var(--fg); }
-.tape-link svg { vertical-align: 0; }
 /* ISIN копируется кликом — выглядит как текст, ведёт себя как кнопка */
 .tape-isin { background: transparent; border: 0; padding: 0; cursor: pointer;
              font-family: var(--mono); font-size: 10.5px; color: var(--mut);

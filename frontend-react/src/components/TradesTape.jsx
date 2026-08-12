@@ -5,7 +5,6 @@ import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
-import { IconChart, IconCard } from "./icons.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
@@ -50,6 +49,27 @@ const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 8) || "—";
 const num = (s) => (s === "" || s == null ? null : Number(s));
 
+/** Маркеры оферты у даты погашения — те же p/c, что в МОНИТОРЕ и по тем же
+ *  правилам: p — ближайшая пут-оферта из MOEX bondization (дата известна),
+ *  c — call-опцион эмитента из corpbonds (даты нет, MOEX колл не различает).
+ *  Факты независимые, у бумаги может быть и то и другое. Жирный маркер —
+ *  метрики посчитаны к этому горизонту (правило цены vs цена выкупа). */
+function OfferMarks({ r }) {
+  const put = r.offer_kind === "put" && r.offer_date;
+  const call = r.has_call === true || r.offer_kind === "call";
+  if (!put && !call) return null;
+  const hz = r.preferred_horizon;
+  return (
+    <>
+      {put && <span className={"offer-mark offer-put" + (hz === "put" ? " offer-mark-on" : "")}
+        title={"пут-оферта " + fmt.date(String(r.offer_date).slice(0, 10))}>p</span>}
+      {call && <span className={"offer-mark offer-call" + (hz === "call" ? " offer-mark-on" : "")}
+        title={r.offer_kind === "call" && r.offer_date
+          ? "call-оферта " + fmt.date(String(r.offer_date).slice(0, 10)) : "call-опцион"}>c</span>}
+    </>
+  );
+}
+
 function SideTag({ side }) {
   if (side !== "buy" && side !== "sell") return <span className="tape-side">—</span>;
   const buy = side === "buy";
@@ -69,7 +89,7 @@ const COLS = [
   // друг под другом («КС + 2,50% (12)»), а в имени выпуска ей тесно
   { key: "formula", label: "ФОРМУЛА",   align: "left", w: 15, get: (r) => r.margin_bps },
   { key: "isin",   label: "ISIN",       align: "left", w: 14, get: (r) => r.isin },
-  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 11, get: (r) => r.maturity || "" },
+  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 13, get: (r) => r.maturity || "" },
   { key: "board",  label: "РЕЖИМ",      align: "left", w: 10, get: (r) => r.board_short || r.board || "" },
   { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 8,  get: (r) => r.price },
   { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 9,  get: (r) => r.value },
@@ -79,7 +99,7 @@ const COLS = [
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
   // график и карточка — последней колонкой: у имени они перетягивали взгляд,
   // а место в колонке БУМАГА нужнее самому имени
-  { key: "act",    label: "",           align: "left", w: 5,  get: () => null },
+  { key: "act",    label: "",           align: "left", w: 15, get: () => null },
 ];
 const DEFAULT_COLS = COLS.map((c) => c.key);
 const LS_ORDER = "tapeCols";
@@ -92,6 +112,15 @@ const readLS = (k, fallback) => {
   catch { return fallback; }
 };
 const savedFilters = () => readLS(LS_FILTERS, {}) || {};
+
+// Набор по умолчанию — рабочий срез стола: крупные сделки во флоатерах без
+// субордов. Он же встаёт по кнопке сброса. Заодно бережёт бэк: «весь рынок без
+// порога» — это агрегат по миллиону с лишним сделок на каждый запрос.
+const DEFAULTS = {
+  minValue: 10e6, maxValue: 0, scopes: ["float"], hideSub: true, hideAmort: false,
+  side: null, market: null, ratings: [], bases: [], cls: [], emitters: [],
+  onlyWatch: false, spreadMin: "", spreadMax: "", ttmMin: "", ttmMax: "",
+};
 // поля объёма — в млн ₽; в состоянии и в API по-прежнему рубли
 const mlnToRub = (v) => {
   const n = parseFloat(String(v).replace(",", "."));
@@ -118,19 +147,17 @@ function IsinCell({ isin }) {
   );
 }
 
-/** Кнопки у названия: график во весь экран и карточка со стаканом. Обе —
- *  обычная навигация, поэтому «назад» возвращает в ленту, а фильтры она
- *  держит в URL и восстанавливает сама. */
+/** Кнопки строки: график во весь экран и стакан бумаги. Подписаны словами, а
+ *  не значками — в плотной ленте иконку приходится расшифровывать наведением.
+ *  Обе — обычная навигация, поэтому «назад» возвращает в ленту с её фильтрами. */
 function RowLinks({ isin, onOpen }) {
   const stop = (e) => e.stopPropagation();
   return (
     <span className="tape-links">
       <button type="button" className="tape-link" title="График выпуска на весь экран"
-        aria-label="График выпуска"
-        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}><IconChart size={12} /></button>
+        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>график</button>
       <button type="button" className="tape-link" title="Карточка бумаги со стаканом"
-        aria-label="Карточка бумаги"
-        onClick={(e) => { stop(e); onOpen(isin, "card"); }}><IconCard size={12} /></button>
+        onClick={(e) => { stop(e); onOpen(isin, "card"); }}>стакан</button>
     </span>
   );
 }
@@ -141,11 +168,15 @@ export default function TradesTape() {
   // дефолт — рабочий срез: неделя и крупняк от 1 млн ₽. Максимум («макс» +
   // «все») лента тянет, но агрегат по миллиону сделок считается секундами.
 
-  const [minValue, setMinValue] = useState(() => pick(savedFilters().minValue, 1e6));
+  const [minValue, setMinValue] = useState(() => pick(savedFilters().minValue, DEFAULTS.minValue));
   const [side, setSide] = useState(() => pick(savedFilters().side, null));
   const [market, setMarket] = useState(() => pick(savedFilters().market, null));
   const [emitters, setEmitters] = useState(() => pick(savedFilters().emitters, []));
-  const [scope, setScope] = useState(() => pick(savedFilters().scope, "float"));
+  // Охват — два независимых флажка: можно смотреть и флоатеры, и фиксы разом.
+  // В API уезжает одним scope. Оба флажка (как и ни одного) → market: сужать
+  // по списку ISIN тут нечем — вместе флоатеры и фиксы это и есть рынок, а
+  // scope=universe гнал бы во временную таблицу весь реестр и вешал запрос.
+  const [scopes, setScopes] = useState(() => pick(savedFilters().scopes, DEFAULTS.scopes));
   // страницы: rows копятся, курсор — последняя показанная сделка
   const [pages, setPages] = useState([]);       // догруженные порции
   const [more, setMore] = useState(false);      // есть ли ещё
@@ -158,9 +189,9 @@ export default function TradesTape() {
   // признаки выпуска — те же, что в СПИСКЕ (внутри воронки)
   const [bases, setBases] = useState(() => pick(savedFilters().bases, []));
   const [cls, setCls] = useState(() => pick(savedFilters().cls, []));
-  const [hideSub, setHideSub] = useState(() => pick(savedFilters().hideSub, false));
+  const [hideSub, setHideSub] = useState(() => pick(savedFilters().hideSub, DEFAULTS.hideSub));
   const [hideAmort, setHideAmort] = useState(() => pick(savedFilters().hideAmort, false));
-  const [maxValue, setMaxValue] = useState(() => pick(savedFilters().maxValue, 0));
+  const [maxValue, setMaxValue] = useState(() => pick(savedFilters().maxValue, DEFAULTS.maxValue));
   // Избранное общее со СПИСКОМ: watchlist живёт в localStorage под ключом
   // "watch", своей копии у ленты нет — звезда там и здесь означает одно и то же.
   const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
@@ -201,14 +232,15 @@ export default function TradesTape() {
     return ISIN_RE.test(s) ? s : null;
   }, [q]);
   const isinReq = pin || qIsin;
+  const scope = scopes.length === 1 ? scopes[0] : "market";
   const daysView = market === "ndm" && byDay;
 
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
-      minValue, side, market, emitters, scope, spreadMin, spreadMax,
+      minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
       maxValue, onlyWatch }));
-  }, [minValue, side, market, emitters, scope, spreadMin, spreadMax,
+  }, [minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort,
       maxValue, onlyWatch]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
@@ -238,7 +270,7 @@ export default function TradesTape() {
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [minValue, maxValue, side, market, daysView, emitters, isinReq, scope, onlyWatch,
+  }, [minValue, maxValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
@@ -323,16 +355,26 @@ export default function TradesTape() {
 
   // Счётчик на воронке — сколько условий включено ВСЕГО (как в СПИСКЕ), в пару
   // к кнопке сброса: иначе спрятанный в меню фильтр молча режет ленту.
+  // Счётчик и кнопка сброса показывают ОТКЛОНЕНИЯ от набора по умолчанию:
+  // «10 млн + флоатеры + без субордов» — это норма стола, а не три фильтра.
   const activeFilters = bases.length + cls.length + emitters.length + ratings.length
-    + (hideSub ? 1 : 0) + (hideAmort ? 1 : 0) + (onlyWatch ? 1 : 0) + (side ? 1 : 0)
-    + (market ? 1 : 0) + (minValue ? 1 : 0) + (maxValue ? 1 : 0)
-    + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0);
+    + (hideSub === DEFAULTS.hideSub ? 0 : 1) + (hideAmort === DEFAULTS.hideAmort ? 0 : 1)
+    + (onlyWatch ? 1 : 0) + (side ? 1 : 0) + (market ? 1 : 0)
+    + (minValue === DEFAULTS.minValue ? 0 : 1) + (maxValue ? 1 : 0)
+    + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0)
+    + (scopes.length === 1 && scopes[0] === DEFAULTS.scopes[0] ? 0 : 1);
 
+  // Сброс возвращает НАБОР ПО УМОЛЧАНИЮ, а не пустоту: пустой фильтр — это
+  // весь рынок без порога, самый тяжёлый и наименее рабочий срез.
   const resetFilters = () => {
-    setSpreadMin(""); setSpreadMax(""); setTtmMin(""); setTtmMax("");
-    setRatings([]); setBases([]); setCls([]); setEmitters([]);
-    setHideSub(false); setHideAmort(false); setOnlyWatch(false);
-    setSide(null); setMarket(null); setMinValue(0); setMaxValue(0);
+    setSpreadMin(DEFAULTS.spreadMin); setSpreadMax(DEFAULTS.spreadMax);
+    setTtmMin(DEFAULTS.ttmMin); setTtmMax(DEFAULTS.ttmMax);
+    setRatings(DEFAULTS.ratings); setBases(DEFAULTS.bases); setCls(DEFAULTS.cls);
+    setEmitters(DEFAULTS.emitters); setOnlyWatch(DEFAULTS.onlyWatch);
+    setHideSub(DEFAULTS.hideSub); setHideAmort(DEFAULTS.hideAmort);
+    setSide(DEFAULTS.side); setMarket(DEFAULTS.market);
+    setMinValue(DEFAULTS.minValue); setMaxValue(DEFAULTS.maxValue);
+    setScopes(DEFAULTS.scopes);
   };
 
   // ── колонки: порядок, ширина, сортировка ─────────────────────────────────
@@ -442,6 +484,36 @@ export default function TradesTape() {
                     </div>
                   </div>
                   <div className="fp-sec">
+                    <div className="fp-head"><span className="fg-lbl">ОХВАТ</span></div>
+                    <div className="fp-chips">
+                      {SCOPES.map(([v, label]) => (
+                        <button key={v} className={"chip-btn" + (scopes.includes(v) ? " on" : "")}
+                          aria-pressed={scopes.includes(v)}
+                          onClick={() => setScopes((a) => toggle(a, v))}
+                          title={v === "float" ? "флоатеры (KEYRATE/RUONIA) из реестра"
+                            : "фиксы: облигации с постоянным купоном"}>{label}</button>
+                      ))}
+                    </div>
+                    <div className="sig-note">
+                      Оба флажка (или ни одного) — рынок целиком, включая бумаги вне реестра.
+                    </div>
+                  </div>
+
+                  <div className="fp-sec">
+                    <div className="fp-head"><span className="fg-lbl">ОБНОВЛЕНИЕ</span></div>
+                    <div className="fp-chips">
+                      <button className={"chip-btn" + (live ? " on" : "")}
+                        onClick={() => setLive((v) => !v)}
+                        title={`лента дотягивается сама раз в ${LIVE_MS / 1000} с; во вкладке в фоне опрос не идёт`}>
+                        {live ? "лайв включён" : "лайв выключен"}
+                      </button>
+                      <button className="chip-btn" onClick={() => setTick((t) => t + 1)}>
+                        обновить сейчас
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="fp-sec">
                     <div className="fp-head"><span className="fg-lbl">СТОРОНА</span></div>
                     <div className="fp-chips">
                       {SIDES.map(([v, label]) => (
@@ -479,6 +551,10 @@ export default function TradesTape() {
               aria-label="Объём сделки — до, млн ₽"
               value={maxValue ? String(maxValue / 1e6) : ""}
               onChange={(e) => setMaxValue(mlnToRub(e.target.value))} />
+            {(minValue || maxValue) && (
+              <button className="chip-btn" title="Сбросить окно объёма"
+                onClick={() => { setMinValue(0); setMaxValue(0); }}>×</button>
+            )}
           </div>
 
           <div className="fgroup" title="Лет до погашения в интервале [от, до]; бумаги без даты погашения при заданной границе скрыты">
@@ -488,6 +564,10 @@ export default function TradesTape() {
             <span className="fg-lbl">—</span>
             <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
               value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
+            {(ttmMin || ttmMax) && (
+              <button className="chip-btn" title="Сбросить окно погашения"
+                onClick={() => { setTtmMin(""); setTtmMax(""); }}>×</button>
+            )}
           </div>
 
           <div className="fgroup" title="R-spread сделки в интервале [от, до], бп; сделки без посчитанного спреда при заданной границе скрыты">
@@ -497,21 +577,13 @@ export default function TradesTape() {
             <span className="fg-lbl">—</span>
             <input className="num-input" type="number" step="10" placeholder="до"
               value={spreadMax} onChange={(e) => setSpreadMax(e.target.value)} />
+            {(spreadMin || spreadMax) && (
+              <button className="chip-btn" title="Сбросить окно спреда"
+                onClick={() => { setSpreadMin(""); setSpreadMax(""); }}>×</button>
+            )}
           </div>
 
-          <span className="seg" role="tablist" aria-label="Охват">
-            {SCOPES.map(([v, label]) => (
-              <button key={v} className={"seg-btn" + (scope === v ? " active" : "")}
-                onClick={() => setScope(v)}
-                title={v === "float" ? "только флоатеры (KEYRATE/RUONIA) из реестра"
-                  : "фиксы: облигации с постоянным купоном"}>{label}</button>
-            ))}
-          </span>
-          <button className={"chip-btn" + (live ? " on" : "")} onClick={() => setLive((v) => !v)}
-            title={`лента дотягивается сама раз в ${LIVE_MS / 1000} с; во вкладке в фоне опрос не идёт`}>
-            {live ? "лайв" : "пауза"}
-          </button>
-          <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>
+
         </div>
         {/* вторая строка — только состояние данных, условия все в первой */}
         <div className="ia-filters ia-meta">
@@ -588,7 +660,9 @@ export default function TradesTape() {
                       : <CouponFormula base={r.base} spreadBps={r.margin_bps}
                           couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />,
                     isin: <IsinCell isin={r.isin} />,
-                    mat: r.maturity ? fmt.date(String(r.maturity).slice(0, 10)) : <span className="dash">—</span>,
+                    mat: r.maturity
+                      ? <><OfferMarks r={r} />{fmt.date(String(r.maturity).slice(0, 10))}</>
+                      : <span className="dash">—</span>,
                     board: (
                       <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}
                         title={r.board_title || r.board}>

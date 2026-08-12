@@ -371,7 +371,7 @@ def labels_map(isins=None) -> Dict[str, dict]:
     (сотни строк, один запрос); со списком — только он."""
     _ensure()
     q = ("SELECT isin, short_name, emitter_name, base, rating, maturity_date, "
-         "margin_bps, coupons_per_year, coupon_period_days, coupon_text "
+         "margin_bps, coupons_per_year, coupon_period_days, coupon_text, has_call "
          "FROM instruments")
     args: list = []
     ids = [(i or "").strip() for i in (isins or []) if i]
@@ -392,7 +392,10 @@ def labels_map(isins=None) -> Dict[str, dict]:
                         "coupons_per_year": (
                             max(1, min(365, round(365 / r["coupon_period_days"])))
                             if r["coupon_period_days"] else r["coupons_per_year"]),
-                        "coupon_text": r["coupon_text"]} for r in rows}
+                        "coupon_text": r["coupon_text"],
+                        # call-опцион эмитента: MOEX его не различает вовсе,
+                        # источник — corpbonds; нужен ленте для маркера «c»
+                        "has_call": r["has_call"]} for r in rows}
 
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}

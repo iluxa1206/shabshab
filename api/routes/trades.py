@@ -207,6 +207,10 @@ async def tape(
                           y_min=spread_min, y_max=spread_max, max_value=max_value)
         if not before_ts else asyncio.sleep(0, result={}))
     moex = await asyncio.to_thread(_moex_names)
+    # Оферты: дата и вид ближайшей — из метрик юниверса (там же, откуда их берёт
+    # МОНИТОР), call-опцион — из реестра. Маркеры p/c рядом с погашением.
+    from services.market_data import MarketDataService
+    um = MarketDataService.universe_metrics() or {}
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
     # block_trades.price_new_trades): цена в % номинала между выпусками
     # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев
@@ -226,6 +230,11 @@ async def tape(
         r["margin_bps"] = lb.get("margin_bps")
         r["coupons_per_year"] = lb.get("coupons_per_year")
         r["coupon_text"] = lb.get("coupon_text")
+        mx = um.get(r["isin"]) or {}
+        r["offer_date"] = mx.get("offer_date")
+        r["offer_kind"] = mx.get("offer_kind")
+        r["preferred_horizon"] = mx.get("horizon")
+        r["has_call"] = lb.get("has_call")
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]
