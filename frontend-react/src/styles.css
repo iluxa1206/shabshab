@@ -55,29 +55,45 @@
   --rt-b: #fa5252;
 }
 
-/* Grey = графит, средняя ступень между белым и чёрным (мягче тёмной) */
-.theme-grey {
-  color-scheme: dark;
-  --bg: #33383f;
-  --fg: #eceef1;
-  --mut: #b0b5bd;
-  --mut-2: #9ea4ae;            /* ~4.7:1 на #33383f (было #8b919b ≈ 3.7:1) */
-  --line: #454b54;
-  --line-2: #565d67;
-  --hover: #3c424a;
-  --inv-bg: #eceef1;
-  --inv-fg: #33383f;
-  --up: #4ecb76;
-  --down: #ff6b6b;
-  --accent: #6b9bff;
+/* Win = old internet core (Windows 95/98 GUI).
+   Разделение, которого нет в остальных темах: --bg это КЛИЕНТСКАЯ область
+   (белая: таблицы, поля, графики), а хром окна (меню, тулбар, статусбар,
+   кнопки, шапки панелей) красится в --face = серебро. Так работали окна той
+   эпохи, и только так плотная таблица на 13px остаётся читаемой.
+   Структурные правила темы — в самом низу файла. */
+.theme-win {
+  color-scheme: light;
+  --mono: "Lucida Console", "DejaVu Sans Mono", Menlo, monospace;
+  --ui: Tahoma, Verdana, Geneva, "DejaVu Sans", sans-serif;
+  --bg: #ffffff;
+  --fg: #000000;
+  --mut: #4c4c4c;              /* ~8.6:1 на белом; аутентичный #808080 = 3.9:1 — мимо */
+  --mut-2: #6b6b6b;            /* ~5.4:1 */
+  --line: #808080;
+  --line-2: #b4b4b4;
+  --hover: #e4e4e4;
+  --inv-bg: #000080;           /* выделение = классический navy */
+  --inv-fg: #ffffff;
+  --up: #007a1f;               /* VGA green, дотянут до контраста на белом */
+  --down: #cc0000;
+  --accent: #000080;           /* navy: тайтлбары, активные кнопки, доп. серия */
   --pos: var(--up);
   --neg: var(--down);
-  --rt-aaa: #51cf66;
-  --rt-aa: #94d82d;
-  --rt-a: #ffa94d;
-  --rt-bbb: #ff922b;
-  --rt-bb: #ff6b6b;
-  --rt-b: #fa5252;
+  /* палитра бевелов Win95: face / светлый / белый / тень / чёрная тень */
+  --face: #c0c0c0;
+  --bev-lt: #dfdfdf;
+  --bev-hi: #ffffff;
+  --bev-sh: #808080;
+  --bev-dk: #000000;
+  --title-a: #000080;          /* активный тайтлбар (левый край градиента) */
+  --title-b: #1084d0;          /* правый край */
+  /* рейтинг-бакеты в 16-цветной VGA-логике */
+  --rt-aaa: #008000;
+  --rt-aa: #4a7d00;
+  --rt-a: #9a6b00;
+  --rt-bbb: #b35a00;
+  --rt-bb: #cc0000;
+  --rt-b: #800000;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

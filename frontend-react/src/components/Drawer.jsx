@@ -45,17 +45,15 @@ export function horizonView(v, sel) {
 
 const HZ_LABEL = { maturity: "к погашению", put: "к оферте (пут)", call: "к call" };
 
-// Свитчер горизонта прайсинга. По умолчанию «Авто» = правило цены: бумага ниже
-// цены пут-выкупа торгуется к оферте (держатель сдаст), выше цены call-выкупа —
-// к коллу (эмитент отзовёт), иначе к погашению. Показываем, только если у
-// бумаги вообще есть альтернативный горизонт.
-export function HorizonSwitch({ v, value, onChange }) {
+// Свитчер горизонта прайсинга. Кнопки «Авто» нет: подсвечен сразу тот горизонт,
+// который выбрало правило цены (active = разрешённый ключ, не сырое состояние) —
+// пользователь видит, к чему бумага прайсится, без лишнего клика. Показываем,
+// только если у бумаги вообще есть альтернативный горизонт.
+export function HorizonSwitch({ v, active, onChange }) {
   const hzs = (v && v.horizons) || {};
   const alts = ["put", "call"].filter((k) => hzs[k]);
   if (!alts.length) return null;
-  const auto = v.preferred_horizon || "maturity";
   const opts = [
-    { k: "auto", t: "Авто", title: HZ_LABEL[auto] || auto },
     { k: "maturity", t: "Погашение", title: fmt.date(hzs.maturity?.date) || "" },
     ...alts.map((k) => ({
       k, t: k === "put" ? "Оферта" : "Call",
@@ -64,10 +62,10 @@ export function HorizonSwitch({ v, value, onChange }) {
   ];
   return (
     <div className="hz-switch">
-      <span className="hz-switch-label">Считать</span>
+      <span className="hz-switch-label">Считать к</span>
       {opts.map((o) => (
         <button key={o.k} type="button" title={o.title}
-          className={"hz-btn" + (value === o.k ? " hz-btn-on" : "")}
+          className={"hz-btn" + (active === o.k ? " hz-btn-on" : "")}
           onClick={() => onChange(o.k)}>{o.t}</button>
       ))}
     </div>
@@ -428,7 +426,7 @@ function Content({ d, charts, hzSel = "auto", setHzSel = () => {} }) {
             : "рыночная цена"}
         </span>
       </div>
-      <HorizonSwitch v={vRaw} value={hzSel} onChange={setHzSel} />
+      <HorizonSwitch v={vRaw} active={hzView.key} onChange={setHzSel} />
       <ValCards v={v} priceDate={m.calc_date} calc={isRepriced}
         hzKey={hzView.key} hzDate={hzView.date} />
 
