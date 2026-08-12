@@ -259,10 +259,17 @@ export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
 // market: bonds (безадресные) | ndm (адресные, РПС)
 export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   issuer, isin, scope = "market", limit = 500,
-                                  spreadMin, spreadMax, ttmMin, ttmMax, rating } = {},
+                                  spreadMin, spreadMax, ttmMin, ttmMax, rating,
+                                  base, cls, hideSubord, hideAmort } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
+  // признаки выпуска: база купона, класс эмитента, суборды/амортизация —
+  // те же условия, что в СПИСКЕ (фильтры-воронка)
+  for (const b of [].concat(base || [])) if (b) p.append("base", b);
+  for (const c of [].concat(cls || [])) if (c) p.append("cls", c);
+  if (hideSubord) p.set("hide_subord", "1");
+  if (hideAmort) p.set("hide_amort", "1");
   for (const [k, v] of [["spread_min", spreadMin], ["spread_max", spreadMax],
                         ["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
     if (v != null && v !== "") p.set(k, v);
@@ -303,6 +310,12 @@ export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
   if (scope) p.set("scope", scope);
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
   for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
+  // признаки выпуска: база купона, класс эмитента, суборды/амортизация —
+  // те же условия, что в СПИСКЕ (фильтры-воронка)
+  for (const b of [].concat(base || [])) if (b) p.append("base", b);
+  for (const c of [].concat(cls || [])) if (c) p.append("cls", c);
+  if (hideSubord) p.set("hide_subord", "1");
+  if (hideAmort) p.set("hide_amort", "1");
   for (const [k, v] of [["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
     if (v != null && v !== "") p.set(k, v);
   }

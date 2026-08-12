@@ -4,8 +4,9 @@ import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } f
 import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
-import IssuerFilter from "./IssuerFilter.jsx";
+import FiltersMenu from "./FiltersMenu.jsx";
 import { IconChart, IconCard } from "./icons.jsx";
+import CouponFormula from "./CouponFormula.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
 //
@@ -60,24 +61,24 @@ function SideTag({ side }) {
 // перетаскиванием, тянутся за границу, кликом сортируются. Раскладка живёт в
 // localStorage, чтобы стол не собирал её заново каждое утро.
 const COLS = [
-  { key: "date",   label: "ДАТА",       align: "left", w: 5,  get: (r) => r.ts },
-  { key: "time",   label: "ВРЕМЯ",      align: "left", w: 7,  get: (r) => r.ts },
-  { key: "name",   label: "БУМАГА",     align: "left", w: 16, get: (r) => (r.name || "").toLowerCase() },
-  { key: "isin",   label: "ISIN",       align: "left", w: 13, get: (r) => r.isin },
-  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 10, get: (r) => r.maturity || "" },
-  { key: "board",  label: "РЕЖИМ",      align: "left", w: 8,  get: (r) => r.board_short || r.board || "" },
-  // единицы — второй строкой (sub), как в СПИСКЕ: заголовок «СУММА, МЛН» в
-  // одну строку не влезал в колонку и обрезался многоточием
-  { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 7,  get: (r) => r.price },
-  { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 8,  get: (r) => r.value },
-  { key: "side",   label: "СТОРОНА",           align: "left", w: 8,  get: (r) => r.side || "" },
-  { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 9, get: (r) => r.y_idx_bps,
+  { key: "date",   label: "ДАТА",       align: "left", w: 6,  get: (r) => r.ts },
+  { key: "time",   label: "ВРЕМЯ",      align: "left", w: 8,  get: (r) => r.ts },
+  { key: "name",   label: "БУМАГА",     align: "left", w: 18, get: (r) => (r.name || "").toLowerCase() },
+  // формула купона — отдельной колонкой, как в СПИСКЕ: части выстраиваются
+  // друг под другом («КС + 2,50% (12)»), а в имени выпуска ей тесно
+  { key: "formula", label: "ФОРМУЛА",   align: "left", w: 15, get: (r) => r.margin_bps },
+  { key: "isin",   label: "ISIN",       align: "left", w: 14, get: (r) => r.isin },
+  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 11, get: (r) => r.maturity || "" },
+  { key: "board",  label: "РЕЖИМ",      align: "left", w: 10, get: (r) => r.board_short || r.board || "" },
+  { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 8,  get: (r) => r.price },
+  { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 9,  get: (r) => r.value },
+  { key: "side",   label: "СТОРОНА",           align: "left", w: 9,  get: (r) => r.side || "" },
+  { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
-  { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 7,  get: (r) => r.yld },
+  { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
 ];
 const DEFAULT_COLS = COLS.map((c) => c.key);
 const LS_ORDER = "tapeCols";
-const LS_WIDTHS = "tapeColW";
 // Фильтры ленты переживают уход на график/карточку и возврат «назад»: без
 // этого стол пересобирал условия после каждого клика по бумаге.
 const LS_FILTERS = "tapeFilters";
@@ -142,6 +143,11 @@ export default function TradesTape() {
   const [ttmMin, setTtmMin] = useState(() => pick(savedFilters().ttmMin, ""));
   const [ttmMax, setTtmMax] = useState(() => pick(savedFilters().ttmMax, ""));
   const [ratings, setRatings] = useState(() => pick(savedFilters().ratings, []));   // выбранные грейды
+  // признаки выпуска — те же, что в СПИСКЕ (внутри воронки)
+  const [bases, setBases] = useState(() => pick(savedFilters().bases, []));
+  const [cls, setCls] = useState(() => pick(savedFilters().cls, []));
+  const [hideSub, setHideSub] = useState(() => pick(savedFilters().hideSub, false));
+  const [hideAmort, setHideAmort] = useState(() => pick(savedFilters().hideAmort, false));
   const [ratingOpts, setRatingOpts] = useState([]);
   const [pin, setPin] = useState(() => pick(savedFilters().pin, null));
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
@@ -164,7 +170,6 @@ export default function TradesTape() {
     // новые колонки версии дописываем в конец, а не теряем молча
     return kept.length ? [...kept, ...DEFAULT_COLS.filter((k) => !kept.includes(k))] : DEFAULT_COLS;
   });
-  const [colWidths, setColWidths] = useState(() => readLS(LS_WIDTHS, {}));
   const [sort, setSort] = useState({ key: null, dir: "desc" });
   const dragRef = useRef(null);
   const [dragKey, setDragKey] = useState(null);
@@ -184,11 +189,10 @@ export default function TradesTape() {
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin }));
+      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort }));
   }, [days, minValue, side, market, emitters, scope, limit, spreadMin, spreadMax,
-      ttmMin, ttmMax, ratings, byDay, pin]);
+      ttmMin, ttmMax, ratings, byDay, pin, bases, cls, hideSub, hideAmort]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
-  useEffect(() => { localStorage.setItem(LS_WIDTHS, JSON.stringify(colWidths)); }, [colWidths]);
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
@@ -208,13 +212,14 @@ export default function TradesTape() {
       : fetchMarketTape({ days, minValue, side, market, issuer: emitters,
                           isin: isinReq, scope, limit, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
-                          ttmMax: num(ttmMax), rating: ratings }, ac.signal)
+                          ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
+                          hideSubord: hideSub, hideAmort }, ac.signal)
         .then((d) => { setData(d); });
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
   }, [days, minValue, side, market, daysView, emitters, isinReq, scope, limit,
-      spreadMin, spreadMax, ttmMin, ttmMax, ratings, tick]);
+      spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
   // демонами (тик Alor и лента ISS), поэтому в сокете не было бы ничего, чего
@@ -270,6 +275,18 @@ export default function TradesTape() {
 
   const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
 
+  // Счётчик на воронке — сколько условий включено ВСЕГО (как в СПИСКЕ), в пару
+  // к кнопке сброса: иначе спрятанный в меню фильтр молча режет ленту.
+  const activeFilters = bases.length + cls.length + emitters.length + ratings.length
+    + (hideSub ? 1 : 0) + (hideAmort ? 1 : 0)
+    + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0);
+
+  const resetFilters = () => {
+    setSpreadMin(""); setSpreadMax(""); setTtmMin(""); setTtmMax("");
+    setRatings([]); setBases([]); setCls([]); setEmitters([]);
+    setHideSub(false); setHideAmort(false);
+  };
+
   // ── колонки: порядок, ширина, сортировка ─────────────────────────────────
   const cols = useMemo(() => {
     const byKey = new Map(COLS.map((c) => [c.key, c]));
@@ -293,10 +310,6 @@ export default function TradesTape() {
       next.splice(j < 0 ? next.length : j, 0, from);
     }
     return next;
-  });
-  const onResizeCol = (key, px) => setColWidths((w) => ({ ...w, [key]: px }));
-  const onResetColWidth = (key) => setColWidths((w) => {
-    const next = { ...w }; delete next[key]; return next;
   });
 
   // Сортировка КЛИЕНТСКАЯ, по загруженным строкам: сервер отдаёт срез по
@@ -382,8 +395,17 @@ export default function TradesTape() {
                   : "все облигации MOEX, включая фиксы и бумаги вне реестра"}>{label}</button>
             ))}
           </span>
-          <IssuerFilter issuers={issuers} selected={emitters}
-            onToggle={(n) => setEmitters((a) => toggle(a, n))} onClear={() => setEmitters([])} />
+          {/* та же воронка, что в СПИСКЕ: база, тип выпуска, класс, эмитент */}
+          <FiltersMenu
+            basesSel={bases} toggleBase={(b) => setBases((a) => toggle(a, b))}
+            clearBases={() => setBases([])}
+            issuers={issuers} emittersSel={emitters}
+            toggleEmitter={(n) => setEmitters((a) => toggle(a, n))}
+            clearEmitters={() => setEmitters([])}
+            hideSub={hideSub} setHideSub={setHideSub}
+            hideAmort={hideAmort} setHideAmort={setHideAmort}
+            clsSel={cls} toggleCls={(c) => setCls((a) => toggle(a, c))}
+            activeCount={activeFilters} />
           <input className="tape-search" placeholder="бумага / ISIN…" value={q}
             onChange={(e) => setQ(e.target.value)} />
           <button className={"chip-btn" + (live ? " on" : "")} onClick={() => setLive((v) => !v)}
@@ -420,11 +442,8 @@ export default function TradesTape() {
             value={ttmMin} onChange={(e) => setTtmMin(e.target.value)} />
           <input className="tape-nin" type="number" step="0.5" min="0" placeholder="до"
             value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
-          {(spreadMin || spreadMax || ttmMin || ttmMax || ratings.length > 0) && (
-            <button className="btn" onClick={() => {
-              setSpreadMin(""); setSpreadMax(""); setTtmMin(""); setTtmMax("");
-              setRatings([]);
-            }}>сбросить</button>
+          {activeFilters > 0 && (
+            <button className="btn" onClick={resetFilters}>сбросить {activeFilters}</button>
           )}
           {sum.archive_till && (
             <span className="ia-flabel">данные до {sum.archive_till.slice(0, 16)}</span>
@@ -469,17 +488,14 @@ export default function TradesTape() {
           <div className="ia-table-wrap">
             <table className="grid tape-table packed cols-fixed">
               <colgroup>
-                {cols.map((c) => <col key={c.key} style={colWidths[c.key]
-                  ? { "--cw": colWidths[c.key] + "px" }
-                  : { "--cw": (c.w || 8) + "ch" }} />)}
+                {cols.map((c) => <col key={c.key} style={{ "--cw": (c.w || 8) + "ch" }} />)}
                 <col className="col-fill" />
               </colgroup>
               <thead>
                 <tr>
                   {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
                     onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
-                    overKey={overKey} setOverKey={setOverKey}
-                    onResizeCol={onResizeCol} onResetColWidth={onResetColWidth} />)}
+                    overKey={overKey} setOverKey={setOverKey} />)}
                   <th className="fill-col" />
                 </tr>
               </thead>
@@ -496,9 +512,12 @@ export default function TradesTape() {
                         <RowLinks isin={r.isin} onOpen={openBond} />
                         {r.name}
                         {r.rating && <span className="tape-rt" style={{ color: ratingColor(r.rating) }}>{r.rating}</span>}
-                        {r.base && <span className="tape-base">{r.base === "FIXED" ? "фикс" : baseLabel(r.base)}</span>}
                       </span>
                     ),
+                    formula: r.base === "FIXED"
+                      ? <span className="tape-base">фикс</span>
+                      : <CouponFormula base={r.base} spreadBps={r.margin_bps}
+                          couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />,
                     isin: <IsinCell isin={r.isin} />,
                     mat: r.maturity ? fmt.date(String(r.maturity).slice(0, 10)) : <span className="dash">—</span>,
                     board: (

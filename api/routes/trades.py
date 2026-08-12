@@ -68,6 +68,47 @@ def _ttm_isins(labels: dict, isins: Optional[list[str]],
     return keep
 
 
+# ОФЗ: суверен Минфина. Тот же критерий, что в /api/bonds (_is_ofz) — иначе
+# «ОФЗ» в ленте и в СПИСКЕ означали бы разное.
+_OFZ_NAME_RE = re.compile(r"^ОФЗ\s", re.I)
+
+
+def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[str]],
+                hide_subord: bool, hide_amort: bool,
+                cls: Optional[list[str]]) -> Optional[list[str]]:
+    """Сузить охват признаками выпуска: база купона, суборд, амортизация, класс.
+
+    Суборд определяется по имени (как в скринере), класс — по эмитенту/имени.
+    Амортизация приходит из метрик юниверса: у бумаг вне юниверса признака нет
+    вообще, и они считаются НЕамортизируемыми — иначе фильтр молча выкосил бы
+    весь рынок за пределами реестра."""
+    want_base = {b.strip().upper() for b in (bases or []) if b and b.strip()}
+    want_cls = {c.strip().upper() for c in (cls or []) if c and c.strip()}
+    if not (want_base or want_cls or hide_subord or hide_amort):
+        return isins
+    from services.screener_core import is_subord
+    from services.market_data import MarketDataService
+    um = MarketDataService.universe_metrics() or {} if hide_amort else {}
+    pool = isins if isins is not None else labels.keys()
+    keep = []
+    for i in pool:
+        lb = labels.get(i) or {}
+        name = (lb.get("name") or "").strip()
+        if want_base and (lb.get("base") or "").upper() not in want_base:
+            continue
+        if hide_subord and is_subord({"name": name}):
+            continue
+        if hide_amort and (um.get(i) or {}).get("has_amort"):
+            continue
+        if want_cls:
+            ofz = (lb.get("emitter") or "").strip() == "Минфин России" \
+                or bool(_OFZ_NAME_RE.match(name))
+            if ("OFZ" if ofz else "CORP") not in want_cls:
+                continue
+        keep.append(i)
+    return keep
+
+
 @router.get("", tags=["Trades"])
 async def tape(
     days: int = Query(1, ge=1, le=400, description="окно в календарных днях назад"),
@@ -83,6 +124,10 @@ async def tape(
     ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
     ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
     rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
+    base: Optional[list[str]] = Query(None, description="база купона: KEYRATE | RUONIA"),
+    cls: Optional[list[str]] = Query(None, description="класс: OFZ | CORP"),
+    hide_subord: bool = Query(False, description="убрать суборды и перпы"),
+    hide_amort: bool = Query(False, description="убрать амортизируемые выпуски"),
     limit: int = Query(500, ge=1, le=20000),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
@@ -124,7 +169,9 @@ async def tape(
                     "warning": "справочники ещё не прогреты — охват пуст"}
 
     if not isin:
-        isins = _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating)
+        isins = _flag_isins(
+            labels, _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating),
+            base, hide_subord, hide_amort, cls)
         if isins is not None and not isins:
             return {"from": None, "trades": [], "scope": scope,
                     "summary": {"n": 0, "value": 0, "buy_value": 0, "sell_value": 0,
@@ -157,6 +204,10 @@ async def tape(
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
         r["board_short"] = board_short(r.get("board"))
         r["maturity"] = lb.get("maturity")
+        # формула купона рисуется тем же компонентом, что в СПИСКЕ
+        r["margin_bps"] = lb.get("margin_bps")
+        r["coupons_per_year"] = lb.get("coupons_per_year")
+        r["coupon_text"] = lb.get("coupon_text")
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]

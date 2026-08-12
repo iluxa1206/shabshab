@@ -364,11 +364,14 @@ def ratings_map(isins) -> Dict[str, str]:
 
 
 def labels_map(isins=None) -> Dict[str, dict]:
-    """{isin: {name, emitter, base, rating, maturity}} — подписи для списков,
-    которые сами считаются вне реестра (лента сделок). Без isins — весь реестр
+    """{isin: {name, emitter, base, rating, maturity, margin_bps, coupons_per_year}}
+    — подписи для списков, которые сами считаются вне реестра (лента сделок).
+    Маржа и частота нужны ленте, чтобы показать формулу купона тем же
+    компонентом, что и СПИСОК («КС + 2,50% (12)»). Без isins — весь реестр
     (сотни строк, один запрос); со списком — только он."""
     _ensure()
-    q = ("SELECT isin, short_name, emitter_name, base, rating, maturity_date "
+    q = ("SELECT isin, short_name, emitter_name, base, rating, maturity_date, "
+         "margin_bps, coupons_per_year, coupon_period_days, coupon_text "
          "FROM instruments")
     args: list = []
     ids = [(i or "").strip() for i in (isins or []) if i]
@@ -382,7 +385,14 @@ def labels_map(isins=None) -> Dict[str, dict]:
         rows = c.execute(q, args).fetchall()
     return {r["isin"]: {"name": r["short_name"] or r["isin"], "emitter": r["emitter_name"],
                         "base": r["base"], "rating": r["rating"],
-                        "maturity": r["maturity_date"]} for r in rows}
+                        "maturity": r["maturity_date"],
+                        "margin_bps": r["margin_bps"],
+                        # частота: фактический период купона авторитетнее
+                        # декларированной частоты — тот же приоритет, что в СПИСКЕ
+                        "coupons_per_year": (
+                            max(1, min(365, round(365 / r["coupon_period_days"])))
+                            if r["coupon_period_days"] else r["coupons_per_year"]),
+                        "coupon_text": r["coupon_text"]} for r in rows}
 
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
