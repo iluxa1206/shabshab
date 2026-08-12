@@ -13,9 +13,10 @@ import IssuerFilter from "./IssuerFilter.jsx";
 //   • крупные сделки всего рынка из ISS: от 1 млн ₽, зато включая адресные
 //     режимы — РПС, РПС с ЦК, размещения, выкупы, которых в стакане нет вообще.
 //
-// Режим РПС показывает не поштучную ленту, а дневной агрегат бумага/борд/день:
-// поштучных адресных сделок за прошлые сессии ISS не отдаёт вообще, поэтому
-// честный ответ на «покажи РПС» — именно агрегат.
+// Режим РПС — такая же поштучная лента, только адресных сделок. Кнопка «по
+// дням» переключает её на дневной агрегат бумага/борд/день: поштучных адресных
+// сделок за прошлые сессии ISS не отдаёт вообще, и за дни до старта нашего
+// сбора агрегат — единственный след блока.
 
 const WINDOWS = [[1, "сегодня"], [7, "7д"], [30, "30д"], [90, "90д"],
                  [180, "180д"], [400, "макс"]];
@@ -53,9 +54,10 @@ function SideTag({ side }) {
 
 export default function TradesTape() {
   const nav = useNavigate();
-  // дефолт — максимум данных: всё окно архива, любые суммы, потолок строк
-  const [days, setDays] = useState(400);
-  const [minValue, setMinValue] = useState(0);
+  // дефолт — рабочий срез: неделя и крупняк от 1 млн ₽. Максимум («макс» +
+  // «все») лента тянет, но агрегат по миллиону сделок считается секундами.
+  const [days, setDays] = useState(7);
+  const [minValue, setMinValue] = useState(1e6);
   const [side, setSide] = useState(null);
   const [market, setMarket] = useState(null);
   const [emitters, setEmitters] = useState([]);
@@ -66,6 +68,9 @@ export default function TradesTape() {
   const [ttmMin, setTtmMin] = useState("");
   const [ttmMax, setTtmMax] = useState("");
   const [pin, setPin] = useState(null);
+  // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
+  // адресных: у безадресных поштучный архив полный, агрегировать нечего.
+  const [byDay, setByDay] = useState(false);
   const [q, setQ] = useState("");
   const [data, setData] = useState(null);
   const [dayData, setDayData] = useState(null);
@@ -83,6 +88,7 @@ export default function TradesTape() {
     return ISIN_RE.test(s) ? s : null;
   }, [q]);
   const isinReq = pin || qIsin;
+  const daysView = market === "ndm" && byDay;
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
@@ -93,7 +99,7 @@ export default function TradesTape() {
     const ac = new AbortController();
     abort.current = ac;
     setStatus("loading");
-    const req = market === "ndm"
+    const req = daysView
       ? fetchBlockDays({ isin: isinReq, days, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
                          ttmMax: num(ttmMax), limit }, ac.signal)
@@ -106,7 +112,7 @@ export default function TradesTape() {
     req.then(() => setStatus("ready"))
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [days, minValue, side, market, emitters, isinReq, scope, limit,
+  }, [days, minValue, side, market, daysView, emitters, isinReq, scope, limit,
       spreadMin, spreadMax, ttmMin, ttmMax, tick]);
 
   // текстовый поиск (не ISIN) — фильтр по уже загруженным строкам
@@ -172,11 +178,18 @@ export default function TradesTape() {
             {MARKETS.map(([v, label]) => (
               <button key={label} className={"seg-btn" + (market === v ? " active" : "")}
                 onClick={() => setMarket(v)}
-                title={v === "ndm" ? "адресные режимы — дневной агрегат по бумагам"
+                title={v === "ndm" ? "адресные режимы: РПС, РПС с ЦК, размещения, выкупы"
                   : v === "bonds" ? "безадресный стакан" : "все режимы"}>{label}</button>
             ))}
           </span>
-          {market !== "ndm" && (
+          {market === "ndm" && (
+            <button className={"chip-btn" + (byDay ? " on" : "")}
+              onClick={() => setByDay((v) => !v)}
+              title="агрегат бумага/режим/день из ISS. За дни до старта поштучного сбора это ЕДИНСТВЕННЫЙ след адресных сделок — поштучно биржа их за прошлые сессии не отдаёт">
+              по дням
+            </button>
+          )}
+          {!daysView && (
             <span className="seg" role="tablist" aria-label="Сторона">
               {SIDES.map(([v, label]) => (
                 <button key={label} className={"seg-btn" + (side === v ? " active" : "")}
@@ -201,7 +214,7 @@ export default function TradesTape() {
           <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>
         </div>
         <div className="ia-filters">
-          {market !== "ndm" && (
+          {!daysView && (
             <>
               <span className="ia-flabel" title="R-spread сделки к индексу; строки без спреда фильтр отсекает">
                 Спред, бп
@@ -233,7 +246,7 @@ export default function TradesTape() {
       {status === "error" && <div className="ia-empty">ошибка: {errMsg}</div>}
       {status === "loading" && !data && !dayData && <div className="ia-empty">читаю архив сделок…</div>}
 
-      {market !== "ndm" && data && (
+      {!daysView && data && (
         <>
           <div className="tape-sum">
             {isinReq && <span className="tape-kpi"><span className="tape-k">БУМАГА</span>
@@ -327,7 +340,7 @@ export default function TradesTape() {
         </>
       )}
 
-      {market === "ndm" && dayData && (
+      {daysView && dayData && (
         <>
           <div className="tape-sum">
             {isinReq && <span className="tape-kpi"><span className="tape-k">БУМАГА</span>
