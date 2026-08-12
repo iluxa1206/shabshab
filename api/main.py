@@ -622,6 +622,10 @@ async def block_trades_worker():
                     # ночью, когда дневная история ISS уже опубликована
                     backfilled_on = now.date()
                     logger.info("block trades backfill: %s", await bt.backfill())
+                    # и тем же заходом ужимаем прошедшие дни до архивного порога:
+                    # полный поток рынка нужен только внутри дня
+                    logger.info("block trades prune: %s",
+                                await asyncio.to_thread(bt.prune))
         except asyncio.CancelledError:
             raise
         except Exception as e:

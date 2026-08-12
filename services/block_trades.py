@@ -44,11 +44,23 @@ _MSK = timezone(timedelta(hours=3))
 _PAGE = 5000                  # максимальный limit сквозной ленты ISS
 _HIST_PAGE = 100              # пагинация history-эндпоинтов ISS
 
-# Порог записи. Всё, что мельче, не пишем: за день по рынку 272k безадресных
-# сделок — база не должна повторять tick-архив. Замер на 2026-08-11 по архиву:
-# ≥1 млн ₽ — 1194 сделки за день, ≥5 млн — 414. Держим 1 млн: на этом уровне
-# счёт идёт на сотни тысяч строк в год, а мелкий блок в неликвиде уже виден.
-BLOCK_MIN_VALUE_RUB = float(os.getenv("BLOCK_MIN_VALUE_RUB", "1000000"))
+# ── что пишем и что остаётся ────────────────────────────────────────────────
+# Пишем ВСЁ, что отдаёт ISS (порог записи 0): пока день идёт, лента должна
+# показывать рынок целиком — мелкие принты в неликвиде и адресные сделки по
+# бумагам вне юниверса больше нигде не сохраняются (tick-архив Alor знает только
+# юниверс и только безадресные борды).
+#
+# Ночью день ужимается до архивного порога: остаются сделки от 5 млн ₽. Замеры
+# 2026-08-11: за день по рынку 272k безадресных сделок (≈70 МБ с индексами),
+# из них ≥5 млн — около 700 строк. То есть архив растёт на доли мегабайта в
+# день, а полный поток живёт ровно столько, сколько нужен.
+BLOCK_MIN_VALUE_RUB = float(os.getenv("BLOCK_MIN_VALUE_RUB", "0"))
+BLOCK_ARCHIVE_MIN_RUB = float(os.getenv("BLOCK_ARCHIVE_MIN_RUB", "5000000"))
+# Сколько последних дней держим целиком (1 = только сегодня).
+BLOCK_RAW_DAYS = max(int(os.getenv("BLOCK_RAW_DAYS", "1")), 1)
+# Порог расчёта спреда: солвер по всему потоку не нужен — мельче этого сделки
+# всё равно не переживут ночь, а внутри дня спред интересен по крупным.
+BLOCK_YIDX_MIN_RUB = float(os.getenv("BLOCK_YIDX_MIN_RUB", "1000000"))
 BLOCK_BACKFILL_DAYS = int(os.getenv("BLOCK_BACKFILL_DAYS", "30"))
 # Полный проход ленты с начала сессии дорогой (55 страниц) — держим потолок,
 # чтобы сбой курсора не превратил каждый опрос в стомегабайтную выкачку.
@@ -159,7 +171,7 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set
     out, unknown = [], set()
     for r in rows:
         val = r.get("VALUE")
-        if val is None or float(val) < BLOCK_MIN_VALUE_RUB:
+        if val is None or (BLOCK_MIN_VALUE_RUB and float(val) < BLOCK_MIN_VALUE_RUB):
             continue
         tid, sec = r.get("TRADENO"), r.get("SECID")
         if tid is None or not sec:
@@ -254,18 +266,52 @@ async def sweep(from_start: bool = False, with_metrics: bool = True) -> dict:
 
 # ────────────────────────── спред сделки ──────────────────────────
 
+def prune(archive_min: Optional[float] = None, raw_days: Optional[int] = None,
+          dry_run: bool = False) -> dict:
+    """Ужимает прошедшие дни до архивного порога: полный поток нужен только
+    внутри дня, дальше от него остаются крупные сделки.
+
+    Идём по дням, а не одним DELETE по всей таблице: 272k строк за день — это
+    длинная транзакция под локом WAL-писателя, а демон в это время пишет
+    следующий такт. Индекс ix_block_ts делает выборку дня дешёвой."""
+    thr = BLOCK_ARCHIVE_MIN_RUB if archive_min is None else float(archive_min)
+    days = BLOCK_RAW_DAYS if raw_days is None else max(int(raw_days), 1)
+    floor = (datetime.now(_MSK).date() - timedelta(days=days - 1)).isoformat()
+    with _connect() as c:
+        dates = [r[0] for r in c.execute(
+            "SELECT DISTINCT substr(ts,1,10) d FROM block_trade "
+            "WHERE substr(ts,1,10) < ? ORDER BY d", (floor,))]
+    deleted = 0
+    for d in dates:
+        where = "substr(ts,1,10)=? AND (value IS NULL OR value < ?)"
+        if dry_run:
+            with _connect() as c:
+                n = c.execute(f"SELECT COUNT(*) FROM block_trade WHERE {where}",
+                              (d, thr)).fetchone()[0]
+        else:
+            with _lock, _connect() as c:
+                n = c.execute(f"DELETE FROM block_trade WHERE {where}", (d, thr)).rowcount or 0
+        deleted += n
+    return {"deleted": deleted, "days": len(dates), "keep_from": floor,
+            "archive_min_rub": thr, "dry_run": dry_run}
+
+
 def unpriced(limit: int = 400) -> list[dict]:
     """Сделки без посчитанного спреда, новые сначала.
 
     Считаем ТОЛЬКО в момент прихода (демоном), а не при чтении ленты: контекст
     строится на выпуск и стоит сетевого gather, поэтому первый запрос ленты по
     сотне выпусков занимал бы минуту. Демон же видит за такт десятки сделок по
-    десятку бумаг, и контексты у него тёплые."""
+    десятку бумаг, и контексты у него тёплые.
+
+    Мелочь ниже BLOCK_YIDX_MIN_RUB не берём вовсе: в потоке 272k сделок за день,
+    солвер по ним не нужен, а метку metrics_at им не ставим — эти строки всё
+    равно уйдут ночным пруном."""
     with _connect() as c:
         rows = c.execute(
             "SELECT trade_id, isin, price FROM block_trade "
-            "WHERE metrics_at IS NULL AND price IS NOT NULL "
-            "ORDER BY trade_id DESC LIMIT ?", (limit,)).fetchall()
+            "WHERE metrics_at IS NULL AND price IS NOT NULL AND value >= ? "
+            "ORDER BY trade_id DESC LIMIT ?", (BLOCK_YIDX_MIN_RUB, limit)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -274,7 +320,8 @@ def unpriced_count() -> int:
     решает, держать ли рабочий темп вне торговых часов."""
     with _connect() as c:
         return int(c.execute(
-            "SELECT COUNT(*) FROM block_trade WHERE metrics_at IS NULL").fetchone()[0])
+            "SELECT COUNT(*) FROM block_trade WHERE metrics_at IS NULL AND value >= ?",
+            (BLOCK_YIDX_MIN_RUB,)).fetchone()[0])
 
 
 def save_metrics(vals: list[tuple]) -> int:
@@ -659,4 +706,6 @@ def db_stats() -> dict:
     return {"blocks": t["n"], "blocks_from": t["a"], "blocks_till": t["b"],
             "days": d["n"], "days_from": d["a"], "days_till": d["b"],
             "min_value_rub": BLOCK_MIN_VALUE_RUB,
+            "archive_min_rub": BLOCK_ARCHIVE_MIN_RUB, "raw_days": BLOCK_RAW_DAYS,
+            "yidx_min_rub": BLOCK_YIDX_MIN_RUB,
             "cursors": [dict(r) for r in cur]}
