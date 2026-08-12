@@ -82,6 +82,20 @@ def test_preferred_horizon_rule(price, keys, expect):
     assert _preferred_horizon(price, {k: HZ[k] for k in keys}) == expect
 
 
+@pytest.mark.parametrize("price,keys,expect", [
+    # МТС 3Р-02: bid/ask 99.95/100.00 — дисконт в копейки не окупает оферту,
+    # и горизонт не должен скакать внутри одного спреда
+    (99.95, ("maturity", "put"), "maturity"),
+    (99.6, ("maturity", "put"), "maturity"),   # в буфере
+    (99.5, ("maturity", "put"), "maturity"),   # ровно граница буфера — ещё погашение
+    (99.49, ("maturity", "put"), "put"),       # за буфером — к оферте
+    (100.4, ("maturity", "call"), "maturity"), # премия в буфере → отзывать незачем
+    (100.51, ("maturity", "call"), "call"),
+])
+def test_preferred_horizon_par_buffer(price, keys, expect):
+    assert _preferred_horizon(price, {k: HZ[k] for k in keys}) == expect
+
+
 def test_preferred_horizon_prefers_nearest_event():
     """Сработали оба опциона (редкая конфигурация) → ближайшее по дате событие."""
     hz = {"maturity": HZ["maturity"],

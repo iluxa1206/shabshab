@@ -479,6 +479,15 @@ def pick_horizon(m: Dict[str, Any], horizon: str = "auto") -> Dict[str, Any]:
     return sel
 
 
+# Мёртвая зона вокруг цены выкупа, пп. Цена в пределах буфера = «практически по
+# номиналу»: дисконт в считанные копейки не окупает поход на оферту
+# (транзакционка + купон после оферты эмитент переставляет), а премия в копейки
+# не заставит эмитента отзывать выпуск. Без буфера бумага у номинала (МТС 3Р-02,
+# bid/ask 99.95/100.00) прыгала между горизонтами от тика к тику: last к оферте,
+# ask к погашению — в одной строке таблицы две несопоставимые цифры.
+_PAR_BUFFER_PCT = 0.5
+
+
 def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
     """К ЧЕМУ ПРАЙСИТСЯ БУМАГА — правило цены vs цена выкупа.
 
@@ -491,6 +500,10 @@ def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
     ДОРОГ, т.е. когда бумага торгуется ВЫШЕ цены выкупа (занял дороже рынка);
     дешёвый долг оставит висеть → горизонт погашение.
 
+    Вокруг цены выкупа — мёртвая зона _PAR_BUFFER_PCT: опцион исполняют ради
+    разницы, а не ради копеек, и без буфера горизонт скакал бы внутри одного
+    спреда bid/ask.
+
     Оба сработали (редкая конфигурация put+call) → ближайшее по дате событие.
     Цена неизвестна → консервативно к погашению.
     """
@@ -498,9 +511,9 @@ def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
         return "maturity"
     cands = []
     put, call = horizons.get("put"), horizons.get("call")
-    if put and put.get("date") and price < (put.get("price_pct") or 100.0):
+    if put and put.get("date") and price < (put.get("price_pct") or 100.0) - _PAR_BUFFER_PCT:
         cands.append(("put", put["date"]))
-    if call and call.get("date") and price > (call.get("price_pct") or 100.0):
+    if call and call.get("date") and price > (call.get("price_pct") or 100.0) + _PAR_BUFFER_PCT:
         cands.append(("call", call["date"]))
     if not cands:
         return "maturity"
