@@ -41,7 +41,7 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
     }
   };
   const armTitle = alert
-    ? `Алерт: ${alert.side === "buy" ? "покупка" : "продажа"} ${alert.metric} ${alert.op} ${alert.threshold}`
+    ? `Алерт: ${alert.side === "buy" ? "buy" : "sell"} ${alert.metric} ${alert.op} ${alert.threshold}`
     : undefined;
   return (
     <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")

@@ -357,11 +357,12 @@ def ratings_map(isins) -> Dict[str, str]:
 
 
 def labels_map(isins=None) -> Dict[str, dict]:
-    """{isin: {name, emitter, base, rating}} — подписи для списков, которые сами
-    считаются вне реестра (лента сделок). Без isins — весь реестр (сотни строк,
-    один запрос); со списком — только он."""
+    """{isin: {name, emitter, base, rating, maturity}} — подписи для списков,
+    которые сами считаются вне реестра (лента сделок). Без isins — весь реестр
+    (сотни строк, один запрос); со списком — только он."""
     _ensure()
-    q = "SELECT isin, short_name, emitter_name, base, rating FROM instruments"
+    q = ("SELECT isin, short_name, emitter_name, base, rating, maturity_date "
+         "FROM instruments")
     args: list = []
     ids = [(i or "").strip() for i in (isins or []) if i]
     if isins is not None:
@@ -373,7 +374,8 @@ def labels_map(isins=None) -> Dict[str, dict]:
     with _conn() as c:
         rows = c.execute(q, args).fetchall()
     return {r["isin"]: {"name": r["short_name"] or r["isin"], "emitter": r["emitter_name"],
-                        "base": r["base"], "rating": r["rating"]} for r in rows}
+                        "base": r["base"], "rating": r["rating"],
+                        "maturity": r["maturity_date"]} for r in rows}
 
 
 _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}

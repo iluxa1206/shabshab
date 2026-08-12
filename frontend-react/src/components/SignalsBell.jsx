@@ -168,7 +168,7 @@ export default function SignalsBell() {
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         {e.side && (
                           <span className={e.side === "buy" ? "pos" : "neg"}>
-                            {e.side === "buy" ? "покупка" : "продажа"}</span>)}
+                            {e.side === "buy" ? "buy" : "sell"}</span>)}
                       </span>
                     ) : (
                       <span className="sb-row-2 num">

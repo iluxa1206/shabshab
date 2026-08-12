@@ -544,8 +544,11 @@ def blocks_stats(frm: Optional[str] = None, till: Optional[str] = None,
 
 def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
               till: Optional[str] = None, min_value: float = 0,
-              limit: int = 1000) -> list[dict]:
-    """Дневные РПС-агрегаты (то, что есть за дни ДО поштучного сбора)."""
+              limit: int = 1000, isins: Optional[list[str]] = None) -> list[dict]:
+    """Дневные РПС-агрегаты (то, что есть за дни ДО поштучного сбора).
+
+    isins — охват (скоуп/эмитенты/срок до погашения); длинный список уезжает во
+    временную таблицу, как и в остальных чтениях архива."""
     q = "SELECT * FROM block_day WHERE 1=1"
     args: list = []
     if isin:
@@ -560,9 +563,17 @@ def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
     if min_value:
         q += " AND value >= ?"
         args.append(min_value)
-    q += " ORDER BY date DESC, value DESC LIMIT ?"
-    args.append(limit)
     with _connect() as c:
+        if not isin and isins is not None:
+            if _bind_isins(c, isins):
+                q += f" AND isin IN (SELECT isin FROM {_TMP})"
+            elif isins:
+                q += f" AND isin IN ({','.join('?' * len(isins))})"
+                args.extend(isins)
+            else:
+                return []
+        q += " ORDER BY date DESC, value DESC LIMIT ?"
+        args.append(limit)
         return [dict(r) for r in c.execute(q, args).fetchall()]
 
 

@@ -19,7 +19,7 @@ function AlertRow({ a, kind, onDelete, onEdit, editing }) {
   const cls = st === "fired" ? "al-fired" : st === "cancelled" ? "al-cancelled" : "al-active";
   return (
     <div className={"al-row " + cls + (editing ? " al-editing" : "")}>
-      <span className={"al-side al-" + a.side}>{a.side === "buy" ? "покупка" : "продажа"}</span>
+      <span className={"al-side al-" + a.side}>{a.side === "buy" ? "buy" : "sell"}</span>
       <span className="al-cond">
         {metricLabel(kind, a.metric)} {a.op} <b>{fmt.num(a.threshold, 2)}</b>
         {a.min_volume > 0 && <> · ≥{fmt.num(a.min_volume, 0)} {a.volume_unit === "rub" ? "₽" : "шт"}</>}

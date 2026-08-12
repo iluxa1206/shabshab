@@ -33,7 +33,7 @@ const timeOf = (iso) => {
 // отличается от стакана (адресные РПС в стакане не видны вообще).
 const BASES = [["KEYRATE", "КС"], ["RUONIA", "RUONIA"], ["FIXED", "фикс"]];
 const MARKETS = [["all", "все"], ["main", "безадресные"], ["ndm", "адресные"]];
-const SIDES = [["any", "любая"], ["buy", "покупка"], ["sell", "продажа"]];
+const SIDES = [["any", "любая"], ["buy", "buy"], ["sell", "sell"]];
 const labelOfPair = (pairs, v) => (pairs.find(([x]) => x === v) || [null, v])[1];
 // «1 сделка / 2 сделки / 5 сделок» — счётчик превью читается как текст, а не как лог
 const plural = (n, one, few, many) => {
@@ -782,7 +782,7 @@ export default function SignalsModule() {
                   {h.reason === "block"
                     ? (h.side === "buy" || h.side === "sell") && (
                         <span className={h.side === "buy" ? "pos" : "neg"}>
-                          {h.side === "buy" ? "покупка" : "продажа"}</span>)
+                          {h.side === "buy" ? "buy" : "sell"}</span>)
                     : <span className={h.side === "ask" ? "pos" : "neg"}>
                         {h.side === "ask" ? "оффер" : "бид"}</span>}
                   {h.val_bps != null && <> <b>{fmt.num(h.val_bps, 0)} бп</b></>}

@@ -1454,6 +1454,11 @@ body.col-resizing * { cursor: col-resize !important; }
 .tape-search { background: var(--bg); color: var(--fg); border: 1px solid var(--line-2);
   padding: 4px 8px; font: inherit; font-size: 12px; width: 160px; }
 .tape-search:focus { outline: none; border-color: var(--fg); }
+/* числовые поля фильтров (спред, срок до погашения) */
+.tape-nin { background: var(--bg); color: var(--fg); border: 1px solid var(--line-2);
+  padding: 4px 6px; font: inherit; font-size: 12px; width: 64px;
+  font-variant-numeric: tabular-nums; }
+.tape-nin:focus { outline: none; border-color: var(--fg); }
 .tape-sum { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
   margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .tape-kpi { display: inline-flex; align-items: baseline; gap: 6px; }

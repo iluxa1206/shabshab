@@ -22,12 +22,39 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from api.routes.blocks import BOARD_TITLES, SCOPES, _labels, _moex_names, _scope_isins
+from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _scope_isins,
+                               board_short)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
+
+
+def _ttm_isins(labels: dict, isins: Optional[list[str]],
+               ttm_min: Optional[float], ttm_max: Optional[float]) -> Optional[list[str]]:
+    """Сузить охват сроком до погашения (годы). Бумаги без даты погашения в
+    справочниках под такой фильтр не попадают — срок у них неизвестен, а не
+    «любой»; при scope=market это отсекает всё, чего нет в наших справочниках."""
+    if ttm_min is None and ttm_max is None:
+        return isins
+    today = date.today()
+    keep = []
+    pool = isins if isins is not None else labels.keys()
+    for i in pool:
+        md = (labels.get(i) or {}).get("maturity")
+        if not md:
+            continue
+        try:
+            yrs = (date.fromisoformat(str(md)[:10]) - today).days / 365.25
+        except ValueError:
+            continue
+        if ttm_min is not None and yrs < ttm_min:
+            continue
+        if ttm_max is not None and yrs > ttm_max:
+            continue
+        keep.append(i)
+    return keep
 
 
 @router.get("", tags=["Trades"])
@@ -40,7 +67,11 @@ async def tape(
     scope: str = Query("market", description="market | universe | float | fixed"),
     issuer: Optional[list[str]] = Query(None, description="эмитенты (можно повторять параметр)"),
     isin: Optional[str] = Query(None, description="одна бумага"),
-    limit: int = Query(500, ge=1, le=5000),
+    spread_min: Optional[float] = Query(None, description="R-spread сделки от, бп"),
+    spread_max: Optional[float] = Query(None, description="R-spread сделки до, бп"),
+    ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
+    ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    limit: int = Query(500, ge=1, le=20000),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
     if side is not None and side not in ("buy", "sell"):
@@ -80,14 +111,24 @@ async def tape(
                                 "by_market": {}, "top": [], "archive_till": None},
                     "warning": "справочники ещё не прогреты — охват пуст"}
 
+    if not isin:
+        isins = _ttm_isins(labels, isins, ttm_min, ttm_max)
+        if isins is not None and not isins:
+            return {"from": None, "trades": [], "scope": scope,
+                    "summary": {"n": 0, "value": 0, "buy_value": 0, "sell_value": 0,
+                                "by_market": {}, "top": [], "archive_till": None},
+                    "warning": "под фильтр срока до погашения бумаг нет"}
+
     frm = (date.today() - timedelta(days=days - 1)).isoformat()
     # строки и агрегат независимы — читаем параллельно (WAL допускает
     # конкурентных читателей), ответ приходит за время медленного из двух
     rows, summary = await asyncio.gather(
         asyncio.to_thread(tape_svc.read_tape, frm=frm, min_value=min_value, side=side,
-                          market=market, boards=board, isins=isins, limit=limit),
+                          market=market, boards=board, isins=isins, limit=limit,
+                          y_min=spread_min, y_max=spread_max),
         asyncio.to_thread(tape_svc.tape_stats, frm=frm, min_value=min_value, side=side,
-                          market=market, boards=board, isins=isins))
+                          market=market, boards=board, isins=isins,
+                          y_min=spread_min, y_max=spread_max))
     moex = await asyncio.to_thread(_moex_names)
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
     # block_trades.price_new_trades): цена в % номинала между выпусками
@@ -102,6 +143,8 @@ async def tape(
         r["base"] = lb.get("base")
         r["rating"] = lb.get("rating")
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        r["board_short"] = board_short(r.get("board"))
+        r["maturity"] = lb.get("maturity")
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]

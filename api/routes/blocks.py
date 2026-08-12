@@ -34,6 +34,27 @@ BOARD_TITLES = {
     "PAUS": "Размещение (USD)",
 }
 
+# Короткая подпись режима для таблиц: в ленте колонка узкая, а трейдеру важна
+# только суть режима (безадресный стакан / адресная сделка / с ЦК), валюта и
+# тип бумаги видны по самой бумаге.
+BOARD_SHORT = {
+    "TQCB": "Т+", "TQOB": "Т+", "TQRD": "Т+", "TQOD": "Т+", "TQOY": "Т+",
+    "TQOE": "Т+", "TQIR": "Т+", "TQUD": "Т+",
+    "PSOB": "РПС", "PSDB": "РПС", "PSYO": "РПС", "PSEU": "РПС", "PSUD": "РПС",
+    "PSEO": "РПС",
+    "PTOB": "РПС с ЦК", "PTDB": "РПС с ЦК", "PTOY": "РПС с ЦК", "PTUD": "РПС с ЦК",
+    "PTOD": "РПС с ЦК", "PTOE": "РПС с ЦК",
+    "PSAU": "Размещ.", "PACY": "Размещ.", "PAUS": "Размещ.", "AUCT": "Размещ.",
+    "PSBB": "Выкуп", "PSBU": "Выкуп", "PSBY": "Выкуп", "AUBB": "Выкуп",
+    "PACT": "Аукцион",
+}
+
+
+def board_short(board: Optional[str]) -> str:
+    """Короткая подпись; неизвестный борд показываем кодом — врать нечем."""
+    b = board or ""
+    return BOARD_SHORT.get(b, b)
+
 
 def _labels() -> dict:
     """isin → {name, emitter, base, rating}. Реестр знает флоатеры, кэш ФИКСОВ —
@@ -48,7 +69,8 @@ def _labels() -> dict:
         out[u["isin"]] = {"name": cur.get("name") or u.get("name") or u["isin"],
                           "emitter": cur.get("emitter") or u.get("issuer"),
                           "base": cur.get("base") or "FIXED",
-                          "rating": cur.get("rating")}
+                          "rating": cur.get("rating"),
+                          "maturity": cur.get("maturity") or u.get("maturity_date")}
     return out
 
 
@@ -86,6 +108,7 @@ def _decorate(rows: list[dict], labels: dict, moex: dict) -> None:
         r["rating"] = lb.get("rating")
         r["in_universe"] = bool(lb)
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        r["board_short"] = board_short(r.get("board"))
         r["negotiated"] = r.get("market") == "ndm"
 
 
@@ -173,7 +196,11 @@ async def days_agg(
     isin: Optional[str] = Query(None),
     days: int = Query(30, ge=1, le=400),
     min_value: float = Query(0, ge=0),
-    limit: int = Query(1000, ge=1, le=5000),
+    scope: str = Query("market", description="market | universe | float | fixed"),
+    issuer: Optional[list[str]] = Query(None, description="эмитенты (по реестру)"),
+    ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
+    ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    limit: int = Query(1000, ge=1, le=20000),
 ):
     """Дневные РПС-обороты (ISS history market=ndm).
 
@@ -183,17 +210,31 @@ async def days_agg(
     isin = (isin or "").strip().upper() or None
     if isin and not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    if scope not in SCOPES:
+        raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
+    from api.routes.trades import _ttm_isins
     from services import block_trades as bt
+    labels = await asyncio.to_thread(_labels)
+    isins: Optional[list[str]] = None
+    if not isin:
+        if issuer:
+            want = {e for e in issuer if e}
+            isins = [k for k, v in labels.items() if (v.get("emitter") or "") in want]
+        else:
+            isins = _scope_isins(scope, labels)
+        isins = _ttm_isins(labels, isins, ttm_min, ttm_max)
+        if isins is not None and not isins:
+            return {"from": None, "days": days, "rows": []}
     frm = (date.today() - timedelta(days=days)).isoformat()
     rows = await asyncio.to_thread(bt.read_days, isin=isin, frm=frm,
-                                   min_value=min_value, limit=limit)
-    labels = await asyncio.to_thread(_labels)
+                                   min_value=min_value, limit=limit, isins=isins)
     moex = await asyncio.to_thread(_moex_names)
     for r in rows:
         lb = labels.get(r["isin"]) or {}
         r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
         r["emitter"] = lb.get("emitter")
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        r["board_short"] = board_short(r.get("board"))
     return {"from": frm, "days": days, "rows": rows}
 
 
@@ -214,6 +255,7 @@ async def by_isin(isin: str, days: int = Query(90, ge=1, le=400),
         asyncio.to_thread(bt.blocks_stats, frm=frm, min_value=min_value, isins=[isin]))
     for r in rows:
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        r["board_short"] = board_short(r.get("board"))
         r["negotiated"] = r.get("market") == "ndm"
     for r in days_rows:
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))

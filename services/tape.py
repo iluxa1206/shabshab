@@ -90,16 +90,33 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp) -> tuple[str,
     return "(" + blocks + " UNION ALL " + ticks + ")", [*b_args, *t_args]
 
 
+def _spread_clause(y_min: Optional[float], y_max: Optional[float]) -> tuple[str, list]:
+    """Фильтр по R-spread — только внешним слоем над объединением: у тиков
+    колонки нет (там литерал NULL), и строки без спреда фильтр отсекает
+    осознанно — «спред от X» про сделки, у которых спред посчитан."""
+    q, args = "", []
+    if y_min is not None:
+        q += " AND y_idx_bps >= ?"
+        args.append(y_min)
+    if y_max is not None:
+        q += " AND y_idx_bps <= ?"
+        args.append(y_max)
+    return q, args
+
+
 def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
               min_value: float = 0, market: Optional[str] = None,
               boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
-              side: Optional[str] = None, limit: int = 500) -> list[dict]:
+              side: Optional[str] = None, limit: int = 500,
+              y_min: Optional[float] = None, y_max: Optional[float] = None) -> list[dict]:
     """Лента сделок, новые сверху."""
     with _connect() as c:
         tmp = _bind_isins(c, isins)
         sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp)
-        rows = c.execute(f"SELECT * FROM {sub} ORDER BY ts DESC, trade_id DESC LIMIT ?",
-                         [*args, limit]).fetchall()
+        yq, yargs = _spread_clause(y_min, y_max)
+        rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq} "
+                         f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
+                         [*args, *yargs, limit]).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -111,7 +128,8 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
 def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                min_value: float = 0, market: Optional[str] = None,
                boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
-               side: Optional[str] = None, top: int = 10) -> dict:
+               side: Optional[str] = None, top: int = 10,
+               y_min: Optional[float] = None, y_max: Optional[float] = None) -> dict:
     """Итоги окна по ВСЕМ подходящим сделкам, а не по срезанным лимитом.
 
     Обороты — только по рублёвым выпускам: у валютных VALUE приходит в валюте
@@ -120,6 +138,9 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
     with _connect() as c:
         tmp = _bind_isins(c, isins)
         sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp)
+        yq, yargs = _spread_clause(y_min, y_max)
+        if yq:
+            sub, args = f"(SELECT * FROM {sub} WHERE 1=1{yq})", [*args, *yargs]
         tot = c.execute(
             f"SELECT COUNT(*) n, {_V} v, "
             f"SUM(CASE WHEN side='buy' THEN value ELSE 0 END) bv, "

@@ -258,9 +258,14 @@ export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
 // scope: market (весь рынок) | universe (флоатеры+фиксы) | float | fixed
 // market: bonds (безадресные) | ndm (адресные, РПС)
 export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
-                                  issuer, isin, scope = "market", limit = 500 } = {},
+                                  issuer, isin, scope = "market", limit = 500,
+                                  spreadMin, spreadMax, ttmMin, ttmMax } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
+  for (const [k, v] of [["spread_min", spreadMin], ["spread_max", spreadMax],
+                        ["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
+    if (v != null && v !== "") p.set(k, v);
+  }
   if (side) p.set("side", side);
   if (market) p.set("market", market);
   for (const b of [].concat(board || [])) if (b) p.append("board", b);
@@ -287,9 +292,15 @@ export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500 }
           { signal });
 
 // дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
-export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000 } = {}, signal) => {
+export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
+                                 scope, issuer, ttmMin, ttmMax } = {}, signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit });
   if (isin) p.set("isin", isin);
+  if (scope) p.set("scope", scope);
+  for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);
+  for (const [k, v] of [["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
+    if (v != null && v !== "") p.set(k, v);
+  }
   return request(`/api/blocks/days?${p}`, { signal });
 };
 
