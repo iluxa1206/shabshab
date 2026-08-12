@@ -448,6 +448,30 @@ def isins_missing_emitter(limit: int = 40) -> list[str]:
     return [r["isin"] for r in rows]
 
 
+def canonical_emitter_names(rows) -> dict:
+    """{emitter_id: одно каноническое написание}. Имя эмитента приезжает из
+    разных источников (MOEX securities, corpbonds, ручной слой) и пишется
+    по-разному — «Газпром капитал» / «Газпром Капитал» / «Газпром капитал ООО»,
+    «Банк ВТБ» / «Банк ВТБ ПАО» / «Банк ВТБ (ПАО)». Витрина группирует по имени,
+    поэтому один эмитент разваливался на несколько строк фильтра и аналитики.
+
+    Склеиваем по emitter_id (MOEX-идентификатор юрлица — надёжнее любой
+    нормализации строк: разные ЮЛ с похожими именами не слипнутся). Побеждает
+    САМОЕ ЧАСТОЕ написание в реестре, тай-брейк — короткое, затем алфавит:
+    правило детерминированное, имён не выдумываем. Строки без emitter_id
+    оставляем как есть — склеивать их можно только по тексту, а это риск
+    объединить разные юрлица."""
+    from collections import Counter
+    freq: dict = {}
+    for r in rows:
+        eid, name = r["emitter_id"], (r["emitter_name"] or "").strip()
+        if eid is None or not name:
+            continue
+        freq.setdefault(eid, Counter())[name] += 1
+    return {eid: min(c.items(), key=lambda kv: (-kv[1], len(kv[0]), kv[0]))[0]
+            for eid, c in freq.items()}
+
+
 def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> list[dict]:
     """Список бумаг в форме universe-строки. Расчётные поля (base/margin/maturity/
     rating/emitter) — из реестра инструментов.
@@ -458,6 +482,9 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
     _ensure()
     with _conn() as c:
         rows = c.execute("SELECT * FROM instruments WHERE active=1").fetchall()
+    # одно написание имени на юрлицо — считаем по ВСЕМ активным строкам, чтобы
+    # выбор не зависел от того, каким фильтром сейчас режут универс
+    canon = canonical_emitter_names(rows)
     out = []
     for r in rows:
         base = r["base"]
@@ -473,7 +500,7 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "maturity_date": r["maturity_date"],
             "rating": r["rating"],
             "emitter_id": r["emitter_id"],
-            "emitter_name": r["emitter_name"],
+            "emitter_name": canon.get(r["emitter_id"]) or r["emitter_name"],
             "coupon_period_days": r["coupon_period_days"],
             "coupons_per_year": r["coupons_per_year"],
             # None = не знаем (corpbonds не скрейплен), True/False — знаем
