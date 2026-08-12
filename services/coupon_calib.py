@@ -537,6 +537,111 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
     return spec
 
 
+# ── Обратная задача: БАЗА и МАРЖА из реализованных купонов ──────────────────
+# calibrate() подбирает режим/лаг, когда маржа уже известна. Здесь наоборот:
+# ни базы, ни маржи нет (corpbonds не знает выпуск — типично для свежих 2025-26
+# бумаг), но есть факт выплат. Наблюдённая ставка купона = индекс + маржа,
+# поэтому перебором (база × режим × лаг) ищем комбинацию, где разброс
+# (ставка − индекс) минимален; сама маржа — среднее этих разностей.
+#
+# Метод неустойчив там, где индекс НЕ МЕНЯЛСЯ за наблюдаемые периоды: тогда
+# любой парой (база, маржа) фит идеален, и «err=0» означает не точность, а
+# неразличимость. Отсюда требования ниже — они же проверены на 60 бумагах с
+# известными параметрами: правило приняло 32, база совпала 32/32, маржа ±10бп
+# в 31 случае (одна разошлась на 15бп), остальные отсеяны как неоднозначные.
+_INFER_MIN_COUPONS = 3     # меньше — статистики нет
+_INFER_MAX_ERR_PP = 0.05   # средний остаток фита
+_INFER_MIN_SPAN_PP = 1.0   # разброс индекса: без него маржа неидентифицируема
+_INFER_MARGIN_BPS = (-100, 2500)
+_INFER_BASE_SEP = 3.0      # вторая база должна быть ХУЖЕ во столько раз
+
+
+_FIXED_MIN_COUPONS = 4
+_FIXED_RATE_TOL_PP = 0.02   # дрожь от округления value в рублях
+_FIXED_KS_SPAN_PP = 1.0     # КС должна была заметно сходить
+
+
+def looks_fixed_coupons(coupons: list, face: float, calc_date: date,
+                        amorts: list = None) -> Optional[dict]:
+    """Бумага на деле ФИКС? → {rate, ks_span_pp, n} или None.
+
+    Discovery считает флоатером всё, у чего есть будущий купон без суммы
+    (bondization), но MOEX публикует значения лишь на несколько лет вперёд, и у
+    длинного ФИКСА хвост графика тоже пустой. Отсюда 148 фикс-бумаг среди 500
+    «флоатеров без базы» на 12.08.2026 (РЖД 1Р-40R 17.65%, ЛСР БО1Р10 24%,
+    МТС 1P-28 21.75% — ставка не двигалась ни разу).
+
+    Признак: все реализованные купоны по одной ставке, ПРИ ЭТОМ ключевая ставка
+    за те же периоды заметно менялась — флоатер так себя вести не может. Второе
+    условие обязательно: на плоской КС постоянный купон ничего не доказывает.
+    Проверено на 120 известных флоатерах — ни одного ложного срабатывания."""
+    rows = _past_rows(coupons, 0.0, face, calc_date, amorts)
+    if len(rows) < _FIXED_MIN_COUPONS:
+        return None
+    rates = [r[2] for r in rows]
+    if max(rates) - min(rates) > _FIXED_RATE_TOL_PP:
+        return None
+    idx = _index("KEYRATE")
+    ks = [k for k in (_rate_at(idx, s) for s, _e, _o in rows) if k is not None]
+    if not ks or max(ks) - min(ks) < _FIXED_KS_SPAN_PP:
+        return None
+    return {"rate": round(rates[0], 3), "ks_span_pp": round(max(ks) - min(ks), 2),
+            "n": len(rows)}
+
+
+def infer_base_margin(coupons: list, face: float, calc_date: date,
+                      amorts: list = None) -> tuple[Optional[dict], Optional[str]]:
+    """(спека | None, причина отказа | None) — база и маржа из истории купонов.
+
+    Возвращает {'base','margin_bps','mode','lag','err_pp','n','span_pp'}. Режим и
+    лаг тут побочный продукт фита: в реестр их не пишем, спеку фиксинга дальше
+    определяет обычная цепочка (парсер проспекта > калибратор)."""
+    rows = _past_rows(coupons, 0.0, face, calc_date, amorts)   # маржа 0 → obs = ставка купона
+    if len(rows) < _INFER_MIN_COUPONS:
+        return None, "мало зафиксированных купонов"
+    per_base: dict[str, dict] = {}
+    for base in ("KEYRATE", "RUONIA"):
+        idx = _index(base)
+        if not idx[0]:
+            continue
+        best = None
+        for lag in range(0, _MAX_LAG + 1):
+            for mode in ("point", "average"):
+                ks, diffs = [], []
+                for s, e, obs in rows:
+                    k = (_rate_at(idx, s - timedelta(days=lag)) if mode == "point"
+                         else _rate_avg(idx, s, e, lag))
+                    if k is None:
+                        continue
+                    ks.append(k)
+                    diffs.append(obs - k)
+                if len(diffs) < _INFER_MIN_COUPONS:
+                    continue
+                m = sum(diffs) / len(diffs)
+                err = sum(abs(x - m) for x in diffs) / len(diffs)
+                if best is None or err < best["err_pp"]:
+                    best = {"base": base, "mode": mode, "lag": lag,
+                            "margin_bps": round(m * 100), "err_pp": round(err, 4),
+                            "n": len(diffs), "span_pp": round(max(ks) - min(ks), 3)}
+        if best:
+            per_base[base] = best
+    if not per_base:
+        return None, "нет истории индекса"
+    win = min(per_base.values(), key=lambda x: x["err_pp"])
+    rival = [v for k, v in per_base.items() if k != win["base"]]
+    if win["span_pp"] < _INFER_MIN_SPAN_PP:
+        return None, f"индекс не менялся ({win['span_pp']}пп) — маржа неотличима"
+    if win["err_pp"] > _INFER_MAX_ERR_PP:
+        return None, f"фит плохой ({win['err_pp']}пп)"
+    lo, hi = _INFER_MARGIN_BPS
+    if not lo <= win["margin_bps"] <= hi:
+        return None, f"маржа вне диапазона ({win['margin_bps']}бп)"
+    if rival and rival[0]["err_pp"] < win["err_pp"] * _INFER_BASE_SEP:
+        return None, (f"база неоднозначна: {win['base']} {win['err_pp']}пп vs "
+                      f"{rival[0]['base']} {rival[0]['err_pp']}пп")
+    return win, None
+
+
 def _last_obs_date(spec: dict, start: date, end: date) -> Optional[date]:
     """Последняя дата наблюдения индекса по спеке. Если она ≤ calc_date (и история
     её покрывает) — окно фиксинга периода полностью реализовано, купон известен

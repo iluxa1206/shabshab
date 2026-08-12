@@ -162,6 +162,15 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("corpbonds enrich failed: %s", e)
 
+    # 6.5. фолбэк для тех, кого corpbonds не знает: база и маржа из истории
+    #      выплат. Иначе свежие выпуски навсегда остаются без параметров —
+    #      непрайсуемыми и с прочерком спреда в ленте.
+    inf_stats = {}
+    try:
+        inf_stats = await infer_missing_params(reg=reg)
+    except Exception as e:
+        logger.warning("infer base/margin failed: %s", e)
+
     # 7. слой bondresearch.ru: наблюдаемые рынком лаг/метод фиксинга (br_* колонки,
     #    приоритет спеки manual > bondresearch > парсер > калибратор). Сбой сайта
     #    не валит синк; куцый ответ не затирает слой (sanity внутри apply_specs).
@@ -183,6 +192,7 @@ async def sync_instruments() -> dict:
         logger.warning("spec backtest failed: %s", e)
 
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "inferred": inf_stats.get("filled", 0),
                   "br_specs": br_stats.get("written", 0),
                   "spec_checked": bt_stats.get("checked", 0),
                   "spec_bad": bt_stats.get("bad", 0) + bt_stats.get("warn", 0),
@@ -198,6 +208,7 @@ async def sync_instruments() -> dict:
     return stats
 
 
+_MAX_INFER_PER_RUN = 40       # калибровок базы/маржи по истории купонов за прогон
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
 _MAX_CORPBONDS_PER_RUN = 70   # запросов к corpbonds.ru за прогон (внешний сайт)
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
@@ -210,6 +221,82 @@ _CORPBONDS_QUOTA_NO_SPEC = 10   # прайсуемые без текста фо�
 # ПОСЛЕДНИМ в срезе targets[:cap] — cap поднят с 60 до 70 под него, иначе
 # квота четырёх старших классов (ровно 60) съедала его целиком каждый прогон.
 _CORPBONDS_QUOTA_CALL = 10
+
+
+async def infer_missing_params(cap: int = _MAX_INFER_PER_RUN, reg=None) -> dict:
+    """База и маржа по ИСТОРИИ КУПОНОВ для бумаг, которых нет на corpbonds.
+
+    Зачем: discovery заводит выпуск в реестр по bondization (есть будущий купон
+    без суммы ⇒ флоатер), но параметры приходят только из corpbonds, а свежие
+    выпуски 2025-26 он не индексирует — на 12.08.2026 таких «флоатер без базы»
+    было 500. Для ленты и витрины это глухой прочерк: без базы и маржи спред не
+    считается ничем.
+
+    Факт выплат — источник не хуже проспекта: ставка купона = индекс + маржа.
+    Правило приёмки в coupon_calib.infer_base_margin намеренно строгое (см. там
+    же валидацию), поэтому неоднозначные выпуски остаются без базы, а не
+    получают выдуманную.
+
+    Тем же проходом ловим обратную ошибку: фикс-купонную бумагу, которую
+    discovery приняла за флоатер из-за неопубликованного хвоста графика
+    (coupon_calib.looks_fixed_coupons) — такие уходят в base='FIXED'.
+
+    Сеть — только MOEX bondization, тот же дневной кэш, что у остального синка.
+    """
+    from services import coupon_calib as cc
+    from services.market_data import MarketDataService
+    if reg is None:
+        from services import instruments_registry as reg
+    today = date.today()
+    stats = {"checked": 0, "filled": 0, "skipped": 0, "fixed": 0}
+    targets = [r["isin"] for r in reg.list_incomplete()
+               if r["base"] is None and not r.get("manual_locked")]
+    # ротация та же, что у corpbonds: сначала ни разу не пробованные
+    targets = reg.enrich_pending(targets, cap)
+    filled: list[str] = []
+    for isin in targets:
+        row = reg.get(isin) or {}
+        try:
+            full = await MarketDataService.fetch_bond_schedule_full(isin)
+        except Exception:
+            continue                  # сетевой сбой — не помечаем, повторим
+        stats["checked"] += 1
+        coupons = (full or {}).get("coupons") or []
+        amorts = (full or {}).get("amortizations") or []
+        face = row.get("face_value") or 1000.0
+        fx = cc.looks_fixed_coupons(coupons, face, today, amorts)
+        if fx:
+            reg.reclassify_fixed(isin)      # reviewed=0 — на подтверждение админом
+            reg.mark_enrich_attempt(isin, "filled")
+            stats["fixed"] += 1
+            logger.info("infer %s: ФИКС %.2f%% (КС ходила на %.1fпп, %d купонов)",
+                        isin, fx["rate"], fx["ks_span_pp"], fx["n"])
+            continue
+        spec, why = cc.infer_base_margin(coupons, face, today, amorts)
+        if not spec:
+            stats["skipped"] += 1
+            logger.debug("infer %s: %s", isin, why)
+            reg.mark_enrich_attempt(isin, "nodata")
+            continue
+        # пишем ТОЛЬКО базу и маржу: режим/лаг фиксинга дальше определяет
+        # обычная цепочка (парсер проспекта > калибратор), у неё правил больше
+        reg.upsert({"isin": isin, "base": spec["base"], "margin_bps": spec["margin_bps"]},
+                   source="coupon-calib")
+        reg.mark_enrich_attempt(isin, "filled")
+        filled.append(isin)
+        stats["filled"] += 1
+        logger.info("infer %s: %s +%dбп (err %.3fпп, %d купонов, разброс %.1fпп)",
+                    isin, spec["base"], spec["margin_bps"], spec["err_pp"],
+                    spec["n"], spec["span_pp"])
+    if filled:
+        # у сделок этих бумаг спред был закрыт прочерком как у «не-флоатера» —
+        # возвращаем их в очередь расчёта, иначе прочерк остался бы навсегда
+        try:
+            from services import block_trades as bt
+            stats["requeued"] = await asyncio.to_thread(bt.reset_metrics, filled)
+        except Exception as e:
+            logger.warning("infer: пересчёт спреда не запущен: %s", e)
+    return stats
 
 
 def _call_unknown_with_offer() -> list[str]:

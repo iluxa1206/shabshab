@@ -31,6 +31,10 @@ const SIDES = [[null, "любая"], ["buy", "buy"], ["sell", "sell"]];
 // «Весь рынок» остаётся как контекст (там же фиксы и бумаги вне реестра).
 const SCOPES = [["float", "флоатеры"], ["market", "весь рынок"]];
 const LIMITS = [5000, 10000, 20000];
+// Такт автообновления. Безадресные сделки юниверса приходят тиком Alor почти
+// сразу, адресные — из ISS с её задержкой ~15 мин, так что чаще смысла нет:
+// запрос стоит агрегата по всему окну на стороне бэка.
+const LIVE_MS = 20000;
 const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 
 // Деньги везде в проекте — в МЛН ₽ голым числом (fmt.mln): единица подписана
@@ -76,6 +80,8 @@ export default function TradesTape() {
   const [errMsg, setErrMsg] = useState("");
   const [issuers, setIssuers] = useState([]);
   const [tick, setTick] = useState(0);
+  const [live, setLive] = useState(true);
+  const [lastAt, setLastAt] = useState(null);
   const abort = useRef(null);
 
   // ISIN в поиске — не текстовый фильтр по загруженным строкам, а сужение
@@ -108,11 +114,25 @@ export default function TradesTape() {
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings }, ac.signal)
         .then((d) => { setData(d); });
-    req.then(() => setStatus("ready"))
+    req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
   }, [days, minValue, side, market, daysView, emitters, isinReq, scope, limit,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, tick]);
+
+  // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
+  // демонами (тик Alor и лента ISS), поэтому в сокете не было бы ничего, чего
+  // не даст такт опроса, а запрос ленты уже умеет фильтры и агрегат.
+  // Во вкладке в фоне не опрашиваем: незачем жечь агрегат по всему окну.
+  useEffect(() => {
+    if (!live) return undefined;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") setTick((t) => t + 1);
+    }, LIVE_MS);
+    const onShow = () => { if (document.visibilityState === "visible") setTick((t) => t + 1); };
+    document.addEventListener("visibilitychange", onShow);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onShow); };
+  }, [live]);
 
   // текстовый поиск (не ISIN) — фильтр по уже загруженным строкам
   const match = (r) => {
@@ -210,6 +230,10 @@ export default function TradesTape() {
             onToggle={(n) => setEmitters((a) => toggle(a, n))} onClear={() => setEmitters([])} />
           <input className="tape-search" placeholder="бумага / ISIN…" value={q}
             onChange={(e) => setQ(e.target.value)} />
+          <button className={"chip-btn" + (live ? " on" : "")} onClick={() => setLive((v) => !v)}
+            title={`лента дотягивается сама раз в ${LIVE_MS / 1000} с; во вкладке в фоне опрос не идёт`}>
+            {live ? "лайв" : "пауза"}
+          </button>
           <button className="btn" onClick={() => setTick((t) => t + 1)}>Обновить</button>
         </div>
         <div className="ia-filters">
@@ -248,6 +272,11 @@ export default function TradesTape() {
           )}
           {sum.archive_till && (
             <span className="ia-flabel">данные до {sum.archive_till.slice(0, 16)}</span>
+          )}
+          {lastAt && (
+            <span className="ia-flabel" title="время последнего успешного запроса">
+              обновлено {lastAt.toLocaleTimeString("ru-RU")}
+            </span>
           )}
         </div>
       </div>

@@ -61,6 +61,9 @@ BLOCK_RAW_DAYS = max(int(os.getenv("BLOCK_RAW_DAYS", "1")), 1)
 # Порог расчёта спреда: солвер по всему потоку не нужен — мельче этого сделки
 # всё равно не переживут ночь, а внутри дня спред интересен по крупным.
 BLOCK_YIDX_MIN_RUB = float(os.getenv("BLOCK_YIDX_MIN_RUB", "1000000"))
+# глубина, на которую считаем спред ТИКАМ Alor (см. unpriced): тик закрывает
+# только окно ожидания ISS, дальше в ленте всё равно побеждает строка из ISS
+TICK_YIDX_DAYS = int(os.getenv("TICK_YIDX_DAYS", "3"))
 BLOCK_BACKFILL_DAYS = int(os.getenv("BLOCK_BACKFILL_DAYS", "30"))
 # Полный проход ленты с начала сессии дорогой (55 страниц) — держим потолок,
 # чтобы сбой курсора не превратил каждый опрос в стомегабайтную выкачку.
@@ -306,36 +309,87 @@ def unpriced(limit: int = 400) -> list[dict]:
 
     Мелочь ниже BLOCK_YIDX_MIN_RUB не берём вовсе: в потоке 272k сделок за день,
     солвер по ним не нужен, а метку metrics_at им не ставим — эти строки всё
-    равно уйдут ночным пруном."""
+    равно уйдут ночным пруном.
+
+    Тик Alor берём наравне с block_trade: сделка приходит тиком СРАЗУ, а из ISS
+    та же строка приезжает лишь через ~15 минут — если ждать её, свежая сделка
+    висит в ленте с прочерком всё это время. Дублей нет: тик берётся только
+    когда его trade_id ещё не пришёл из ISS (там строка богаче — считаем по ней).
+    """
     with _connect() as c:
         rows = c.execute(
-            "SELECT trade_id, isin, price FROM block_trade "
+            "SELECT trade_id, isin, price, 'block' AS src FROM block_trade "
             "WHERE metrics_at IS NULL AND price IS NOT NULL AND value >= ? "
             "ORDER BY trade_id DESC LIMIT ?", (BLOCK_YIDX_MIN_RUB, limit)).fetchall()
-    return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        left = limit - len(out)
+        if left > 0:
+            # только свежий хвост: тик нужен ровно для того, чтобы закрыть окно
+            # ожидания ISS (~15 мин). У старых сделок ISS-двойник уже приехал и
+            # посчитан, а гонять солвер по всему архиву тиков — часы работы
+            # впустую (на 12.08.2026 их 47k).
+            frm = (datetime.now(_MSK) - timedelta(days=TICK_YIDX_DAYS)).strftime("%Y-%m-%d")
+            ticks = c.execute(
+                "SELECT t.trade_id, t.isin, t.price, 'tick' AS src FROM trade_tick t "
+                "WHERE t.metrics_at IS NULL AND t.price IS NOT NULL AND t.value >= ? "
+                "AND t.ts >= ? "
+                "AND NOT EXISTS (SELECT 1 FROM block_trade b WHERE b.trade_id = t.trade_id) "
+                "ORDER BY t.trade_id DESC LIMIT ?",
+                (BLOCK_YIDX_MIN_RUB, frm, left)).fetchall()
+            out.extend(dict(r) for r in ticks)
+    return out
 
 
 def unpriced_count() -> int:
     """Сколько сделок ещё без посчитанного спреда — по этому счётчику демон
     решает, держать ли рабочий темп вне торговых часов."""
+    frm = (datetime.now(_MSK) - timedelta(days=TICK_YIDX_DAYS)).strftime("%Y-%m-%d")
     with _connect() as c:
         return int(c.execute(
-            "SELECT COUNT(*) FROM block_trade WHERE metrics_at IS NULL AND value >= ?",
-            (BLOCK_YIDX_MIN_RUB,)).fetchone()[0])
+            "SELECT (SELECT COUNT(*) FROM block_trade WHERE metrics_at IS NULL AND value >= ?) "
+            "+ (SELECT COUNT(*) FROM trade_tick WHERE metrics_at IS NULL AND value >= ? "
+            "   AND ts >= ?)",     # та же граница, что в unpriced: иначе счётчик
+            (BLOCK_YIDX_MIN_RUB,   # вечно ненулевой и демон не уходит в редкий такт
+             BLOCK_YIDX_MIN_RUB, frm)).fetchone()[0])
 
 
-def save_metrics(vals: list[tuple]) -> int:
+def save_metrics(vals: list[tuple], table: str = "block_trade") -> int:
     """[(y_idx, dm, trade_id)] → в базу. metrics_at ставится всегда, даже когда
     спред посчитать нечем (фикс, бумага вне реестра): иначе такие строки
-    возвращались бы в очередь на каждом такте демона."""
+    возвращались бы в очередь на каждом такте демона.
+
+    table — block_trade (ISS) или trade_tick (Alor): колонки метрик одинаковы."""
     if not vals:
         return 0
+    if table not in ("block_trade", "trade_tick"):
+        raise ValueError(f"неизвестная таблица: {table}")
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
     with _lock, _connect() as c:
         cur = c.executemany(
-            "UPDATE block_trade SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE trade_id=?",
+            f"UPDATE {table} SET y_idx_bps=?, dm_bps=?, metrics_at=? WHERE trade_id=?",
             [(y, d, now, tid) for y, d, tid in vals])
         return cur.rowcount or 0
+
+
+def reset_metrics(isins: list[str]) -> int:
+    """Вернуть сделки бумаг в очередь расчёта спреда (metrics_at=NULL).
+
+    Нужно, когда бумага ПОЗЖЕ получила базу/маржу: её сделки уже закрыты
+    прочерком как «не флоатер», и сами в очередь не вернутся — metrics_at
+    ставится всегда, иначе неоцениваемые строки крутились бы вечно."""
+    ids = [i for i in (isins or []) if i]
+    if not ids:
+        return 0
+    done = 0
+    with _lock, _connect() as c:
+        for i in range(0, len(ids), 400):     # потолок переменных SQLite
+            chunk = ids[i:i + 400]
+            cur = c.execute(
+                f"UPDATE block_trade SET metrics_at=NULL WHERE y_idx_bps IS NULL "
+                f"AND value >= ? AND isin IN ({','.join('?' * len(chunk))})",
+                [BLOCK_YIDX_MIN_RUB, *chunk])
+            done += cur.rowcount or 0
+    return done
 
 
 async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
@@ -358,15 +412,25 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
          else others).append(r)
 
     done = 0
+    # строки приходят из двух таблиц (ISS и тики Alor) — метки пишем каждой в свою
+    def _by_table(rows_, val):
+        out = 0
+        for tbl in ("block_trade", "trade_tick"):
+            part = [val(r) for r in rows_ if r.get("src", "block") ==
+                    ("tick" if tbl == "trade_tick" else "block")]
+            if part:
+                out += save_metrics(part, table=tbl)
+        return out
+
     if others:
         done += await asyncio.to_thread(
-            save_metrics, [(None, None, r["trade_id"]) for r in others])
+            _by_table, others, lambda r: (None, None, r["trade_id"]))
     if floats:
         floats = floats[:limit]
         await trade_yidx.enrich(floats, labels, max_isins=limit)
         done += await asyncio.to_thread(
-            save_metrics,
-            [(r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"]) for r in floats])
+            _by_table, floats,
+            lambda r: (r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"]))
     return done
 
 

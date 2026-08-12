@@ -306,6 +306,15 @@ _MIGRATIONS = [
     # тип фильтра: book — условия по стакану (исторический, потому DEFAULT),
     # block — крупная сделка в ленте (см. services/block_trades.notify_blocks)
     "ALTER TABLE signal_filters ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'",
+    # спред у ТИКА Alor: раньше считался только для block_trade (ISS), из-за чего
+    # свежая безадресная сделка висела с прочерком ~15 минут — ровно до того, как
+    # та же сделка приедет из ISS. Тик приходит сразу, поэтому считаем и по нему.
+    "ALTER TABLE trade_tick ADD COLUMN y_idx_bps REAL",
+    "ALTER TABLE trade_tick ADD COLUMN dm_bps REAL",
+    "ALTER TABLE trade_tick ADD COLUMN metrics_at TEXT",
+    # очередь расчёта ходит по (metrics_at, value) — без индекса это фулскан
+    # многомиллионной таблицы на каждом такте демона
+    "CREATE INDEX IF NOT EXISTS ix_tick_unpriced ON trade_tick(metrics_at, value)",
 ]
 
 
