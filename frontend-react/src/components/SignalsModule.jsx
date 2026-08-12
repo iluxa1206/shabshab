@@ -145,6 +145,14 @@ function MultiPicker({ label, placeholder, items, onChange, search, keyOf, label
 
 const numOrEmpty = (v) => (v == null ? "" : String(v));
 
+// Объём вводится в МЛН ₽ — как фильтр тикета в СПИСКЕ (Toolbar): «100000000»
+// в поле никто не читает с первого раза. В состоянии и в API — по-прежнему ₽.
+const rubToMln = (v) => (v == null || v === "" ? "" : String(v / 1e6));
+const mlnToRub = (s) => {
+  const v = parseFloat(String(s).replace(",", "."));
+  return Number.isFinite(v) && v > 0 ? Math.round(v * 1e6) : null;
+};
+
 /** Форма фильтра: отбор бумаг (ИЛИ) + условия сделки (И) + живое превью.
  *  edit — существующий фильтр: те же поля, но сохраняем правкой. Монтируется
  *  с key={edit?.id ?? "new"}, поэтому начальные значения ставятся один раз. */
@@ -157,7 +165,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [side, setSide] = useState(ep.side || "ask");
   const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
   const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
-  const [minMoney, setMinMoney] = useState(numOrEmpty(ep.min_money_rub));
+  const [minMoney, setMinMoney] = useState(rubToMln(ep.min_money_rub));  // млн ₽
   const [moneyMode, setMoneyMode] = useState(ep.money_mode || "book");
   const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
   const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
@@ -172,7 +180,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     ratings, emitters, isins, side,
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
-    min_money_rub: minMoney === "" ? null : Number(minMoney),
+    min_money_rub: mlnToRub(minMoney),
     money_mode: moneyMode,
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
@@ -288,9 +296,10 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
 
       <div className="sig-row">
         <div className="sig-field">
-          <label className="sig-label" htmlFor="sig-money">Объём, ₽</label>
-          <input id="sig-money" className="sig-input num" type="number" placeholder="не важно"
-            value={minMoney} onChange={(e) => setMinMoney(e.target.value)} />
+          <label className="sig-label" htmlFor="sig-money">Объём, млн ₽</label>
+          <input id="sig-money" className="sig-input num" type="number" step="0.5" min="0"
+            placeholder="не важно" value={minMoney}
+            onChange={(e) => setMinMoney(e.target.value)} />
         </div>
         <div className="sig-field">
           <label className="sig-label">Срок до погашения, лет</label>
@@ -369,7 +378,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
   const [bases, setBases] = useState(ep.bases || ["KEYRATE", "RUONIA"]);
-  const [minValue, setMinValue] = useState(numOrEmpty(ep.min_value_rub ?? 100000000));
+  const [minValue, setMinValue] = useState(rubToMln(ep.min_value_rub ?? 100000000));  // млн ₽
   const [markets, setMarkets] = useState(ep.markets || "all");
   const [side, setSide] = useState(ep.side || "any");
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
@@ -380,13 +389,13 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
 
   const params = useMemo(() => ({
     ratings, emitters, isins, bases, markets, side, hide_subord: hideSub,
-    min_value_rub: minValue === "" ? null : Number(minValue),
+    min_value_rub: mlnToRub(minValue),
   }), [ratings, emitters, isins, bases, markets, side, hideSub, minValue]);
 
   // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
   // выставленный порог либо молчит неделю, либо звонит каждые пять минут.
   useEffect(() => {
-    if (minValue === "" || Number(minValue) < 1e6) { setPreview(null); return; }
+    if (!(mlnToRub(minValue) >= 1e6)) { setPreview(null); return; }
     let dead = false;
     const t = setTimeout(async () => {
       try {
@@ -405,7 +414,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     e.preventDefault();
     setErr("");
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
-    if (minValue === "" || Number(minValue) < 1e6) {
+    if (!(mlnToRub(minValue) >= 1e6)) {
       setErr("Порог объёма: от 1 млн ₽ — мельче лента не хранит"); return; }
     try {
       await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop });
@@ -433,9 +442,9 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
 
       <div className="sig-row">
         <div className="sig-field">
-          <label className="sig-label" htmlFor="blk-money">Объём сделки от, ₽</label>
-          <input id="blk-money" className="sig-input num" type="number" value={minValue}
-            onChange={(e) => setMinValue(e.target.value)} />
+          <label className="sig-label" htmlFor="blk-money">Объём сделки от, млн ₽</label>
+          <input id="blk-money" className="sig-input num" type="number" step="1" min="1"
+            value={minValue} onChange={(e) => setMinValue(e.target.value)} />
         </div>
         <div className="sig-field">
           <label className="sig-label">Режим торгов</label>
@@ -600,6 +609,32 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
   );
 }
 
+// Повторное срабатывание по УЖЕ найденной бумаге: показываем, что именно
+// шевельнулось и на сколько — иначе в ленте десяток одинаковых строк подряд.
+const REPEAT = {
+  price: ["цена", "price", (v) => fmt.num(v, 2) + "%"],
+  spread: ["спред", "val_bps", (v) => fmt.num(v, 0) + " бп"],
+  money: ["объём", "money_rub", (v) => money(v) + " ₽"],
+};
+
+function WhyLine({ h }) {
+  const r = REPEAT[h.reason];
+  if (!r) {
+    return h.reason === "new"
+      ? <div className="sig-hit-why">нашлась под условия</div> : null;
+  }
+  const [what, field, fmtv] = r;
+  const prev = h["prev_" + field];
+  const cur = h[field];
+  return (
+    <div className="sig-hit-why">
+      повтор: {what}{" "}
+      {prev != null && <span className="num">{fmtv(prev)} → </span>}
+      <span className="num">{cur != null ? fmtv(cur) : "—"}</span>
+    </div>
+  );
+}
+
 /** Колонка одного вида сигналов: список фильтров + своя форма под ним.
  *  Виды не переключаются табом — они стоят рядом, потому что настраивают их
  *  вместе (порог блока смотрят на условия стакана и наоборот). */
@@ -733,7 +768,9 @@ export default function SignalsModule() {
         {feed.length === 0
           ? <div className="sig-empty">Пока пусто.</div>
           : feed.map((h) => (
-              <div className="sig-hit" key={h.id}>
+              <div key={h.id}
+                className={"sig-hit " + (h.reason === "block" ? "hit-block" : "hit-book")
+                  + (REPEAT[h.reason] ? " hit-repeat" : "")}>
                 <div className="sig-hit-top">
                   <span className="sig-hit-name">{h.name || h.isin}</span>
                   <span className={"sb-tag sb-" + h.reason}>{REASON[h.reason] || h.reason}</span>
@@ -753,6 +790,7 @@ export default function SignalsModule() {
                   {h.money_rub != null && <> · {money(h.money_rub)} ₽</>}
                   {h.levels ? <> · {h.levels} ур</> : null}
                 </div>
+                <WhyLine h={h} />
                 <div className="sig-hit-meta">
                   {/* у блока filter_name пустой, когда звонило умолчание
                       (env-порог), а не заведённый пользователем фильтр */}

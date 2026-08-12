@@ -1508,7 +1508,7 @@ body.col-resizing * { cursor: col-resize !important; }
 /* ---- Сигналы ---- */
 /* Три колонки: фильтры стакана │ фильтры крупных сделок │ лента. Два вида
    сигналов живут рядом, а не под переключателем — их сравнивают глазами. */
-.sig-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 340px;
+.sig-wrap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 0; flex: 1; min-height: 0; overflow: hidden; }
 .sig-col { padding: 20px 24px; overflow-y: auto; min-width: 0; }
 .sig-col + .sig-col { border-left: 1px solid var(--line); }
@@ -1596,11 +1596,21 @@ body.col-resizing * { cursor: col-resize !important; }
 .sig-submit { margin-top: 14px; width: 100%; padding: 10px; }
 
 /* лента */
-.sig-hit { border: 1px solid var(--line); background: var(--bg); padding: 9px 11px; margin-bottom: 6px; }
+/* Полоса слева — тип события: лента смешанная, и рыночный блок надо отличать
+   от срабатывания своего фильтра по стакану ещё до чтения текста. */
+.sig-hit { border: 1px solid var(--line); border-left: 3px solid var(--mut-2);
+           background: var(--bg); padding: 9px 11px; margin-bottom: 6px; }
+.sig-hit.hit-block { border-left-color: var(--accent);
+                     background: color-mix(in srgb, var(--accent) 5%, var(--bg)); }
+.sig-hit.hit-book { border-left-color: var(--up); }
+/* повтор по уже найденной бумаге — приглушаем: новое важнее шевеления */
+.sig-hit.hit-repeat { border-left-style: dashed; }
 .sig-hit-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 .sig-hit-name { font-size: 12.5px; font-weight: 700; }
 .sig-hit-time { font-family: var(--mono); font-size: 10px; color: var(--mut); }
 .sig-hit-body { font-size: 12px; margin-top: 3px; text-align: left; }
+.sig-hit-why { font-size: 10.5px; color: var(--mut); margin-top: 3px; }
+.sig-hit-why .num { font-family: var(--mono); }
 .sig-hit-meta { font-family: var(--mono); font-size: 9.5px; color: var(--mut-2); margin-top: 3px;
                 letter-spacing: 0.04em; }
 
@@ -1636,7 +1646,7 @@ body.col-resizing * { cursor: col-resize !important; }
                color: var(--mut); cursor: pointer; font-size: 12px; padding: 9px 11px; }
 
 /* Узко для трёх колонок — лента уходит под формы, оставляя им половины */
-@media (max-width: 1500px) {
+@media (max-width: 1400px) {
   .sig-wrap { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .sig-feed-col { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
 }
