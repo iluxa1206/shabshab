@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Подвал ленты — test harness</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <!-- Раскладка вкладки СДЕЛКИ без данных и авторизации: скролл-контейнер
+       .issuer-agg.tape-page, длинная таблица и липкий подвал. Нужен, чтобы
+       проверять прилипание и края полосы глазами. -->
+  <body class="theme-dark">
+    <div id="app">
+      <div class="issuer-agg tape-page">
+        <div class="ia-head">
+          <h2 class="ia-title">Лента сделок</h2>
+          <div class="ia-filters">
+            <input class="tape-search" placeholder="бумага / ISIN…" />
+            <div class="fgroup tape-topbox">
+              <button class="chip-btn" id="topbtn">топ оборота ▾</button>
+              <div class="tape-topmenu" id="topmenu" hidden>
+                <button class="tape-topitem"><span class="tt-name">ОФЗ 29025</span><span class="tt-val">4 210,3</span></button>
+                <button class="tape-topitem on"><span class="tt-name">РЖД 1Р-40R</span><span class="tt-val">2 980,1</span></button>
+                <button class="tape-topitem"><span class="tt-name">Систем2P14</span><span class="tt-val">1 744,8</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ia-table-wrap">
+          <table class="grid tape-table packed" id="tbl">
+            <thead><tr><th class="left">ДАТА</th><th class="left">ВРЕМЯ</th><th class="left">БУМАГА</th>
+              <th class="num">ЦЕНА, %</th><th class="num">СУММА, МЛН</th><th class="num">R-SPREAD, БП</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="tape-foot">
+          <span class="tape-fkpi"><span class="tape-fk">СДЕЛОК</span><span class="tape-fv">1 077</span></span>
+          <span class="tape-fkpi"><span class="tape-fk">ОБОРОТ, МЛН</span><span class="tape-fv">29 271,4</span></span>
+          <span class="tape-fkpi"><span class="tape-fk">BUY</span><span class="tape-fv tape-buy">6 845,8</span></span>
+          <span class="tape-fkpi"><span class="tape-fk">SELL</span><span class="tape-fv tape-sell">7 738,1</span></span>
+          <span class="tape-fkpi"><span class="tape-fk">АДРЕСНЫЕ</span><span class="tape-fv">14 687,5</span></span>
+          <span class="tape-fkpi"><span class="tape-fk">ПОКАЗАНО</span><span class="tape-fv">500 из 1 077</span></span>
+          <span class="tape-fnote">данные до 2026-08-12 18:38 · обновлено 18:39:26</span>
+          <span class="tape-fspace"></span>
+          <button class="btn">показать ещё 500</button>
+        </div>
+      </div>
+      <div class="statusbar"><span class="status-cell">статус-бар приложения</span></div>
+    </div>
+    <script type="module">
+      const tb = document.querySelector("#tbl tbody");
+      for (let i = 0; i < 80; i++) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td class="left tape-ts">12.08</td><td class="left tape-ts">17:${String(59 - i % 60).padStart(2, "0")}:20</td>`
+          + `<td class="left"><span class="tape-name-cell">Бумага ${i + 1}</span></td>`
+          + `<td class="num">100,0${i % 9}</td><td class="num">${(i * 7.3).toFixed(1)}</td><td class="num">${180 + i}</td>`;
+        tb.appendChild(tr);
+      }
+      const btn = document.querySelector("#topbtn"), menu = document.querySelector("#topmenu");
+      btn.onclick = () => { menu.hidden = !menu.hidden; btn.classList.toggle("on", !menu.hidden); };
+    </script>
+  </body>
+</html>

@@ -577,25 +577,22 @@ export default function ChartPage() {
   // область данных графика, иначе окно не совпадает с тем, что видно
   const [rightPad, setRightPad] = useState(0);
 
-  // Высота графика — всё, что осталось до низа окна: страница не должна
-  // скроллиться. Шапка переносится на 2–3 строки при узком окне и «дорастает»
-  // после загрузки данных, поэтому следим за её размером, а не считаем один раз.
-  const topRef = useRef(null);
   const [height, setHeight] = useState(420);
+  // Высоту графика раздаёт РАСКЛАДКА, а не арифметика: .chart-page — колонка на
+  // всю доступную высоту, .cp-row забирает остаток после шапки, полосы-обзора и
+  // подвала. Прежний расчёт вычитал слагаемые вручную (34 на подвал, отступы) и
+  // регулярно промахивался: подвал уезжал под статус-бар, а после подгрузки
+  // данных страница оставалась длиннее окна до первого ресайза.
+  // Здесь же измеряем ФАКТ — он нужен панели распределения и геометрии.
+  const rowRef = useRef(null);
   useLayoutEffect(() => {
-    const calc = () => {
-      const el = hostRef.current;
-      if (!el) return;
-      const top = el.getBoundingClientRect().top;
-      // под графиком: полоса-обзор (BRUSH_H + отступ) и строка-подвал (34px)
-      // 34 подвал + BRUSH_H + 8 отступ + 2 рамка полосы
-      setHeight(Math.max(260, Math.round(window.innerHeight - top - 34 - BRUSH_H - 10)));
-    };
-    calc();
-    window.addEventListener("resize", calc);
-    const ro = new ResizeObserver(calc);
-    if (topRef.current) ro.observe(topRef.current);
-    return () => { window.removeEventListener("resize", calc); ro.disconnect(); };
+    const el = rowRef.current;
+    if (!el) return undefined;
+    const measure = () => setHeight(Math.max(260, Math.round(el.clientHeight)));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   // создание графика — один раз; данные и цвета обновляются отдельными эффектами
@@ -998,7 +995,7 @@ export default function ChartPage() {
 
   return (
     <div className="chart-page" ref={wrapRef}>
-      <div className="cp-top" ref={topRef}>
+      <div className="cp-top">
       <div className="cp-head">
         <div className="cp-id">
           <button type="button" className="cp-back" onClick={goBack}
@@ -1134,9 +1131,9 @@ export default function ChartPage() {
       </div>
 
       {/* Строка под курсором рендерится ВСЕГДА: раньше она появлялась только
-          при наведении, а за высотой .cp-top следит ResizeObserver — блок
-          возникал/исчезал, высота графика пересчитывалась, и график прыгал
-          вместе с масштабом. Пустая строка держит место. */}
+          при наведении — блок возникал и исчезал, остаток высоты под график
+          пересчитывался, и график прыгал вместе с масштабом. Пустая строка
+          держит место. */}
       <div className="cp-legend">
         {legend && candles.length > 0 ? (
           <>
@@ -1183,7 +1180,7 @@ export default function ChartPage() {
       </div>
       </div>
 
-      <div className="cp-row" style={{ height }}>
+      <div className="cp-row" ref={rowRef}>
         <div className="cp-chart" ref={hostRef} />
         {distOn && <SpreadDist dist={dist} theme={theme} height={height} skipped={distThin}
           label={sLabel} geom={distGeom} />}

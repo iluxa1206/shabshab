@@ -525,7 +525,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .charts-full { font-size: 13px; padding: 2px 8px; text-decoration: none; line-height: 1.4; }
 
 /* ── полноэкранный график выпуска (/chart/:isin) ── */
-.chart-page { display: flex; flex-direction: column; padding: 10px 16px 0; gap: 8px; }
+/* Страница графика занимает всю высоту под шапкой: скроллиться она не должна,
+   а высоту графику раздаёт flex — см. .cp-row. */
+.chart-page { display: flex; flex-direction: column; padding: 10px 16px 0; gap: 8px;
+  flex: 1 1 auto; min-height: 0; overflow: hidden; }
 /* блок над графиком: за его высотой следит ResizeObserver — шапка переносится
    на 2–3 строки на узком окне, и график должен ужаться, а не уехать за низ */
 .cp-top { display: flex; flex-direction: column; gap: 8px; }
@@ -538,7 +541,7 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-isin { font: 11px var(--mono); color: var(--mut-2); }
 .cp-rating { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
   padding: 1px 5px; color: var(--mut); }
-/* кнопка карточки со стаканом стоит в строке имени — выравниваем по центру */
+/* кнопка карточки со стаканом стоит в строке имени — выравниваем по базовой */
 .cp-ob { align-self: center; }
 .cp-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; }
 .cp-stat { display: inline-flex; align-items: baseline; gap: 5px; }
@@ -583,7 +586,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* треугольники на графике белые с контуром — в тексте повторяем тем же приёмом */
 .cp-tri { color: var(--fg); }
 /* график + панель распределения справа (RVD-раскладка) */
-.cp-row { display: flex; gap: 8px; align-items: stretch; }
+/* график + панель распределения: забирает ВСЮ оставшуюся высоту страницы —
+   полоса-обзор и подвал стоят под ним и своё место держат сами */
+.cp-row { display: flex; gap: 8px; align-items: stretch; flex: 1 1 auto; min-height: 260px; }
 .cp-chart { flex: 1 1 auto; min-width: 0; height: 100%;
   border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .cp-dist { flex: 0 0 210px; border: 1px solid var(--line); border-radius: 4px;
@@ -603,10 +608,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-dist-empty { font: 10px var(--mono); color: var(--mut-2); padding: 8px; }
 @media (max-width: 900px) { .cp-dist { display: none; } }
 /* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
-.cp-brush { width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
+.cp-brush { width: 100%; flex: 0 0 auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
   overflow: hidden; outline-offset: 2px; }
 .cp-brush:focus-visible { outline: 2px solid var(--accent); }
-.cp-foot { font: 10px var(--mono); color: var(--mut-2); padding: 4px 0 8px; }
+.cp-foot { flex: 0 0 auto; font: 10px var(--mono); color: var(--mut-2); padding: 4px 0 8px; }
 .cp-warn { color: var(--down); }
 @media (max-width: 720px) {
   .chart-page { padding: 8px 10px 0; }
@@ -993,6 +998,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
   #app { height: auto; min-height: 100vh; }
   .table-wrap { flex: none; overflow-x: auto; }
+  /* страница графика тут тоже скроллится целиком: высоту графику даём долей
+     экрана, иначе flex:1 в контейнере height:auto схлопывается в min-height */
+  .chart-page { flex: none; overflow: visible; }
+  .cp-row { flex: none; height: 55vh; }
 }
 
 /* ── флоатер-метрики: перцентиль-бар в таблице ── */
@@ -1468,12 +1477,24 @@ body.col-resizing * { cursor: col-resize !important; }
   padding: 4px 6px; font: inherit; font-size: 12px; width: 64px;
   font-variant-numeric: tabular-nums; }
 .tape-nin:focus { outline: none; border-color: var(--fg); }
-/* Подвал ленты: итоги окна одной строкой под таблицей. Липкий к низу окна —
-   цифры справочные, но должны быть под рукой без прокрутки в конец. */
+/* Подвал ленты: итоги окна одной строкой под таблицей. Липнет к низу СВОЕГО
+   скролл-контейнера (.issuer-agg), поэтому отрицательные поля гасят его
+   padding — иначе полоса висит в 18px от краёв и в 14px от низа, а в просвете
+   едут строки таблицы (выглядит как вклиненная посреди ленты плашка). */
+.tape-page { padding-bottom: 0; }
 .tape-foot { position: sticky; bottom: 0; z-index: 3;
   display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-  padding: 6px 2px; margin-top: 4px;
-  background: var(--bg); border-top: 1px solid var(--line); }
+  margin: 4px -18px 0; padding: 7px 18px;
+  background: var(--bg); border-top: 1px solid var(--line-2);
+  box-shadow: 0 -8px 14px -10px rgba(0, 0, 0, 0.55); }
+.theme-win .tape-foot { background: var(--face); }
+/* На малом экране (см. медиазапрос выше) скроллится вся страница, а не тело
+   вкладки: липкий подвал прилипал бы к низу ОКНА и висел поперёк таблицы.
+   Правило стоит ЗДЕСЬ, а не в общем блоке малого экрана, — иначе базовое
+   .tape-foot ниже по файлу перебивает его при равной специфичности. */
+@media (max-width: 760px), (max-height: 720px) {
+  .tape-foot { position: static; box-shadow: none; }
+}
 .tape-fkpi { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .tape-fk { font-size: 9.5px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.08em; }
 .tape-fv { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
