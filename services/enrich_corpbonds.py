@@ -35,7 +35,11 @@ _CB_URL = "https://corpbonds.ru/bond/{isin}"
 # v4 — снимаем «Наличие call-опциона» (has_call) в реестр: MOEX bondization
 # в offertype колл не различает, corpbonds единственный источник. Бумаги,
 # обойдённые v3, перечекиваются, чтобы флаг проставился.
-PARSER_VERSION = 4
+# v5 — снимаем ДАТЫ колла из календаря выплат (строки «call-опцион»). Без даты
+# флаг has_call рисовал маркер «c», но горизонт прайсинга оставался погашением:
+# _preferred_horizon нечего было сравнивать с ценой (СибурХ1Р04 — колл каждый
+# месяц с 14.12.2026, а спред считался к 2032 году).
+PARSER_VERSION = 5
 
 
 def _parse_formula(f: str) -> dict:
@@ -112,6 +116,33 @@ def _num(s: str) -> Optional[float]:
         return None
 
 
+_DMY_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+
+
+def _parse_call_dates(soup) -> list:
+    """Даты call-опциона из КАЛЕНДАРЯ ВЫПЛАТ страницы (в таблице параметров их нет).
+
+    Строка календаря: <td></td><td>14.12.2026</td><td>call-опцион</td>… Колл у
+    RU-флоатеров обычно бермудский — дата на каждый купон после lock-up, поэтому
+    возвращаем ВЕСЬ список: какая из них «ближайшая будущая», зависит от дня
+    расчёта, а скрейп редкий.
+
+    Ячейку с меткой отбираем по КОРОТКОМУ тексту: на странице есть ещё длинные
+    методологические абзацы со словом «call-опцион» — они бы дали мусорные даты.
+    """
+    out: list = []
+    for tr in soup.find_all("tr"):
+        tds = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+        if not any(t and len(t) <= 30 and "call" in t.lower() for t in tds):
+            continue
+        for t in tds:
+            if t and _DMY_RE.fullmatch(t):
+                iso = _to_iso(t)
+                if iso and iso not in out:
+                    out.append(iso)
+    return sorted(out)
+
+
 def parse_corpbonds_html(html: str) -> dict:
     """HTML страницы corpbonds → нормализованные параметры бумаги."""
     from bs4 import BeautifulSoup
@@ -145,6 +176,11 @@ def parse_corpbonds_html(html: str) -> dict:
     if _call is None:
         _call = kv.get("Наличие call-опциона")
     out["has_call"] = None if _call is None else (_call.strip() == "Да")
+    # Даты колла — из календаря выплат. Нашли даты → колл есть, даже если строки
+    # «Наличие сall-опциона» на странице не оказалось (факт сильнее отсутствия поля).
+    out["call_dates"] = _parse_call_dates(s)
+    if out["call_dates"]:
+        out["has_call"] = True
     out["is_step"] = kv.get("Купон лесенкой", "") == "Да"
     out["is_subord"] = kv.get("Субординированная облигация", "") == "Да"
     out["rating_raw"] = (kv.get("Кредитный рейтинг") or "").strip() or None
@@ -177,6 +213,13 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
             if apply and r.get("has_call") is not None:
                 reg.set_has_call(isin, r["has_call"])
                 stats["call_flag"] = stats.get("call_flag", 0) + 1
+            # Даты колла — источник горизонта прайсинга (MOEX их не даёт вовсе).
+            # Пустой список пишем тоже: «календарь есть, коллов в нём нет» —
+            # знание, которое гасит устаревшие даты после реструктуризации.
+            if apply and r.get("call_dates") is not None:
+                reg.set_call_dates(isin, r["call_dates"])
+                if r["call_dates"]:
+                    stats["call_dates"] = stats.get("call_dates", 0) + 1
             base, margin, exotic = r.get("base"), r.get("margin_bps"), r.get("exotic")
             # экзотика или не-КС/RUONIA флоатер (ИПЦ и т.п.) → вне линейной модели.
             # ВАЖНО: судим об экзотике ТОЛЬКО когда формула на странице была. После

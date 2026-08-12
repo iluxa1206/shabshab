@@ -44,6 +44,53 @@ def _trading_day() -> str:
     d = now.date() if now.hour >= 9 else now.date() - timedelta(days=1)
     return d.isoformat()
 
+
+# --- call-опционы: даты из реестра (corpbonds), которых нет у MOEX ---
+# MOEX в bondization.offertype колл не различает вовсе, а у части выпусков
+# (СибурХ1Р04/05/06) блок offers пуст, хотя колл есть — ежемесячный, с 2026 года.
+# Без даты горизонт прайсинга оставался погашением: правилу цены нечего было
+# сравнивать. Подмешиваем БЛИЖАЙШУЮ будущую дату колла одной синтетической
+# записью в offers — дальше всё работает штатной дорогой (offer_kind → 'call',
+# first_call_date → horizons['call'] → _preferred_horizon).
+# Инъекция идёт ПОСЛЕ кэша расписания: на диск ложится чистый ответ MOEX.
+_CALL_DATES: Dict[str, list] = {}
+_CALL_DATES_AT: float = 0.0
+_CALL_DATES_TTL = 600.0
+
+
+def _call_dates_cached() -> Dict[str, list]:
+    global _CALL_DATES, _CALL_DATES_AT
+    if time.time() - _CALL_DATES_AT > _CALL_DATES_TTL:
+        try:
+            from services import instruments_registry as reg
+            _CALL_DATES = reg.call_dates_map()
+        except Exception as e:
+            logger.warning(f"call_dates_map: {e}")
+            _CALL_DATES = {}
+        _CALL_DATES_AT = time.time()
+    return _CALL_DATES
+
+
+def _with_call_offers(isin: str, sched: dict) -> dict:
+    """Копия расписания с добавленной ближайшей будущей датой колла (если есть).
+    Дубль не создаём: если MOEX сам отдал оферту на эту дату — она авторитетнее."""
+    dates = _call_dates_cached().get(isin)
+    if not dates:
+        return sched
+    today = date.today().isoformat()
+    future = [d for d in sorted(dates) if d > today]
+    if not future:
+        return sched
+    nearest = future[0]
+    offers = list(sched.get("offers") or [])
+    if any((o.get("date") or "") == nearest for o in offers):
+        return sched
+    offers.append({"date": nearest, "type": "call-опцион", "price": None,
+                   "source": "corpbonds"})
+    out = dict(sched)
+    out["offers"] = offers
+    return out
+
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.
 _MOEX_SEM = asyncio.Semaphore(5)
@@ -478,7 +525,7 @@ class MarketDataService:
             await asyncio.to_thread(cls._ensure_full_mem)
         cls._ensure_full_mem()
         if isin in cls._full_mem:
-            return cls._full_mem[isin]
+            return _with_call_offers(isin, cls._full_mem[isin])
 
         async def _fetch(sec: str) -> dict:
             out = {"coupons": [], "amorts": [], "offers": []}
@@ -561,7 +608,7 @@ class MarketDataService:
             # дамп ~5 МБ JSON: дебаунс пишет раз в 60с, но и одна такая запись в
             # event loop — сотни мс фриза; в поток
             await asyncio.to_thread(cls._save_full_disk)
-        return out
+        return _with_call_offers(isin, out)
 
     _sec_cache: Dict[str, dict] = {}
     _sec_loaded: bool = False

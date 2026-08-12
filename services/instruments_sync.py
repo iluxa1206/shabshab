@@ -154,7 +154,9 @@ async def sync_instruments() -> dict:
                    + reg.enrich_pending([n["isin"] for n in reg.list_no_spec()],
                                         _CORPBONDS_QUOTA_NO_SPEC, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending(_call_unknown_with_offer(),
-                                        _CORPBONDS_QUOTA_CALL, parser_ver=PARSER_VERSION))
+                                        _CORPBONDS_QUOTA_CALL, parser_ver=PARSER_VERSION)
+                   + reg.enrich_pending([c["isin"] for c in reg.list_call_dates_missing()],
+                                        _CORPBONDS_QUOTA_CALL_DATES, parser_ver=PARSER_VERSION))
         targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
@@ -222,7 +224,7 @@ async def sync_instruments() -> dict:
 
 _MAX_INFER_PER_RUN = 40       # калибровок базы/маржи по истории купонов за прогон
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
-_MAX_CORPBONDS_PER_RUN = 70   # запросов к corpbonds.ru за прогон (внешний сайт)
+_MAX_CORPBONDS_PER_RUN = 80   # запросов к corpbonds.ru за прогон (внешний сайт)
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
 # большой incomplete не вытеснял остальные за срез
 _CORPBONDS_QUOTA_INCOMPLETE = 30
@@ -230,9 +232,13 @@ _CORPBONDS_QUOTA_SUSPECT = 10
 _CORPBONDS_QUOTA_EXOTIC = 10
 _CORPBONDS_QUOTA_NO_SPEC = 10   # прайсуемые без текста формулы (дефолт-спека)
 # бумаги с будущей офертой и неизвестным has_call (маркер p/c). Класс идёт
-# ПОСЛЕДНИМ в срезе targets[:cap] — cap поднят с 60 до 70 под него, иначе
-# квота четырёх старших классов (ровно 60) съедала его целиком каждый прогон.
+# ПРЕДПОСЛЕДНИМ в срезе targets[:cap] — cap поднят с 60 до 80 под него и класс
+# дат колла, иначе квота старших классов съедала бы их целиком каждый прогон.
 _CORPBONDS_QUOTA_CALL = 10
+# бумаги, у которых колл возможен (has_call=1/NULL), но ДАТ его нет: без даты
+# колл не может стать горизонтом прайсинга. Разово их закрывает
+# scripts/backfill_call_dates.py, эта квота лишь поддерживает — класс иссякает.
+_CORPBONDS_QUOTA_CALL_DATES = 10
 
 
 async def infer_missing_params(cap: int = _MAX_INFER_PER_RUN, reg=None) -> dict:

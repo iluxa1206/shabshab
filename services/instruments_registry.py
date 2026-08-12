@@ -111,6 +111,11 @@ _MIGRATIONS = [
     # универсе только 'Оферта' / 'Оферта (состоялось)' / 'Оферта/Погашение', т.е.
     # даты оферт есть, а чья это опция — из MOEX не узнать.
     "ALTER TABLE instruments ADD COLUMN has_call INTEGER",
+    # ДАТЫ колла (JSON-массив ISO) из календаря выплат corpbonds. has_call даёт
+    # только факт «опцион есть», а горизонт прайсинга требует даты: без неё
+    # _preferred_horizon не с чем сравнивать цену. Колл обычно бермудский —
+    # хранится весь список, «ближайшая будущая» считается на дату расчёта.
+    "ALTER TABLE instruments ADD COLUMN call_dates TEXT",
     # Сверка типа купона со smart-lab (services/smartlab_audit). Внешний источник
     # называет тип словами и о нашей математике ничего не знает — этим и ценен:
     # ловит и ложный FIXED от классификатора, и флоатер с чужой базой.
@@ -675,6 +680,45 @@ def set_has_call(isin: str, value: Optional[bool]) -> None:
                   (1 if value else 0, _now(), isin))
 
 
+def set_call_dates(isin: str, dates) -> None:
+    """Даты call-опциона из corpbonds (список ISO). None — «не знаем», не пишем;
+    [] — знаем, что коллов в календаре нет (гасит устаревшие даты).
+
+    manual_locked не уважаем по той же причине, что и set_has_call: это факт о
+    бумаге, а не параметр прайсинга, а в проде сотни строк заморожены импортом."""
+    if dates is None:
+        return
+    _ensure()
+    isin = (isin or "").strip()
+    if not isin:
+        return
+    import json as _json
+    val = _json.dumps(sorted({d for d in dates if d}), ensure_ascii=False)
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET call_dates=?, updated_at=? WHERE isin=?",
+                  (val, _now(), isin))
+
+
+def call_dates_map() -> Dict[str, list]:
+    """{isin: [ISO даты колла]} — только бумаги, у которых даты известны и непусты.
+    Их десятки, а не тысячи: грузится одним запросом и кэшируется вызывающим
+    (services.market_data подмешивает эти даты в оферты MOEX)."""
+    _ensure()
+    import json as _json
+    out: Dict[str, list] = {}
+    with _conn() as c:
+        rows = c.execute("SELECT isin, call_dates FROM instruments "
+                         "WHERE call_dates IS NOT NULL AND call_dates != '[]'").fetchall()
+    for r in rows:
+        try:
+            ds = _json.loads(r["call_dates"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(ds, list) and ds:
+            out[r["isin"]] = [d for d in ds if isinstance(d, str)]
+    return out
+
+
 def set_margin_check(isin: str, diff_pp: Optional[float]) -> None:
     """Записать расхождение бэк-аута маржи (pp) от факта КС/RUONIA. |>1.5| → suspect."""
     _ensure()
@@ -738,6 +782,21 @@ def list_call_unknown() -> list[dict]:
         rows = c.execute(
             "SELECT isin, short_name FROM instruments "
             "WHERE active=1 AND base IN ('KEYRATE','RUONIA') AND has_call IS NULL"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_call_dates_missing() -> list[dict]:
+    """Активные флоатеры, у которых ДАТ колла нет (call_dates IS NULL), а сам колл
+    возможен: has_call=1 («есть») или NULL («не знаем»). has_call=0 пропускаем —
+    corpbonds уже ответил, что опциона нет, ходить за календарём незачем.
+    Цель backfill_call_dates: без даты колл не может стать горизонтом прайсинга."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, has_call, maturity_date FROM instruments "
+            "WHERE active=1 AND base IN ('KEYRATE','RUONIA') "
+            "AND call_dates IS NULL AND (has_call IS NULL OR has_call=1)"
         ).fetchall()
     return [dict(r) for r in rows]
 
