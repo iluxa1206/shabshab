@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   createChart, CandlestickSeries, LineSeries, HistogramSeries, AreaSeries, CrosshairMode,
@@ -263,6 +263,15 @@ function tradeTime(ts, tf) {
 export default function ChartPage() {
   const { isin } = useParams();
   const [sp, setSp] = useSearchParams();
+  const nav = useNavigate();
+
+  // «Назад» = НАЗАД ПО ИСТОРИИ, а не «на карточку выпуска»: на график приходят
+  // из ленты сделок, из списка, из сигналов — и возвращаться человек хочет
+  // туда же, со своими фильтрами. Прямая ссылка/F5 истории не имеет
+  // (router держит индекс записи в history.state.idx) — там прежний переход
+  // на карточку остаётся единственным осмысленным.
+  const canGoBack = (window.history.state?.idx ?? 0) > 0;
+  const goBack = () => (canGoBack ? nav(-1) : nav(`/floaters?isin=${isin}`));
 
   const period = sp.get("p") || "3m";
   const custom = { from: sp.get("from"), to: sp.get("to") };
@@ -847,7 +856,8 @@ export default function ChartPage() {
       <div className="cp-top" ref={topRef}>
       <div className="cp-head">
         <div className="cp-id">
-          <Link className="cp-back" to={`/floaters?isin=${isin}`} title="К карточке выпуска">←</Link>
+          <button type="button" className="cp-back" onClick={goBack}
+            title={canGoBack ? "Назад — туда, откуда пришли" : "К карточке выпуска"}>←</button>
           <span className="cp-name" title={row?.emitter_name || ""}>{name}</span>
           <span className="cp-isin">{isin}</span>
           {row?.rating && <span className="cp-rating">{row.rating}</span>}

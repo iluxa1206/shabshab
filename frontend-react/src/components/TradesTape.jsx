@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
 import { copyText } from "../clipboard.js";
@@ -122,6 +122,7 @@ function RowLinks({ isin, onOpen }) {
 
 export default function TradesTape() {
   const nav = useNavigate();
+  const [sp, setSp] = useSearchParams();
   // дефолт — рабочий срез: неделя и крупняк от 1 млн ₽. Максимум («макс» +
   // «все») лента тянет, но агрегат по миллиону сделок считается секундами.
   const [days, setDays] = useState(() => pick(savedFilters().days, 7));
@@ -310,11 +311,18 @@ export default function TradesTape() {
     });
   }, [rows, sort]);
 
-  // Открыть бумагу из ленты. Фильтры лежат в URL, поэтому «назад» из графика
-  // или карточки возвращает ленту в том же виде — без пересбора условий.
+  // Открыть бумагу из ленты. Карточка — ПОВЕРХ ленты: Drawer смонтирован
+  // глобально и слушает ?isin= в адресе, поэтому уходить на СПИСОК незачем —
+  // лента остаётся под карточкой, а её закрытие ничего не пересобирает.
+  // График — отдельная страница, но возврат с неё идёт назад по истории.
   const openBond = (isin, where) => {
-    if (where === "chart") nav(`/chart/${isin}`);
-    else nav(`/floaters?isin=${isin}&ob=1`);
+    if (where === "chart") { nav(`/chart/${isin}`); return; }
+    setSp((prev) => {
+      const n = new URLSearchParams(prev);
+      n.set("isin", isin);
+      n.set("ob", "1");
+      return n;
+    });
   };
 
   return (
