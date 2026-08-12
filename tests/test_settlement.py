@@ -236,3 +236,18 @@ def test_asof_accrual_resets_on_coupon_payment_date():
     acc2, _ = _accrue_to_date(11.74, _d(2026, 8, 7), _d(2026, 8, 10), periods, 1000.0)
     daily = 34.11 / (_d(2026, 8, 9) - _d(2026, 5, 9)).days
     assert acc2 == pytest.approx(daily, abs=1e-3), "один день нового периода"
+
+
+def test_accrue_to_settle_on_coupon_payment_date():
+    """calc_date == старт купонного периода (день выплаты): накопления ноль,
+    пропорцию строить не из чего. Раньше НКД на поставку возвращался как есть
+    (0), т.е. dirty занижен на 1-3 дня. Теперь дни поставки начисляются по
+    дневной ставке ПРЕДЫДУЩЕГО купона."""
+    from datetime import date as _d
+    from core.valuation import accrue_to_settle
+    periods = [(_d(2026, 5, 8), _d(2026, 8, 7), 34.11),
+               (_d(2026, 8, 7), _d(2026, 11, 7), None)]
+    acc, note = accrue_to_settle(0.0, _d(2026, 8, 7), periods)   # пт → settle пн 10.08
+    daily = 34.11 / (_d(2026, 8, 7) - _d(2026, 5, 8)).days
+    assert acc == pytest.approx(daily * 3, abs=1e-3), "3 дня нового периода"
+    assert note

@@ -669,7 +669,12 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #   4 — 2026-08-11: якорь realized-гибрида — ПЕРВАЯ архивная кривая, не
 #       сегодняшняя: серия рвалась скачком на границе архива котировок
 #       (realized→market), у ТрансмхПБ8 −50bp за день при флэт цене
-HONEST_ENGINE_VERSION = 4
+#   5 — 2026-08-12: НКД в ДЕНЬ ВЫПЛАТЫ купона. На нерабочей дате факт последних
+#       торгов (почти полный купон старого периода) оставался НКД новой даты
+#       (_accrue_to_date), на рабочей — accrue_to_settle не доначисляла НКД на
+#       поставку (calc == старт периода, elapsed=0 → возврат входа), занижая
+#       dirty на 1-3 дня накопления
+HONEST_ENGINE_VERSION = 5
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:

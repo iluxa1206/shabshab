@@ -218,7 +218,9 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #          НКД старого периода почти в полный купон (history-строки за выходной
 #          нет, _accrue_to_date при смене периода с неопубликованным купоном
 #          оставлял факт пятницы) → dirty завышен на купон, спред улетал в минус
-#          на сотни bps. 495 бумаг / 3152 бара в окне 95 дней
+#          на сотни bps. 495 бумаг / 3152 бара в окне 95 дней. В ТОРГОВЫЙ день
+#          выплаты тот же дефект был мягче — НКД на поставку не доначислялся
+#          (accrue_to_settle, elapsed=0). HONEST_ENGINE_VERSION=5
 BARS_METRICS_VERSION = 3
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",

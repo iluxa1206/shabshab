@@ -340,6 +340,13 @@ def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
         elapsed = (calc_date - s).days
         if elapsed > 0:
             return round(accrued_calc * (settle - s).days / elapsed, 4), note
+        # calc_date == старт периода (день выплаты купона): пропорцию строить не
+        # из чего — накопления ноль. Начисляем дни поставки по дневной ставке
+        # ПРЕДЫДУЩЕГО купона, иначе НКД на settle занижен на весь gap
+        prev = period_at(periods, s - timedelta(days=1))
+        if prev and prev[2] is not None:
+            sp, ep, vp = prev
+            return round(vp / ((ep - sp).days or 1) * (settle - s).days, 4), note
         return accrued_calc, None
 
     a = accrued_at(periods, settle)
