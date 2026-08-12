@@ -466,6 +466,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .q-px.q-vwap { color: var(--fg); border-bottom: 1px dotted var(--line-2); display: inline-block; }
 .q-sp { font-size: 11px; font-weight: 600; line-height: 1.1; margin-top: 1px; }
 .q-sp .dash { font-weight: 400; }
+/* Сторона стакана — сверхпрозрачной заливкой ячейки: бид зелёный, оффер
+   красный. Альфа мелкая нарочно: подсказка глазу, а не раскраска таблицы. */
+.grid tbody td.q-bid { background: rgba(46, 204, 113, 0.07); }
+.grid tbody td.q-ask { background: rgba(231, 76, 60, 0.07); }
 /* Y-IDX по стакану: цвет знака сохраняем (это та же метрика), но мельче и
    без стрелки — доминирует mid-чип. */
 

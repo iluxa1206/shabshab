@@ -6,8 +6,6 @@ import { baseLabel, couponsPerYear, fmt, dmColor } from "../format.js";
 import CouponFormula from "./CouponFormula.jsx";
 import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetchRepricePast, UnauthorizedError, issueUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
-import PriceChart from "./PriceChart.jsx";
-import SpreadHistory from "./SpreadHistory.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
 
@@ -244,46 +242,10 @@ function StaleChips({ m }) {
   );
 }
 
-// Общий период графиков карточки — календарные дни. Раньше цене шли
-// календарные (30), а истории спреда торговые (21) — окна не совпадали, и
-// синхронный курсор это маскировал. Теперь оба чарта режутся одной датой.
-const CHART_PERIODS = [[30, "1М"], [90, "3М"], [180, "6М"], [365, "1Г"]];
-const isoBack = (days) => new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
 // период карточки → код периода полноэкранной страницы /chart/:isin
 const CHART_P_CODE = { 30: "1m", 90: "3m", 180: "6m", 365: "1y" };
 
-// Графики карточки: цена (сверху) + динамика Y-IDX (снизу) на ОДНОМ периоде —
-// видно, как двигались цена и спред в одинаковом окне. Рендерится в выездной
-// панели слева от карточки (desktop) или инлайн в теле карточки (узкий экран).
-function ChartsBody({ isin, period, setPeriod, onClose }) {
-  // синхронный курсор: дата ховера одного графика — пунктирная вертикаль на другом
-  const [hoverDate, setHoverDate] = useState(null);
-  return (
-    <div className="charts-body">
-      <div className="charts-head">
-        <span className="charts-title">Графики</span>
-        <span className="sh-range" role="group" aria-label="Период графиков">
-          {CHART_PERIODS.map(([cd, l]) => (
-            <button key={cd} className={"sh-rbtn" + (period === cd ? " on" : "")}
-              onClick={() => setPeriod(cd)}>{l}</button>
-          ))}
-        </span>
-        {/* полноэкранный график в своей вкладке: гибкий период, zoom/pan */}
-        <a className="btn charts-full" target="_blank" rel="noopener noreferrer"
-          href={`${APP_BASENAME}/chart/${isin}?p=${CHART_P_CODE[period] || "1y"}`}
-          title="Открыть на весь экран в новой вкладке">⤢</a>
-        <button className="btn ob-close" onClick={onClose} aria-label="Закрыть графики">✕</button>
-      </div>
-      <div className="section-title">Цена · MOEX</div>
-      <PriceChart isin={isin} periodDays={period} syncDate={hoverDate} onHoverDate={setHoverDate} />
-      <div className="section-title">Динамика R-spread</div>
-      <SpreadHistory isin={isin} kind="floater" board="TQCB" from={isoBack(period)}
-        syncDate={hoverDate} onHoverDate={setHoverDate} />
-    </div>
-  );
-}
-
-function Content({ d, charts, hzSel = "auto", setHzSel = () => {} }) {
+function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
   const r = d.reference, m = d.market;
   const baseVal = d.valuation;
 
@@ -454,9 +416,6 @@ function Content({ d, charts, hzSel = "auto", setHzSel = () => {} }) {
         <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
       </div>
 
-      {/* узкий экран: панель графиков не помещается — графики инлайн */}
-      {charts && <div className="charts-inline">{charts}</div>}
-
       <FloaterSection f={d.floater} base={r.base_rate_type} />
 
       <div className="section-title">Купоны · факт + прогноз{cutToOffer ? " · до оферты" : ""}</div>
@@ -519,16 +478,9 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
   // объёма сигнала в стакане должна считать деньги ровно как screener_core
   const accrued = data?.valuation?.accrued_settle_rub ?? data?.reference?.accrued_interest ?? 0;
 
-  // Панель графиков (флоатеры): цена + DM на общем периоде, слева от карточки.
-  // Открывается кнопкой ГРАФИКИ (аналог СТАКАНА). Один элемент рендерится и в
-  // панели (desktop), и инлайн (узкий экран) — видимость переключает CSS.
-  const [showCharts, setShowCharts] = useState(false);
-  useEffect(() => { setShowCharts(false); }, [isin]);
-  const [period, setPeriod] = useState(90);
-  const charts = !isFixed && data && showCharts
-    ? <ChartsBody isin={isin} period={period} setPeriod={setPeriod}
-        onClose={() => setShowCharts(false)} />
-    : null;
+  // Мини-графиков в карточке больше нет: единственный вход в графики —
+  // полноэкранная страница /chart/:isin (кнопка ГРАФИКИ ⤢).
+  const period = 90;
 
   // focus + esc + tab-trap
   useEffect(() => {
@@ -579,14 +531,13 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                   aria-pressed={showOb}
                   title="Стакан выпуска"
                 >СТАКАН</button>
-                {!isFixed && (
-                  <button
-                    className={"btn ob-toggle" + (showCharts ? " on" : "")}
-                    onClick={() => setShowCharts((v) => !v)}
-                    aria-pressed={showCharts}
-                    title="Цена и динамика DM на общем периоде"
-                  >ГРАФИКИ</button>
-                )}
+                <button
+                  className="btn ob-toggle"
+                  // лента СДЕЛКИ, сразу сужённая на этот выпуск: ISIN уезжает
+                  // в ?q= — там он не текстовый фильтр, а сужение запроса
+                  onClick={() => navigate(`/trades?q=${isin}`)}
+                  title="Лента сделок по этому выпуску"
+                >СДЕЛКИ</button>
                 {!isFixed && (
                   // второй вход в те же графики, минуя панель карточки: полный
                   // экран в новой вкладке с гибким периодом и zoom/pan
@@ -640,24 +591,12 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
               {err ? <div className="warn-box">Ошибка: {err}</div>
                 : !data ? <div className="loading">ЗАГРУЗКА</div>
                 : isFixed ? <FixedCard d={data} />
-                : <Content d={data} charts={charts} hzSel={hzSel} setHzSel={setHzSel} />}
+                : <Content d={data} hzSel={hzSel} setHzSel={setHzSel} />}
             </div>
           </motion.aside>
-          {charts && (
-            <motion.aside
-              className="charts-panel"
-              key="charts-panel"
-              initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: reduce ? 0 : 24, opacity: 0 }}
-              transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
-            >
-              {charts}
-            </motion.aside>
-          )}
           {showOb && (
             <motion.aside
-              className={"ob-panel" + (charts ? " ob-shifted" : "")}
+              className="ob-panel"
               key="ob-panel"
               initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
               animate={{ x: 0, opacity: 1 }}

@@ -248,7 +248,9 @@ export default function TradesTape() {
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
   // адресных: у безадресных поштучный архив полный, агрегировать нечего.
   const [byDay, setByDay] = useState(() => pick(savedFilters().byDay, false));
-  const [q, setQ] = useState("");
+  // ?q= — вход с бумагой из карточки (кнопка СДЕЛКИ): лента открывается сразу
+  // сужённой на этот выпуск. Дальше поле живёт своей жизнью, адрес не трогаем.
+  const [q, setQ] = useState(() => sp.get("q") || "");
   const [data, setData] = useState(null);
   const [dayData, setDayData] = useState(null);
   const [status, setStatus] = useState("loading");
