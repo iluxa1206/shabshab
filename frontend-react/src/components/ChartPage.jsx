@@ -570,6 +570,8 @@ export default function ChartPage() {
   const tradeAtRef = useRef({ buy: new Map(), sell: new Map(), rps: new Map() });
   const theme = useThemeVars(wrapRef);
   const [legend, setLegend] = useState(null);
+  // счётчик пересозданий графика — см. эффект создания ниже
+  const [chartVer, setChartVer] = useState(0);
   const [hasYidx, setHasYidx] = useState(false);
   // окно brush'а — в логических индексах баров (тех же, что у timeScale)
   const [visRange, setVisRange] = useState(null);
@@ -613,6 +615,13 @@ export default function ChartPage() {
       localization: { locale: "ru-RU" },
     });
     chartRef.current = chart;
+    // Версия инстанса: эффекты, которые ПОДПИСЫВАЮТСЯ на график (легенда под
+    // курсором, слежение за видимым окном), обязаны перезапуститься после
+    // каждого пересоздания. Без неё подписка терялась, когда данные приходили
+    // из кэша раньше темы: эффект отрабатывал при chartRef.current === null и
+    // больше не звался, потому что его собственные зависимости не менялись —
+    // крестик рисовался, а строка цифр бара оставалась пустой.
+    setChartVer((v) => v + 1);
     return () => { chart.remove(); chartRef.current = null; seriesRef.current = {}; };
     // пересоздаём при смене типа графика/наличия панели спреда: так проще и
     // надёжнее, чем снимать и добавлять серии в живом графике
@@ -924,7 +933,7 @@ export default function ChartPage() {
     ts.subscribeVisibleLogicalRangeChange(onRange);
     onRange(ts.getVisibleLogicalRange());
     return () => ts.unsubscribeVisibleLogicalRangeChange(onRange);
-  }, [candles, type, spreadPaneOn, theme, tf]);
+  }, [candles, type, spreadPaneOn, theme, tf, chartVer]);
 
   // рамка → график
   const applyBrush = (r) => chartRef.current?.timeScale().setVisibleLogicalRange(r);
@@ -971,7 +980,7 @@ export default function ChartPage() {
     };
     chart.subscribeCrosshairMove(onMove);
     return () => chart.unsubscribeCrosshairMove(onMove);
-  }, [candles, type, spreadPaneOn, spreadPts]);
+  }, [candles, type, spreadPaneOn, spreadPts, chartVer]);
 
   // ── шапка ─────────────────────────────────────────────────────────────────
   const r = qDetails.data?.reference;
