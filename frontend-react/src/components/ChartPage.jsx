@@ -47,6 +47,15 @@ const LAYERS = [
           + "в стакане и обезличенной ленте их нет вообще"],
 ];
 const BIG_THRESHOLDS = [1, 5, 10, 50, 100];   // млн ₽
+// Цвета точек сделок НЕ из палитры свечей: зелёная точка на зелёной свече не
+// видна вовсе. Три чужих для графика тона — их ни с чем не спутать, а сторона
+// читается по цвету, а не по положению относительно бара.
+const TRADE_DOT = {
+  buy: "#0ea5e9",    // покупка по аску — голубой
+  sell: "#f59e0b",   // продажа по биду — янтарный
+  rps: "#a855f7",    // адресная (РПС) — фиолетовый
+};
+const TRADE_DOT_R = 4.5;
 const LAYER_MAX_DAYS = 730;                   // потолок окна баров у бэка
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -187,7 +196,8 @@ function layerPoints(bars, tf, useVwap = true) {
       a.yNum += y * b.volume; a.yDen += b.volume;
       // ohlc — спред по ценам самого часа (может не быть у старых баров,
       // налитых до появления полей: тогда останется прежняя склейка по vwap)
-      a.hours.push({ y, v: b.volume, ohlc: barSpreadOHLC(b) });
+      // px — сами цены часа: по ним видно, ИЗ ЧЕГО получилась цифра спреда
+      a.hours.push({ y, v: b.volume, ohlc: barSpreadOHLC(b), close: b.close });
     }
     if (b.buy_volume) { a.bq += b.buy_volume; a.bv += (b.buy_vwap || 0) * b.buy_volume; }
     if (b.sell_volume) { a.sq += b.sell_volume; a.sv += (b.sell_vwap || 0) * b.sell_volume; }
@@ -237,6 +247,9 @@ function layerPoints(bars, tf, useVwap = true) {
       y_c: cndl?.c ?? null,
       y_h: cndl?.h ?? null,
       y_l: cndl?.l ?? null,
+      // цена закрытия дня — закрытие последнего часа, попавшего в склейку:
+      // база спреда, когда слой СРЕДНЕВЗВЕС выключен
+      close: src.length ? src[src.length - 1].close : null,
       buy_vwap: a.bq ? a.bv / a.bq : null,
       sell_vwap: a.sq ? a.sv / a.sq : null,
     };
@@ -427,12 +440,17 @@ export default function ChartPage() {
   // средневзвешенной цене), резерв — дневной снапшот spread_daily.
   const spreadPts = useMemo(() => {
     if (!spreadPaneOn) return [];
+    // px — ЦЕНА, по которой посчитана точка спреда (средневзвешенная или
+    // закрытие — смотря включён ли слой СРЕДНЕВЗВЕС). Без неё цифру спреда
+    // нельзя сверить с ценовым графиком: непонятно, из чего она получилась.
     const bars = layerPts.filter((p) => p.y_idx_bps != null).map((p) => ({
       time: p.time, value: p.y_idx_bps, thin: p.thin, src: "bars",
       o: p.y_o, h: p.y_h, l: p.y_l, c: p.y_c,
+      px: on("vwap") ? p.vwap_pct : (p.close ?? p.vwap_pct),
     }));
     const daily = (qSpread.data?.points || [])
-      .map((p) => ({ time: p.date, value: sKind === "g" ? p.g_spread_bps : p.y_idx_bps }))
+      .map((p) => ({ time: p.date, value: sKind === "g" ? p.g_spread_bps : p.y_idx_bps,
+                     px: p.price ?? null, src: "daily" }))
       .filter((p) => p.value != null);
     if (bars.length < 2) return daily;
     // на внутридневной сетке дневной снапшот не годится: одна точка на день
@@ -464,6 +482,31 @@ export default function ChartPage() {
     () => (distOn ? distStats((distFiltered ? fatPts : spreadPts).map((p) => p.value)) : null),
     [distOn, distFiltered, fatPts, spreadPts]);
   const distThin = distFiltered ? spreadPts.length - fatPts.length : 0;
+
+  // Чем прайсится линия/свеча спреда — на самом деле, а не по умолчанию.
+  // Источник виден по метке точки: свой архив баров или дневной снапшот.
+  const spreadBase = useMemo(() => {
+    const daily = spreadPts.length && spreadPts[0].src === "daily";
+    if (daily) {
+      return { label: "закр. дня (снапшот)",
+               hint: "дневной снапшот spread_daily: цена закрытия дня, вечерний расчёт. "
+                     + "Берётся, когда архив часовых баров не покрывает окно" };
+    }
+    if (smode === "candles" || smode === "hlc") {
+      return { label: "O/H/L/C часов",
+               hint: "свеча спреда: открытие — по цене открытия первого часа дня, "
+                     + "закрытие — по закрытию последнего, макс/мин — по всем ценам "
+                     + "всех часов (часы тоньше 1% дневного объёма отброшены)" };
+    }
+    return on("vwap")
+      ? { label: "VWAP",
+          hint: "спред по средневзвешенной цене часа (value/volume/номинал), "
+                + "на дневной сетке — взвешенной по объёму за день. "
+                + "Выключи слой СРЕДНЕВЗВЕС, чтобы считать по цене закрытия" }
+      : { label: "закр.",
+          hint: "спред по цене закрытия часа/дня. Включи слой СРЕДНЕВЗВЕС, "
+                + "чтобы считать по средневзвешенной цене" };
+  }, [spreadPts, smode, layers, layersOk]);   // eslint-disable-line
 
   // ── график ────────────────────────────────────────────────────────────────
   const wrapRef = useRef(null);
@@ -641,7 +684,8 @@ export default function ChartPage() {
         .sort((a, b) => (a.time > b.time ? 1 : a.time < b.time ? -1 : 0));
       if (!pts.length) return;
       const s = chart.addSeries(LineSeries, {
-        color, lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 3.5,
+        color, lineVisible: false, pointMarkersVisible: true,
+        pointMarkersRadius: TRADE_DOT_R,
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         priceFormat: pxFmt,
       }, 0);
@@ -662,9 +706,9 @@ export default function ChartPage() {
     };
     const bigDots = on("big") ? pickBest(bigTrades, (time, t) => `${time}|${t.side}`) : [];
     const rpsDots = on("rps") ? pickBest(rpsTrades, (time) => time) : [];
-    dots("dotBuy", bigDots.filter((t) => t.side !== "sell"), theme.up);
-    dots("dotSell", bigDots.filter((t) => t.side === "sell"), theme.down);
-    dots("dotRps", rpsDots, theme.accent || theme.up);
+    dots("dotBuy", bigDots.filter((t) => t.side !== "sell"), TRADE_DOT.buy);
+    dots("dotSell", bigDots.filter((t) => t.side === "sell"), TRADE_DOT.sell);
+    dots("dotRps", rpsDots, TRADE_DOT.rps);
     // сделка под курсором — по времени бара: в легенде показываем цену и оборот
     tradeAtRef.current = {
       buy: new Map(bigDots.filter((t) => t.side !== "sell").map((t) => [String(t.time), t])),
@@ -845,6 +889,9 @@ export default function ChartPage() {
         yAvg: pt?.value,
         yo: yd?.open ?? pt?.o,
         yh: yd?.high ?? val(s.yhi), yl: yd?.low ?? val(s.ylo),
+        // база спреда: цена, по которой он посчитан, и какая именно это цена
+        yPx: pt?.px, yPxKind: pt?.src === "daily" ? "закр. дня (снапшот)"
+          : on("vwap") ? "ср.взвес" : "закр.",
         w: val(s.vwap), b: val(s.buy), sl: val(s.sell),
         // сделки под точками этого бара: цена и оборот — подписей на графике
         // больше нет, цифры живут здесь
@@ -958,6 +1005,14 @@ export default function ChartPage() {
             </select>
           </label>
         )}
+        {/* что означает цвет точки — иначе три чужих цвета на графике надо угадывать */}
+        {(on("big") || on("rps")) && (
+          <span className="cp-layers-k cp-dot-key">
+            {on("big") && <i style={{ color: TRADE_DOT.buy }}>● покупка</i>}
+            {on("big") && <i style={{ color: TRADE_DOT.sell }}>● продажа</i>}
+            {on("rps") && <i style={{ color: TRADE_DOT.rps }}>● РПС</i>}
+          </span>
+        )}
         <span className="cp-layers-k">спред</span>
         <span className="cp-group" role="group" aria-label="Панель спреда">
           {[["line", "Линия", `${sLabel}: по средневзвесу при включённом слое СРЕДНЕВЗВЕС, иначе по цене закрытия`],
@@ -973,6 +1028,13 @@ export default function ChartPage() {
           disabled={smode === "off"}
           title="Гистограмма распределения спреда за период + сводка"
           onClick={() => setParam({ dist: distOn ? null : "1" })}>Распределение</button>
+        {/* база спреда видна ВСЕГДА, а не только под курсором: одна и та же
+            бумага даёт разную цифру по средневзвесу и по закрытию */}
+        {smode !== "off" && (
+          <span className="cp-layers-k cp-base" title={spreadBase.hint}>
+            по цене: {spreadBase.label}
+          </span>
+        )}
         <span className="cp-hint">
           {(qBars.isPending && barsOn) || (qTrades.isPending && on("big"))
             || (qBlocks.isPending && on("rps"))
@@ -1020,11 +1082,19 @@ export default function ChartPage() {
                   {legend.yh != null && legend.yl != null && legend.yh !== legend.yl &&
                     <> · день {Math.round(legend.yl)} … {Math.round(legend.yh)}</>}</>
               : <> · {sLabel} {Math.round(legend.y)} bps</>)}
+            {/* по какой цене посчитан спред: без этого цифру не сверить с
+                ценовым графиком (средневзвес / закрытие / снапшот дня) */}
+            {legend.y != null && legend.yPx != null && (
+              // цену базы не дублируем, когда она уже стоит в строке слоем
+              // СРЕДНЕВЗВЕС — тогда достаточно назвать саму базу
+              legend.yPxKind === "ср.взвес" && legend.w != null
+                ? <> (по ср.взвесу)</>
+                : <> (по цене {fmt.pct(legend.yPx)}, {legend.yPxKind})</>)}
             {/* сделки, отмеченные точками на этом баре: цена принта и оборот */}
             {legend.trades?.map((t, i) => (
-              <span key={i} className={"cp-legend-trade "
-                + (t.negotiated ? "rps" : t.side === "sell" ? "down" : "up")}>
-                {" · "}{t.negotiated ? (t.board_title || "РПС")
+              <span key={i} className="cp-legend-trade" style={{ color: TRADE_DOT[
+                t.negotiated ? "rps" : t.side === "sell" ? "sell" : "buy"] }}>
+                {" · "}●{" "}{t.negotiated ? (t.board_title || "РПС")
                   : t.side === "sell" ? "продажа" : "покупка"}
                 {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
               </span>
