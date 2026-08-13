@@ -243,8 +243,9 @@ export const fetchHourlyBars = (isin, { kind = "floater", days = 30, hours = 1,
 // принты. Глубина: у брокера ~30 дней, глубже — только то, что накопил демон.
 // order='value' — самые крупные за окно (лента маркеров), 'ts' — последние.
 export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
-                                    order, refresh = true } = {}) => {
+                                    order, refresh = true, kind } = {}) => {
   let u = `/api/history/${encodeURIComponent(isin)}/trades?days=${days}&min_value=${minValue}&limit=${limit}`;
+  if (kind) u += `&kind=${kind}`;
   if (order) u += `&order=${order}`;
   if (side) u += `&side=${side}`;
   if (!refresh) u += "&refresh=false";

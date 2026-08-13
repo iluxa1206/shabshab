@@ -210,6 +210,43 @@ async def hourly_bars(
             "bars": rows, "n": len(rows)}
 
 
+async def _price_trades(isin: str, rows: list, kind: str) -> int:
+    """Проставляет строкам сделок y_idx_bps/dm_bps/ytm (у фикса — g_spread_bps)
+    по ЦЕНЕ САМОЙ СДЕЛКИ. Возвращает число заполненных строк; при любой ошибке
+    модели молча уходит ни с чем — маркеры сделок важнее спреда к ним."""
+    try:
+        from services.orderbook_svc import build_metrics_fn
+        metrics_fn, _cd, _face = await build_metrics_fn(isin, kind)
+    except Exception as e:
+        logger.info("trades pricing %s: модель недоступна (%s)", isin, e)
+        return 0
+    memo: dict = {}
+
+    def _m(price):
+        k = round(float(price), 3)
+        if k not in memo:
+            try:
+                memo[k] = metrics_fn(k) or {}
+            except Exception:
+                memo[k] = {}
+        return memo[k]
+
+    n = 0
+    for r in rows:
+        if r.get("price") is None:
+            continue
+        m = await asyncio.to_thread(_m, r["price"])
+        if not m:
+            continue
+        for src, dst in (("y_idx_bps", "y_idx_bps"), ("dm_bps", "dm_bps"),
+                         ("g_spread_bps", "g_spread_bps"), ("yield_pct", "ytm")):
+            v = m.get(src)
+            if v is not None:
+                r[dst] = round(v, 2 if dst == "ytm" else 0)
+        n += 1
+    return n
+
+
 @router.get("/{isin}/trades", tags=["History"])
 async def trades(
     isin: str = Path(...),
@@ -221,8 +258,9 @@ async def trades(
                        description="ts — последние по времени, value — самые крупные за окно"),
     refresh: bool = Query(True),
     board: str = Query(None),
+    kind: str = Query("floater", pattern="^(floater|fixed)$"),
 ):
-    """Сделки из тикового архива: цена, объём, рублёвый оборот, агрессор.
+    """Сделки из тикового архива: цена, объём, рублёвый оборот, агрессор, спред.
     min_value отсекает мелочь — остаются крупные принты."""
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
@@ -243,6 +281,12 @@ async def trades(
     # сколько сделок под фильтр вообще подходит: без этого клиент не отличает
     # «столько и было» от «лимит срезал остальное»
     total = await asyncio.to_thread(ta.count_trades, isin, frm, min_value, side)
+    # Спред КАЖДОЙ сделки — тем же reprice, что уровни стакана и бары: маркер
+    # крупного принта без спреда заставлял считать в уме «дорого или дёшево он
+    # взял». Модель выпуска строится один раз, дальше reprice по цене без I/O,
+    # ответы мемоизируем — уникальных цен на сотню принтов десятки.
+    if rows:
+        await _price_trades(isin, rows, kind)
 
     def _vwap(rs):
         q = sum(r.get("qty") or 0 for r in rs)

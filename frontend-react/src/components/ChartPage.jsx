@@ -150,6 +150,9 @@ function readTheme(el) {
     up: v("--up", "#22a06b"),
     down: v("--down", "#e5484d"),
     accent: v("--accent", "#3b82f6"),
+    // средневзвес — неон, а не тусклый акцент: линия идёт поверх свечей и на
+    // тёмной теме тонула в них
+    vwapC: v("--vwap", "#00d5ff"),
     // спред — своя серия со своим цветом: раньше линия шла цветом текста и
     // сливалась с ценой закрытия/HLC, а в легенде цифры спреда невозможно было
     // отличить глазом от цифр цены
@@ -202,10 +205,6 @@ const Y_OHLC_MIN_SHARE = 0.01;
 const Y_OHLC_MIN_DAY_VALUE = 1e6;   // ₽ оборота за день (без НКД)
 const Y_OHLC_MIN_HOUR_VALUE = 1e5;  // то же для часа на внутридневном масштабе
 const Y_OHLC_MIN_HOUR_SHARE = 0.2;  // и не меньше доли от медианного часа окна
-// Допуск «цена снапшота ↔ цена дня на графике», п.п. номинала. Снапшот считает
-// по своей цене (last/prev-close тёплого кэша), свеча — по сделкам MOEX: копейки
-// расхождения нормальны, полпроцента — уже другая цена, а значит и другой спред.
-const SNAP_PX_TOL = 0.3;
 
 // Метрика спреда зависит от типа бумаги: у флоатера Y-IDX, у фикса G-спред.
 // Бар несёт оба поля, заполнено то, что считается для этой бумаги.
@@ -213,6 +212,9 @@ const barSpread = (b) => (b.y_idx_bps != null ? b.y_idx_bps : b.g_spread_bps);
 const spreadKindOf = (bars) =>
   (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
 const SPREAD_LABEL = { y: "R-spread", g: "G-спред" };
+// спред по цене самой сделки (бэк считает его тем же reprice, что уровни стакана)
+const tradeSpread = (t) => (t?.y_idx_bps != null ? t.y_idx_bps
+  : t?.g_spread_bps != null ? t.g_spread_bps : null);
 
 // Спред по ценам бара (бэкенд считает его тем же reprice, что и по vwap).
 // Спред обратен цене, поэтому «максимум спреда» — это y по МИНИМАЛЬНОЙ цене:
@@ -366,8 +368,12 @@ export default function ChartPage() {
   const defTf = PERIODS.find(([k]) => k === period)?.[3] || "1d";
   const tf = sp.get("tf") || (isCustom ? "1d" : defTf);
   const type = sp.get("type") || "candles";
-  // панель спреда: линия по средневзвесу / свечи спреда / выкл (RVD-режим)
-  const smode = sp.get("sm") || "line";
+  // панель спреда: линия по средневзвесу / HLC / выкл (RVD-режим).
+  // Свечи спреда убраны: дневная свеча склеивалась из часовых значений и на
+  // редких днях выдавала диапазон, которого на рынке не было. Старые ссылки с
+  // sm=candles открываются линией.
+  const smodeRaw = sp.get("sm") || "line";
+  const smode = smodeRaw === "candles" ? "line" : smodeRaw;
   const distOn = sp.get("dist") === "1";
 
   const setParam = (patch) => setSp((prev) => {
@@ -436,14 +442,20 @@ export default function ChartPage() {
   // запроса на бэке идут под одним замком по ISIN — и слой сделок ЖДАЛ конца
   // второго, уже лишнего, дрейна. Порог берём в ключ, но старые точки держим на
   // экране (placeholderData), чтобы переключение «крупнее, млн ₽» не мигало.
+  // Тип метрики спреда узнаём по самим барам: страница открывается по ISIN и
+  // обслуживает и флоатеры (Y-IDX), и фиксы (G-спред) — у фикса y_idx пуст во
+  // всех барах, и панель молча оставалась пустой.
+  const sKind = spreadKindOf(qBars.data?.bars);
+  const sLabel = SPREAD_LABEL[sKind];
   const keepPrev = (prev) => prev;
   const qTrades = useQuery({
-    queryKey: ["big-trades", isin, layerDays, bigMln],
+    queryKey: ["big-trades", isin, layerDays, bigMln, sKind],
     // order=value: с сортировкой по времени лимит срезал дальнюю половину окна
     // и маркеры обрывались на середине графика без всякого следа
     queryFn: () => fetchTrades(isin, { days: Math.min(layerDays, 400),
                                        minValue: bigMln * 1e6, limit: 400,
-                                       order: "value", refresh: !barsOn }),
+                                       order: "value", refresh: !barsOn,
+                                       kind: sKind === "g" ? "fixed" : "floater" }),
     enabled: on("big"),
     staleTime: 300_000,
     placeholderData: keepPrev,
@@ -457,11 +469,6 @@ export default function ChartPage() {
     placeholderData: keepPrev,
   });
 
-  // Тип метрики спреда узнаём по самим барам: страница открывается по ISIN и
-  // обслуживает и флоатеры (Y-IDX), и фиксы (G-спред) — у фикса y_idx пуст во
-  // всех барах, и панель молча оставалась пустой.
-  const sKind = spreadKindOf(qBars.data?.bars);
-  const sLabel = SPREAD_LABEL[sKind];
   const qSpread = useQuery({
     queryKey: ["spread-hist", isin, sKind, from || "all"],
     queryFn: () => fetchSpreadHistory(isin, { kind: sKind === "g" ? "fixed" : "floater",
@@ -500,6 +507,10 @@ export default function ChartPage() {
   // панель спреда есть либо от дневной истории, либо от часовых баров
   const spreadPaneOn = smode !== "off" && (spreadOn || (barsOn && layersOk));
 
+  // Видимое окно графика во ВРЕМЕНИ: по нему режется выборка распределения
+  // (зум в месяц — статистика месяца). Ставится подпиской на timeScale ниже.
+  const [visTimes, setVisTimes] = useState(null);
+
   // Точки спреда для панели и распределения. Приоритет — свой архив (спред по
   // средневзвешенной цене), резерв — дневной снапшот spread_daily.
   const spreadPts = useMemo(() => {
@@ -518,30 +529,16 @@ export default function ChartPage() {
     // спред в 400+ б.п. там, где весь месяц ~100) — у баров такие дни отсекались,
     // а у снапшота нет, и статистика панели ехала.
     const dayVal = new Map(candles.map((c) => [c.t.slice(0, 10), (c.v || 0) * 1000 * (c.c || 100) / 100]));
-    const dayClose = new Map(candles.map((c) => [c.t.slice(0, 10), c.c]));
     const daily = (qSpread.data?.points || [])
-      .map((p) => {
-        // Цена снапшота ДОЛЖНА совпадать с ценой того же дня на графике: иначе
-        // спред посчитан не от того, что человек видит. В выходные вечерний
-        // снапшот регулярно берёт цену с другой доски/стейл-значение (пример
-        // RU000A109DP7 08-08/08-09: снапшот 103,48 против 98,99 в буднях — y-idx
-        // −434 против +567 б.п.), и на графике это ровно тот одиночный выброс
-        // «в выходные». Такие точки не рисуем: сверить их не с чем.
-        const close = dayClose.get(p.date);
-        const px = p.price ?? null;
-        return {
-          time: p.date, value: sKind === "g" ? p.g_spread_bps : p.y_idx_bps,
-          px, src: "daily",
-          thin: (dayVal.get(p.date) ?? Infinity) < Y_OHLC_MIN_DAY_VALUE,
-          offPx: close != null && px != null && Math.abs(px - close) > SNAP_PX_TOL,
-        };
-      })
-      .filter((p) => p.value != null && !p.offPx);
+      .map((p) => ({ time: p.date, value: sKind === "g" ? p.g_spread_bps : p.y_idx_bps,
+                     px: p.price ?? null, src: "daily",
+                     thin: (dayVal.get(p.date) ?? Infinity) < Y_OHLC_MIN_DAY_VALUE }))
+      .filter((p) => p.value != null);
     if (bars.length < 2) return daily;
     // на внутридневной сетке дневной снапшот не годится: одна точка на день
     // легла бы поверх часовых баров, да ещё по другой цене (закрытие vs VWAP)
     if (tf === "5m" || tf === "1h") return bars;
-    if (smode === "candles" || smode === "hlc" || daily.length < 2) return bars;
+    if (smode === "hlc" || daily.length < 2) return bars;
     // СКЛЕЙКА, а не «или-или». Бары лучше (спред по средневзвесу/закрытию, честные
     // значения по выходным сессиям), но архив мельче окна: раньше при нехватке
     // глубины ВСЯ панель падала на дневной снапшот — и слой СРЕДНЕВЗВЕС переставал
@@ -552,21 +549,8 @@ export default function ChartPage() {
     return head.length ? [...head, ...bars] : bars;
   }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from, candles]);
 
-  // Сколько снапшот-точек выброшено по расхождению цены — это надо СКАЗАТЬ:
-  // молча выкинутый день выглядит как «данных нет», а не как «данные битые».
-  const snapOffPx = useMemo(() => {
-    if (!spreadPaneOn) return 0;
-    const dayClose = new Map(candles.map((c) => [c.t.slice(0, 10), c.c]));
-    return (qSpread.data?.points || []).filter((p) => {
-      const close = dayClose.get(p.date);
-      const val = sKind === "g" ? p.g_spread_bps : p.y_idx_bps;
-      return val != null && close != null && p.price != null
-        && Math.abs(p.price - close) > SNAP_PX_TOL;
-    }).length;
-  }, [spreadPaneOn, qSpread.data, candles, sKind]);
-
-  // Свечи и HLC у спреда возможны только там, где в баре есть внутридневной
-  // разброс: дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
+  // HLC у спреда возможен только там, где в баре есть внутридневной разброс:
+  // дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
   const spreadOHLC = spreadPts.some((p) => p.o != null);   // см. shownPts ниже
   // В распределение тонкие дни не идут: два случайных принта дают спред в
   // сотни б.п. и в одиночку растягивают шкалу, среднее и σ (см. Y_OHLC_MIN_DAY_VALUE)
@@ -574,16 +558,23 @@ export default function ChartPage() {
   // когда ликвидных дней почти нет (сплошной неликвид), фильтр не применяем —
   // иначе панель осталась бы пустой там, где данные всё-таки есть
   const distFiltered = fatPts.length > 5;
+  const distSrc = distFiltered ? fatPts : spreadPts;
+  // время у точек — либо ISO-дата (дневная сетка), либо UNIX-секунды (внутри дня);
+  // видимое окно приходит в том же виде, поэтому сравниваем как есть
+  const distVis = useMemo(
+    () => (visTimes
+      ? distSrc.filter((p) => p.time >= visTimes.from && p.time <= visTimes.to)
+      : distSrc),
+    [distSrc, visTimes]);
   const dist = useMemo(
-    () => (distOn ? distStats((distFiltered ? fatPts : spreadPts).map((p) => p.value)) : null),
-    [distOn, distFiltered, fatPts, spreadPts]);
+    () => (distOn ? distStats(distVis.map((p) => p.value)) : null),
+    [distOn, distVis]);
   const distThin = distFiltered ? spreadPts.length - fatPts.length : 0;
-  // На САМОЙ панели тонкие дни тоже не рисуем: пара принтов в выходную сессию
-  // даёт спред в сотни б.п. (RU000A109DP7 08-08/08-09: одна сделка по 103,48
-  // против 98,99 в буднях — y-idx −434 вместо +567), и такой одиночный выброс
-  // растягивает шкалу панели так, что нормального движения на ней не видно.
-  // Линия перешагивает такой день, счётчик скрытых — в подвале.
-  const shownPts = distFiltered ? fatPts : spreadPts;
+  // Линия рисует ВСЕ дни, включая выходные сессии: сделки там настоящие, и
+  // спред по ним — тоже рынок, пусть и тонкий. Тонкие дни выключены только из
+  // СТАТИСТИКИ распределения: одна такая точка перекашивает среднее и σ, по
+  // которым читается «дорого/дёшево».
+  const shownPts = spreadPts;
 
   // Чем прайсится линия/свеча спреда — на самом деле, а не по умолчанию.
   // Источник виден по метке точки: свой архив баров или дневной снапшот.
@@ -608,7 +599,7 @@ export default function ChartPage() {
                      + `(спред по ${on("vwap") ? "средневзвешенной цене" : "цене закрытия"}). `
                      + "База каждой точки — в строке под курсором" };
     }
-    if (smode === "candles" || smode === "hlc") {
+    if (smode === "hlc") {
       return { label: "O/H/L/C часов",
                hint: "свеча спреда: открытие — по цене открытия первого часа дня, "
                      + "закрытие — по закрытию последнего, макс/мин — по всем ценам "
@@ -771,7 +762,7 @@ export default function ChartPage() {
       const pts = layerPts.filter((p) => p.vwap_pct != null);
       if (pts.length > 1) {
         const vwap = chart.addSeries(LineSeries, {
-          color: theme.accent, lineWidth: 2, lineStyle: 0,
+          color: theme.vwapC, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false,
           priceFormat: { type: "price", precision: 2, minMove: 0.01 },
         }, 0);
@@ -848,11 +839,29 @@ export default function ChartPage() {
         () => ({ stroke: theme.bg, marks })));
     }
     dots("dotRps", rpsDots, TRADE_DOT.rps);
-    // сделка под курсором — по времени бара: в легенде показываем цену и оборот
+    // сделка под курсором — по времени бара: в легенде показываем цену, оборот
+    // и спред по цене принта. Точка на графике одна (самая крупная в баре по
+    // стороне), поэтому к ней же клеим «сколько всего таких сделок в баре и на
+    // какую сумму» — иначе крупная серия принтов выглядела бы как одна сделка.
+    const rollup = (rows, keyOf) => {
+      const agg = new Map();
+      for (const t of rows) {
+        const k = keyOf(String(tradeTime(t.ts, tf)), t);
+        const a = agg.get(k) || { n: 0, value: 0 };
+        a.n += 1; a.value += t.value || 0;
+        agg.set(k, a);
+      }
+      return agg;
+    };
+    const bigAgg = on("big") ? rollup(bigTrades, (time, t) => `${time}|${t.side}`) : new Map();
+    const rpsAgg = on("rps") ? rollup(rpsTrades, (time) => time) : new Map();
+    const withAgg = (t, agg, k) => ({ ...t, bar: agg.get(k) });
     tradeAtRef.current = {
-      buy: new Map(bigDots.filter((t) => t.side !== "sell").map((t) => [String(t.time), t])),
-      sell: new Map(bigDots.filter((t) => t.side === "sell").map((t) => [String(t.time), t])),
-      rps: new Map(rpsDots.map((t) => [String(t.time), t])),
+      buy: new Map(bigDots.filter((t) => t.side !== "sell")
+        .map((t) => [String(t.time), withAgg(t, bigAgg, `${t.time}|${t.side}`)])),
+      sell: new Map(bigDots.filter((t) => t.side === "sell")
+        .map((t) => [String(t.time), withAgg(t, bigAgg, `${t.time}|${t.side}`)])),
+      rps: new Map(rpsDots.map((t) => [String(t.time), withAgg(t, rpsAgg, String(t.time))])),
     };
 
     let yidxDrawn = false;
@@ -878,17 +887,6 @@ export default function ChartPage() {
             .map((p) => ({ time: p.time, value: p[field] })));
           seriesRef.current[key] = s;
         }
-      } else if (spreadOHLC && smode === "candles") {
-        const yidx = chart.addSeries(CandlestickSeries, {
-          upColor: shade(theme.up, BODY_K, BODY_A),
-          downColor: shade(theme.down, BODY_K, BODY_A),
-          borderUpColor: theme.up, borderDownColor: theme.down,
-          wickUpColor: theme.up, wickDownColor: theme.down,
-          priceFormat: spFmt, priceLineVisible: false,
-        }, 1);
-        yidx.setData(shownPts.filter((p) => p.o != null)
-          .map((p) => ({ time: p.time, open: p.o, high: p.h, low: p.l, close: p.c })));
-        seriesRef.current.yidx = yidx;
       } else {
         // Заливка под линией (AreaSeries) вместо голой линии: панель спреда —
         // половина экрана, и одна нитка цветом текста на ней терялась. Градиент
@@ -1022,6 +1020,11 @@ export default function ChartPage() {
       measureRightPad(chart, n, r);
       // автоскейл спреда пересчитывается на пан/зум — двигаем и гистограмму
       measureDistGeom(chart);
+      // распределение считается по ВИДИМОЙ части: зум в месяц должен показывать
+      // статистику месяца, а не всего загруженного окна
+      const vr = ts.getVisibleRange();
+      setVisTimes((prev) => (prev && vr && prev.from === vr.from && prev.to === vr.to)
+        ? prev : (vr ? { from: vr.from, to: vr.to } : null));
     };
     ts.subscribeVisibleLogicalRangeChange(onRange);
     onRange(ts.getVisibleLogicalRange());
@@ -1094,7 +1097,7 @@ export default function ChartPage() {
   // подписи в легенде красим в цвета соответствующих серий графика
   const cHi = { color: theme?.up };
   const cLo = { color: theme?.down };
-  const cAcc = { color: theme?.accent };
+  const cAcc = { color: theme?.vwapC };
   const cSp = { color: theme?.spread };
 
   const tfDepth = TF_DEPTH_DAYS[tf];
@@ -1201,7 +1204,6 @@ export default function ChartPage() {
         <span className="cp-layers-k" style={cSp}>спред</span>
         <span className="cp-group" role="group" aria-label="Панель спреда">
           {[["line", "Линия", `${sLabel}: по средневзвесу при включённом слое СРЕДНЕВЗВЕС, иначе по цене закрытия`],
-            ["candles", "Свечи", "O/H/L/C спреда из часовых значений дня"],
             ["hlc", "HLC", "Три линии: макс/мин спреда за день и закрытие"],
             ["off", "Выкл", "убрать панель спреда"]].map(([k, l, hint]) => (
             <button key={k} type="button" title={hint}
@@ -1287,6 +1289,11 @@ export default function ChartPage() {
                 {t.negotiated ? (t.board_title || "РПС")
                   : t.side === "sell" ? "продажа" : "покупка"}
                 {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
+                {/* спред ПО ЦЕНЕ ПРИНТА — тем же reprice, что уровни стакана */}
+                {tradeSpread(t) != null && <> · {sLabel} {tradeSpread(t)}</>}
+                {/* маркер один на бар (самый крупный), остальные — числом */}
+                {t.bar && t.bar.n > 1 &&
+                  <> · ещё {t.bar.n - 1} на {fmt.mln(t.bar.value - (t.value || 0))} млн ₽</>}
               </span>
             ))}
           </>
@@ -1295,9 +1302,10 @@ export default function ChartPage() {
       </div>
 
       <div className="cp-row" ref={rowRef}>
-        <div className="cp-chart" ref={hostRef} />
-        {distOn && <SpreadDist dist={dist} theme={theme} height={height} skipped={distThin}
-          label={sLabel} geom={distGeom} />}
+        <div className="cp-chart" ref={hostRef}>
+          {distOn && <SpreadDist dist={dist} theme={theme} label={sLabel}
+            geom={distGeom} rightPad={rightPad} />}
+        </div>
       </div>
 
       {candles.length > 1 && (
@@ -1331,22 +1339,14 @@ export default function ChartPage() {
             )}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}
             {spreadPaneOn && hasYidx && distThin > 0 && (
-              <span title={"День с оборотом меньше 1 млн ₽ — это не рынок, а пара принтов "
-                           + "(чаще всего выходная сессия). Спред такого дня уходит на сотни "
-                           + "б.п. и растягивает шкалу панели, поэтому он скрыт."}>
-                {` · ${distThin} тонк. дн. скрыто`}
+              <span title={"День с оборотом меньше 1 млн ₽ (обычно выходная сессия) на графике "
+                           + "остаётся, но в среднее/σ/перцентиль не идёт: пара принтов "
+                           + "перекашивает статистику."}>
+                {` · тонких дней: ${distThin} (не в статистике)`}
               </span>
             )}
-            {spreadPaneOn && snapOffPx > 0 && (
-              <span className="cp-warn"
-                title={`Цена вечернего снапшота разошлась с ценой дня больше чем на ${SNAP_PX_TOL} п.п. `
-                       + "Чаще всего это выходные: снапшот берёт цену с другой доски или "
-                       + "стейл-значение, и спред от неё не сходится с графиком цены."}>
-                {` · скрыто снапшот-точек: ${snapOffPx} — цена снапшота ≠ цена дня`}
-              </span>
-            )}
-            {spreadPaneOn && hasYidx && !spreadOHLC && (smode === "candles" || smode === "hlc") &&
-              ` · ${smode === "hlc" ? "HLC" : "свечи"} спреда нет: в архиве только спред по средневзвесу (бары до пересчёта)`}
+            {spreadPaneOn && hasYidx && !spreadOHLC && smode === "hlc" &&
+              " · HLC спреда нет: в архиве только спред по средневзвесу (бары до пересчёта)"}
             {!spreadPaneOn && " · панель спреда выключена"}
             {on("big") && !bigTrades.length &&
               ` · сделок крупнее ${bigMln} млн ₽ в архиве нет (глубина тиков ~30 дней)`}
@@ -1360,87 +1360,67 @@ export default function ChartPage() {
   );
 }
 
-// ── распределение спреда: сводка + горизонтальная гистограмма ────────────────
-// Ось значений вертикальная — та же ориентация, что у панели спреда слева:
-// глазом видно, в какой части своего диапазона сидит текущий уровень.
-const SUMMARY_H = 150;
+// ── распределение спреда: гистограмма ВНУТРИ панели спреда, у правого края ──
+// Профиль объёма, только по спреду: бары растут влево от ценовой шкалы, в той же
+// системе координат (пиксель ↔ bps), что и сама панель — уровень концентрации
+// читается прямо напротив линии. Выборка — ВИДИМАЯ часть окна: зум меняет и
+// гистограмму, и сводку. Раньше это была отдельная колонка справа от графика,
+// которая ела ширину и жила своей жизнью.
+const DIST_W = 132;          // ширина поля гистограммы, px
+const DIST_SUM_W = 150;      // ширина плашки сводки
 
-function SpreadDist({ dist, theme, height, skipped = 0, label = "R-spread", geom = null }) {
-  if (!dist || !theme) {
-    return <div className="cp-dist"><div className="cp-dist-empty">мало точек спреда</div></div>;
-  }
-  // aligned: гистограмма живёт в системе координат ПАНЕЛИ СПРЕДА (пиксель↔bps
-  // как у шкалы графика, та же вертикальная позиция) — уровни совпадают глазом.
-  // Без геометрии (панель спреда не отрисована) — прежний автономный масштаб.
+function SpreadDist({ dist, theme, label = "R-spread", geom = null, rightPad = 0 }) {
   const aligned = !!(geom && geom.h > 40 && geom.vTop !== geom.vBot);
-  const h = aligned ? height : Math.max(120, height - SUMMARY_H);
-  const w = 208, padL = 6, padR = 44, padT = 8, padB = 16;
+  if (!dist || !theme || !aligned) return null;
+
+  const y = (v) => geom.top + (geom.vTop - v) / (geom.vTop - geom.vBot) * geom.h;
   const maxN = Math.max(...dist.hist.map((b) => b.n)) || 1;
-  const span = (dist.hi - dist.lo) || 1;
-  const y = aligned
-    ? (v) => geom.top + (geom.vTop - v) / (geom.vTop - geom.vBot) * geom.h
-    : (v) => padT + (dist.hi - v) / span * (h - padT - padB);
-  const barW = (n) => n / maxN * (w - padL - padR);
-  const fixedRowH = Math.max(2, (h - padT - padB) / dist.hist.length - 1);
+  const barW = (n) => Math.max(1, n / maxN * (DIST_W - 10));
   const yLast = y(dist.last);
-  const row = (k, v, cls) => (
-    <div className="cp-dist-row"><span>{k}</span><b className={cls}>{v}</b></div>
-  );
   const n0 = (x) => Math.round(x).toLocaleString("ru-RU");
+  // бары рисуем от правого края поля влево
+  const right = DIST_W;
 
   return (
-    <div className="cp-dist">
-      <div className="cp-dist-top">
-      <div className="cp-dist-head" title={skipped ? "тонкие дни (оборот < 1 млн ₽) в статистику не идут" : ""}>
-        Распределение <span style={{ color: theme.spread }}>{label}</span> · {dist.n} набл.
-        {skipped ? ` · −${skipped} тонк.` : ""}
-      </div>
-      <div className="cp-dist-sum">
-        {row("Текущий", n0(dist.last), "hi")}
-        {row("Среднее", n0(dist.mean))}
-        {row("От среднего", (dist.offAvg >= 0 ? "+" : "") + n0(dist.offAvg),
-             dist.offAvg >= 0 ? "up" : "down")}
-        {row("Медиана", n0(dist.median))}
-        {row("Ст.откл.", n0(dist.sd))}
-        {row("σ от среднего", dist.z != null ? dist.z.toFixed(2) : "—")}
-        {row("Перцентиль", dist.pct.toFixed(1) + "%")}
-      </div>
-      </div>
-      <svg width={w} height={h} role="img" aria-label={`Гистограмма распределения ${label}`}
-        style={aligned ? { position: "absolute", left: 0, top: 0 } : undefined}>
-        {aligned && (
-          <defs>
-            {/* всё, что вылезает за вертикаль панели спреда, срезаем */}
-            <clipPath id="cp-dist-clip">
-              <rect x="0" y={geom.top} width={w} height={geom.h} />
-            </clipPath>
-          </defs>
-        )}
-        <g clipPath={aligned ? "url(#cp-dist-clip)" : undefined}>
+    <>
+      <svg className="cp-dist-svg" width={DIST_W} height={geom.top + geom.h}
+        style={{ right: rightPad + 2 }} aria-hidden="true">
+        <clipPath id="cp-dist-clip">
+          <rect x="0" y={geom.top} width={DIST_W} height={geom.h} />
+        </clipPath>
+        <g clipPath="url(#cp-dist-clip)">
           {dist.hist.map((b, i) => {
             const y1 = y(b.hi);
-            const hh = aligned ? Math.max(1.5, y(b.lo) - y1 - 1) : fixedRowH;
+            const hh = Math.max(1.5, y(b.lo) - y1 - 1);
+            const cur = b.lo <= dist.last && dist.last <= b.hi;
             return (
-              <rect key={i} x={padL} y={y1} width={barW(b.n)} height={hh}
-                fill={theme.spread} opacity={b.lo <= dist.last && dist.last <= b.hi ? 0.95 : 0.4} />
+              <rect key={i} x={right - barW(b.n)} y={y1} width={barW(b.n)} height={hh}
+                fill={theme.spread} opacity={cur ? 0.85 : 0.32} />
             );
           })}
-          <line x1={padL} x2={w - padR + 4} y1={yLast} y2={yLast}
-            stroke={theme.spread} strokeWidth="1" strokeDasharray="3 2" />
-          <text x={w - padR + 6} y={yLast + 3} fontSize="10" fill={theme.spread}
-            fontFamily="var(--mono)">{n0(dist.last)}</text>
-          {/* границы прячем, когда они налезают на подпись текущего: на узком
-              диапазоне (несколько наблюдений) три числа сливались в кашу */}
-          {Math.abs(y(dist.hi) + 8 - yLast) > 11 && (
-            <text x={w - padR + 6} y={y(dist.hi) + 8} fontSize="9" fill={theme.mut}
-              fontFamily="var(--mono)">{n0(dist.hi)}</text>
-          )}
-          {Math.abs(y(dist.lo) - yLast) > 11 && (
-            <text x={w - padR + 6} y={y(dist.lo)} fontSize="9" fill={theme.mut}
-              fontFamily="var(--mono)">{n0(dist.lo)}</text>
-          )}
+          {/* уровень текущего значения — та же координата, что у линии слева */}
+          <line x1={0} x2={right} y1={yLast} y2={yLast}
+            stroke={theme.spread} strokeWidth="1" strokeDasharray="3 2" opacity="0.9" />
         </g>
       </svg>
-    </div>
+      {/* сводка — в левый верхний угол панели: справа профиль и ценовая шкала,
+          посреди панели плашка перекрывала бы саму линию спреда */}
+      <div className="cp-dist-sum" style={{ top: geom.top + 4, left: 6, width: DIST_SUM_W }}>
+        <div className="cp-dist-head">
+          <span style={{ color: theme.spread }}>{label}</span> в окне · {dist.n} набл.
+        </div>
+        {[["Текущий", n0(dist.last), "hi"],
+          ["Среднее", n0(dist.mean)],
+          ["От среднего", (dist.offAvg >= 0 ? "+" : "") + n0(dist.offAvg),
+           dist.offAvg >= 0 ? "up" : "down"],
+          ["Медиана", n0(dist.median)],
+          ["Ст.откл.", n0(dist.sd)],
+          ["\u03c3 от среднего", dist.z != null ? dist.z.toFixed(2) : "—"],
+          ["Перцентиль", dist.pct.toFixed(1) + "%"],
+        ].map(([k, v, cls]) => (
+          <div className="cp-dist-row" key={k}><span>{k}</span><b className={cls}>{v}</b></div>
+        ))}
+      </div>
+    </>
   );
 }
