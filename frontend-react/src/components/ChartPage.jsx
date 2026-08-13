@@ -534,19 +534,13 @@ export default function ChartPage() {
                      px: p.price ?? null, src: "daily",
                      thin: (dayVal.get(p.date) ?? Infinity) < Y_OHLC_MIN_DAY_VALUE }))
       .filter((p) => p.value != null);
-    if (bars.length < 2) return daily;
-    // на внутридневной сетке дневной снапшот не годится: одна точка на день
-    // легла бы поверх часовых баров, да ещё по другой цене (закрытие vs VWAP)
-    if (tf === "5m" || tf === "1h") return bars;
-    if (smode === "hlc" || daily.length < 2) return bars;
-    // СКЛЕЙКА, а не «или-или». Бары лучше (спред по средневзвесу/закрытию, честные
-    // значения по выходным сессиям), но архив мельче окна: раньше при нехватке
-    // глубины ВСЯ панель падала на дневной снапшот — и слой СРЕДНЕВЗВЕС переставал
-    // влиять на спред даже там, где бары есть. Теперь снапшот закрывает только
-    // хвост слева, до первой даты архива, а дальше идут бары.
-    const barsFrom = String(bars[0].time).slice(0, 10);
-    const head = daily.filter((p) => p.time < barsFrom);
-    return head.length ? [...head, ...bars] : bars;
+    // ОДНА БАЗА НА ВСЮ ЛИНИЮ. Склейку «снапшот слева + бары справа» пришлось
+    // убрать: в одной серии оказывались точки по цене закрытия и по средневзвесу,
+    // считанные разными движками, — и на глаз это читалось как движение рынка.
+    // Бары есть — вся линия по барам (и по той базе, что выбрана слоем
+    // СРЕДНЕВЗВЕС); баров нет — вся линия по дневному снапшоту. Левее начала
+    // архива точек просто нет, и подвал про это говорит.
+    return bars.length > 1 ? bars : daily;
   }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from, candles]);
 
   // HLC у спреда возможен только там, где в баре есть внутридневной разброс:
@@ -572,26 +566,12 @@ export default function ChartPage() {
 
   // Чем прайсится линия/свеча спреда — на самом деле, а не по умолчанию.
   // Источник виден по метке точки: свой архив баров или дневной снапшот.
-  // Дата стыка склейки: с неё точки идут из своего архива баров, левее — снапшот.
-  const spreadJoin = useMemo(() => {
-    if (!shownPts.length || shownPts[0].src !== "daily") return null;
-    const first = shownPts.find((p) => p.src === "bars");
-    return first ? String(first.time).slice(0, 10) : null;
-  }, [shownPts]);
-
   const spreadBase = useMemo(() => {
     const daily = shownPts.length && shownPts[0].src === "daily";
-    if (daily && !spreadJoin) {
+    if (daily) {
       return { label: "закр. дня (снапшот)",
                hint: "дневной снапшот spread_daily: цена закрытия дня, вечерний расчёт. "
-                     + "Берётся, когда архив часовых баров не покрывает окно" };
-    }
-    if (daily) {
-      return { label: `снапшот → ${on("vwap") ? "VWAP" : "закр."}`,
-               hint: `склейка: до ${spreadJoin} — дневной снапшот spread_daily (цена `
-                     + "закрытия, вечерний расчёт), дальше — свой архив часовых баров "
-                     + `(спред по ${on("vwap") ? "средневзвешенной цене" : "цене закрытия"}). `
-                     + "База каждой точки — в строке под курсором" };
+                     + "Берётся, когда часовых баров за окно нет вовсе" };
     }
     if (smode === "hlc") {
       return { label: "O/H/L/C часов",
@@ -607,7 +587,7 @@ export default function ChartPage() {
       : { label: "закр.",
           hint: "спред по цене закрытия часа/дня. Включи слой СРЕДНЕВЗВЕС, "
                 + "чтобы считать по средневзвешенной цене" };
-  }, [shownPts, spreadJoin, smode, layers, layersOk]);   // eslint-disable-line
+  }, [shownPts, smode, layers, layersOk]);   // eslint-disable-line
 
   // ── график ────────────────────────────────────────────────────────────────
   const wrapRef = useRef(null);
@@ -904,19 +884,6 @@ export default function ChartPage() {
             lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "ср.",
           });
         }
-        // стык склейки: слева снапшот, справа свой архив — вертикали у
-        // lightweight-charts нет, помечаем сменой цвета точки на первом баре
-        if (spreadJoin) {
-          const mark = chart.addSeries(LineSeries, {
-            color: alpha(theme.spread, 0.9), lineVisible: false,
-            pointMarkersVisible: true, pointMarkersRadius: 3,
-            priceLineVisible: false, lastValueVisible: false,
-            crosshairMarkerVisible: false, priceFormat: spFmt,
-          }, 1);
-          const at = shownPts.find((p) => p.src === "bars");
-          if (at) mark.setData([{ time: at.time, value: at.value }]);
-          seriesRef.current.yjoin = mark;
-        }
       }
     }
 
@@ -943,7 +910,7 @@ export default function ChartPage() {
       measureDistGeom(c);
     });
     return () => cancelAnimationFrame(raf);
-  }, [candles, type, tf, theme, spreadPaneOn, shownPts, spreadJoin, smode, spreadOHLC,
+  }, [candles, type, tf, theme, spreadPaneOn, shownPts, smode, spreadOHLC,
       layerPts, bigTrades, rpsTrades, layers, layersOk]);
 
   // при смене окна/таймфрейма старая строка легенды осталась бы висеть от
@@ -1325,10 +1292,12 @@ export default function ChartPage() {
                   ? (on("vwap")
                       ? " · спред по средневзвешенной цене (свой архив)"
                       : " · спред по цене закрытия (свой архив)")
-                  : spreadJoin
-                    ? ` · спред: дневной снапшот (закр.) до ${fmt.date(spreadJoin)},`
-                      + ` дальше свой архив (${on("vwap") ? "средневзвес" : "закр."})`
-                    : " · спред по цене закрытия (дневной снапшот)"}
+                  : " · спред по цене закрытия (дневной снапшот)"}
+                {/* окно шире архива — говорим, с какой даты линия вообще есть:
+                    молчаливый обрыв слева читался как «спред пропал» */}
+                {shownPts.length > 1 && from
+                  && String(shownPts[0].time).slice(0, 10) > from
+                  && ` (архив с ${fmt.date(String(shownPts[0].time).slice(0, 10))})`}
               </span>
             )}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}

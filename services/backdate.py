@@ -529,7 +529,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
     ref = ctx["ref_obj"]
     periods, amorts, offers = ctx["periods"], ctx["amorts"], ctx["offers"]
 
-    from services.valuation import _index_provider, calculate_valuation_metrics
+    from services.valuation import _index_provider, calculate_valuation_metrics, pick_horizon
     from services.market_data import MarketDataService
     warns: list = []
     _fn, hist_pairs = _index_provider(ref.base, warns, None)
@@ -541,6 +541,29 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
 
     dates = [r["date"] for r in rows]
     curve_memo: dict = {}
+    # ГОРИЗОНТ ФИКСИРУЕМ НА ВСЮ СЕРИЮ, по последней цене окна. Пересчитывать
+    # правило цены на каждый день нельзя: у бумаги с офертой около номинала
+    # горизонт скакал бы put↔maturity от дня ко дню, а это разные метрики
+    # (РЖД 1Р-52R при 99.0: put 165 б.п. против maturity 83) — линия рвалась бы
+    # ступенями там, где рынок стоял на месте. Один горизонт на серию = то же
+    # число, что в шапке и стакане сегодня, и однородная история.
+    hz_key = "maturity"
+    _last = next((r for r in reversed(rows) if r.get("close") is not None), None)
+    if _last is not None:
+        try:
+            _c, _mode = curve_asof(ref.base, _date.fromisoformat(_last["date"]),
+                                   today_curve, hist_pairs)
+            _ru = (_c if ref.base == "RUONIA" else
+                   (curve_asof("RUONIA", _date.fromisoformat(_last["date"]), _r, ru_hist)[0]
+                    if (_r is not None and ru_hist) else None))
+            _m = calculate_valuation_metrics(
+                ref, float(_last["close"]), _c, _date.fromisoformat(_last["date"]),
+                accrued_override=(float(_last["accint"]) if _last.get("accint") is not None else None),
+                periods=periods, amorts=amorts, offers=offers,
+                ruonia_curve=_ru, accrued_basis="calc")
+            hz_key = _m.get("preferred_horizon") or "maturity"
+        except Exception as e:
+            logger.debug("as-of %s: горизонт по правилу цены не определился (%s)", isin, e)
 
     def fn(day_iso: str, price: float) -> dict:
         d = _date.fromisoformat(day_iso)
@@ -569,10 +592,17 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
             ref, price, curve, d, accrued_override=float(accint),
             periods=periods, amorts=amorts, offers=offers,
             ruonia_curve=ru, accrued_basis="calc")
-        return {"y_idx_bps": m.get("yield_over_index_bps"),
-                "dm_bps": m.get("disc_margin_bps"),
+        # ГОРИЗОНТ — по правилу цены, как в карточке, стакане и ленте сделок.
+        # Верхнеуровневые поля ответа всегда к погашению: у бумаги с офертой
+        # (РЖД 1Р-52R: put 09.10.2029 при погашении 31.03.2036) линия графика
+        # считалась к 2036-му, а R-spread в шапке — к оферте, и одна и та же
+        # метрика на одном экране расходилась на сотни б.п.
+        h = pick_horizon(m, hz_key)
+        return {"y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
+                "dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
                 "g_spread_bps": m.get("g_spread_bps"),
-                "yield_pct": m.get("yield_xirr_pct")}
+                "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
+                "horizon": h.get("horizon")}
 
     return fn
 
@@ -607,7 +637,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             r["close"] = r["legalclose"]
     rows = [r for r in rows if r.get("close") is not None][-days:]
 
-    from services.valuation import calculate_valuation_metrics
+    from services.valuation import calculate_valuation_metrics, pick_horizon
     ref = ctx["ref_obj"]
     from services.valuation import _index_provider
     warnings: list = []
@@ -618,6 +648,26 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     # база Y-IDX — роллирование RUONIA и для КС-бумаг: нужна RUONIA-кривая НА ТУ ЖЕ
     # прошлую дату (сегодняшняя дала бы завтрашние ожидания во вчерашней цифре)
     ru_hist = hist_pairs if ref.base == "RUONIA" else _index_provider("RUONIA", warnings, None)[1]
+
+    # Горизонт — один на всю серию, по последней цене окна (см. asof_bar_metrics):
+    # правило цены, пересчитанное на каждый день, ломало бы линию ступенями у
+    # бумаг с офертой около номинала.
+    hz_key = "maturity"
+    if rows:
+        try:
+            _d = _date.fromisoformat(rows[-1]["date"])
+            _c, _mode = curve_asof(ref.base, _d, today_curve, hist_pairs)
+            _ru = _c if ref.base == "RUONIA" else curve_asof("RUONIA", _d, _r, ru_hist)[0]
+            _acc = rows[-1].get("accint")
+            if _acc is None:
+                _acc = _accrued_from_periods(ctx["periods"], _d, ref.face_value)
+            _m = calculate_valuation_metrics(
+                ref, rows[-1]["close"], _c, _d, accrued_override=_acc,
+                periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
+                ruonia_curve=_ru, accrued_basis="calc")
+            hz_key = _m.get("preferred_horizon") or "maturity"
+        except Exception as e:
+            logger.debug("honest %s: горизонт по правилу цены не определился (%s)", isin, e)
 
     points = []
     for r in rows:
@@ -643,12 +693,14 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
                 ref, px, curve, d, accrued_override=accint,
                 periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
                 ruonia_curve=ru_curve, accrued_basis="calc")
+            hz = pick_horizon(m, hz_key)     # см. asof_bar_metrics: один горизонт на серию
             points.append({
                 "date": r["date"], "price": px,
-                "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
-                "ytm": m.get("yield_xirr_pct"),
-                "y_idx_bps": m.get("yield_over_index_bps"),
-                "curve_mode": mode, "src": "honest",
+                "sm_bps": hz.get("sm_bps", m.get("sm_bps")),
+                "dm_bps": hz.get("disc_margin_bps", m.get("disc_margin_bps")),
+                "ytm": hz.get("yield_xirr_pct", m.get("yield_xirr_pct")),
+                "y_idx_bps": hz.get("yield_over_index_bps", m.get("yield_over_index_bps")),
+                "curve_mode": mode, "src": "honest", "horizon": hz.get("horizon"),
             })
         except Exception as e:
             logger.debug(f"honest point {isin}@{r['date']}: {e}")
@@ -678,7 +730,9 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #       (_accrue_to_date), на рабочей — accrue_to_settle не доначисляла НКД на
 #       поставку (calc == старт периода, elapsed=0 → возврат входа), занижая
 #       dirty на 1-3 дня накопления
-HONEST_ENGINE_VERSION = 5
+# 6 — 2026-08-13: горизонт по правилу цены (pick_horizon) вместо «всегда к
+#     погашению»: у бумаг с офертой история расходилась с шапкой и стаканом.
+HONEST_ENGINE_VERSION = 6
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
