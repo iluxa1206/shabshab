@@ -87,6 +87,8 @@ async def spread_history(
             "date": t[:10], "price": round(px, 3),
             "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
             "g_spread_bps": m.get("g_spread_bps"),
+            "y_idx_alt_bps": m.get("y_idx_alt_bps"), "horizon": m.get("horizon"),
+            "alt_horizon": m.get("alt_horizon"),
             "ytm": m.get("yield_pct"), "src": "est",
         })
 
@@ -117,6 +119,9 @@ async def spread_history(
         "dm_bps": r.get("dm_bps"), "y_idx_bps": r.get("y_idx"),
         "g_spread_bps": r.get("g_spread_bps"),
         "ytm": r.get("ytm"),
+        # спред ко второму горизонту — для свитчера «погашение ↔ оферта»
+        "y_idx_alt_bps": r.get("y_idx_alt"), "horizon": r.get("horizon"),
+        "alt_horizon": r.get("alt_horizon"),
         "src": "honest" if r.get("src") == "honest" else "exact",
     } for r in exact_rows]
     # поля, которых в строке нет (напр. y_idx у легаси-снапшота при упавшем
@@ -125,7 +130,8 @@ async def spread_history(
     for p in exact:
         e = est_by_date.get(p["date"])
         if e:
-            for k in ("dm_bps", "y_idx_bps", "g_spread_bps", "ytm", "price"):
+            for k in ("dm_bps", "y_idx_bps", "g_spread_bps", "ytm", "price",
+                      "y_idx_alt_bps", "horizon", "alt_horizon"):
                 if p.get(k) is None and e.get(k) is not None:
                     p[k] = e[k]
     # est — только хвосты вне точного окна: до первой точной даты (бэкфилл не

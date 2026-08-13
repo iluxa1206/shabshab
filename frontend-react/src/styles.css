@@ -615,6 +615,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* гистограмма распределения: профиль у правого края панели спреда, кликам не
    мешает (pointer-events: none) — зум и пан работают сквозь неё */
 .cp-dist-svg { position: absolute; top: 0; pointer-events: none; z-index: 2; }
+/* «данные готовятся»: надпись пульсирует, пока фоновый пересчёт не дошёл до
+   бумаги (сама линия спреда в это время идёт пунктиром) */
+.cp-pulse { animation: cp-pulse 1.4s ease-in-out infinite; }
+@keyframes cp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .cp-pulse { animation: none; } }
 /* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
 .cp-brush { width: 100%; flex: 0 0 auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
   overflow: hidden; outline-offset: 2px; }

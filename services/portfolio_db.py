@@ -294,6 +294,14 @@ _MIGRATIONS = [
     "ALTER TABLE bar_hourly ADD COLUMN y_low_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN y_close_bps REAL",
     "ALTER TABLE bar_hourly ADD COLUMN metrics_ver INTEGER",
+    # горизонт бара и спред ко второму горизонту: свитчер «погашение ↔ оферта»
+    # на графике переключает готовые числа (см. bars.BARS_METRICS_VERSION=6)
+    "ALTER TABLE bar_hourly ADD COLUMN horizon TEXT",
+    "ALTER TABLE bar_hourly ADD COLUMN y_idx_alt_bps REAL",
+    "ALTER TABLE bar_hourly ADD COLUMN alt_horizon TEXT",
+    "ALTER TABLE spread_daily ADD COLUMN horizon TEXT",
+    "ALTER TABLE spread_daily ADD COLUMN y_idx_alt REAL",
+    "ALTER TABLE spread_daily ADD COLUMN alt_horizon TEXT",
     "ALTER TABLE signal_filters ADD COLUMN change_pct REAL NOT NULL DEFAULT 10",
     # signal_hits (лента+анти-спам одной таблицей) заменена парой
     # signal_state/signal_events; старая остаётся безвредной сиротой

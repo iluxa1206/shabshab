@@ -209,9 +209,32 @@ const Y_OHLC_MIN_HOUR_SHARE = 0.2;  // и не меньше доли от мед
 // по нему, а не по дневному снапшоту (см. spreadPts).
 const SPREAD_BARS_MIN_COVER = 0.7;
 
+// ГОРИЗОНТ. Бумага с офертой прайсится либо к погашению, либо к выкупу — правило
+// цены выбирает автоматически (put предъявят ниже цены выкупа, call дёрнут выше),
+// но глазами часто нужно ровно другое. Бэк считает ОБА горизонта и кладёт рядом:
+// y_idx_bps — тот, что выбрало правило (поле horizon говорит какой), y_idx_alt_bps
+// — второй (поле alt_horizon). Свитчер поэтому мгновенный, без пересчёта истории.
+const HORIZONS = [
+  ["auto", "Авто", "Горизонт по правилу цены: ниже цены выкупа — к оферте, выше — к погашению"],
+  ["maturity", "Погашение", "Всегда к дате погашения, даже если правило цены выбрало оферту"],
+  ["offer", "Оферта", "Всегда к ближайшей оферте (put/call)"],
+];
+// Значение точки под выбранный горизонт. Точка знает, к чему посчитано её
+// основное число, поэтому «к погашению» — это либо основное, либо альтернативное.
+function atHorizon(p, hz) {
+  const main = p?.y_idx_bps != null ? p.y_idx_bps : p?.g_spread_bps;
+  if (hz === "auto" || main == null) return main;
+  const isMat = (p.horizon || "maturity") === "maturity";
+  const want = hz === "maturity";
+  if (want === isMat) return main;
+  return p.y_idx_alt_bps != null ? p.y_idx_alt_bps : main;
+}
+// Есть ли у бумаги вообще второй горизонт (иначе свитчер прятать)
+const hasAltHorizon = (rows) => !!rows?.some((b) => b.y_idx_alt_bps != null);
+
 // Метрика спреда зависит от типа бумаги: у флоатера Y-IDX, у фикса G-спред.
 // Бар несёт оба поля, заполнено то, что считается для этой бумаги.
-const barSpread = (b) => (b.y_idx_bps != null ? b.y_idx_bps : b.g_spread_bps);
+const barSpread = (b, hz = "auto") => atHorizon(b, hz);
 const spreadKindOf = (bars) =>
   (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
 const SPREAD_LABEL = { y: "R-spread", g: "G-спред" };
@@ -233,9 +256,17 @@ const barSpreadOHLC = (b) => {
 // закрытия (выключен) — линия спреда следует тому же представлению цены, что
 // выбрано на ценовом графике. У старых баров y_close_bps может не быть —
 // откатываемся на средневзвес, чтобы серия не рвалась.
-function layerPoints(bars, tf, useVwap = true) {
+function layerPoints(bars, tf, useVwap = true, hz = "auto") {
   if (!bars?.length) return [];
-  const ptSpread = (b) => (useVwap ? barSpread(b) : (b.y_close_bps ?? barSpread(b)));
+  // OHLC спреда считаны только к основному горизонту, поэтому на «другом»
+  // горизонте база — всегда значение бара (по средневзвесу или по закрытию,
+  // сдвинутому на разницу горизонтов у самого бара)
+  const shift = (b) => {
+    const main = barSpread(b, "auto"), sel = barSpread(b, hz);
+    return main != null && sel != null ? sel - main : 0;
+  };
+  const ptSpread = (b) => (useVwap ? barSpread(b, hz)
+    : (b.y_close_bps != null ? b.y_close_bps + shift(b) : barSpread(b, hz)));
   if (tf === "5m" || tf === "1h") {
     // На часовой сетке «тонкий» — сам час: одиночная сделка на утренней сессии
     // даёт спред в сотни б.п. и так же травит статистику, как тонкий день.
@@ -245,7 +276,10 @@ function layerPoints(bars, tf, useVwap = true) {
     const med = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
     const min = Math.max(Y_OHLC_MIN_HOUR_VALUE, med * Y_OHLC_MIN_HOUR_SHARE);
     return bars.map((b) => {
-      const s = barSpreadOHLC(b);
+      const sh = shift(b);
+      const s0 = barSpreadOHLC(b);
+      const s = s0 && sh
+        ? { o: s0.o + sh, c: s0.c + sh, h: s0.h + sh, l: s0.l + sh } : s0;
       // на часовой сетке свеча спреда — сам бар: у часа есть свои O/H/L/C цены
       return { ...b, time: toTime(b.ts, "1h"), y_idx_bps: ptSpread(b),
                y_o: s?.o ?? null, y_h: s?.h ?? null, y_l: s?.l ?? null, y_c: s?.c ?? null,
@@ -260,13 +294,16 @@ function layerPoints(bars, tf, useVwap = true) {
     a.vol += b.volume || 0;
     a.val += b.value || 0;
     a.face = b.face || a.face;
-    const y = barSpread(b);
+    const y = barSpread(b, hz);
     if (y != null && b.volume) {
       a.yNum += y * b.volume; a.yDen += b.volume;
       // ohlc — спред по ценам самого часа (может не быть у старых баров,
       // налитых до появления полей: тогда останется прежняя склейка по vwap)
       // px — сами цены часа: по ним видно, ИЗ ЧЕГО получилась цифра спреда
-      a.hours.push({ y, v: b.volume, ohlc: barSpreadOHLC(b), close: b.close });
+      const sh = shift(b);
+      const o0 = barSpreadOHLC(b);
+      a.hours.push({ y, v: b.volume, close: b.close,
+                     ohlc: o0 && sh ? { o: o0.o + sh, c: o0.c + sh, h: o0.h + sh, l: o0.l + sh } : o0 });
     }
     if (b.buy_volume) { a.bq += b.buy_volume; a.bv += (b.buy_vwap || 0) * b.buy_volume; }
     if (b.sell_volume) { a.sq += b.sell_volume; a.sv += (b.sell_vwap || 0) * b.sell_volume; }
@@ -378,6 +415,8 @@ export default function ChartPage() {
   const smodeRaw = sp.get("sm") || "line";
   const smode = smodeRaw === "candles" ? "line" : smodeRaw;
   const distOn = sp.get("dist") === "1";
+  // горизонт спреда: auto (правило цены) | maturity | offer
+  const hz = HORIZONS.some(([k]) => k === sp.get("hz")) ? sp.get("hz") : "auto";
 
   const setParam = (patch) => setSp((prev) => {
     const n = new URLSearchParams(prev);
@@ -485,8 +524,8 @@ export default function ChartPage() {
       const d = b.ts.slice(0, 10);
       return (!from || d >= from) && (!to || d <= to);
     });
-    return layerPoints(rows, tf, on("vwap"));
-  }, [qBars.data, tf, from, to, layers, layersOk]); // eslint-disable-line
+    return layerPoints(rows, tf, on("vwap"), hz);
+  }, [qBars.data, tf, from, to, layers, layersOk, hz]); // eslint-disable-line
 
   const bigTrades = useMemo(() => {
     const rows = (qTrades.data?.trades || []).filter((t) => {
@@ -533,7 +572,8 @@ export default function ChartPage() {
     // а у снапшота нет, и статистика панели ехала.
     const dayVal = new Map(candles.map((c) => [c.t.slice(0, 10), (c.v || 0) * 1000 * (c.c || 100) / 100]));
     const daily = (qSpread.data?.points || [])
-      .map((p) => ({ time: p.date, value: sKind === "g" ? p.g_spread_bps : p.y_idx_bps,
+      .map((p) => ({ time: p.date,
+                     value: sKind === "g" ? p.g_spread_bps : atHorizon(p, hz),
                      px: p.price ?? null, src: "daily",
                      thin: (dayVal.get(p.date) ?? Infinity) < Y_OHLC_MIN_DAY_VALUE }))
       .filter((p) => p.value != null);
@@ -550,7 +590,29 @@ export default function ChartPage() {
     if (bars.length < 2) return daily;
     if (daily.length > 4 && bars.length < daily.length * SPREAD_BARS_MIN_COVER) return daily;
     return bars;
-  }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from, candles]);
+  }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from, candles, hz]);
+
+  // Свитчер горизонта показываем только там, где есть что переключать:
+  // у бумаги без оферт второго горизонта не существует.
+  const hasAlt = hasAltHorizon(qBars.data?.bars)
+    || (qSpread.data?.points || []).some((p) => p.y_idx_alt_bps != null);
+
+  // ДАННЫЕ ЕЩЁ ГОТОВЯТСЯ. Спред бара считается честным as-of и пересчитывается
+  // фоном после смены версии движка: пока пересчёт не дошёл, у части дней спреда
+  // нет. Рисовать такую линию сплошной нельзя — она выглядит как готовая, хотя
+  // перескакивает дни. Считаем покрытие: сколько дней окна с ценой закрыто
+  // точками спреда.
+  const spreadPending = useMemo(() => {
+    if (!spreadPaneOn || !candles.length) return false;
+    if (barsOn && qBars.isFetching) return true;
+    // сравниваем с днями, когда бумага РЕАЛЬНО торговалась (свечи MOEX): дырка
+    // в спреде при наличии сделок = недосчитанный день, а не выходной
+    const tradeDays = new Set(candles.map((c) => c.t.slice(0, 10)));
+    const have = new Set(spreadPts.map((p) => String(p.time).slice(0, 10)));
+    let missing = 0;
+    for (const d of tradeDays) if (!have.has(d)) missing += 1;
+    return spreadPts.length > 0 && missing > Math.max(1, tradeDays.size * 0.02);
+  }, [spreadPaneOn, candles, spreadPts, barsOn, qBars.isFetching]);
 
   // HLC у спреда возможен только там, где в баре есть внутридневной разброс:
   // дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
@@ -876,6 +938,9 @@ export default function ChartPage() {
         // относительный (от самой линии вниз), поэтому работает и на
         // отрицательных значениях спреда.
         const yidx = chart.addSeries(AreaSeries, {
+          // пунктир = «данные ещё готовятся»: часть дней без спреда, линия
+          // перескакивает их и сплошной выглядела бы законченной
+          lineStyle: spreadPending ? 2 : 0,
           lineColor: theme.spread, lineWidth: 2,
           topColor: alpha(theme.spread, 0.28), bottomColor: alpha(theme.spread, 0.02),
           crosshairMarkerRadius: 4, crosshairMarkerBorderColor: theme.bg,
@@ -919,7 +984,7 @@ export default function ChartPage() {
       measureDistGeom(c);
     });
     return () => cancelAnimationFrame(raf);
-  }, [candles, type, tf, theme, spreadPaneOn, shownPts, smode, spreadOHLC,
+  }, [candles, type, tf, theme, spreadPaneOn, shownPts, smode, spreadOHLC, spreadPending,
       layerPts, bigTrades, rpsTrades, layers, layersOk]);
 
   // при смене окна/таймфрейма старая строка легенды осталась бы висеть от
@@ -1171,6 +1236,20 @@ export default function ChartPage() {
             {on("rps") && <i style={{ color: TRADE_DOT.rps }}>● РПС</i>}
           </span>
         )}
+        {/* к чему считаем спред: правило цены / погашение / оферта. Кнопки
+            появляются только у бумаг с офертой — остальным переключать нечего */}
+        {hasAlt && smode !== "off" && (
+          <>
+            <span className="cp-layers-k">горизонт</span>
+            <span className="cp-group" role="group" aria-label="Горизонт спреда">
+              {HORIZONS.map(([k, l, hint]) => (
+                <button key={k} type="button" title={hint}
+                  className={"cp-btn" + (hz === k ? " on" : "")}
+                  onClick={() => setParam({ hz: k === "auto" ? null : k })}>{l}</button>
+              ))}
+            </span>
+          </>
+        )}
         <span className="cp-layers-k" style={cSp}>спред</span>
         <span className="cp-group" role="group" aria-label="Панель спреда">
           {[["line", "Линия", `${sLabel}: по средневзвесу при включённом слое СРЕДНЕВЗВЕС, иначе по цене закрытия`],
@@ -1195,7 +1274,9 @@ export default function ChartPage() {
         <span className="cp-hint">
           {(qBars.isPending && barsOn) || (qTrades.isPending && on("big"))
             || (qBlocks.isPending && on("rps"))
-            ? "загрузка архива…"
+            ? <span className="cp-pulse">загрузка данных…</span>
+            : spreadPending
+              ? <span className="cp-pulse">данные спреда догружаются — линия пунктиром</span>
             : barsOn || on("big") || on("rps")
               ? [
                   barsOn && layerPts.length ? `${layerPts.length} баров` : null,

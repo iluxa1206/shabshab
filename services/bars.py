@@ -247,6 +247,9 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 "y_low_bps": _metrics(l).get(spread_key),
                 "y_close_bps": _metrics(cl).get(spread_key),
                 "metrics_ver": BARS_METRICS_VERSION,
+                "horizon": m.get("horizon"),
+                "y_idx_alt_bps": m.get("y_idx_alt_bps"),
+                "alt_horizon": m.get("alt_horizon"),
             })
         return bars
 
@@ -278,11 +281,16 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #          и лента сделок — к горизонту по правилу цены (pick_horizon). У бумаг
 #          с офертой это две разные метрики на одном экране: РЖД 1Р-52R — put
 #          09.10.2029 против погашения 31.03.2036. Теперь горизонт общий.
-BARS_METRICS_VERSION = 5
+#   6    — 2026-08-13: рядом со спредом выбранного горизонта пишется спред ко
+#          ВТОРОМУ (погашение ↔ ближайшая оферта) — свитчер на графике
+#          переключает готовые числа, без пересчёта года истории.
+BARS_METRICS_VERSION = 6
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",
-         "y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps", "metrics_ver")
+         "y_open_bps", "y_high_bps", "y_low_bps", "y_close_bps", "metrics_ver",
+         # горизонт бара и спред ко ВТОРОМУ горизонту (свитчер погашение↔оферта)
+         "horizon", "y_idx_alt_bps", "alt_horizon")
 
 
 def upsert_bars(bars: list[dict]) -> int:
@@ -309,7 +317,8 @@ def _null_stale_spreads(isin: str, frm: str, till_day: str) -> int:
         cur = c.execute(
             "UPDATE bar_hourly SET y_idx_bps=NULL, dm_bps=NULL, g_spread_bps=NULL, "
             "ytm=NULL, y_open_bps=NULL, y_high_bps=NULL, y_low_bps=NULL, "
-            "y_close_bps=NULL WHERE isin=? AND ts>=? AND ts<? "
+            "y_close_bps=NULL, y_idx_alt_bps=NULL, horizon=NULL, alt_horizon=NULL "
+            "WHERE isin=? AND ts>=? AND ts<? "
             "AND (metrics_ver IS NULL OR metrics_ver<?) "
             "AND (y_idx_bps IS NOT NULL OR g_spread_bps IS NOT NULL "
             "     OR y_close_bps IS NOT NULL)",

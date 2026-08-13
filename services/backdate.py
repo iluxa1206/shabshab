@@ -514,6 +514,17 @@ async def fetch_history_range(secid: str, d_from: date, d_till: date,
     return out
 
 
+def _alt_horizon(hz_key: str, horizons: dict) -> Optional[str]:
+    """Второй горизонт для свитчера графика: к погашению ↔ к ближайшей оферте.
+    None, если у бумаги оферт нет и переключать не на что."""
+    if hz_key != "maturity":
+        return "maturity"
+    for k in ("put", "call"):
+        if k in (horizons or {}):
+            return k
+    return None
+
+
 async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
     """Sync-фабрика ЧЕСТНЫХ метрик для прошлых дней: fn(day_iso, price_pct) →
     {y_idx_bps, dm_bps, g_spread_bps, yield_pct}. Кривая/НКД/номинал — as-of
@@ -547,7 +558,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
     # (РЖД 1Р-52R при 99.0: put 165 б.п. против maturity 83) — линия рвалась бы
     # ступенями там, где рынок стоял на месте. Один горизонт на серию = то же
     # число, что в шапке и стакане сегодня, и однородная история.
-    hz_key = "maturity"
+    hz_key, alt_key = "maturity", None
     _last = next((r for r in reversed(rows) if r.get("close") is not None), None)
     if _last is not None:
         try:
@@ -562,6 +573,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
                 periods=periods, amorts=amorts, offers=offers,
                 ruonia_curve=_ru, accrued_basis="calc")
             hz_key = _m.get("preferred_horizon") or "maturity"
+            alt_key = _alt_horizon(hz_key, _m.get("horizons") or {})
         except Exception as e:
             logger.debug("as-of %s: горизонт по правилу цены не определился (%s)", isin, e)
 
@@ -598,11 +610,17 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
         # считалась к 2036-му, а R-spread в шапке — к оферте, и одна и та же
         # метрика на одном экране расходилась на сотни б.п.
         h = pick_horizon(m, hz_key)
+        # ВТОРОЙ ГОРИЗОНТ считаем тем же прогоном и кладём рядом: свитчер
+        # «к погашению / к оферте» на графике должен переключаться мгновенно,
+        # а пересчёт года истории по требованию — это минуты.
+        alt = pick_horizon(m, alt_key) if alt_key else {}
         return {"y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
                 "dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
                 "g_spread_bps": m.get("g_spread_bps"),
                 "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
-                "horizon": h.get("horizon")}
+                "horizon": h.get("horizon"),
+                "y_idx_alt_bps": alt.get("yield_over_index_bps"),
+                "alt_horizon": alt.get("horizon") if alt else None}
 
     return fn
 
@@ -652,7 +670,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     # Горизонт — один на всю серию, по последней цене окна (см. asof_bar_metrics):
     # правило цены, пересчитанное на каждый день, ломало бы линию ступенями у
     # бумаг с офертой около номинала.
-    hz_key = "maturity"
+    hz_key, alt_key = "maturity", None
     if rows:
         try:
             _d = _date.fromisoformat(rows[-1]["date"])
@@ -666,6 +684,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
                 periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
                 ruonia_curve=_ru, accrued_basis="calc")
             hz_key = _m.get("preferred_horizon") or "maturity"
+            alt_key = _alt_horizon(hz_key, _m.get("horizons") or {})
         except Exception as e:
             logger.debug("honest %s: горизонт по правилу цены не определился (%s)", isin, e)
 
@@ -694,13 +713,16 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
                 periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
                 ruonia_curve=ru_curve, accrued_basis="calc")
             hz = pick_horizon(m, hz_key)     # см. asof_bar_metrics: один горизонт на серию
+            alt = pick_horizon(m, alt_key) if alt_key else {}
             points.append({
                 "date": r["date"], "price": px,
                 "sm_bps": hz.get("sm_bps", m.get("sm_bps")),
                 "dm_bps": hz.get("disc_margin_bps", m.get("disc_margin_bps")),
                 "ytm": hz.get("yield_xirr_pct", m.get("yield_xirr_pct")),
                 "y_idx_bps": hz.get("yield_over_index_bps", m.get("yield_over_index_bps")),
+                "y_idx_alt_bps": alt.get("yield_over_index_bps"),
                 "curve_mode": mode, "src": "honest", "horizon": hz.get("horizon"),
+                "alt_horizon": alt.get("horizon") if alt else None,
             })
         except Exception as e:
             logger.debug(f"honest point {isin}@{r['date']}: {e}")

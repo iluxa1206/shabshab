@@ -56,7 +56,8 @@ def read_history(isin: str, days: int = 400) -> List[dict]:
     """Точная история по бумаге, по возрастанию даты."""
     with _connect() as c:
         r = c.execute(
-            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx, src, engine_ver "
+            "SELECT date, kind, price_pct, dm_bps, g_spread_bps, z_bps, ytm, y_idx, "
+            "y_idx_alt, horizon, alt_horizon, src, engine_ver "
             "FROM spread_daily WHERE isin=? ORDER BY date DESC LIMIT ?",
             (isin, days)).fetchall()
     return [dict(x) for x in reversed(r)]
@@ -128,23 +129,28 @@ def upsert_honest(isin: str, points: list, existing_dates: set,
             continue
         if p["date"] in retrust:
             rew.append((p.get("y_idx_bps"), p.get("dm_bps"), p.get("ytm"),
+                        p.get("y_idx_alt_bps"), p.get("horizon"), p.get("alt_horizon"),
                         engine_ver, isin, p["date"]))
         elif p["date"] in existing_dates:
-            upd.append((p.get("y_idx_bps"), isin, p["date"]))
+            upd.append((p.get("y_idx_bps"), p.get("y_idx_alt_bps"), p.get("horizon"),
+                        p.get("alt_horizon"), isin, p["date"]))
         else:
             ins.append((isin, p["date"], "floater", p.get("price"), p.get("dm_bps"),
-                        None, None, p.get("ytm"), p.get("y_idx_bps"), "honest", engine_ver))
+                        None, None, p.get("ytm"), p.get("y_idx_bps"), "honest", engine_ver,
+                        p.get("horizon"), p.get("y_idx_alt_bps"), p.get("alt_horizon")))
     with _lock, _connect() as c:
         if ins:
             c.executemany(
                 "INSERT OR IGNORE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-                "g_spread_bps,z_bps,ytm,y_idx,src,engine_ver) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ins)
+                "g_spread_bps,z_bps,ytm,y_idx,src,engine_ver,horizon,y_idx_alt,alt_horizon) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ins)
         if upd:
             c.executemany(
-                "UPDATE spread_daily SET y_idx=? WHERE isin=? AND date=? AND y_idx IS NULL",
-                upd)
+                "UPDATE spread_daily SET y_idx=?, y_idx_alt=?, horizon=?, alt_horizon=? "
+                "WHERE isin=? AND date=? AND y_idx IS NULL", upd)
         if rew:
             c.executemany(
-                "UPDATE spread_daily SET y_idx=?, dm_bps=?, ytm=?, src='honest', "
-                "engine_ver=? WHERE isin=? AND date=?", rew)
+                "UPDATE spread_daily SET y_idx=?, dm_bps=?, ytm=?, y_idx_alt=?, "
+                "horizon=?, alt_horizon=?, src='honest', engine_ver=? "
+                "WHERE isin=? AND date=?", rew)
     return len(ins) + len(upd) + len(rew)
