@@ -5,29 +5,34 @@ import { NavLink, useLocation } from "react-router-dom";
 const TYPES = [
   { id: "floaters", label: "Флоатеры", home: "/floaters" },
   { id: "fixed", label: "Фиксы", home: "/fixed" },
-  { id: "euro", label: "Евробонды", home: "/euro" },
+  { id: "curves", label: "Кривые", home: "/curves" },
+  // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
+  { id: "reference", label: "Справочник", home: "/reference", admin: true },
   { id: "status", label: "Статус", home: "/status" },
 ];
 const SUBNAV = {
   floaters: [["/floaters", "Монитор"], ["/trades", "Сделки"],
-             ["/signals", "Сигналы"], ["/payments", "Выплаты"], ["/curves", "Кривые"],
+             ["/signals", "Сигналы"], ["/payments", "Выплаты"],
              ["/calc/float", "Калькулятор"]],
   fixed: [["/fixed", "Монитор"], ["/calc", "Калькулятор"]],
-  euro: [],
+  curves: [],
+  reference: [],
   status: [],
 };
 const currentType = (p) =>
   p.startsWith("/calc/float") ? "floaters"
-    : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed" : p.startsWith("/euro") ? "euro"
+    : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed"
+    : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
     : p.startsWith("/status") ? "status" : "floaters";
 
-function TypeMenu({ type }) {
-  const cur = TYPES.find((t) => t.id === type) || TYPES[0];
+function TypeMenu({ type, isAdmin }) {
+  const items = TYPES.filter((t) => !t.admin || isAdmin);
+  const cur = items.find((t) => t.id === type) || items[0];
   return (
     <div className="type-menu">
       <button type="button" className="seg-btn type-btn" aria-haspopup="true">{cur.label} ▾</button>
       <div className="type-drop" role="menu">
-        {TYPES.map((t) => (
+        {items.map((t) => (
           <NavLink key={t.id} to={t.home} role="menuitem"
             className={"type-opt" + (t.id === type ? " on" : "")}>{t.label}</NavLink>
         ))}
@@ -43,16 +48,12 @@ const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 // таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
 export default function Topbar({ user, onLogout, onOpenSettings, extra }) {
   const type = currentType(useLocation().pathname);
-  let sub = SUBNAV[type] || [];
-  // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
-  if (type === "floaters" && user?.role === "admin") {
-    sub = [...sub, ["/reference", "Справочник"]];
-  }
+  const sub = SUBNAV[type] || [];
   return (
     <header className="menubar">
       <div className="brand-row">
         <span className="wordmark">DESK</span>
-        <TypeMenu type={type} />
+        <TypeMenu type={type} isAdmin={user?.role === "admin"} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
             {sub.map(([to, label]) => (

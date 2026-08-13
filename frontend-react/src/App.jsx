@@ -19,7 +19,6 @@ import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import FixedModule from "./components/FixedModule.jsx";
 import CalcModule from "./components/CalcModule.jsx";
-import EuroStub from "./components/EuroStub.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
@@ -740,7 +739,6 @@ function Dashboard() {
         <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
         <Route path="/calc" element={<CalcModule />} />
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
-        <Route path="/euro" element={<EuroStub />} />
         <Route path="/trades" element={<TradesTape />} />
         {/* КРУПНЫЕ слиты в СДЕЛКИ: лента одна, крупняк отбирается порогом суммы.
             Старый путь отдаёт ту же ленту — на вкладку успели наставить закладок.

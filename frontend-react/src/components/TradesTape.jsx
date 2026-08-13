@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
@@ -47,6 +47,13 @@ const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 // в одной колонке был несравним глазами.
 const money = (v) => (v == null ? "—" : fmt.mln(v));
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
+// Заголовок дня: «13.08.2026 — ЧТ». День недели считаем как UTC — ts уже
+// московское время, и локальная таймзона браузера сдвинула бы дату.
+const WD = ["ВС", "ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ"];
+const dayTitle = (day) => {
+  const d = new Date(day + "T00:00:00Z");
+  return `${day.slice(8, 10)}.${day.slice(5, 7)}.${day.slice(0, 4)} — ${WD[d.getUTCDay()]}`;
+};
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 8) || "—";
 const num = (s) => (s === "" || s == null ? null : Number(s));
 
@@ -557,6 +564,22 @@ export default function TradesTape() {
     });
   }, [rows, sort]);
 
+  // Разделители дней. Имеют смысл ТОЛЬКО в хронологическом порядке (дефолт —
+  // как отдал сервер, либо сортировка по дате/времени): в порядке по сумме или
+  // спреду даты перемешаны, и «13.08.2026 — ЧТ» над случайной строкой врал бы,
+  // что дальше идёт этот день. → {trade_id первой строки дня: 'YYYY-MM-DD'}.
+  const dayHeads = useMemo(() => {
+    const byTime = !sort.key || sort.key === "date" || sort.key === "time";
+    const out = {};
+    if (!byTime) return out;
+    let last = null;
+    for (const r of sorted) {
+      const d = (r.ts || "").slice(0, 10);
+      if (d && d !== last) { out[r.trade_id] = d; last = d; }
+    }
+    return out;
+  }, [sorted, sort.key]);
+
   // Открыть бумагу из ленты. Карточка — ПОВЕРХ ленты: Drawer смонтирован
   // глобально и слушает ?isin= в адресе, поэтому уходить на СПИСОК незачем —
   // лента остаётся под карточкой, а её закрытие ничего не пересобирает.
@@ -781,8 +804,15 @@ export default function TradesTape() {
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
                     act: <RowLinks isin={r.isin} onOpen={openBond} />,
                   };
+                  const head = dayHeads[r.trade_id];
                   return (
-                    <tr key={r.trade_id}
+                    <Fragment key={r.trade_id}>
+                    {head && (
+                      <tr className="tape-day">
+                        <td className="left" colSpan={cols.length + 1}>{dayTitle(head)}</td>
+                      </tr>
+                    )}
+                    <tr
                       className={(clickable ? "" : "tape-row-static ")
                                  + (r.negotiated ? "blk-ndm" : "")}
                       onClick={clickable ? () => openBond(r.isin, "chart") : undefined}
@@ -798,6 +828,7 @@ export default function TradesTape() {
                       ))}
                       <td className="fill-col" />
                     </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>
