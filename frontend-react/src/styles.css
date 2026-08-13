@@ -16,7 +16,7 @@
   --up: #157a37;              /* cheap / gain */
   --down: #c0271f;            /* rich / loss */
   --accent: #3b5bd4;          /* доп. серия на графиках (напр. НРД Прил.3) */
-  --spread: #b25e00;          /* панель спреда: своя серия, не цена и не средневзвес */
+  --spread: #5c53c0;          /* панель спреда: лаванда (на белом — тёмный тон той же гаммы) */
   --vwap: #0090c8;            /* линия средневзвеса поверх свечей */
   --pos: var(--up);
   --neg: var(--down);
@@ -46,7 +46,7 @@
   --up: #4ecb76;
   --down: #ff6b6b;
   --accent: #6b9bff;          /* доп. серия на графиках (напр. НРД Прил.3) */
-  --spread: #ffb454;          /* панель спреда: своя серия, не цена и не средневзвес */
+  --spread: #c9c9ff;          /* панель спреда: лаванда — не спорит ни со свечами, ни с цианом средневзвеса */
   --vwap: #00d5ff;            /* линия средневзвеса поверх свечей */
   --pos: var(--up);
   --neg: var(--down);
@@ -81,7 +81,7 @@
   --up: #007a1f;               /* VGA green, дотянут до контраста на белом */
   --down: #cc0000;
   --accent: #000080;           /* navy: тайтлбары, активные кнопки, доп. серия */
-  --spread: #9a6b00;           /* панель спреда: VGA-охра */
+  --spread: #800080;           /* панель спреда: VGA-пурпур (ближайшая лаванда в 16 цветах) */
   --vwap: #008080;             /* VGA teal */
   --pos: var(--up);
   --neg: var(--down);
@@ -615,20 +615,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* гистограмма распределения: профиль у правого края панели спреда, кликам не
    мешает (pointer-events: none) — зум и пан работают сквозь неё */
 .cp-dist-svg { position: absolute; top: 0; pointer-events: none; z-index: 2; }
-.cp-dist-sum { position: absolute; z-index: 3; pointer-events: none;
-  display: flex; flex-direction: column; gap: 1px; padding: 4px 6px;
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  border: 1px solid var(--line-2); border-radius: 3px; }
-.cp-dist-head { font: 9px var(--mono); text-transform: uppercase; letter-spacing: .06em;
-  color: var(--mut-2); padding-bottom: 3px; margin-bottom: 2px;
-  border-bottom: 1px solid var(--line-2); }
-.cp-dist-row { display: flex; justify-content: space-between; gap: 8px;
-  font: 10px var(--mono); color: var(--mut); }
-.cp-dist-row b { color: var(--fg); font-weight: 600; }
-.cp-dist-row b.hi { color: var(--spread); font-weight: 700; }
-.cp-dist-row b.up { color: var(--up); }
-.cp-dist-row b.down { color: var(--down); }
-@media (max-width: 900px) { .cp-dist-sum { display: none; } }
 /* полоса-обзор: край в край с областью данных графика (rightPad = шкала цен) */
 .cp-brush { width: 100%; flex: 0 0 auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 4px;
   overflow: hidden; outline-offset: 2px; }

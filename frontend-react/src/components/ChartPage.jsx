@@ -552,24 +552,18 @@ export default function ChartPage() {
   // HLC у спреда возможен только там, где в баре есть внутридневной разброс:
   // дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
   const spreadOHLC = spreadPts.some((p) => p.o != null);   // см. shownPts ниже
-  // В распределение тонкие дни не идут: два случайных принта дают спред в
-  // сотни б.п. и в одиночку растягивают шкалу, среднее и σ (см. Y_OHLC_MIN_DAY_VALUE)
-  const fatPts = useMemo(() => spreadPts.filter((p) => !p.thin), [spreadPts]);
-  // когда ликвидных дней почти нет (сплошной неликвид), фильтр не применяем —
-  // иначе панель осталась бы пустой там, где данные всё-таки есть
-  const distFiltered = fatPts.length > 5;
-  const distSrc = distFiltered ? fatPts : spreadPts;
+  // В распределение идут ВСЕ дни, включая тонкие: сделка есть сделка, а отбор
+  // «нормальных» оборотов делал статистику несравнимой с самой линией.
   // время у точек — либо ISO-дата (дневная сетка), либо UNIX-секунды (внутри дня);
   // видимое окно приходит в том же виде, поэтому сравниваем как есть
   const distVis = useMemo(
     () => (visTimes
-      ? distSrc.filter((p) => p.time >= visTimes.from && p.time <= visTimes.to)
-      : distSrc),
-    [distSrc, visTimes]);
+      ? spreadPts.filter((p) => p.time >= visTimes.from && p.time <= visTimes.to)
+      : spreadPts),
+    [spreadPts, visTimes]);
   const dist = useMemo(
     () => (distOn ? distStats(distVis.map((p) => p.value)) : null),
     [distOn, distVis]);
-  const distThin = distFiltered ? spreadPts.length - fatPts.length : 0;
   // Линия рисует ВСЕ дни, включая выходные сессии: сделки там настоящие, и
   // спред по ним — тоже рынок, пусть и тонкий. Тонкие дни выключены только из
   // СТАТИСТИКИ распределения: одна такая точка перекашивает среднее и σ, по
@@ -1303,7 +1297,7 @@ export default function ChartPage() {
 
       <div className="cp-row" ref={rowRef}>
         <div className="cp-chart" ref={hostRef}>
-          {distOn && <SpreadDist dist={dist} theme={theme} label={sLabel}
+          {distOn && <SpreadDist dist={dist} theme={theme}
             geom={distGeom} rightPad={rightPad} />}
         </div>
       </div>
@@ -1338,13 +1332,6 @@ export default function ChartPage() {
               </span>
             )}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}
-            {spreadPaneOn && hasYidx && distThin > 0 && (
-              <span title={"День с оборотом меньше 1 млн ₽ (обычно выходная сессия) на графике "
-                           + "остаётся, но в среднее/σ/перцентиль не идёт: пара принтов "
-                           + "перекашивает статистику."}>
-                {` · тонких дней: ${distThin} (не в статистике)`}
-              </span>
-            )}
             {spreadPaneOn && hasYidx && !spreadOHLC && smode === "hlc" &&
               " · HLC спреда нет: в архиве только спред по средневзвесу (бары до пересчёта)"}
             {!spreadPaneOn && " · панель спреда выключена"}
@@ -1363,13 +1350,12 @@ export default function ChartPage() {
 // ── распределение спреда: гистограмма ВНУТРИ панели спреда, у правого края ──
 // Профиль объёма, только по спреду: бары растут влево от ценовой шкалы, в той же
 // системе координат (пиксель ↔ bps), что и сама панель — уровень концентрации
-// читается прямо напротив линии. Выборка — ВИДИМАЯ часть окна: зум меняет и
-// гистограмму, и сводку. Раньше это была отдельная колонка справа от графика,
-// которая ела ширину и жила своей жизнью.
+// читается прямо напротив линии. Выборка — ВИДИМАЯ часть окна: зум перестраивает
+// профиль. Ни колонки справа, ни плашки со сводкой: цифры среднего/медианы
+// человек и так читает по самой панели, а плашка перекрывала линию.
 const DIST_W = 132;          // ширина поля гистограммы, px
-const DIST_SUM_W = 150;      // ширина плашки сводки
 
-function SpreadDist({ dist, theme, label = "R-spread", geom = null, rightPad = 0 }) {
+function SpreadDist({ dist, theme, geom = null, rightPad = 0 }) {
   const aligned = !!(geom && geom.h > 40 && geom.vTop !== geom.vBot);
   if (!dist || !theme || !aligned) return null;
 
@@ -1377,12 +1363,10 @@ function SpreadDist({ dist, theme, label = "R-spread", geom = null, rightPad = 0
   const maxN = Math.max(...dist.hist.map((b) => b.n)) || 1;
   const barW = (n) => Math.max(1, n / maxN * (DIST_W - 10));
   const yLast = y(dist.last);
-  const n0 = (x) => Math.round(x).toLocaleString("ru-RU");
   // бары рисуем от правого края поля влево
   const right = DIST_W;
 
   return (
-    <>
       <svg className="cp-dist-svg" width={DIST_W} height={geom.top + geom.h}
         style={{ right: rightPad + 2 }} aria-hidden="true">
         <clipPath id="cp-dist-clip">
@@ -1403,24 +1387,5 @@ function SpreadDist({ dist, theme, label = "R-spread", geom = null, rightPad = 0
             stroke={theme.spread} strokeWidth="1" strokeDasharray="3 2" opacity="0.9" />
         </g>
       </svg>
-      {/* сводка — в левый верхний угол панели: справа профиль и ценовая шкала,
-          посреди панели плашка перекрывала бы саму линию спреда */}
-      <div className="cp-dist-sum" style={{ top: geom.top + 4, left: 6, width: DIST_SUM_W }}>
-        <div className="cp-dist-head">
-          <span style={{ color: theme.spread }}>{label}</span> в окне · {dist.n} набл.
-        </div>
-        {[["Текущий", n0(dist.last), "hi"],
-          ["Среднее", n0(dist.mean)],
-          ["От среднего", (dist.offAvg >= 0 ? "+" : "") + n0(dist.offAvg),
-           dist.offAvg >= 0 ? "up" : "down"],
-          ["Медиана", n0(dist.median)],
-          ["Ст.откл.", n0(dist.sd)],
-          ["\u03c3 от среднего", dist.z != null ? dist.z.toFixed(2) : "—"],
-          ["Перцентиль", dist.pct.toFixed(1) + "%"],
-        ].map(([k, v, cls]) => (
-          <div className="cp-dist-row" key={k}><span>{k}</span><b className={cls}>{v}</b></div>
-        ))}
-      </div>
-    </>
   );
 }
