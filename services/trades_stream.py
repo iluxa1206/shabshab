@@ -8,9 +8,12 @@
 (services/universe_stream).
 
 Что этот слой закрывает и чего НЕ закрывает:
-  • безадресные сделки бумаг юниверса — realtime, пушем (этот модуль);
-  • адресные (РПС, размещения, выкупы) и бумаги вне юниверса — по-прежнему ISS
-    с его 15 минутами: подписки на них у брокера нет в принципе.
+  • безадресные сделки ВСЕГО рынка облигаций MOEX — realtime, пушем (этот
+    модуль). Флоатер-юниверс пишем целиком, остальной рынок — от порога
+    TRADES_STREAM_MIN_RUB: в ленте у него всё равно нижняя планка 1 млн ₽,
+    а баров по нему мы не строим;
+  • адресные (РПС, размещения, выкупы) — по-прежнему ISS с его 15 минутами:
+    подписки на них у брокера нет в принципе.
 Обе ленты склеиваются по TRADENO (services/tape), так что доехавшая позже
 ISS-копия той же сделки дублем не станет — INSERT OR IGNORE по (isin, trade_id).
 
@@ -35,25 +38,39 @@ logger = logging.getLogger(__name__)
 
 _WS_URL = BASE_API.replace("https://", "wss://") + "/ws"
 TRADES_STREAM = os.getenv("TRADES_STREAM", "1") not in ("0", "false", "no")
-_SHARD_SIZE = int(os.getenv("ALOR_TRADES_SHARD", "150"))   # ISIN на сокет
+_SHARD_SIZE = int(os.getenv("ALOR_TRADES_SHARD", "250"))   # ISIN на сокет
 # Пишем пачками: SQLite синхронный, а на открытии рынка тики идут очередью по
 # всему юниверсу — executemany раз в пару секунд дешевле сотни одиночных вставок.
 _FLUSH_SEC = float(os.getenv("TRADES_STREAM_FLUSH", "2"))
 _RECONCILE_SEC = 300        # пересборка шардов под изменившийся юниверс
 _FACES_TTL = 6 * 3600       # номиналы (амортизация) меняются не чаще раза в день
 
+# ОХВАТ. market — весь торгуемый рынок облигаций MOEX (≈3100 бумаг): без него
+# лента по всему, чего нет во флоатер-юниверсе (ОФЗ-ПД, корп-фиксы, бумаги вне
+# реестра), жила на ISS с его 15-минутной задержкой. universe — прежнее
+# поведение, аварийный откат одной переменной окружения.
+_SCOPE = os.getenv("TRADES_STREAM_SCOPE", "market").strip().lower()
+_MAX_ISINS = int(os.getenv("TRADES_STREAM_MAX", "3300"))
+# Бумаги ВНЕ юниверса пишем от порога: мелкий принт по ОФЗ-ПД в ленте не нужен
+# (её нижняя планка и так 1 млн ₽), баров по ним мы не строим, а поток «всё
+# подряд по всему рынку» — это кратный рост архива на тесном диске VPS.
+# Флоатеров юниверса порог НЕ касается: там тик — источник баров и VWAP.
+_OTHER_MIN_RUB = float(os.getenv("TRADES_STREAM_MIN_RUB", "1000000"))
+
 _buf: dict[str, list] = {}          # isin → сырые тики до ближайшего flush
 _streamed: set = set()              # ISIN на живых сокетах
+_core: set = set()                  # из них — флоатер-юниверс (пишем целиком)
 _faces: dict = {"at": 0.0, "map": {}}
-_stats = {"ticks": 0, "saved": 0, "flushes": 0, "last_ts": None, "no_board": 0}
+_stats = {"ticks": 0, "saved": 0, "flushes": 0, "last_ts": None, "no_board": 0,
+          "skipped_small": 0}
 _REPORT_SEC = 300           # период сводки в лог
 _last_report = 0.0
 
 
 def stats() -> dict:
     """Состояние слоя — для /api/status."""
-    return {"streamed": len(_streamed), "buffered": sum(len(v) for v in _buf.values()),
-            **_stats}
+    return {"streamed": len(_streamed), "core": len(_core), "scope": _SCOPE,
+            "buffered": sum(len(v) for v in _buf.values()), **_stats}
 
 
 def live_isins() -> set:
@@ -172,10 +189,27 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
         backoff = min(backoff * 2, 30)
 
 
+def _tick_value(isin: str, price, qty) -> float:
+    """Рублёвый объём тика по кэшу номиналов (цена — % от номинала).
+
+    Кэш пустой на старте (первый flush его и наливает) — тогда считаем по 1000 ₽:
+    для порога этого достаточно, а промах в номинале даёт лишнюю запись, а не
+    потерянную сделку."""
+    face = _faces["map"].get(isin) or 1000.0
+    try:
+        return float(qty) * face * float(price) / 100.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _on_trade(isin: str, data: dict) -> None:
     """Пуш Alor → буфер в формате, который понимает trades_archive.upsert_ticks
     (тот же, что у REST alltrades: id/price/qty/time/side/board)."""
     if data.get("id") is None or data.get("price") is None or not data.get("qty"):
+        return
+    if isin not in _core and _OTHER_MIN_RUB > 0 \
+            and _tick_value(isin, data.get("price"), data.get("qty")) < _OTHER_MIN_RUB:
+        _stats["skipped_small"] += 1
         return
     if not data.get("board"):
         _stats["no_board"] += 1
@@ -195,12 +229,31 @@ def _on_trade(isin: str, data: dict) -> None:
                               tid=data.get("id"), ts=str(data.get("time") or "") or None)
 
 
+async def subscription_isins() -> list[str]:
+    """Кого слушаем. Флоатер-юниверс идёт ПЕРВЫМ и режется на шарды раньше всех:
+    при отказе брокера на хвосте подписок (лимит, лишние бумаги) первым делом
+    остаётся живой именно он — по нему считаются бары, VWAP и спред.
+
+    scope=market добавляет весь остальной торгуемый рынок облигаций MOEX. Список
+    берём из того же листинга, что даёт номиналы, — второго запроса не нужно."""
+    from services import instruments_registry
+    uni = await instruments_registry.fetch_floater_universe()
+    core = sorted({u["isin"] for u in uni if u.get("isin")})
+    _core.clear()
+    _core.update(core)
+    if _SCOPE != "market":
+        return core[:_MAX_ISINS]
+    from services.market_data import MarketDataService
+    all_bonds = await MarketDataService.fetch_bond_listing()
+    rest = sorted(set(all_bonds or {}) - set(core))
+    return (core + rest)[:_MAX_ISINS]
+
+
 async def trades_stream_pool() -> None:
-    """Владелец пула: режет юниверс на шарды, держит по сокету на шард и один
-    сливной таск, пересобирает пул при изменении юниверса."""
+    """Владелец пула: режет рынок на шарды, держит по сокету на шард и один
+    сливной таск, пересобирает пул при изменении списка бумаг."""
     if not TRADES_STREAM:
         return
-    from services import instruments_registry
     await asyncio.sleep(30)     # старт после прогрева, следом за пулом котировок
     tasks: list = []
     stops: list = []
@@ -210,8 +263,7 @@ async def trades_stream_pool() -> None:
     try:
         while True:
             try:
-                uni = await instruments_registry.fetch_floater_universe()
-                isins = sorted({u["isin"] for u in uni if u.get("isin")})
+                isins = await subscription_isins()
                 key = tuple(isins)
                 if key != current:
                     for s in stops:
@@ -226,8 +278,9 @@ async def trades_stream_pool() -> None:
                         stops.append(stop)
                         tasks.append(asyncio.create_task(_shard_socket(n, shard, stop)))
                     current = key
-                    logger.info("trades stream: %d бумаг / %d сокетов сделок",
-                                len(isins), len(shards))
+                    logger.info("trades stream: %d бумаг (%d юниверс) / %d сокетов "
+                                "сделок, охват %s", len(isins), len(_core),
+                                len(shards), _SCOPE)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

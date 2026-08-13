@@ -440,6 +440,23 @@ def set_rating(isin: str, rating: str) -> None:
 # Отрицательный — MOEX нумерует положительными, пересечься не может.
 _OFZ_EMITTER_ID = -1
 
+# ОФЗ-ПК СТАРОГО ТИПА (29006–29012): купон = средняя RUONIA за ПРЕДЫДУЩИЙ период
+# (avg_prev) + фиксированная премия, а не «среднее за свой период» новых выпусков.
+# Премия у них есть в листинге MOEX (130–160бп), у 29013+ её нет (маржа 0).
+_OFZ_PK_OLD = ("29006", "29007", "29008", "29009", "29010", "29011", "29012")
+# Лаг подобран по факту выплат (8 реализованных купонов на бумагу, 2026-08-13):
+# окно=период, лаг 2–3 дня → медиана |ошибки| 0.003–0.021пп при марже, совпавшей
+# с листингом (131/140/151/160бп против 130/140/150/160). Берём 3 — единое
+# правило на серию, разброс между 2 и 3 внутри допуска вердикта (0.15пп).
+_OFZ_PK_OLD_LAG = 3
+
+
+def _is_ofz_pk_name(short_name: Optional[str]) -> bool:
+    """Название говорит «ОФЗ-ПК» (серия 29xxx). Тот же критерий, что в SQL-условии
+    normalize_ofz_pk — держим их рядом, чтобы не разъехались."""
+    s = (short_name or "").strip().upper()
+    return s.startswith("ОФЗ 29") or s.startswith("ОФЗ-ПК") or s.startswith("SU29")
+
 
 def normalize_ofz_pk() -> int:
     """Нормализация ОФЗ-ПК (серия 29xxx, Минфин): дозаполнить недостающие параметры
@@ -449,15 +466,27 @@ def normalize_ofz_pk() -> int:
     is_priceable=False → бумаг вообще не было в универсе/аналитике. Факт: купон =
     среднее RUONIA за период с лагом Т-7, маржа 0. Эмитент (Минфин) и суверенный
     рейтинг AAA у MOEX/corpbonds для ОФЗ отсутствуют → правило, как в fixed-вкладке.
-    Возвращает число затронутых строк (max по апдейтам)."""
+
+    Серия 29xxx — это ПЕРЕМЕННЫЙ купон по определению, поэтому вердикт base='FIXED'
+    на ней всегда наш промах (у 29007–29010 он держался с неизвестного момента и
+    выкидывал бумаги из универса — а значит и из живого стрима сделок Alor, лента
+    по ним отставала на 15 минут ISS). Такой вердикт снимаем, спеку старой серии
+    ставим правилом ниже. Возвращает число затронутых строк (max по апдейтам)."""
     _ensure()
     name_cond = "(short_name LIKE 'ОФЗ 29%' OR short_name LIKE 'ОФЗ-ПК%' OR short_name LIKE 'SU29%')"
+    old_cond = "(" + " OR ".join(f"short_name LIKE '%{s}%'" for s in _OFZ_PK_OLD) + ")"
     n = 0
     with _lock, _conn() as c:
         now = _now()
         for sql, args in (
             (f"UPDATE instruments SET base='RUONIA', updated_at=? WHERE active=1 AND {name_cond} "
-             "AND manual_locked=0 AND (base IS NULL OR base='')", (now,)),
+             "AND manual_locked=0 AND (base IS NULL OR base='' OR base='FIXED')", (now,)),
+            # старая серия: avg_prev с коротким лагом ПЕРЕЗАПИСЫВАЕТ правило новых
+            # (average/7) — его успел налить этот же нормализатор, пока серия
+            # числилась фиксом; фит по факту купонов даёт 0.01пп против 1.2–1.9пп
+            (f"UPDATE instruments SET coupon_mode='avg_prev', fixing_lag={_OFZ_PK_OLD_LAG}, "
+             f"fixing_lag_unit='days', avg_window_days=NULL, updated_at=? "
+             f"WHERE active=1 AND {name_cond} AND {old_cond} AND manual_locked=0", (now,)),
             (f"UPDATE instruments SET margin_bps=0, updated_at=? WHERE active=1 AND {name_cond} "
              "AND manual_locked=0 AND margin_bps IS NULL", (now,)),
             (f"UPDATE instruments SET coupon_mode='average', updated_at=? WHERE active=1 AND {name_cond} "
@@ -653,9 +682,17 @@ def set_exotic(isin: str, note: str = "") -> None:
 def reclassify_fixed(isin: str) -> None:
     """Бумага оказалась фикс-купонной (0 будущих незафикс. купонов) → base='FIXED':
     уходит из флоатер-универса (universe_rows фильтрует по KEYRATE/RUONIA), не
-    прайсится как флоатер. reviewed=0 — на подтверждение админом."""
+    прайсится как флоатер. reviewed=0 — на подтверждение админом.
+
+    ОФЗ-ПК исключены: у старой серии купон известен на период вперёд и по всему
+    опубликованному хвосту графика равен последнему значению, из-за чего эвристика
+    «ставка не менялась» на них ложно срабатывает. Тип бумаги здесь знает не
+    эвристика, а название серии — normalize_ofz_pk ставит им RUONIA правилом."""
     _ensure()
     with _lock, _conn() as c:
+        row = c.execute("SELECT short_name FROM instruments WHERE isin=?", (isin,)).fetchone()
+        if row and _is_ofz_pk_name(row["short_name"]):
+            return
         c.execute("UPDATE instruments SET base='FIXED', reviewed=0, updated_at=? "
                   "WHERE isin=? AND manual_locked=0", (_now(), isin))
 

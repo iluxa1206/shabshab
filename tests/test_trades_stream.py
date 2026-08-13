@@ -1,8 +1,9 @@
 """Живая лента сделок из Alor WS: буфер пушей → trade_tick.
 
 Проверяем ровно то, что ломается молча: рублёвый объём считается по номиналу
-бумаги (у амортизируемых он не 1000), а повторный пуш той же сделки не плодит
-дублей — ISS-копия того же TRADENO доедет позже своей лентой.
+бумаги (у амортизируемых он не 1000), повторный пуш той же сделки не плодит
+дублей (ISS-копия того же TRADENO доедет позже своей лентой), а порог для бумаг
+ВНЕ флоатер-юниверса не задевает сам юниверс — по нему тик кормит бары и VWAP.
 """
 import importlib
 
@@ -19,6 +20,7 @@ def ts(tmp_path, monkeypatch):
     importlib.reload(ta)
     import services.trades_stream as mod
     importlib.reload(mod)
+    mod._core.add("RU000TEST01")        # бумага юниверса: пишем любой размер
     return pdb, mod
 
 
@@ -59,3 +61,29 @@ def test_broken_push_ignored(ts):
     mod._on_trade("RU000TEST01", {"id": 1, "price": None, "qty": 5})
     mod._on_trade("RU000TEST01", {"id": 2, "price": 100.0, "qty": 0})
     assert mod._buf == {}
+
+
+def test_small_trade_outside_universe_skipped(ts):
+    """Вне юниверса пишем от порога: мелочь по ОФЗ-ПД в ленте не показывается
+    (её нижняя планка 1 млн ₽), а архив от неё растёт кратно."""
+    _pdb, mod = ts
+    mod._on_trade("RU000OTHER1", {"id": 1, "price": 100.0, "qty": 10,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQOB"})
+    assert mod._buf == {} and mod._stats["skipped_small"] == 1
+
+
+def test_big_trade_outside_universe_kept(ts):
+    """Крупная сделка вне юниверса — ради неё стрим и расширяли: ISS отдал бы её
+    через 15 минут."""
+    _pdb, mod = ts
+    mod._on_trade("RU000OTHER1", {"id": 2, "price": 100.0, "qty": 2000,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQOB"})
+    assert len(mod._buf.get("RU000OTHER1") or []) == 1
+
+
+def test_small_trade_inside_universe_kept(ts):
+    """Порог не касается юниверса: тик там — источник часовых баров и VWAP."""
+    _pdb, mod = ts
+    mod._on_trade("RU000TEST01", {"id": 3, "price": 100.0, "qty": 1,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
+    assert len(mod._buf.get("RU000TEST01") or []) == 1

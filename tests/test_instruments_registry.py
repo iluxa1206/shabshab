@@ -415,3 +415,41 @@ def test_sl_stale_rotation(reg):
     reg.set_smartlab_type("RU2", "floater")
     reg.set_smartlab_type("RU3", "floater")
     assert reg.list_sl_stale(1) == ["RU1"]      # проверенный раньше всех
+
+
+def test_ofz_pk_fixed_verdict_is_reverted(reg):
+    """Серия 29xxx — переменный купон по определению: вердикт FIXED снимается,
+    бумага возвращается в универс (а с ним и в живой стрим сделок Alor)."""
+    reg.upsert({"isin": "RU000A0JV4M0", "short_name": "ОФЗ 29007", "base": "FIXED",
+                "margin_bps": 130, "maturity_date": "2027-03-03"}, "moex")
+    reg.normalize_ofz_pk()
+    r = reg.get("RU000A0JV4M0")
+    assert r["base"] == "RUONIA" and r["margin_bps"] == 130   # премию листинга не трогаем
+    assert [x["isin"] for x in reg.universe_rows()] == ["RU000A0JV4M0"]
+
+
+def test_ofz_pk_old_series_gets_avg_prev(reg):
+    """Старая серия (29006–29012) считается по ПРЕДЫДУЩЕМУ периоду с коротким
+    лагом — правило перебивает average/7 новых выпусков."""
+    reg.upsert({"isin": "RU000A0JV4P3", "short_name": "ОФЗ 29008", "base": "RUONIA",
+                "margin_bps": 140, "coupon_mode": "average", "fixing_lag": 7}, "moex")
+    reg.upsert({"isin": "RU000A101KT1", "short_name": "ОФЗ 29013", "base": "RUONIA",
+                "margin_bps": 0}, "moex")
+    reg.normalize_ofz_pk()
+    old = reg.get("RU000A0JV4P3")
+    assert old["coupon_mode"] == "avg_prev" and old["fixing_lag"] == 3
+    new = reg.get("RU000A101KT1")
+    assert new["coupon_mode"] == "average" and new["fixing_lag"] == 7
+
+
+def test_ofz_pk_not_reclassified_as_fixed(reg):
+    """Эвристика «ставка не менялась» на ОФЗ-ПК ложно срабатывает — гейт по имени."""
+    reg.upsert({"isin": "RU000A0JV4N8", "short_name": "ОФЗ 29009", "base": "RUONIA",
+                "margin_bps": 150}, "moex")
+    reg.reclassify_fixed("RU000A0JV4N8")
+    assert reg.get("RU000A0JV4N8")["base"] == "RUONIA"
+    # обычная бумага гейтом не защищена
+    reg.upsert({"isin": "RU1", "short_name": "Тест 1", "base": "KEYRATE",
+                "margin_bps": 100}, "moex")
+    reg.reclassify_fixed("RU1")
+    assert reg.get("RU1")["base"] == "FIXED"
