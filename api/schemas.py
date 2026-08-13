@@ -302,6 +302,9 @@ class BondListItem(BaseModel):
     index_yield_pct: Optional[float] = None    # YTM роллирования RUONIA на тот же срок, % (база для всех флоатеров)
     disc_margin_bps: Optional[int] = None      # наш discount margin (Fabozzi)
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
+    # средневзвешенный (по обороту) спред за ПРЕДЫДУЩИЕ 7 дней, bps — база, от
+    # которой витрина считает отклонение текущего Y-IDX (services.bars.spread_avg_map)
+    y_idx_avg7_bps: Optional[float] = None
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
     price_thin: bool = False                    # 0 сделок сегодня → цена несвежая, DM/z с ненадёжной цены
     price_stale: bool = False                   # показана prev-close (нет live/сделки сегодня), не текущая

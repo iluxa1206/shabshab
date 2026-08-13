@@ -109,6 +109,40 @@ def _face_for(faces: dict[str, float], day: str, fallback: float) -> float:
     return faces[max(prev)] if prev else fallback
 
 
+def tick_vwap_hours(isin: str, day: str) -> dict[str, float]:
+    """{'YYYY-MM-DD HH:00': Σ(price·qty)/Σqty} по тиковому архиву за день.
+
+    Цена тика Alor уже в % номинала — такой средневзвес не зависит от FACEVALUE
+    и потому верен в день, когда номинал изменился (см. _implied_face)."""
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT substr(ts,1,13)||':00' h, SUM(price*qty) n, SUM(qty) q "
+            "FROM trade_tick WHERE isin=? AND ts>=? AND ts<? GROUP BY h",
+            (isin, day, day + " 24")).fetchall()
+    return {r["h"]: r["n"] / r["q"] for r in rows if r["q"]}
+
+
+def _implied_face(candles_of_day: list[dict]) -> Optional[float]:
+    """Номинал дня, выведенный из самих свечей: у часа с ЕДИНОЙ ценой (high==low)
+    value/volume — это ровно цена одной бумаги в рублях, значит
+    face = value/volume/(цена%/100).
+
+    Нужен, потому что FACEVALUE за СЕГОДНЯ ISS не отдаёт: дневная строка history
+    появляется после закрытия, а /securities до конца дня показывает вчерашний
+    номинал. У бумаг с амортизацией сегодня или с валютным/индексируемым
+    номиналом (пересчитывается ежедневно) вчерашний номинал уводил сегодняшний
+    средневзвес на проценты — вплоть до 11 пп мимо диапазона сделок дня."""
+    vals = []
+    for c in candles_of_day:
+        vol, val, h, l = c.get("volume"), c.get("value"), c.get("high"), c.get("low")
+        if vol and val and h and l and h == l:
+            vals.append(val / vol / (h / 100))
+    if not vals:
+        return None
+    vals.sort()
+    return vals[len(vals) // 2]
+
+
 # ─────────────────────────── сборка баров ───────────────────────────
 
 async def build_bars(isin: str, days: int = 30, kind: str = "floater",
@@ -152,6 +186,13 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
     fallback_face = float(face_ref) if face_ref else _DEFAULT_FACE
     today_iso = date.today().isoformat()
 
+    # Сегодняшний номинал ISS не отдаёт (см. _implied_face), поэтому цена
+    # сегодняшних баров считается БЕЗ него: сначала по тикам архива (цена тика уже
+    # в % номинала), затем по номиналу, выведенному из самих свечей дня.
+    tick_vwap = await asyncio.to_thread(tick_vwap_hours, isin, today_iso)
+    today_face = _implied_face([c for c in candles
+                                if str(c.get("begin") or "")[:10] == today_iso])
+
     # reprice уровней — чистый CPU: в event loop он вставал бы на десятки мс на
     # бумагу × весь обход демона (то самое «сайт периодически подвисает»)
     def _crunch() -> list[dict]:
@@ -164,7 +205,12 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
             ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
             day = ts[:10]
             face = _face_for(faces, day, fallback_face)
-            vwap = round(val / vol / face * 100, 4) if vol and val and face else c.get("close")
+            if day == today_iso and today_face:
+                face = today_face
+            tv = tick_vwap.get(ts) if day == today_iso else None
+            vwap = (round(tv, 4) if tv
+                    else round(val / vol / face * 100, 4) if vol and val and face
+                    else c.get("close"))
             # прошлый день → честный as-of того дня; сегодня → живая модель
             use_asof = asof_fn is not None and day < today_iso
 
@@ -221,7 +267,14 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #          на сотни bps. 495 бумаг / 3152 бара в окне 95 дней. В ТОРГОВЫЙ день
 #          выплаты тот же дефект был мягче — НКД на поставку не доначислялся
 #          (accrue_to_settle, elapsed=0). HONEST_ENGINE_VERSION=5
-BARS_METRICS_VERSION = 3
+#   4    — 2026-08-13: цена СЕГОДНЯШНЕГО бара считалась через FACEVALUE, которого
+#          за сегодня у ISS ещё нет (брался вчерашний) → у бумаг с амортизацией
+#          сегодня и с валютным/индексируемым номиналом средневзвес уезжал на
+#          проценты мимо диапазона сделок дня (RU000A108C58: 89.44 при сделках
+#          100.46–101.14). Теперь сегодня считается по тикам, номинал —
+#          выведенный из свечей (_implied_face). Бампом версии перестраиваются
+#          дни, записанные кривыми, пока они были «сегодня».
+BARS_METRICS_VERSION = 4
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",
@@ -411,6 +464,47 @@ def adv_map(days: int = 30, kind: Optional[str] = None) -> dict:
     out = {r["isin"]: r["v"] / tdays for r in rows
            if r["v"] is not None} if tdays else {}
     _adv_cache.update(key=key, at=now, map=out)
+    return out
+
+
+# База спреда — тот же профиль обращения, что у ADV: считается по всему рынку
+# одним запросом и живёт в памяти, потому что архив баров дописывается раз в час.
+_SPREAD_AVG_TTL_SEC = 900.0
+_spread_avg_cache: dict = {"key": None, "at": 0.0, "map": {}}
+
+
+def spread_avg_map(days: int = 7, kind: Optional[str] = None) -> dict:
+    """ISIN → средневзвешенный спред за ПРЕДЫДУЩИЕ `days` дней, bps.
+
+    Взвешивание — оборотом бара (`value`), метрика — спред по средневзвешенной
+    цене часа (y_idx_bps у флоатеров, g_spread_bps у фиксов). Так база — это
+    «где бумага реально торговалась», а не среднее по часам, где одна сделка
+    весит столько же, сколько миллиардный час.
+
+    Окно ЗАКАНЧИВАЕТСЯ вчера: сегодняшние сделки сравниваются с историей, а не
+    сами с собой. Спред прошлых дней в баре — честный as-of того дня
+    (см. BARS_METRICS_VERSION), поэтому база не переоценивается сегодняшней
+    кривой."""
+    import time
+    key = (days, kind)
+    now = time.monotonic()
+    if _spread_avg_cache["key"] == key and now - _spread_avg_cache["at"] < _SPREAD_AVG_TTL_SEC:
+        return _spread_avg_cache["map"]
+
+    today = date.today().isoformat()
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    q = ("SELECT isin, SUM(COALESCE(y_idx_bps, g_spread_bps) * value) n, SUM(value) d "
+         "FROM bar_hourly WHERE ts >= ? AND ts < ? AND value > 0 "
+         "AND COALESCE(y_idx_bps, g_spread_bps) IS NOT NULL")
+    args: list = [cutoff, today]
+    if kind:
+        q += " AND kind = ?"
+        args.append(kind)
+    q += " GROUP BY isin"
+    with _connect() as c:
+        rows = c.execute(q, args).fetchall()
+    out = {r["isin"]: r["n"] / r["d"] for r in rows if r["d"]}
+    _spread_avg_cache.update(key=key, at=now, map=out)
     return out
 
 

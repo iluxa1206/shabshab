@@ -477,6 +477,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* цена — не верх стакана, а VWAP набора тикета: пунктир под ценой */
 .q-px.q-vwap { color: var(--fg); border-bottom: 1px dotted var(--line-2); display: inline-block; }
 .q-sp { font-size: 11px; font-weight: 600; line-height: 1.1; margin-top: 1px; }
+/* ОТКЛ 7Д: верхний этаж — само отклонение (главная цифра колонки, потому и
+   жирная), нижний — база недели, справочная (наследует приглушённый .q-sp) */
+.q-dev { font-weight: 600; }
+.q-dev-base { color: var(--mut); font-weight: 400; }
 .q-sp .dash { font-weight: 400; }
 /* Сторона стакана — сверхпрозрачной заливкой ячейки: бид зелёный, оффер
    красный. Альфа мелкая нарочно: подсказка глазу, а не раскраска таблицы. */
@@ -1532,6 +1536,12 @@ body.col-resizing * { cursor: col-resize !important; }
 .tape-rt, .tape-base { font-size: 9.5px; margin-left: 6px; color: var(--mut); }
 .tape-name-cell { display: inline-flex; align-items: center; gap: 4px;
                   font-weight: 600; white-space: nowrap; }
+/* ОТКЛ 7Д — два этажа в ячейке, как котировка в МОНИТОРЕ: сверху отклонение
+   спреда сделки от базы недели, под ним сама база (справочная, приглушена). */
+.tape-dev7 { display: inline-flex; flex-direction: column; align-items: flex-end;
+             line-height: 1.15; }
+.tape-dev7-v { font-weight: 600; }
+.tape-dev7-b { font-size: 11px; color: var(--mut); line-height: 1.1; }
 /* Кнопки строки: «график» и «стакан». Подписаны словами и потому видны всегда
    (иконки прятались до наведения, но пустая колонка со словами читается как
    недогрузившаяся); приглушены, на наведении строки — в полную силу. */

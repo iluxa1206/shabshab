@@ -443,7 +443,8 @@ def enrich_bars_with_ticks(isin: str, frm: Optional[str] = None,
     бары уже обогащены и трогать их не нужно."""
     floor = raw_floor()
     frm = max(frm, floor) if frm else floor
-    q = ("SELECT substr(ts,1,13)||':00' h, side, SUM(qty) q, SUM(value) v, COUNT(*) n "
+    q = ("SELECT substr(ts,1,13)||':00' h, side, SUM(qty) q, SUM(value) v, "
+         "SUM(price*qty) pq, COUNT(*) n "
          "FROM trade_tick WHERE isin=?")
     args: list = [isin]
     if frm:
@@ -460,29 +461,29 @@ def enrich_bars_with_ticks(isin: str, frm: Optional[str] = None,
 
     agg: dict[str, dict] = {}
     for r in rows:
-        a = agg.setdefault(r["h"], {"trades": 0, "buy_q": 0.0, "buy_v": 0.0,
-                                    "sell_q": 0.0, "sell_v": 0.0})
+        a = agg.setdefault(r["h"], {"trades": 0, "buy_q": 0.0, "buy_pq": 0.0,
+                                    "sell_q": 0.0, "sell_pq": 0.0})
         a["trades"] += r["n"]
         if r["side"] == "buy":
             a["buy_q"] += r["q"] or 0
-            a["buy_v"] += r["v"] or 0
+            a["buy_pq"] += r["pq"] or 0
         elif r["side"] == "sell":
             a["sell_q"] += r["q"] or 0
-            a["sell_v"] += r["v"] or 0
+            a["sell_pq"] += r["pq"] or 0
 
     upd = []
     for h, a in agg.items():
-        # vwap стороны в % номинала: value/qty уже рубли за бумагу → делим на номинал
-        # бара (face берём из строки bar_hourly в SQL-выражении ниже)
+        # vwap стороны в % номинала считаем ПРЯМО по цене тика (она уже в %), а не
+        # из рублёвого value через номинал бара: в день смены номинала (амортизация,
+        # валютный/индексируемый номинал) номинал бара — вчерашний, и деление на
+        # него уводило цену стороны на проценты.
         upd.append((a["trades"], a["buy_q"] or None, a["sell_q"] or None,
-                    a["buy_v"] or None, a["sell_v"] or None, isin, h))
+                    a["buy_pq"] or None, a["sell_pq"] or None, isin, h))
     with _lock, _connect() as c:
         cur = c.executemany(
             "UPDATE bar_hourly SET trades=?1, buy_volume=?2, sell_volume=?3, "
-            "buy_vwap = CASE WHEN ?2 IS NOT NULL AND COALESCE(face,1000)>0 "
-            "                THEN ROUND(?4/?2/COALESCE(face,1000)*100, 4) END, "
-            "sell_vwap = CASE WHEN ?3 IS NOT NULL AND COALESCE(face,1000)>0 "
-            "                 THEN ROUND(?5/?3/COALESCE(face,1000)*100, 4) END "
+            "buy_vwap = CASE WHEN ?2 IS NOT NULL THEN ROUND(?4/?2, 4) END, "
+            "sell_vwap = CASE WHEN ?3 IS NOT NULL THEN ROUND(?5/?3, 4) END "
             "WHERE isin=?6 AND ts=?7", upd)
         return cur.rowcount or 0
 

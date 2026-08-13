@@ -226,6 +226,15 @@ async def tape(
     # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев
     # контекстов по сотне выпусков занимает минуту на первом запросе.
     priced = sum(1 for r in rows if r.get("y_idx_bps") is not None)
+    # база спреда за предыдущие 7 дней: строка ленты показывает, на сколько
+    # спред сделки отклонился от того уровня, по которому бумага торговалась
+    # неделю (services.bars.spread_avg_map — кэш в памяти, запрос раз в 15 мин)
+    from services import bars as bars_svc
+    try:
+        avg7 = await asyncio.to_thread(bars_svc.spread_avg_map, 7)
+    except Exception as e:
+        logger.warning("spread_avg_map failed: %s", e)
+        avg7 = {}
 
     for r in rows:
         lb = labels.get(r["isin"]) or {}
@@ -245,6 +254,7 @@ async def tape(
         r["offer_kind"] = mx.get("offer_kind")
         r["preferred_horizon"] = mx.get("horizon")
         r["has_call"] = lb.get("has_call")
+        r["y_idx_avg7_bps"] = avg7.get(r["isin"])
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]

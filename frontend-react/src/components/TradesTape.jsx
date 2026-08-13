@@ -112,6 +112,12 @@ function SideTag({ side }) {
     {buy ? "buy" : "sell"}</span>;
 }
 
+// Отклонение спреда сделки от базы прошлой недели, бп. База приходит с бэком
+// строкой (services.bars.spread_avg_map) — у сделок без посчитанного спреда и у
+// бумаг без истории баров отклонения нет.
+const dev7 = (r) => (r.y_idx_bps == null || r.y_idx_avg7_bps == null
+  ? null : r.y_idx_bps - r.y_idx_avg7_bps);
+
 // ── колонки ленты ───────────────────────────────────────────────────────────
 // Порядок, ширины и сортировка — как в СПИСКЕ (общий HeaderCell): переносятся
 // перетаскиванием, тянутся за границу, кликом сортируются. Раскладка живёт в
@@ -135,6 +141,12 @@ const COLS = [
   { key: "side",   label: "СТОРОНА",           align: "left", w: 9,  get: (r) => r.side || "" },
   { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
+  // Насколько сделка ушла от того уровня, по которому бумага торговалась неделю:
+  // сверху отклонение, под ним сама база (средневзвешенный по обороту спред за
+  // предыдущие 7 дней). Сортировка — по отклонению, база справочная.
+  { key: "dev7",   label: "ОТКЛ 7Д", sub: "БП / БАЗА", align: "num", w: 10, get: (r) => dev7(r),
+    title: "отклонение R-spread сделки от средневзвешенного по обороту спреда"
+           + " за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)" },
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
   // график и карточка — последней колонкой: у имени они перетягивали взгляд,
   // а место в колонке БУМАГА нужнее самому имени
@@ -757,6 +769,15 @@ export default function TradesTape() {
                     value: <>{money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : ""}</>,
                     side: <SideTag side={r.side} />,
                     yidx: r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—",
+                    dev7: (dev7(r) == null && r.y_idx_avg7_bps == null) ? "—" : (
+                      <span className="tape-dev7">
+                        <span className="tape-dev7-v"
+                          style={dev7(r) == null ? undefined : dmColor(Math.round(dev7(r)) || null)}>
+                          {fmt.devBps(dev7(r)) ?? "—"}</span>
+                        <span className="tape-dev7-b">
+                          {r.y_idx_avg7_bps == null ? "—" : fmt.num(r.y_idx_avg7_bps, 0)}</span>
+                      </span>
+                    ),
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
                     act: <RowLinks isin={r.isin} onOpen={openBond} />,
                   };

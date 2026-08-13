@@ -37,6 +37,29 @@ function Chip({ value }) {
   return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
 }
 
+// Отклонение текущего R-spread от базы прошлой недели, bps. Двумя этажами:
+// сверху отклонение со знаком (крашено как спред — шире базы = дороже риск),
+// снизу сама база. Одна цифра без базы обманчива: +40 к базе 120 и +40 к базе
+// 900 — разные истории, поэтому база рисуется рядом, а не прячется в title.
+export function dev7(b) {
+  const cur = b.yield_over_index_bps, base = b.y_idx_avg7_bps;
+  return cur == null || base == null ? null : cur - base;
+}
+
+function Dev7({ b }) {
+  const base = b.y_idx_avg7_bps, d = dev7(b);
+  const title = "отклонение текущего R-spread от средневзвешенного по обороту"
+    + " спреда за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)";
+  if (d == null && base == null) return <td className={"num" + ms(b)} title={title}><D /></td>;
+  return (
+    <td className={"num q-cell" + ms(b)} title={title}>
+      <div className="q-px q-dev" style={d == null ? undefined : dmColor(Math.round(d) || null)}>
+        {d == null ? <D /> : fmt.devBps(d)}</div>
+      <div className="q-sp q-dev-base">{fmt.bps(base) ?? <D />}</div>
+    </td>
+  );
+}
+
 // Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
 // ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
 // значение, а не бегает через полтаблицы, чтобы их сопоставить.
@@ -213,6 +236,12 @@ export const COLS = [
       {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
+  // Отклонение текущего R-spread от того уровня, по которому бумага реально
+  // торговалась прошлую неделю: сверху отклонение, под ним сама база. База —
+  // средневзвешенный по обороту спред часовых баров за ПРЕДЫДУЩИЕ 7 дней (без
+  // сегодня), спред там — по средневзвешенной цене часа и честный as-of дня.
+  { key: "y_idx_dev7_bps", label: "ОТКЛ 7Д", sub: "R-spread / БАЗА", align: "num", w: 10,
+    cell: (b) => <Dev7 key="y_idx_dev7_bps" b={b} /> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,
