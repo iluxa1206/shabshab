@@ -37,32 +37,6 @@ function Chip({ value }) {
   return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
 }
 
-// Отклонение текущего R-spread от базы прошлой недели, bps. Двумя этажами:
-// сверху отклонение со знаком (крашено как спред — шире базы = дороже риск),
-// снизу сама база. Одна цифра без базы обманчива: +40 к базе 120 и +40 к базе
-// 900 — разные истории, поэтому база рисуется рядом, а не прячется в title.
-export function dev7(b) {
-  const cur = b.yield_over_index_bps, base = b.y_idx_avg7_bps;
-  return cur == null || base == null ? null : cur - base;
-}
-
-function Dev7({ b }) {
-  const base = b.y_idx_avg7_bps, d = dev7(b);
-  const title = "отклонение текущего R-spread от средневзвешенного по обороту"
-    + " спреда за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)";
-  if (d == null && base == null) return <td className={"num" + ms(b)} title={title}><D /></td>;
-  return (
-    <td className={"num q-cell" + ms(b)} title={title}>
-      <div className="q-px q-dev" style={d == null ? undefined : dmColor(Math.round(d) || null)}>
-        {d == null ? <D /> : fmt.devBps(d)}</div>
-      <div className="q-sp q-dev-base">{fmt.bps(base) ?? <D />}</div>
-    </td>
-  );
-}
-
-// Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
-// ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
-// значение, а не бегает через полтаблицы, чтобы их сопоставить.
 // R-spread по цене СРЕДНЕВЗВЕСА. Своей цифры бэк для этой цены не считает —
 // линеаризуем от известного якоря через dY/dP (y_idx_slope_bps_per_pct), как это
 // делает фильтр по объёму для VWAP стакана. Якорь — цена последней сделки (обе
@@ -78,14 +52,16 @@ function wapSpread(b) {
   return null;
 }
 
-// base7 — база недели: рядом со спредом стороны мелким серым идёт отклонение от
-// неё («120 +20»). Спред стороны сам по себе не говорит, дорого это или дёшево;
-// отклонение от собственной истории бумаги — говорит, и держать его в глазах
-// прямо у котировки дешевле, чем сверять с колонкой ОТКЛ 7Д через полтаблицы.
+// Котировка двумя этажами в одной ячейке: чистая цена, под ней R-spread по ней
+// же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
+// значение, а не бегает через полтаблицы, чтобы их сопоставить.
+//
+// base7 — база недели: у СРЕДНЕВЗВЕСА рядом со спредом мелким серым идёт
+// отклонение от неё («120 +20»). У котировок стакана база не рисуется: там и так
+// две цифры, а сравнивать с историей осмысленно цену сделок, а не заявку.
 function Quote({ px, spread, title, vwap, side, base7 }) {
-  // сторона красит ячейку целиком (бид зелёным, оффер красным) — фон почти
-  // прозрачный, чтобы не спорить с цветом Y-IDX под ценой
-  // сторону красим только у стакана; средневзвес — ничья цена, фон нейтральный
+  // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
+  // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
   const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
   // заявки нет вовсе — один прочерк, а не два друг под другом
   if (px == null && spread == null) return <td className={"num" + cls} title={title}><D /></td>;
@@ -223,12 +199,12 @@ export const COLS = [
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
-  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 11,
+  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 8,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap_bid}
-      base7={b.y_idx_avg7_bps} title={qTitle(b, "bid")} /> },
-  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 11,
+      title={qTitle(b, "bid")} /> },
+  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 8,
     cell: (b) => <Quote key="ask" side="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap_ask}
-      base7={b.y_idx_avg7_bps} title={qTitle(b, "ask")} /> },
+      title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
@@ -266,12 +242,6 @@ export const COLS = [
       {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
-  // Отклонение текущего R-spread от того уровня, по которому бумага реально
-  // торговалась прошлую неделю: сверху отклонение, под ним сама база. База —
-  // средневзвешенный по обороту спред часовых баров за ПРЕДЫДУЩИЕ 7 дней (без
-  // сегодня), спред там — по средневзвешенной цене часа и честный as-of дня.
-  { key: "y_idx_dev7_bps", label: "ОТКЛ 7Д", sub: "R-spread / БАЗА", align: "num", w: 10,
-    cell: (b) => <Dev7 key="y_idx_dev7_bps" b={b} /> },
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,

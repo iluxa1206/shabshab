@@ -12,7 +12,7 @@ import Catalog from "./components/Catalog.jsx";
 import Topbar from "./components/Topbar.jsx";
 import { IconChart } from "./components/icons.jsx";
 import Toolbar from "./components/Toolbar.jsx";
-import BondTable, { DEFAULT_COLS, dev7 } from "./components/BondTable.jsx";
+import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
@@ -591,12 +591,8 @@ function Dashboard() {
     if (match) rows = rows.filter(match);
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
-    // ОТКЛ 7Д — единственная вычисляемая колонка: в строке лежат текущий спред и
-    // база недели, разность считается на лету (иначе WS-тик спреда оставлял бы
-    // предпосчитанное поле стейлом)
-    const val = (r) => (key === "y_idx_dev7_bps" ? dev7(r) : r[key]);
     rows.sort((a, b) => {
-      let x = val(a), y = val(b);
+      let x = a[key], y = b[key];
       if (x == null && y == null) return 0;
       if (x == null) return 1;
       if (y == null) return -1;
