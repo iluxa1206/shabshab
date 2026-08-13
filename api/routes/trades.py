@@ -49,9 +49,13 @@ def _rating_isins(labels: dict, isins: Optional[list[str]],
 
 
 def _ttm_isins(labels: dict, isins: Optional[list[str]],
-               ttm_min: Optional[float], ttm_max: Optional[float]) -> Optional[list[str]]:
-    """Сузить охват сроком до погашения (годы). Бумаги без даты погашения в
-    справочниках под такой фильтр не попадают — срок у них неизвестен, а не
+               ttm_min: Optional[float], ttm_max: Optional[float],
+               uni: Optional[dict] = None) -> Optional[list[str]]:
+    """Сузить охват сроком до ГОРИЗОНТА ПРАЙСИНГА (годы) — той даты, к которой
+    посчитаны метрики бумаги: оферта/колл по правилу цены, иначе погашение.
+    uni — метрики юниверса (offer_date/horizon); без них считаем к погашению.
+
+    Бумаги без даты под такой фильтр не попадают — срок у них неизвестен, а не
     «любой»; при scope=market это отсекает всё, чего нет в наших справочниках."""
     if ttm_min is None and ttm_max is None:
         return isins
@@ -59,7 +63,9 @@ def _ttm_isins(labels: dict, isins: Optional[list[str]],
     keep = []
     pool = isins if isins is not None else labels.keys()
     for i in pool:
-        md = (labels.get(i) or {}).get("maturity")
+        mx = (uni or {}).get(i) or {}
+        md = (mx.get("offer_date") if mx.get("horizon") in ("put", "call") else None) \
+            or (labels.get(i) or {}).get("maturity")
         if not md:
             continue
         try:
@@ -129,8 +135,8 @@ async def tape(
     max_value: Optional[float] = Query(None, ge=0, description="порог суммы сделки до, ₽"),
     spread_min: Optional[float] = Query(None, description="R-spread сделки от, бп"),
     spread_max: Optional[float] = Query(None, description="R-spread сделки до, бп"),
-    ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
-    ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    ttm_min: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга от, лет"),
+    ttm_max: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга до, лет"),
     rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
     base: Optional[list[str]] = Query(None, description="база купона: KEYRATE | RUONIA"),
     cls: Optional[list[str]] = Query(None, description="класс: OFZ | CORP"),
@@ -182,9 +188,15 @@ async def tape(
                                 "by_market": {}, "top": [], "archive_till": None},
                     "warning": "справочники ещё не прогреты — охват пуст"}
 
+    # Метрики юниверса нужны и фильтру срока (горизонт прайсинга), и разметке
+    # строк ниже — берём один раз тут: вызов синхронный, читает готовый снапшот.
+    from services.market_data import MarketDataService
+    um = MarketDataService.universe_metrics() or {}
+
     if not isin:
         isins = _flag_isins(
-            labels, _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating),
+            labels,
+            _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max, um), rating),
             base, hide_subord, hide_amort, cls)
         if isins is not None and not isins:
             return {"from": None, "trades": [], "scope": scope,
@@ -207,10 +219,8 @@ async def tape(
                           y_min=spread_min, y_max=spread_max, max_value=max_value)
         if not before_ts else asyncio.sleep(0, result={}))
     moex = await asyncio.to_thread(_moex_names)
-    # Оферты: дата и вид ближайшей — из метрик юниверса (там же, откуда их берёт
-    # МОНИТОР), call-опцион — из реестра. Маркеры p/c рядом с погашением.
-    from services.market_data import MarketDataService
-    um = MarketDataService.universe_metrics() or {}
+    # Оферты: дата и вид ближайшей — из метрик юниверса um (там же, откуда их
+    # берёт МОНИТОР), call-опцион — из реестра. Маркеры p/c рядом с датой оферты.
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
     # block_trades.price_new_trades): цена в % номинала между выпусками
     # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев

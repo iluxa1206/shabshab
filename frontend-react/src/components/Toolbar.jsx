@@ -126,18 +126,18 @@ export default function Toolbar({
         {depthLoading && <span className="fg-lbl">…</span>}
       </div>
 
-      {/* группа: окно погашения в годах */}
-      <div className="fgroup" title="Лет до погашения в интервале [от, до]. Бумаги без даты погашения при заданной границе скрыты.">
-        <span className="fg-lbl">MAT, Y</span>
+      {/* группа: окно срока в годах — до ГОРИЗОНТА ПРАЙСИНГА, не до погашения */}
+      <div className="fgroup" title="Лет до даты, к которой посчитаны метрики строки (оферта/колл по правилу цены, иначе погашение), в интервале [от, до]. Бумаги без даты при заданной границе скрыты.">
+        <span className="fg-lbl">СРОК, Y</span>
         <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
-          aria-label="Лет до погашения — от" value={matFrom}
+          aria-label="Лет до горизонта — от" value={matFrom}
           onChange={(e) => setMatFrom(e.target.value)} />
         <span className="fg-lbl">—</span>
         <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
-          aria-label="Лет до погашения — до" value={matTo}
+          aria-label="Лет до горизонта — до" value={matTo}
           onChange={(e) => setMatTo(e.target.value)} />
         {(matFrom || matTo) && (
-          <button className="chip-btn" title="Сбросить окно погашения"
+          <button className="chip-btn" title="Сбросить окно срока"
             onClick={() => { setMatFrom(""); setMatTo(""); }}>×</button>
         )}
       </div>

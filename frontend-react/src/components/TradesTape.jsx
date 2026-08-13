@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
-import { fmt, baseLabel, ratingColor, dmColor } from "../format.js";
+import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
@@ -50,11 +50,12 @@ const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 8) || "—";
 const num = (s) => (s === "" || s == null ? null : Number(s));
 
-/** Маркеры оферты у даты погашения — те же p/c, что в МОНИТОРЕ и по тем же
- *  правилам: p — ближайшая пут-оферта из MOEX bondization (дата известна),
- *  c — call-опцион эмитента из corpbonds (даты нет, MOEX колл не различает).
- *  Факты независимые, у бумаги может быть и то и другое. Жирный маркер —
- *  метрики посчитаны к этому горизонту (правило цены vs цена выкупа). */
+/** Маркеры оферты — те же p/c, что в МОНИТОРЕ и по тем же правилам: p —
+ *  ближайшая пут-оферта из MOEX bondization, c — колл эмитента (corpbonds;
+ *  дата бывает не всегда — MOEX колл не различает). Факты независимые, у
+ *  бумаги может быть и то и другое. Жирный маркер — метрики посчитаны к
+ *  этому горизонту (правило цены vs цена выкупа). Место маркеров — у ДАТЫ
+ *  ОФЕРТЫ; у погашения они остаются, только когда даты оферты нет. */
 function OfferMarks({ r }) {
   const put = r.offer_kind === "put" && r.offer_date;
   const call = r.has_call === true || r.offer_kind === "call";
@@ -68,6 +69,39 @@ function OfferMarks({ r }) {
         title={r.offer_kind === "call" && r.offer_date
           ? "call-оферта " + fmt.date(String(r.offer_date).slice(0, 10)) : "call-опцион"}>c</span>}
     </>
+  );
+}
+
+/** Погашение и оферта в одной ячейке, как в МОНИТОРЕ: дата + лет до неё в
+ *  скобках, вторым этажом оферта мелким серым. СИНИЕ годы = горизонт, к
+ *  которому посчитан спред строки — но только когда выбор был (без оферты и
+ *  колла горизонт один, и подсветка каждой строки ничего не сообщает). */
+function MaturityCell({ r }) {
+  const mat = String(r.maturity).slice(0, 10);
+  const off = r.offer_date ? String(r.offer_date).slice(0, 10) : null;
+  const hz = r.preferred_horizon;
+  const hasChoice = !!off || r.has_call === true;
+  return (
+    <div className="mat-cell">
+      <div className="mat-main">
+        {!off && <OfferMarks r={r} />}
+        {fmt.date(mat)}
+        {yearsTo(mat) != null && (
+          <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
+            {" (" + yearsTo(mat) + ")"}</span>
+        )}
+      </div>
+      {off && (
+        <div className="mat-offer"
+          title={(r.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(off)}>
+          <OfferMarks r={r} />{fmt.date(off)}
+          {yearsTo(off) != null && (
+            <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
+              {" (" + yearsTo(off) + ")"}</span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -90,7 +124,11 @@ const COLS = [
   // друг под другом («КС + 2,50% (12)»), а в имени выпуска ей тесно
   { key: "formula", label: "ФОРМУЛА",   align: "left", w: 15, get: (r) => r.margin_bps },
   { key: "isin",   label: "ISIN",       align: "left", w: 14, get: (r) => r.isin },
-  { key: "mat",    label: "ПОГАШЕНИЕ",  align: "left", w: 13, get: (r) => r.maturity || "" },
+  // два этажа, как в МОНИТОРЕ: погашение с годами до него, под ним дата оферты
+  // (если есть). Сортировка — по погашению: этаж оферты справочный. w=17 по
+  // максимуму формата «p 10.10.2029 (4.2)».
+  { key: "mat",    label: "ПОГАШЕНИЕ",  sub: "(ЛЕТ) · ОФЕРТА",
+    align: "left", w: 17, get: (r) => r.maturity || "" },
   { key: "board",  label: "РЕЖИМ",      align: "left", w: 10, get: (r) => r.board_short || r.board || "" },
   { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 8,  get: (r) => r.price },
   { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 9,  get: (r) => r.value },
@@ -640,15 +678,15 @@ export default function TradesTape() {
             )}
           </div>
 
-          <div className="fgroup" title="Лет до погашения в интервале [от, до]; бумаги без даты погашения при заданной границе скрыты">
-            <span className="fg-lbl">MAT, Y</span>
+          <div className="fgroup" title="Лет до даты, к которой посчитаны метрики бумаги (оферта/колл по правилу цены, иначе погашение), в интервале [от, до]; бумаги без даты при заданной границе скрыты">
+            <span className="fg-lbl">СРОК, Y</span>
             <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
               value={ttmMin} onChange={(e) => setTtmMin(e.target.value)} />
             <span className="fg-lbl">—</span>
             <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
               value={ttmMax} onChange={(e) => setTtmMax(e.target.value)} />
             {(ttmMin || ttmMax) && (
-              <button className="chip-btn" title="Сбросить окно погашения"
+              <button className="chip-btn" title="Сбросить окно срока"
                 onClick={() => { setTtmMin(""); setTtmMax(""); }}>×</button>
             )}
           </div>
@@ -708,9 +746,7 @@ export default function TradesTape() {
                       : <CouponFormula base={r.base} spreadBps={r.margin_bps}
                           couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />,
                     isin: <IsinCell isin={r.isin} />,
-                    mat: r.maturity
-                      ? <><OfferMarks r={r} />{fmt.date(String(r.maturity).slice(0, 10))}</>
-                      : <span className="dash">—</span>,
+                    mat: r.maturity ? <MaturityCell r={r} /> : <span className="dash">—</span>,
                     board: (
                       <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}
                         title={r.board_title || r.board}>

@@ -547,18 +547,24 @@ function Dashboard() {
     if (clsSel.length) rows = rows.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
-    // окно погашения в ЛЕТ до погашения: границы переводим в даты-отсечки и
-    // сравниваем ISO-строки. Строки без даты погашения (перп/дыра в справочнике)
-    // при заданной границе прячем — иначе они молча пролезают в любой срок
+    // Окно срока в ЛЕТ до ГОРИЗОНТА ПРАЙСИНГА — той даты, к которой посчитаны
+    // метрики строки (оферта/колл по правилу цены, иначе погашение). Фильтровать
+    // по погашению было бы враньём в обе стороны: бумага с офертой через год
+    // пряталась бы из окна «до 2 лет», хотя и торгуется, и считается к ней.
+    // Границы переводим в даты-отсечки и сравниваем ISO-строки. Строки без даты
+    // (перп/дыра в справочнике) при заданной границе прячем — иначе они молча
+    // пролезают в любой срок.
     const yearsToIso = (y) => new Date(Date.now() + y * 365.25 * 86400e3).toISOString().slice(0, 10);
+    const hzDate = (b) => ((b.preferred_horizon === "put" || b.preferred_horizon === "call")
+      && b.offer_date) || b.maturity_date;
     const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
     if (Number.isFinite(mFrom)) {
       const cut = yearsToIso(mFrom);
-      rows = rows.filter((b) => b.maturity_date && b.maturity_date >= cut);
+      rows = rows.filter((b) => hzDate(b) && hzDate(b) >= cut);
     }
     if (Number.isFinite(mTo)) {
       const cut = yearsToIso(mTo);
-      rows = rows.filter((b) => b.maturity_date && b.maturity_date <= cut);
+      rows = rows.filter((b) => hzDate(b) && hzDate(b) <= cut);
     }
     // ФИЛЬТР ПО ОБЪЁМУ. Котировка заполненной стороны становится VWAP на её тикет
     // по лестнице стакана, Y-IDX — спред к этой цене. volMode решает судьбу строки,

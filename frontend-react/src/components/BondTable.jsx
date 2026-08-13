@@ -1,7 +1,7 @@
 import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { baseLabel, fmt, dmColor, ratingColor } from "../format.js";
+import { baseLabel, fmt, dmColor, ratingColor, yearsTo } from "../format.js";
 import { fetchAlerts } from "../api.js";
 import { copyText } from "../clipboard.js";
 import CouponFormula from "./CouponFormula.jsx";
@@ -68,16 +68,6 @@ function qTitle(b, side) {
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
     + `; R-spread пересчитан на неё (линеаризация от верха стакана)`;
-}
-
-// Лет до даты, одна десятая. Календарные годы (365.25), а не торговые: цифра
-// рядом с датой — срок, а не duration. Прошедшая дата → null (скобок не будет).
-function yrsTo(iso) {
-  if (!iso) return null;
-  const t = Date.parse(iso + "T00:00:00Z");
-  if (!Number.isFinite(t)) return null;
-  const y = (t - Date.now()) / (365.25 * 864e5);
-  return y < 0 ? null : y.toFixed(1);
 }
 
 // Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
@@ -160,18 +150,18 @@ export const COLS = [
                 (has_call из corpbonds) иначе потерял бы маркер вовсе */}
             {!b.offer_date && <OfferMarks b={b} />}
             {fmt.date(b.maturity_date) ?? <D />}
-            {yrsTo(b.maturity_date) != null && (
+            {yearsTo(b.maturity_date) != null && (
               <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
-                {" (" + yrsTo(b.maturity_date) + ")"}</span>
+                {" (" + yearsTo(b.maturity_date) + ")"}</span>
             )}
           </div>
           {b.offer_date && (
             <div className="mat-offer"
               title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
               <OfferMarks b={b} />{fmt.date(b.offer_date)}
-              {yrsTo(b.offer_date) != null && (
+              {yearsTo(b.offer_date) != null && (
                 <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
-                  {" (" + yrsTo(b.offer_date) + ")"}</span>
+                  {" (" + yearsTo(b.offer_date) + ")"}</span>
               )}
             </div>
           )}

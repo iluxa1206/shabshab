@@ -198,8 +198,8 @@ async def days_agg(
     min_value: float = Query(0, ge=0),
     scope: str = Query("market", description="market | universe | float | fixed"),
     issuer: Optional[list[str]] = Query(None, description="эмитенты (по реестру)"),
-    ttm_min: Optional[float] = Query(None, ge=0, description="срок до погашения от, лет"),
-    ttm_max: Optional[float] = Query(None, ge=0, description="срок до погашения до, лет"),
+    ttm_min: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга от, лет"),
+    ttm_max: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга до, лет"),
     rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
     limit: int = Query(1000, ge=1, le=20000),
 ):
@@ -223,7 +223,13 @@ async def days_agg(
             isins = [k for k, v in labels.items() if (v.get("emitter") or "") in want]
         else:
             isins = _scope_isins(scope, labels)
-        isins = _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max), rating)
+        # срок считается до горизонта прайсинга — как в ленте и в МОНИТОРЕ
+        from services.market_data import MarketDataService
+        isins = _rating_isins(
+            labels,
+            _ttm_isins(labels, isins, ttm_min, ttm_max,
+                       MarketDataService.universe_metrics() or {}),
+            rating)
         if isins is not None and not isins:
             return {"from": None, "days": days, "rows": []}
     frm = (date.today() - timedelta(days=days)).isoformat()

@@ -47,6 +47,17 @@ export const couponsPerYear = (periodDays, declared) => {
   return d > 0 ? Math.round(d) : null;
 };
 
+// Лет до даты, одна десятая. Календарные годы (365.25), а не торговые: цифра
+// рядом с датой — срок, а не duration. Прошедшая дата → null (скобок не будет).
+// Принимает и «2032-03-17», и «2032-03-17 00:00:00» (лента отдаёт со временем).
+export const yearsTo = (iso) => {
+  if (!iso) return null;
+  const t = Date.parse(String(iso).slice(0, 10) + "T00:00:00Z");
+  if (!Number.isFinite(t)) return null;
+  const y = (t - Date.now()) / (365.25 * 864e5);
+  return y < 0 ? null : y.toFixed(1);
+};
+
 // Цвет рейтингового бакета — общий словарь для фильтров, таблиц и графиков.
 export const RT_COLOR = {
   AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
