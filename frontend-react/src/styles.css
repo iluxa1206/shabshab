@@ -479,6 +479,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .q-sp { font-size: 11px; font-weight: 600; line-height: 1.1; margin-top: 1px; }
 /* ОТКЛ 7Д: верхний этаж — само отклонение (главная цифра колонки, потому и
    жирная), нижний — база недели, справочная (наследует приглушённый .q-sp) */
+/* Отклонение от базы недели рядом со спредом котировки: мелкое и серое —
+   справочная величина при главной цифре, а не вторая равноправная. */
+.q-sp-dev { font-size: 9.5px; font-weight: 400; color: var(--mut); margin-left: 4px; }
 .q-dev { font-weight: 600; }
 .q-dev-base { color: var(--mut); font-weight: 400; }
 .q-sp .dash { font-weight: 400; }
@@ -1819,6 +1822,12 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
                  box-shadow: inset 2px 0 0 var(--accent); }
 .ob-row.ob-sig-part { background: color-mix(in srgb, var(--accent) 9%, transparent);
                       box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+/* то же, но набор ФИЛЬТРА ПО ОБЪЁМУ с МОНИТОРА: другой цвет — сигнал это
+   случившееся срабатывание, а фильтр лишь условие отбора, и путать их нельзя */
+.ob-row.ob-sig.ob-vol { background: color-mix(in srgb, var(--up) 16%, transparent);
+                        box-shadow: inset 2px 0 0 var(--up); }
+.ob-row.ob-sig-part.ob-vol { background: color-mix(in srgb, var(--up) 8%, transparent);
+                             box-shadow: inset 2px 0 0 color-mix(in srgb, var(--up) 55%, transparent); }
 .sig-form-head { display: flex; align-items: baseline; gap: 12px; }
 .sig-cancel { margin-left: auto; background: transparent; border: 1px solid var(--line-2);
               color: var(--mut); font-family: var(--mono); font-size: 9px; letter-spacing: .1em;

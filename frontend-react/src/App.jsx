@@ -767,6 +767,9 @@ function Dashboard() {
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"}
         sigVol={Number(searchParams.get("sigvol")) || 0} sigSide={searchParams.get("sigside") || "ask"}
         sigPx={Number(searchParams.get("sigpx")) || 0}
+        // фильтр по объёму с МОНИТОРА — в стакане карточки подсвечиваются
+        // уровни, набирающие ровно этот тикет по своей стороне
+        volBid={volBid} volAsk={volAsk}
         onClose={closeDrawer} />
       <StatusBar count={bonds.length} bonds={bonds} kpiBonds={tableRows} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} meta={meta}

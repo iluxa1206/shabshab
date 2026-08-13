@@ -26,6 +26,25 @@ function alertForLevel(lvl, side, alerts) {
 
 const DEPTHS = [10, 20, 30, 50];
 
+// Набор тикета `vol` рублей по лестнице стороны от лучшей цены — та же схема,
+// что у бэка (screener_core.vwap_for) и у фильтра объёма в таблице (vwap.js):
+// деньги уровня ГРЯЗНЫЕ, последний уровень берётся частично.
+// → {'side:цена': {money, partial}} по уровням, вошедшим в набор.
+function fillLevels(levels, side, vol, face, accrued) {
+  const out = {};
+  if (!(vol > 0) || !face) return out;
+  let left = vol;
+  for (const l of levels) {
+    const money = l.quantity * (face * l.price_pct / 100 + (accrued || 0));
+    if (money <= 0) continue;
+    const part = Math.min(money, left);
+    out[`${side}:${l.price_pct}`] = { money: part, partial: part < money - 1e-6 };
+    left -= part;
+    if (left <= 1e-9) break;
+  }
+  return out;
+}
+
 // Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → Y-IDX
 // (первичная) + YTM, фикс → YTM+G-спред. side красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
@@ -46,9 +65,13 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
   return (
     <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")
         + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")
-        + (fill ? (fill.partial ? " ob-sig-part" : " ob-sig") : "")}
+        + (fill ? (fill.partial ? " ob-sig-part" : " ob-sig") : "")
+        + (fill?.vol ? " ob-vol" : "")}
       onClick={onClick}
-      title={fill ? `В наборе сигнала: ${fmt.mln(fill.money)} млн ₽${fill.partial ? " (уровень взят частично)" : ""}` : armTitle}>
+      title={fill
+        ? `${fill.vol ? "В наборе фильтра по объёму" : "В наборе сигнала"}: `
+          + `${fmt.mln(fill.money)} млн ₽${fill.partial ? " (уровень взят частично)" : ""}`
+        : armTitle}>
       <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? <IconAlert size={11} /> : <IconBell size={11} />}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.mln(rub) + " млн ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
@@ -72,7 +95,8 @@ function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
 // Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
-export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx, horizon = "auto", onClose }) {
+export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx,
+                                    volBid = 0, volAsk = 0, horizon = "auto", onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
@@ -148,17 +172,27 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
     }
 
     if (!(sigVol > 0)) return {};
-    let left = sigVol;
-    for (const l of live) {
-      const money = l.quantity * (face * l.price_pct / 100 + (accrued || 0));
-      if (money <= 0) continue;
-      const part = Math.min(money, left);
-      out[`${sigSide}:${l.price_pct}`] = { money: part, partial: part < money - 1e-6 };
-      left -= part;
-      if (left <= 1e-9) break;
-    }
+    Object.assign(out, fillLevels(live, sigSide, sigVol, face, accrued));
     return out;
   }, [ob, sigVol, sigSide, sigPx, face, accrued]);
+
+  // Подсветка ФИЛЬТРА ПО ОБЪЁМУ с МОНИТОРА: стол отобрал бумаги по тикету на
+  // биде и/или оффере — в стакане видно, какими уровнями этот тикет набирается.
+  // Стороны независимы: у каждой свой введённый объём (в отличие от сигнала,
+  // где сторона одна).
+  const volFill = useMemo(() => {
+    if (!face) return {};
+    const pick = (arr) => (arr || []).filter((l) => l.quantity != null && l.price_pct != null);
+    return {
+      ...(volBid > 0 ? fillLevels(pick(ob?.bids), "bid", volBid, face, accrued) : {}),
+      ...(volAsk > 0 ? fillLevels(pick(ob?.asks), "ask", volAsk, face, accrued) : {}),
+    };
+  }, [ob, volBid, volAsk, face, accrued]);
+
+  // сигнал приоритетнее фильтра: он про конкретное срабатывание, фильтр — про
+  // условие отбора, и на одном уровне важнее показать первый
+  const fillFor = (side, price) => sigFill[`${side}:${price}`]
+    || (volFill[`${side}:${price}`] ? { ...volFill[`${side}:${price}`], vol: true } : null);
 
   return (
     <div className="ob-panel-inner">
@@ -206,13 +240,13 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} fill={sigSide === "ask" ? sigFill[`ask:${l.price_pct}`] : null} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} fill={fillFor("ask", l.price_pct)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
               <tr className="ob-spread">
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} fill={sigSide === "bid" ? sigFill[`bid:${l.price_pct}`] : null} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} fill={fillFor("bid", l.price_pct)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
             </tbody>
           </table>
         )}

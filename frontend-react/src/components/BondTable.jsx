@@ -63,17 +63,44 @@ function Dev7({ b }) {
 // Котировка стакана двумя этажами в одной ячейке: чистая цена, под ней Y-IDX по
 // ней же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
 // значение, а не бегает через полтаблицы, чтобы их сопоставить.
-function Quote({ px, spread, title, vwap, side }) {
+// R-spread по цене СРЕДНЕВЗВЕСА. Своей цифры бэк для этой цены не считает —
+// линеаризуем от известного якоря через dY/dP (y_idx_slope_bps_per_pct), как это
+// делает фильтр по объёму для VWAP стакана. Якорь — цена последней сделки (обе
+// цены торговые, шаг между ними мал), иначе верх стакана.
+function wapSpread(b) {
+  const k = b.y_idx_slope_bps_per_pct, px = b.wap_price_pct;
+  if (px == null || k == null) return null;
+  const anchors = [[b.last_price_pct, b.yield_over_index_bps],
+                   [b.bid_price_pct, b.y_idx_bid_bps], [b.ask_price_pct, b.y_idx_ask_bps]];
+  for (const [ap, ay] of anchors) {
+    if (ap != null && ay != null) return Math.round(ay + (px - ap) * k);
+  }
+  return null;
+}
+
+// base7 — база недели: рядом со спредом стороны мелким серым идёт отклонение от
+// неё («120 +20»). Спред стороны сам по себе не говорит, дорого это или дёшево;
+// отклонение от собственной истории бумаги — говорит, и держать его в глазах
+// прямо у котировки дешевле, чем сверять с колонкой ОТКЛ 7Д через полтаблицы.
+function Quote({ px, spread, title, vwap, side, base7 }) {
   // сторона красит ячейку целиком (бид зелёным, оффер красным) — фон почти
   // прозрачный, чтобы не спорить с цветом Y-IDX под ценой
-  const cls = side === "bid" ? " q-bid" : " q-ask";
+  // сторону красим только у стакана; средневзвес — ничья цена, фон нейтральный
+  const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
   // заявки нет вовсе — один прочерк, а не два друг под другом
   if (px == null && spread == null) return <td className={"num" + cls} title={title}><D /></td>;
+  const dev = spread == null || base7 == null ? null : spread - base7;
   return (
     <td className={"num q-cell" + cls} title={title}>
       <div className={"q-px" + (vwap ? " q-vwap" : "")}>{fmt.pct(px) ?? <D />}</div>
       <div className="q-sp" style={spread == null ? undefined : dmColor(spread)}>
-        {spread == null ? <D /> : fmt.bps(spread)}</div>
+        {spread == null ? <D /> : fmt.bps(spread)}
+        {dev != null && (
+          <span className="q-sp-dev"
+            title={`отклонение от средневзвешенного спреда за 7 дней (${fmt.bps(base7)} бп)`}>
+            {fmt.devBps(dev)}</span>
+        )}
+      </div>
     </td>
   );
 }
@@ -196,12 +223,12 @@ export const COLS = [
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
-  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 8,
+  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 11,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap_bid}
-      title={qTitle(b, "bid")} /> },
-  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 8,
+      base7={b.y_idx_avg7_bps} title={qTitle(b, "bid")} /> },
+  { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 11,
     cell: (b) => <Quote key="ask" side="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap_ask}
-      title={qTitle(b, "ask")} /> },
+      base7={b.y_idx_avg7_bps} title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
@@ -210,10 +237,13 @@ export const COLS = [
   // Средневзвес дня. У избранного — НАШ VWAP по тикам Alor (живой, тот же, что
   // рисует слой «Средневзвес» на графике), у остальных — биржевой WAPRICE из
   // снапшота MOEX. Отсюда и подпись в title: источники разные.
-  { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "CLN %", align: "num", w: 8,
-    cell: (b) => <td className="num" key="wap_price_pct"
-      title={b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня"}>
-      {fmt.pct(b.wap_price_pct) ?? <D />}</td> },
+  // Спред под ценой — по той же схеме, что у BID/OFFER: R-spread по цене
+  // средневзвеса и мелким серым его отклонение от базы недели.
+  { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "% / R-spread", align: "num", w: 11,
+    cell: (b) => <Quote key="wap_price_pct" side="wap" px={b.wap_price_pct} spread={wapSpread(b)}
+      base7={b.y_idx_avg7_bps}
+      title={(b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня")
+        + "; R-spread пересчитан на эту цену (линеаризация от цены сделки)"} /> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;

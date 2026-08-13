@@ -450,7 +450,8 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
   );
 }
 
-export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sigPx, onClose }) {
+export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sigPx,
+                                 volBid, volAsk, onClose }) {
   const isFixed = kind === "fixed";
   const navigate = useNavigate();
   const detailsQ = useQuery({
@@ -605,6 +606,7 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
             >
               <Orderbook isin={isin} kind={kind} face={face} accrued={accrued}
                 sigVol={sigVol} sigSide={sigSide} sigPx={sigPx} horizon={hzSel}
+                volBid={volBid} volAsk={volAsk}
                 onClose={() => setShowOb(false)} />
             </motion.aside>
           )}
