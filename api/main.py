@@ -371,6 +371,37 @@ async def daily_prewarm():
             logger.warning(f"daily prewarm error: {e}")
 
 
+# Ночной прогрев спреда: топ по обороту, окно, которое реально смотрят.
+NIGHTLY_WARM = os.getenv("NIGHTLY_WARM", "1") not in ("0", "false", "no")
+NIGHTLY_WARM_TOP = int(os.getenv("NIGHTLY_WARM_TOP", "200"))
+NIGHTLY_WARM_DAYS = int(os.getenv("NIGHTLY_WARM_DAYS", "150"))
+
+
+async def nightly_spread_warm():
+    """Каждую ночь в 03:00 МСК — досчёт спреда по самым торгуемым бумагам.
+
+    Честный as-of дорог (своя кривая/НКД/номинал на каждый день, порядка минут
+    на бумагу), поэтому греем топ по обороту на окно 150 дней, а не весь универс
+    на всю глубину. Считается один раз: результат штампуется metrics_ver и при
+    следующем открытии графика не пересчитывается."""
+    if not NIGHTLY_WARM:
+        logger.info("nightly warm выключен (NIGHTLY_WARM=0)")
+        return
+    from services import bars as bars_svc
+    while True:
+        now = datetime.now(_MSK)
+        target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (target - now).total_seconds()))
+        try:
+            logger.info("nightly warm 03:00: старт (топ %d, окно %d дн)",
+                        NIGHTLY_WARM_TOP, NIGHTLY_WARM_DAYS)
+            await bars_svc.warm_hot(days=NIGHTLY_WARM_DAYS, top=NIGHTLY_WARM_TOP)
+        except Exception as e:
+            logger.warning("nightly warm error: %s", e)
+
+
 ALERT_POLL_INTERVAL = 12   # проверка алертов против стакана, сек
 
 
@@ -722,6 +753,7 @@ async def lifespan(app: FastAPI):
     alor_ws = asyncio.create_task(alor_orderbook_ws())
     spread_snap = asyncio.create_task(spread_snapshotter())
     bars_worker = asyncio.create_task(hourly_bars_worker())
+    night_warm = asyncio.create_task(nightly_spread_warm())
     depth_task = asyncio.create_task(depth_poller())
     archive_task = asyncio.create_task(archive_maintenance())
     blocks_task = asyncio.create_task(block_trades_worker())
@@ -756,6 +788,7 @@ async def lifespan(app: FastAPI):
     alor_ws.cancel()
     spread_snap.cancel()
     bars_worker.cancel()
+    night_warm.cancel()
     depth_task.cancel()
     archive_task.cancel()
     blocks_task.cancel()

@@ -29,6 +29,14 @@ async def main(a) -> None:
     from services import bars as bars_svc
 
     init_db()
+    if a.hot:
+        # тот же прогрев, что ночной воркер: топ по обороту на окно, которое
+        # реально смотрят. Полный проход по универсу на всю глубину нереален —
+        # честный as-of строит кривую/НКД на каждый день (минуты на бумагу).
+        stat = await bars_svc.warm_hot(days=a.days, top=a.hot,
+                                       concurrency=a.concurrency)
+        log.info("готово (hot): %s", stat)
+        return
     kinds = tuple(k.strip() for k in a.kinds.split(",") if k.strip())
     stat = await bars_svc.refresh_universe(
         days=a.days, limit=a.limit, with_ticks=not a.no_ticks,
@@ -46,4 +54,6 @@ if __name__ == "__main__":
                          "заново (ремонт дыры; обычный прогон и так тянет всё новое)")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--kinds", default="floater,fixed", help="floater,fixed")
+    ap.add_argument("--hot", type=int, default=None,
+                    help="греть только топ-N бумаг по обороту (как ночной воркер)")
     asyncio.run(main(ap.parse_args()))

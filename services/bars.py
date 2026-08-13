@@ -532,6 +532,47 @@ def active_isins(days: int = 7) -> set:
     return {r["isin"] for r in rows}
 
 
+def hot_isins(top: int = 200, window_days: int = 30) -> list[str]:
+    """Самые торгуемые бумаги по обороту за окно — их графики открывают чаще
+    всего, и именно им стоит держать спред досчитанным заранее."""
+    cutoff = (date.today() - timedelta(days=window_days)).isoformat()
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT isin, SUM(COALESCE(value,0)) v FROM bar_hourly WHERE ts >= ? "
+            "GROUP BY isin ORDER BY v DESC LIMIT ?", (cutoff, top)).fetchall()
+    return [r["isin"] for r in rows]
+
+
+async def warm_hot(days: int = 150, top: int = 200, concurrency: int = 2) -> dict:
+    """Ночной прогрев спреда по самым торгуемым бумагам.
+
+    Полный проход по универсу на 400 дней нереален: честный as-of строит на
+    КАЖДЫЙ день свою кривую/НКД/номинал, выходит порядка десяти минут на бумагу.
+    Поэтому греем не всё и не на всю глубину, а топ по обороту на окно, которое
+    реально смотрят (1М/3М/6М). Остальное догревается лениво при открытии
+    графика — ensure_bars уже так работает, и результат ложится в базу
+    (metrics_ver), так что второй раз бумага не пересчитывается."""
+    targets = dict(await universe_targets())
+    isins = [i for i in await asyncio.to_thread(hot_isins, top) if i in targets]
+    sem = asyncio.Semaphore(concurrency)
+    stat = {"papers": len(isins), "done": 0, "failed": 0}
+
+    async def one(isin: str):
+        async with sem:
+            try:
+                await ensure_bars(isin, days=days, kind=targets[isin], wait_past=True)
+                stat["done"] += 1
+            except Exception as e:
+                stat["failed"] += 1
+                logger.warning("warm_hot %s: %s", isin, e)
+            if (stat["done"] + stat["failed"]) % 25 == 0:
+                logger.info("warm_hot: %d/%d", stat["done"] + stat["failed"], len(isins))
+
+    await asyncio.gather(*(one(i) for i in isins))
+    logger.info("warm_hot готово: %s", stat)
+    return stat
+
+
 async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                            with_ticks: bool = True, concurrency: int = 4,
                            kinds: tuple = ("floater", "fixed"),
