@@ -96,15 +96,11 @@ async def _faces_map() -> dict:
 
 
 def _flush_sync(chunks: list[tuple[str, list]], faces: dict) -> int:
-    """Синхронная запись пачки (в to_thread): по бумаге — свой upsert."""
-    from services.trades_archive import upsert_ticks
-    saved = 0
-    for isin, raw in chunks:
-        face = faces.get(isin)
-        # faces у upsert_ticks — карта ПО ДНЯМ; у стрима день один (сегодня),
-        # поэтому передаём пустую карту и номинал фолбэком
-        saved += upsert_ticks(isin, raw, {}, face) if face else upsert_ticks(isin, raw, {})
-    return saved
+    """Синхронная запись пачки (в to_thread) — одной транзакцией на весь такт:
+    при рыночном охвате поштучная запись по бумаге держала ядро сотнями коротких
+    транзакций (см. upsert_ticks_bulk)."""
+    from services.trades_archive import upsert_ticks_bulk
+    return upsert_ticks_bulk(chunks, faces)
 
 
 async def _flusher(stop: asyncio.Event) -> None:

@@ -193,9 +193,10 @@ async def fetch_today(client: httpx.AsyncClient, isin: str, headers: dict) -> li
 
 # ─────────────────────────── запись ───────────────────────────
 
-def upsert_ticks(isin: str, raw: list[dict], faces: dict[str, float],
-                 fallback_face: float = _DEFAULT_FACE) -> int:
-    """INSERT OR IGNORE по (isin, trade_id): перехлёст окон не плодит дублей."""
+def _tick_rows(isin: str, raw: list[dict], faces: dict[str, float],
+               fallback_face: float = _DEFAULT_FACE) -> list[tuple]:
+    """Сырые пуши/ответы alltrades → строки trade_tick. faces — номиналы ПО ДНЯМ
+    (у амортизируемых он меняется), fallback_face — когда дня в карте нет."""
     rows = []
     for t in raw:
         tid, price, qty = t.get("id"), t.get("price"), t.get("qty")
@@ -210,6 +211,10 @@ def upsert_ticks(isin: str, raw: list[dict], faces: dict[str, float],
         rows.append((isin, int(tid), ts, float(price), float(qty),
                      round(float(qty) * face * float(price) / 100, 2),
                      t.get("side"), t.get("board")))
+    return rows
+
+
+def _insert_ticks(rows: list[tuple]) -> int:
     if not rows:
         return 0
     with _lock, _connect() as c:
@@ -217,6 +222,27 @@ def upsert_ticks(isin: str, raw: list[dict], faces: dict[str, float],
             "INSERT OR IGNORE INTO trade_tick(isin,trade_id,ts,price,qty,value,side,board) "
             "VALUES(?,?,?,?,?,?,?,?)", rows)
         return cur.rowcount or 0
+
+
+def upsert_ticks(isin: str, raw: list[dict], faces: dict[str, float],
+                 fallback_face: float = _DEFAULT_FACE) -> int:
+    """INSERT OR IGNORE по (isin, trade_id): перехлёст окон не плодит дублей."""
+    return _insert_ticks(_tick_rows(isin, raw, faces, fallback_face))
+
+
+def upsert_ticks_bulk(chunks: list[tuple[str, list[dict]]],
+                      faces: dict[str, float]) -> int:
+    """Пачка «бумага → её сырые тики» ОДНОЙ транзакцией. faces — номинал на
+    бумагу (не по дням: у живого стрима день один — сегодня).
+
+    Зачем отдельный путь: стрим слушает весь рынок (~3100 бумаг), и запись
+    поштучно на бумагу давала на каждом такте flush сотни коротких транзакций —
+    ядро просыпалось с лагом до 1.5с. Строк столько же, транзакция одна."""
+    rows: list[tuple] = []
+    for isin, raw in chunks:
+        face = faces.get(isin)
+        rows.extend(_tick_rows(isin, raw, {}, face) if face else _tick_rows(isin, raw, {}))
+    return _insert_ticks(rows)
 
 
 def get_watermark(isin: str) -> Optional[str]:
