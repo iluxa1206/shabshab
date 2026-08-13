@@ -1535,8 +1535,8 @@ body.col-resizing * { cursor: col-resize !important; }
    прокрутка ленты уводила бы липкую строку из вида. */
 .tape-table tbody tr.tape-day > td,
 .tape-table tbody tr.tape-day:hover > td {
-  background: color-mix(in srgb, var(--fg) 6%, transparent); color: var(--mut);
-  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .18em;
+  background: color-mix(in srgb, var(--fg) 14%, transparent); color: var(--fg);
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .18em;
   padding: 6px 16px; border-top: 1px solid var(--line-2); }
 /* ОТКЛ 7Д — два этажа в ячейке, как котировка в МОНИТОРЕ: сверху отклонение
    спреда сделки от базы недели, под ним сама база (справочная, приглушена). */
