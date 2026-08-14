@@ -248,23 +248,45 @@ async def days_agg(
 @router.get("/{isin}", tags=["Blocks"])
 async def by_isin(isin: str, days: int = Query(90, ge=1, le=400),
                   min_value: float = Query(0, ge=0),
-                  limit: int = Query(500, ge=1, le=5000)):
+                  limit: int = Query(500, ge=1, le=5000),
+                  order: str = Query("ts", pattern="^(ts|value)$",
+                                     description="ts — последние по времени, "
+                                                 "value — самые крупные за окно")):
     """Крупные сделки одной бумаги + её дневные РПС-обороты (для карточки)."""
     isin = isin.strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
     from services import block_trades as bt
     frm = (date.today() - timedelta(days=days - 1)).isoformat()
-    rows, days_rows, summary = await asyncio.gather(
+    rows, days_rows, summary, total = await asyncio.gather(
         asyncio.to_thread(bt.read_blocks, frm=frm, min_value=min_value,
-                          isins=[isin], limit=limit),
+                          isins=[isin], limit=limit, order=order),
         asyncio.to_thread(bt.read_days, isin=isin, frm=frm),
-        asyncio.to_thread(bt.blocks_stats, frm=frm, min_value=min_value, isins=[isin]))
+        asyncio.to_thread(bt.blocks_stats, frm=frm, min_value=min_value, isins=[isin]),
+        asyncio.to_thread(bt.count_blocks, frm=frm, min_value=min_value, isins=[isin]))
     for r in rows:
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
         r["board_short"] = board_short(r.get("board"))
         r["negotiated"] = r.get("market") == "ndm"
+    # Спред в базе посчитан ЖИВОЙ моделью в момент прихода сделки: для сегодняшних
+    # это верно, для прошлых сессий — оценка, расходящаяся с линией спреда на
+    # графике (у бумаг с малой дюрацией — на сотни bps). Пересчитываем прошлые
+    # дни честным as-of, тем же движком, что рисует линию.
+    # Только флоатеры: у фикса аналог — g-спред по своей кривой, архива которой
+    # нет, и пересчитывать его сегодняшней моделью смысла нет (в базе то же).
+    base = ((await asyncio.to_thread(_labels)).get(isin) or {}).get("base")
+    if rows and base in ("KEYRATE", "RUONIA"):
+        try:
+            from api.routes.history import _price_trades
+            past = [r for r in rows if str(r.get("ts") or "")[:10] < date.today().isoformat()]
+            if past:
+                await _price_trades(isin, past, "floater", days=days)
+        except Exception as e:
+            logger.info("blocks pricing %s: as-of недоступен (%s) — спред из базы", isin, e)
     for r in days_rows:
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
     return {"isin": isin, "from": frm, "days": days, "blocks": rows,
+            # сколько подходит под фильтр всего и срезал ли лимит: без этого
+            # график молча показывал часть точек как «все»
+            "total": total, "truncated": total > len(rows),
             "day_totals": days_rows, "summary": summary}

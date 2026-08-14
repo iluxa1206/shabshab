@@ -602,14 +602,42 @@ def _where(frm: Optional[str], till: Optional[str], min_value: float,
 def read_blocks(frm: Optional[str] = None, till: Optional[str] = None,
                 min_value: float = 0, market: Optional[str] = None,
                 boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
-                side: Optional[str] = None, limit: int = 500) -> list[dict]:
-    """Лента крупных сделок, новые сверху."""
+                side: Optional[str] = None, limit: int = 500,
+                order: str = "ts") -> list[dict]:
+    """Лента крупных сделок, новые сверху.
+
+    order='ts' — последние limit сделок; order='value' — limit САМЫХ крупных за
+    окно (маркерам РПС на графике нужно именно это: с сортировкой по времени
+    лимит молча срезал дальнюю половину окна, и точки обрывались на середине —
+    те же грабли, что уже чинили у слоя крупных сделок, см. trades_archive.
+    read_trades). Возвращается всегда по времени, новые сверху.
+
+    Спред сделки (y_idx_bps/dm_bps) считает демон при её приходе — отдаём его
+    наружу: без этих полей маркер РПС на графике оставался без цифры, хотя она
+    посчитана и лежит в той же строке."""
     with _connect() as c:
         tmp = _bind_isins(c, isins)
         where, args = _where(frm, till, min_value, market, boards, isins, side, tmp)
-        q = ("SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur "
-             "FROM block_trade" + where + " ORDER BY ts DESC, trade_id DESC LIMIT ?")
-        return [dict(r) for r in c.execute(q, [*args, limit]).fetchall()]
+        cols = ("trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur,"
+                "y_idx_bps,dm_bps")
+        tail = (" ORDER BY value DESC LIMIT ?" if order == "value"
+                else " ORDER BY ts DESC, trade_id DESC LIMIT ?")
+        rows = [dict(r) for r in c.execute(f"SELECT {cols} FROM block_trade{where}{tail}",
+                                           [*args, limit]).fetchall()]
+    rows.sort(key=lambda r: (r.get("ts") or "", r.get("trade_id") or 0), reverse=True)
+    return rows
+
+
+def count_blocks(frm: Optional[str] = None, till: Optional[str] = None,
+                 min_value: float = 0, market: Optional[str] = None,
+                 boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
+                 side: Optional[str] = None) -> int:
+    """Сколько сделок под фильтр вообще подходит: клиент должен отличать
+    «столько и было» от «лимит срезал остальное»."""
+    with _connect() as c:
+        tmp = _bind_isins(c, isins)
+        where, args = _where(frm, till, min_value, market, boards, isins, side, tmp)
+        return c.execute("SELECT COUNT(*) FROM block_trade" + where, args).fetchone()[0]
 
 
 def blocks_stats(frm: Optional[str] = None, till: Optional[str] = None,

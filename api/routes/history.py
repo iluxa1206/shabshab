@@ -216,23 +216,42 @@ async def hourly_bars(
             "bars": rows, "n": len(rows)}
 
 
-async def _price_trades(isin: str, rows: list, kind: str) -> int:
+async def _price_trades(isin: str, rows: list, kind: str,
+                        days: int = 0, board: Optional[str] = None) -> int:
     """Проставляет строкам сделок y_idx_bps/dm_bps/ytm (у фикса — g_spread_bps)
     по ЦЕНЕ САМОЙ СДЕЛКИ. Возвращает число заполненных строк; при любой ошибке
-    модели молча уходит ни с чем — маркеры сделок важнее спреда к ним."""
+    модели молча уходит ни с чем — маркеры сделок важнее спреда к ним.
+
+    ПРОШЛЫЕ СЕССИИ — ЧЕСТНЫМ AS-OF (кривая/НКД/номинал того дня), тем же
+    движком, что рисует линию спреда рядом. Раньше всё считалось сегодняшней
+    моделью, и маркер расходился с линией на сотни bps там, где дюрация мала
+    (замер: Магнит5Р03 03.08 — маркер −328 против линии −29). Сегодняшние
+    сделки считаются живой моделью: as-of на текущий день не определён.
+    Сборка as-of стоит доли секунды на тёплых кэшах; не собралась (бумага
+    только размещена / нет истории) — молча остаёмся на живой модели."""
+    from datetime import date as _date
     try:
         from services.orderbook_svc import build_metrics_fn
         metrics_fn, _cd, _face = await build_metrics_fn(isin, kind)
     except Exception as e:
         logger.info("trades pricing %s: модель недоступна (%s)", isin, e)
         return 0
+    asof_fn = None
+    if kind == "floater" and days > 1:
+        try:
+            from services.backdate import asof_bar_metrics
+            asof_fn = await asof_bar_metrics(isin, days, board)
+        except Exception as e:
+            logger.info("trades pricing %s: as-of недоступен (%s) — прошлые дни "
+                        "оценочно сегодняшней моделью", isin, e)
+    today_iso = _date.today().isoformat()
     memo: dict = {}
 
-    def _m(price):
-        k = round(float(price), 3)
+    def _m(price, day=None):
+        k = (day, round(float(price), 3))
         if k not in memo:
             try:
-                memo[k] = metrics_fn(k) or {}
+                memo[k] = ((asof_fn(day, k[1]) if day else metrics_fn(k[1])) or {})
             except Exception:
                 memo[k] = {}
         return memo[k]
@@ -241,7 +260,11 @@ async def _price_trades(isin: str, rows: list, kind: str) -> int:
     for r in rows:
         if r.get("price") is None:
             continue
-        m = await asyncio.to_thread(_m, r["price"])
+        day = str(r.get("ts") or "")[:10]
+        past = bool(asof_fn) and day and day < today_iso
+        m = await asyncio.to_thread(_m, r["price"], day if past else None)
+        if not m and past:            # as-of споткнулся на дне — живая модель
+            m = await asyncio.to_thread(_m, r["price"], None)
         if not m:
             continue
         for src, dst in (("y_idx_bps", "y_idx_bps"), ("dm_bps", "dm_bps"),
@@ -282,17 +305,23 @@ async def trades(
                 await ta.drain(isin, days=min(days, ta.ALOR_HISTORY_DAYS), board=board)
             except Exception as e:
                 logger.warning("trades drain %s: %s", isin, e)
-    rows = await asyncio.to_thread(ta.read_trades, isin, frm=frm, min_value=min_value,
-                                   side=side, limit=limit, order=order)
-    # сколько сделок под фильтр вообще подходит: без этого клиент не отличает
-    # «столько и было» от «лимит срезал остальное»
-    total = await asyncio.to_thread(ta.count_trades, isin, frm, min_value, side)
+    # ОБА АРХИВА, склейка по TRADENO (services/tape): тиковый начинается с
+    # первого дрейна по бумаге, а ISS-лента ловит весь рынок — раньше слой не
+    # видел крупных сделок за дни до старта дрейна (ОФЗ 29010: принты на 37 и
+    # 49 млн ₽ 11.08). Адресные исключены: их рисует отдельный слой РПС.
+    from services import tape as tape_svc
+    rows, total = await asyncio.gather(
+        asyncio.to_thread(tape_svc.read_isin_trades, isin, frm=frm,
+                          min_value=min_value, side=side, limit=limit, order=order),
+        # сколько сделок под фильтр вообще подходит: без этого клиент не отличает
+        # «столько и было» от «лимит срезал остальное»
+        asyncio.to_thread(tape_svc.count_isin_trades, isin, frm, None, min_value, side))
     # Спред КАЖДОЙ сделки — тем же reprice, что уровни стакана и бары: маркер
     # крупного принта без спреда заставлял считать в уме «дорого или дёшево он
     # взял». Модель выпуска строится один раз, дальше reprice по цене без I/O,
     # ответы мемоизируем — уникальных цен на сотню принтов десятки.
     if rows:
-        await _price_trades(isin, rows, kind)
+        await _price_trades(isin, rows, kind, days=days, board=board)
 
     def _vwap(rs):
         q = sum(r.get("qty") or 0 for r in rs)

@@ -152,6 +152,45 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
     return out
 
 
+def read_isin_trades(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
+                     min_value: float = 0, side: Optional[str] = None,
+                     limit: int = 500, order: str = "ts",
+                     market: Optional[str] = "bonds") -> list[dict]:
+    """Сделки ОДНОЙ бумаги из ОБЪЕДИНЁННОГО архива (маркеры крупных принтов на
+    графике). Раньше слой читал только trade_tick и не видел сделок, которых там
+    нет: тиковый архив по бумаге начинается с первого дрейна, а ISS-лента ловит
+    весь рынок (замер 2026-08-14: 15 из 516 крупных сделок у флоатеров юниверса
+    и 796 из 3240 по рынку — включая ОФЗ 29010 на 37 и 49 млн ₽).
+
+    market='bonds' по умолчанию: адресные сделки рисует ОТДЕЛЬНЫЙ слой РПС
+    (/api/blocks/{isin}), и без этого фильтра одна сделка получила бы два
+    маркера. order='value' — лимит режет мелочь, а не дальнюю половину окна.
+    Дедуп по TRADENO делает _union, поэтому сделка из обоих архивов — одна
+    строка."""
+    with _connect() as c:
+        tmp = _bind_isins(c, [isin])
+        sub, args = _union(frm, till, min_value, market, None, [isin], side, tmp)
+        tail = ("ORDER BY value DESC LIMIT ?" if order == "value"
+                else "ORDER BY ts DESC, trade_id DESC LIMIT ?")
+        rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1 {tail}",
+                         [*args, limit]).fetchall()
+    out = [dict(r) for r in rows]
+    for d in out:
+        d["negotiated"] = d.get("market") == "ndm"
+    out.sort(key=lambda r: (r.get("ts") or "", r.get("trade_id") or 0))
+    return out
+
+
+def count_isin_trades(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
+                      min_value: float = 0, side: Optional[str] = None,
+                      market: Optional[str] = "bonds") -> int:
+    """Сколько сделок бумаги подходит под фильтр во всём объединении."""
+    with _connect() as c:
+        tmp = _bind_isins(c, [isin])
+        sub, args = _union(frm, till, min_value, market, None, [isin], side, tmp)
+        return c.execute(f"SELECT COUNT(*) FROM {sub}", args).fetchone()[0]
+
+
 def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                min_value: float = 0, market: Optional[str] = None,
                boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
