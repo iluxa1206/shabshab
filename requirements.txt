@@ -15,3 +15,6 @@ pandas
 beautifulsoup4
 openpyxl
 pytest
+# без него @pytest.mark.asyncio-тесты не запускаются вовсе (pytest валит их как
+# «async def not natively supported») — 6 тестов has_call молча не выполнялись
+pytest-asyncio~=1.4

@@ -647,7 +647,8 @@ def _honest_memo_put(key: tuple, day, result: dict) -> None:
 
 
 async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] = None,
-                               price_overrides: Optional[dict] = None) -> dict:
+                               price_overrides: Optional[dict] = None,
+                               till: Optional["date"] = None) -> dict:
     """Честная динамика спредов: для КАЖДОГО торгового дня — свой calc_date,
     своя as-of кривая, фактические НКД/номинал/close того дня → SM/DM/y-idx.
     В отличие от candle-оценки (историч. цена × сегодняшняя модель) серия не
@@ -656,12 +657,15 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     (бэкфилл легаси-снапшотов на их же цене). Расчёт ~15с на 120 дней → мемо на
     день (только без overrides)."""
     from datetime import date as _date, timedelta as _td
-    key = (isin, days, board)
+    # till — правая граница окна (по умолчанию вчера). Задаётся при досчёте
+    # ЛЕВОГО куска расширенного окна: ensure_honest_backfill не пересчитывает
+    # то, что уже лежит в базе.
+    key = (isin, days, board, till.isoformat() if till else None)
     hit = None if price_overrides else _honest_memo.get(key)
     if hit and hit[0] == _date.today():
         _honest_memo.move_to_end(key)      # свежеиспользованное вытесняется последним
         return hit[1]
-    d_till = _date.today() - _td(days=1)
+    d_till = till or (_date.today() - _td(days=1))
     d_from = d_till - _td(days=int(days * 1.55) + 7)   # запас на выходные
 
     ctx = await load_backdate_ctx(isin, d_till, board)  # статика + кривая на d_till
@@ -772,7 +776,12 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #       dirty на 1-3 дня накопления
 # 6 — 2026-08-13: горизонт по правилу цены (pick_horizon) вместо «всегда к
 #     погашению»: у бумаг с офертой история расходилась с шапкой и стаканом.
-HONEST_ENGINE_VERSION = 6
+# 7 — 2026-08-14: неопределённые купоны источника больше не факт. MOEX эхом
+#     заполнял хвост будущих купонов последней объявленной ставкой (у старых
+#     ОФЗ-ПК — до погашения, 29010: 16.59% до 2034), и весь хвост прайсился
+#     замороженной ставкой вместо форварда. Замер на выборке: Y-IDX −5…−212 bps,
+#     SM −5…−176 bps — история старого движка несопоставима с новой.
+HONEST_ENGINE_VERSION = 7
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
@@ -802,15 +811,36 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     overrides = {d: r["price_pct"] for d, r in existing.items()
                  if r.get("price_pct") is not None
                  and (d in untrusted or r.get("y_idx") is None)}
-    # окно уже покрыто доверенными строками с y_idx и дыр-легаси нет →
-    # тяжёлый пересчёт не нужен
+    # ОКНО УЖЕ ПОКРЫТО? Критерий — САМАЯ РАННЯЯ доверенная дата: если она левее
+    # начала окна, считать нечего. Раньше здесь стояло `have >= days` — число
+    # доверенных СТРОК против КАЛЕНДАРНЫХ дней окна: торговых дней всегда меньше
+    # (в 400-дневном окне их ~270), поэтому условие не выполнялось никогда, и
+    # каждый рестарт процесса (memo живёт в памяти) гнал полный пересчёт всей
+    # истории заново. Дыры внутри окна повторный прогон не залечит — их там нет
+    # ровно потому, что у MOEX нет истории на эти даты.
+    from datetime import timedelta as _td2
     have = sum(1 for d, r in existing.items()
                if _trusted(r) and r.get("y_idx") is not None)
-    if not overrides and have >= days:
+    trusted_dates = [d for d, r in existing.items()
+                     if _trusted(r) and r.get("y_idx") is not None]
+    earliest = min(trusted_dates) if trusted_dates else None
+    frm_iso = (_date.today() - _td2(days=days)).isoformat()
+    if not overrides and have and earliest and earliest <= frm_iso:
         _backfill_done[(isin, board)] = (_date.today(), days)
         return 0
-    series = await honest_spread_series(isin, days, board,
-                                        price_overrides=overrides or None)
+    # Окно расширили влево — считаем ТОЛЬКО недостающий кусок [frm, earliest),
+    # а не всю историю заново (те же грабли, что были у часовых баров).
+    till = None
+    span = days
+    if not overrides and earliest and earliest > frm_iso:
+        till = _date.fromisoformat(earliest) - _td2(days=1)
+        span = (till - (_date.today() - _td2(days=days))).days + 1
+    if span < 1:
+        _backfill_done[(isin, board)] = (_date.today(), days)
+        return dropped
+    series = await honest_spread_series(isin, span, board,
+                                        price_overrides=overrides or None,
+                                        till=till)
     missing_or_null = [p for p in series["points"]
                        if p["date"] not in existing or p["date"] in overrides]
     n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION,

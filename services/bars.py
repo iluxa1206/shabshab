@@ -146,14 +146,18 @@ def _implied_face(candles_of_day: list[dict]) -> Optional[float]:
 # ─────────────────────────── сборка баров ───────────────────────────
 
 async def build_bars(isin: str, days: int = 30, kind: str = "floater",
-                     board: Optional[str] = None, with_metrics: bool = True) -> list[dict]:
+                     board: Optional[str] = None, with_metrics: bool = True,
+                     till: Optional[str] = None) -> list[dict]:
     """Часовые бары бумаги за последние `days` календарных дней (без записи в БД).
-    with_metrics=False — только цена/объём (быстро, без загрузки модели бумаги)."""
+    with_metrics=False — только цена/объём (быстро, без загрузки модели бумаги).
+    till — правая граница окна ('YYYY-MM-DD', по умолчанию сегодня): расширение
+    окна графика досчитывает ТОЛЬКО недостающий кусок слева, а не весь диапазон
+    заново (см. ensure_bars)."""
     from services.backdate import resolve_market
 
     secid, brd = await resolve_market(isin, board)
     secid, brd = secid or isin, brd or "TQCB"
-    till = date.today().isoformat()
+    till = till or date.today().isoformat()
     frm = (date.today() - timedelta(days=days)).isoformat()
 
     async with httpx.AsyncClient() as client:
@@ -232,9 +236,12 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 return m
 
             m = _metrics(vwap)
-            # спред по каждой цене бара: без них свеча спреда собиралась из vwap
-            # соседних часов и в малоликвидный день вырождалась в одну-две точки
-            spread_key = "g_spread_bps" if kind == "fixed" else "y_idx_bps"
+            # HLC-режим панели спреда убран (2026-08-14): свеча спреда читалась
+            # плохо, а стоила ЧЕТЫРЁХ reprice на бар вместо одного — это и был
+            # главный вклад в долгий фоновый пересчёт длинных окон. Колонки
+            # y_*_bps остаются в схеме (старые строки), но больше не заполняются;
+            # цифра самого спреда (y_idx_bps по vwap) не изменилась, поэтому
+            # BARS_METRICS_VERSION не бампаем — пересчитывать нечего.
             o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
             bars.append({
                 "isin": isin, "ts": ts, "kind": kind,
@@ -242,10 +249,8 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
                 "y_idx_bps": m.get("y_idx_bps"), "dm_bps": m.get("dm_bps"),
                 "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
-                "y_open_bps": _metrics(o).get(spread_key),
-                "y_high_bps": _metrics(h).get(spread_key),
-                "y_low_bps": _metrics(l).get(spread_key),
-                "y_close_bps": _metrics(cl).get(spread_key),
+                "y_open_bps": None, "y_high_bps": None,
+                "y_low_bps": None, "y_close_bps": None,
                 "metrics_ver": BARS_METRICS_VERSION,
                 "horizon": m.get("horizon"),
                 "y_idx_alt_bps": m.get("y_idx_alt_bps"),
@@ -284,7 +289,11 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #   6    — 2026-08-13: рядом со спредом выбранного горизонта пишется спред ко
 #          ВТОРОМУ (погашение ↔ ближайшая оферта) — свитчер на графике
 #          переключает готовые числа, без пересчёта года истории.
-BARS_METRICS_VERSION = 6
+#   7    — 2026-08-14: эхо неопределённых купонов источника (см.
+#          coupon_calib.strip_undetermined_values, HONEST_ENGINE_VERSION=7).
+#          Спред баров считался с замороженной ставкой на всём хвосте купонов —
+#          сдвиг до 200 bps, старые бары несопоставимы с новыми.
+BARS_METRICS_VERSION = 7
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",
@@ -335,6 +344,17 @@ def _covered_from(isin: str) -> Optional[str]:
     return r[0] if r and r[0] else None
 
 
+# ГЛУБИНА, ДО КОТОРОЙ ОКНО УЖЕ СЧИТАЛИ. Без этой памяти «покрыто ли окно»
+# выводилось из самих баров (_covered_from — дата самого раннего бара текущей
+# версии), а это ВРЁТ, когда данных левее просто не существует: у выпуска с
+# историей короче запрошенного окна (или за границей глубины ISS) covered
+# навсегда правее frm, условие «не покрыто» не выполнялось никогда, и КАЖДЫЙ
+# запрос графика запускал полный пересчёт всего окна. На проде это крутилось по
+# кругу каждые 40 секунд (2975 строк × 226 дней на бумагу).
+# Ключ по дню и версии метрик: новый день досчитывает хвост, бамп версии — всё.
+_past_depth: dict[str, tuple] = {}      # isin → (день, версия, самая ранняя frm)
+
+
 _bg_backfill: set = set()               # isin'ы с уже запущенным фоновым пересчётом
 _bg_sem = asyncio.Semaphore(2)          # честный as-of сетевой и тяжёлый — не флудим
 
@@ -368,16 +388,39 @@ async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
     n = await asyncio.to_thread(upsert_bars, tail)
 
     covered = await asyncio.to_thread(_covered_from, isin)
-    need_past = days > 1 and (stale > 0 or covered is None or covered[:10] > frm)
+    # Считали ли это окно сегодня на текущей версии метрик (см. _past_depth).
+    seen = _past_depth.get(isin)
+    done_frm = (seen[2] if seen and seen[0] == date.today().isoformat()
+                and seen[1] == BARS_METRICS_VERSION else None)
+    need_past = days > 1 and (
+        stale > 0                                  # в окне нашлись стейл-строки
+        or (done_frm is None and (covered is None or covered[:10] > frm))
+        or (done_frm is not None and frm < done_frm))   # окно расширили влево
     if need_past and isin not in _bg_backfill:
         _bg_backfill.add(isin)
+        # Инкремент: если стейла нет и часть окна уже посчитана — считаем только
+        # НЕДОСТАЮЩИЙ кусок слева [frm, граница). Раньше расширение окна
+        # (6 месяцев → YTD) пересчитывало весь диапазон, включая готовые дни.
+        edge = None
+        if stale == 0:
+            known = [d for d in (done_frm, covered[:10] if covered else None) if d]
+            edge = min(known) if known else None
+        till_day = edge if edge and edge > frm else None
 
         async def _past():
             try:
                 async with _bg_sem:
-                    bars = await build_bars(isin, days, kind, board)
+                    bars = await build_bars(isin, days, kind, board, till=till_day)
                     m = await asyncio.to_thread(upsert_bars, bars)
-                logger.info("bars honest backfill %s: %d строк (%d дн)", isin, m, days)
+                logger.info("bars honest backfill %s: %d строк (%d дн%s)",
+                            isin, m, days, f", досчёт до {till_day}" if till_day else "")
+                # глубину помним, даже если строк не приехало: данных левее может
+                # не быть вовсе, и повторять этот проход бессмысленно
+                prev = _past_depth.get(isin)
+                keep = (prev[2] if prev and prev[0] == date.today().isoformat()
+                        and prev[1] == BARS_METRICS_VERSION else None)
+                _past_depth[isin] = (date.today().isoformat(), BARS_METRICS_VERSION,
+                                     min(frm, keep) if keep else frm)
                 return m
             except Exception as e:
                 logger.warning("bars honest backfill %s: %s", isin, e)
