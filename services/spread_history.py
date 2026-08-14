@@ -131,6 +131,20 @@ def rows_without_horizon(isin: str, days: int = 400) -> List[dict]:
             "ORDER BY date", (isin, cutoff)).fetchall()]
 
 
+def mark_horizon(isin: str, horizon: str, days: int = 400) -> int:
+    """Ставит горизонт строкам без него, НЕ трогая сам спред. Для бумаг, у
+    которых горизонт был и остаётся единственным (нет ни оферт, ни коллов):
+    пересчитывать нечего, а метка нужна — без неё агрегат считает строку
+    несопоставимой с сегодняшней и выбрасывает её с графика."""
+    from datetime import date, timedelta
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with _lock, _connect() as c:
+        cur = c.execute(
+            "UPDATE spread_daily SET horizon=? WHERE isin=? AND kind='floater' "
+            "AND horizon IS NULL AND date >= ?", (horizon, isin, cutoff))
+        return cur.rowcount or 0
+
+
 def update_horizon(isin: str, points: list) -> int:
     """Проставляет горизонт (и спред к нему + ко второму) у строк, где его нет.
     Трогает только строки с horizon IS NULL: прошлое, уже посчитанное с горизонтом,
