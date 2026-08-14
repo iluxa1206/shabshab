@@ -262,7 +262,7 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   issuer, isin, scope = "market", limit = 500,
                                   spreadMin, spreadMax, ttmMin, ttmMax, rating,
                                   base, cls, hideSubord, hideAmort,
-                                  beforeTs, beforeId, isins, maxValue } = {},
+                                  beforeTs, beforeId, isins, maxValue, flagged } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
@@ -289,8 +289,22 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
   // избранное: watchlist живёт в браузере, поэтому набор ISIN уезжает списком
   for (const i of [].concat(isins || [])) if (i) p.append("isins", i);
   if (maxValue != null && maxValue !== "" && maxValue > 0) p.set("max_value", maxValue);
+  // только отмеченные флажком: бэк отдаёт снимки сделок, остальные фильтры
+  // ленты к ним не применяются (см. api/routes/trades.tape)
+  if (flagged) p.set("flagged", "1");
   return request(`/api/trades?${p}`, { signal });
 };
+
+// Отмеченные сделки («красный флажок» в ленте) — per-user, живут на сервере:
+// стол открывает ленту с разных машин, localStorage тут не годится.
+export const fetchTradeFlags = (limit = 1000) =>
+  request(`/api/trades/flags?limit=${limit}`).then((d) => d.trades || []);
+
+export const addTradeFlag = (trade) =>
+  request("/api/trades/flags", { method: "POST", json: trade });
+
+export const removeTradeFlag = (tradeId) =>
+  request(`/api/trades/flags/${tradeId}`, { method: "DELETE" });
 
 export const fetchTapeIssuers = () =>
   request("/api/trades/issuers").then((d) => d.issuers || []);
@@ -306,9 +320,12 @@ export const fetchTapeBoards = (days = 30) =>
 // которых нет в обезличенном тик-архиве. Источник — ISS, см. services/block_trades.
 
 // крупные сделки одной бумаги + её дневные РПС-обороты (карточка выпуска)
-export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500 } = {}, signal) =>
-  request(`/api/blocks/${encodeURIComponent(isin)}?days=${days}&min_value=${minValue}&limit=${limit}`,
-          { signal });
+// order=value — для маркеров РПС на графике: лимит должен срезать МЕЛОЧЬ, а не
+// дальнюю половину окна (иначе точки обрываются на середине графика)
+export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500,
+                                          order } = {}, signal) =>
+  request(`/api/blocks/${encodeURIComponent(isin)}?days=${days}&min_value=${minValue}`
+          + `&limit=${limit}${order ? `&order=${order}` : ""}`, { signal });
 
 // дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
 export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,

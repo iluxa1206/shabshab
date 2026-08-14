@@ -10,6 +10,7 @@ import {
 } from "../api.js";
 import { fmt, baseLabel } from "../format.js";
 import { Brush } from "../charts/index.js";
+import { IconCalendar } from "./icons.jsx";
 
 // Полноэкранный график выпуска (своя вкладка, /chart/:isin).
 // Сверху — строка параметров бумаги, ниже — график на всю высоту окна:
@@ -20,20 +21,21 @@ import { Brush } from "../charts/index.js";
 
 // ── периоды ─────────────────────────────────────────────────────────────────
 // [ключ, подпись, календарных дней (null = «всё»), таймфрейм по умолчанию]
+// Окна дневного масштаба. 1Д и 5Д убраны вместе с переключателем таймфрейма:
+// на дневках это одна-пять свечей — смотреть там нечего, а внутридневных
+// таймфреймов больше нет.
 const PERIODS = [
-  ["1d", "1Д", 1, "5m"],
-  ["5d", "5Д", 5, "1h"],
-  ["1m", "1М", 30, "1d"],
-  ["3m", "3М", 90, "1d"],
-  ["6m", "6М", 180, "1d"],
-  ["ytd", "YTD", null, "1d"],
-  ["1y", "1Г", 365, "1d"],
-  ["3y", "3Г", 1095, "1w"],
-  ["all", "ВСЁ", null, "1w"],
+  ["1m", "1М", 30],
+  ["3m", "3М", 90],
+  ["6m", "6М", 180],
+  ["ytd", "YTD", null],
+  ["1y", "1Г", 365],
+  // 3Г убран: дневных свечей ISS отдаёт 550 дней, дальше окно всё равно
+  // упиралось в ту же глубину, что и «ВСЁ» — две кнопки про одно и то же
+  ["all", "ВСЁ", null],
 ];
-const TFS = [["5m", "5м"], ["1h", "1ч"], ["1d", "1д"], ["1w", "1н"]];
-// глубина, которую отдаёт бэк по таймфрейму (services/market_data._CANDLE_TF)
-const TF_DEPTH_DAYS = { "5m": 4, "1h": 45, "1d": 550, "1w": 365 * 4 };
+// глубина дневных свечей у бэка (services/market_data._CANDLE_TF)
+const TF_DEPTH_DAYS = { "1d": 550 };
 const BRUSH_H = 54;   // высота полосы-обзора под графиком
 
 // ── дополнительные слои (URL-параметр l=vwap,sides,big) ─────────────────────
@@ -389,6 +391,55 @@ function tradeTime(ts, tf) {
   return Math.floor(sec / step) * step;
 }
 
+// ── прогресс загрузки слоёв ─────────────────────────────────────────────────
+// Свечи, средневзвес и спред приезжают тремя независимыми запросами разной
+// длительности (у баров бэк ещё дренит тиковый архив — секунды), и раньше на
+// всё это была одна строчка «загрузка данных…» в углу: непонятно, что именно
+// едет и не завис ли запрос. Полоса живёт НАД графиком абсолютом — появление и
+// исчезновение не двигают высоту канвы (иначе lightweight-charts на каждом
+// шаге пересчитывал бы масштаб).
+// Байтового прогресса у этих ручек нет (JSON целиком), поэтому полоса
+// неопределённая, а честная цифра — секундомер: видно, что запрос жив.
+function useElapsed(active) {
+  const [sec, setSec] = useState(0);
+  useEffect(() => {
+    if (!active) { setSec(0); return; }
+    const t0 = Date.now();
+    setSec(0);
+    const id = setInterval(() => setSec(Math.floor((Date.now() - t0) / 1000)), 250);
+    return () => clearInterval(id);
+  }, [active]);
+  return sec;
+}
+
+function LoadTask({ label, state, detail }) {
+  const sec = useElapsed(state === "load");
+  return (
+    <div className={"cp-task cp-task-" + state}>
+      <span className="cp-task-l">{label}</span>
+      <span className="cp-task-bar"><i /></span>
+      <span className="cp-task-d">
+        {state === "load" ? (sec >= 2 ? `${sec} с` : "…")
+          : state === "err" ? "ошибка"
+          : detail}
+      </span>
+    </div>
+  );
+}
+
+function LoadProgress({ tasks }) {
+  const live = tasks.filter((t) => t.state === "load" || t.state === "err"
+    || t.state === "wait");
+  if (!live.length) return null;
+  return (
+    <div className="cp-load" role="status" aria-live="polite">
+      {tasks.filter((t) => t.state !== "skip").map((t) => (
+        <LoadTask key={t.key} label={t.label} state={t.state} detail={t.detail} />
+      ))}
+    </div>
+  );
+}
+
 export default function ChartPage() {
   const { isin } = useParams();
   const [sp, setSp] = useSearchParams();
@@ -402,18 +453,31 @@ export default function ChartPage() {
   const canGoBack = (window.history.state?.idx ?? 0) > 0;
   const goBack = () => (canGoBack ? nav(-1) : nav(`/floaters?isin=${isin}`));
 
-  const period = sp.get("p") || "3m";
+  // Легаси-ключи убранных окон: 3Г упирался в ту же глубину ISS, что и «ВСЁ»,
+  // внутридневные — в дневки. Неизвестный ключ вместо молчаливого «всё» (так
+  // ссылка открывалась без единой подсвеченной кнопки) сводим к дефолту.
+  const periodRaw = sp.get("p") || "3m";
+  const period = PERIODS.some(([k]) => k === periodRaw) ? periodRaw
+    : (periodRaw === "3y" ? "all" : "3m");
   const custom = { from: sp.get("from"), to: sp.get("to") };
   const isCustom = !!(custom.from || custom.to);
-  const defTf = PERIODS.find(([k]) => k === period)?.[3] || "1d";
-  const tf = sp.get("tf") || (isCustom ? "1d" : defTf);
+  // ТОЛЬКО ДНЕВКИ. Переключатель таймфрейма убран: 5м/1ч/1н работали неровно
+  // (глубина ISS по внутридневным — считанные дни, недельная сетка не дружит с
+  // часовыми барами слоёв), а дневной масштаб — единственный, который даёт
+  // одинаково честную картину на всех окнах. Параметр tf в URL игнорируем:
+  // старые ссылки открываются дневками, а не пустым графиком.
+  const tf = "1d";
   const type = sp.get("type") || "candles";
   // панель спреда: линия по средневзвесу / HLC / выкл (RVD-режим).
   // Свечи спреда убраны: дневная свеча склеивалась из часовых значений и на
   // редких днях выдавала диапазон, которого на рынке не было. Старые ссылки с
   // sm=candles открываются линией.
+  // Панель спреда: линия или выкл. HLC убран (2026-08-14) — свеча спреда
+  // читалась плохо, а стоила четырёх reprice на бар вместо одного и была
+  // главным вкладом в долгий фоновый пересчёт. Старые ссылки (sm=hlc,
+  // sm=candles) открываются линией.
   const smodeRaw = sp.get("sm") || "line";
-  const smode = smodeRaw === "candles" ? "line" : smodeRaw;
+  const smode = smodeRaw === "off" ? "off" : "line";
   const distOn = sp.get("dist") === "1";
   // горизонт спреда: auto (правило цены) | maturity | offer
   const hz = HORIZONS.some(([k]) => k === sp.get("hz")) ? sp.get("hz") : "auto";
@@ -473,9 +537,14 @@ export default function ChartPage() {
 
   // бары нужны и панели спреда: спред считается по средневзвешенной цене
   const barsOn = on("vwap") || on("sides") || (smode !== "off" && layersOk);
+  // Опрос догрузки (см. ниже) ждёт данные, которые бэк уже считает ФОНОМ, и
+  // дрейнить ради него тиковый архив Alor заново незачем: refresh=false на
+  // повторных заходах снимает лишний сетевой вызов на каждой итерации.
+  const pollingRef = useRef(false);
   const qBars = useQuery({
     queryKey: ["hbars", isin, layerDays],
-    queryFn: () => fetchHourlyBars(isin, { days: layerDays }),
+    queryFn: () => fetchHourlyBars(isin, { days: layerDays,
+                                           refresh: !pollingRef.current }),
     enabled: barsOn,
     staleTime: 300_000,
   });
@@ -504,8 +573,11 @@ export default function ChartPage() {
   });
   const qBlocks = useQuery({
     queryKey: ["rps-blocks", isin, layerDays, bigMln],
+    // order=value — как у слоя крупных сделок: лимит режет мелочь, а не
+    // дальнюю половину окна (иначе маркеры РПС обрывались на середине графика)
     queryFn: () => fetchBlocksByIsin(isin, { days: Math.min(layerDays, 400),
-                                             minValue: bigMln * 1e6, limit: 400 }),
+                                             minValue: bigMln * 1e6, limit: 400,
+                                             order: "value" }),
     enabled: on("rps"),
     staleTime: 300_000,
     placeholderData: keepPrev,
@@ -614,9 +686,76 @@ export default function ChartPage() {
     return spreadPts.length > 0 && missing > Math.max(1, tradeDays.size * 0.02);
   }, [spreadPaneOn, candles, spreadPts, barsOn, qBars.isFetching]);
 
-  // HLC у спреда возможен только там, где в баре есть внутридневной разброс:
-  // дневная сетка склеена из часов. На 5м/1ч и на снапшотах — линия.
-  const spreadOHLC = spreadPts.some((p) => p.o != null);   // см. shownPts ниже
+  // ДОГРУЗКА НЕ ЗАМЕЧАЛАСЬ. Бары прошлых дней бэк досчитывает ФОНОМ (честный
+  // as-of, минуты на длинное окно) и отвечает на запрос тем, что уже есть.
+  // Фронт кэшировал этот дырявый ответ на staleTime — линия оставалась
+  // пунктирной до ручной перезагрузки страницы, хотя данные на бэке уже
+  // готовы. Пока покрытие неполное — переспрашиваем сами, с нарастающей
+  // паузой (10с → 20с → 40с → 60с) и потолком попыток: у части бумаг дырки
+  // остаются навсегда (дни без метрик), и вечный опрос был бы холостым.
+  // поповер произвольного периода (иконка календаря в панели окон)
+  const [calOpen, setCalOpen] = useState(false);
+  const calRef = useRef(null);
+  useEffect(() => {
+    if (!calOpen) return undefined;
+    const onDoc = (e) => { if (!calRef.current?.contains(e.target)) setCalOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setCalOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [calOpen]);
+
+  const POLL_MAX = 8;
+  const [pollN, setPollN] = useState(0);
+  useEffect(() => { setPollN(0); }, [isin, tf, from, to, hz, smode]);
+  useEffect(() => {
+    if (!spreadPending || pollN >= POLL_MAX) return;
+    const id = setTimeout(async () => {
+      setPollN((n) => n + 1);
+      pollingRef.current = true;      // повторный заход — без дрейна тиков
+      try {
+        if (barsOn) await qBars.refetch();
+        if (spreadOn) await qSpread.refetch();
+      } finally {
+        pollingRef.current = false;
+      }
+    }, Math.min(10_000 * 2 ** Math.floor(pollN / 2), 60_000));
+    return () => clearTimeout(id);
+  }, [spreadPending, pollN, barsOn, spreadOn]); // eslint-disable-line
+
+  // Прогресс загрузки трёх слоёв данных (см. LoadProgress). Состояния:
+  // load — запрос в полёте, wait — данные догружаются/досчитываются на бэке,
+  // err — запрос упал, done — приехало (в подписи сколько), skip — слой выключен.
+  const loadTasks = useMemo(() => {
+    const st = (q, enabled) => (!enabled ? "skip"
+      : q.isError ? "err"
+      : q.isPending || q.isFetching ? "load" : "done");
+    return [
+      { key: "candles", label: "свечи", state: st(qCandles, true),
+        detail: candles.length ? `${candles.length} · ${tf}` : "пусто" },
+      { key: "bars", label: "средневзвес", state: st(qBars, barsOn),
+        detail: layerPts.length ? `${layerPts.length} баров` : "пусто" },
+      { key: "spread", label: "спред",
+        state: !spreadPaneOn ? "skip"
+          : qSpread.isError ? "err"
+          : (spreadOn && (qSpread.isPending || qSpread.isFetching)) ? "load"
+          : spreadPending ? "wait"
+          : "done",
+        // при догрузке говорим, что ждём бэк и сколько раз уже переспросили —
+        // «пунктир навсегда» больше не выглядит как молчаливое зависание
+        detail: spreadPending
+          ? (pollN >= POLL_MAX ? "часть дней без спреда"
+             : `досчитывается на сервере · ${pollN + 1}/${POLL_MAX}`)
+          : spreadPts.length ? `${spreadPts.length} точек` : "пусто" },
+    ];
+  }, [qCandles.isPending, qCandles.isFetching, qCandles.isError, candles.length, tf,
+      qBars.isPending, qBars.isFetching, qBars.isError, barsOn, layerPts.length,
+      qSpread.isPending, qSpread.isFetching, qSpread.isError, spreadOn,
+      spreadPaneOn, spreadPending, spreadPts.length, pollN]);
+
   // В распределение идут ВСЕ дни, включая тонкие: сделка есть сделка, а отбор
   // «нормальных» оборотов делал статистику несравнимой с самой линией.
   // время у точек — либо ISO-дата (дневная сетка), либо UNIX-секунды (внутри дня);
@@ -643,12 +782,6 @@ export default function ChartPage() {
       return { label: "закр. дня (снапшот)",
                hint: "дневной снапшот spread_daily: цена закрытия дня, вечерний расчёт. "
                      + "Берётся, когда часовых баров за окно нет вовсе" };
-    }
-    if (smode === "hlc") {
-      return { label: "O/H/L/C часов",
-               hint: "свеча спреда: открытие — по цене открытия первого часа дня, "
-                     + "закрытие — по закрытию последнего, макс/мин — по всем ценам "
-                     + "всех часов (часы тоньше 1% дневного объёма отброшены)" };
     }
     return on("vwap")
       ? { label: "VWAP",
@@ -911,28 +1044,11 @@ export default function ChartPage() {
 
     let yidxDrawn = false;
     if (spreadPaneOn && shownPts.length > 1) {
-      // O/H/L/C спреда собраны из часовых значений дня, поэтому и «тело» свечи,
-      // и коридор HLC — это реальный разброс спреда внутри дня, а не пересчёт
-      // цены свечи. Линия — средневзвешенное за день.
+      // Линия спреда — средневзвешенное за день (по vwap или по закрытию,
+      // смотря включён ли слой СРЕДНЕВЗВЕС).
       const spFmt = { type: "price", precision: 0, minMove: 1 };
       yidxDrawn = true;
-      if (spreadOHLC && smode === "hlc") {
-        // Цвета синхронизированы с ЦЕНОВЫМ графиком, а не со своей осью: спред
-        // обратен цене, минимум спреда — это максимум цены (зелёный), и наоборот.
-        for (const [key, field, color, w] of [
-          ["yhi", "h", theme.down, 1],
-          ["ylo", "l", theme.up, 1],
-          ["yidx", "c", theme.spread, 2],
-        ]) {
-          const s = chart.addSeries(LineSeries, {
-            color, lineWidth: w, priceFormat: spFmt,
-            priceLineVisible: false, lastValueVisible: key === "yidx",
-          }, 1);
-          s.setData(shownPts.filter((p) => p[field] != null)
-            .map((p) => ({ time: p.time, value: p[field] })));
-          seriesRef.current[key] = s;
-        }
-      } else {
+      {
         // Заливка под линией (AreaSeries) вместо голой линии: панель спреда —
         // половина экрана, и одна нитка цветом текста на ней терялась. Градиент
         // относительный (от самой линии вниз), поэтому работает и на
@@ -948,16 +1064,8 @@ export default function ChartPage() {
         }, 1);
         yidx.setData(shownPts.map((p) => ({ time: p.time, value: p.value })));
         seriesRef.current.yidx = yidx;
-        // средний уровень окна — пунктиром: без него «дорого/дёшево» на глаз не
-        // читается, приходилось лезть в панель распределения
-        const fin = shownPts.map((p) => p.value).filter((x) => Number.isFinite(x));
-        if (fin.length > 2) {
-          const avg = fin.reduce((s, x) => s + x, 0) / fin.length;
-          yidx.createPriceLine({
-            price: Math.round(avg), color: alpha(theme.spread, 0.55),
-            lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "ср.",
-          });
-        }
+        // Средний уровень — пунктиром; сама линия ставится отдельным эффектом
+        // ниже, по ВИДИМОЙ зоне графика (зум в месяц = среднее месяца)
       }
     }
 
@@ -984,8 +1092,34 @@ export default function ChartPage() {
       measureDistGeom(c);
     });
     return () => cancelAnimationFrame(raf);
-  }, [candles, type, tf, theme, spreadPaneOn, shownPts, smode, spreadOHLC, spreadPending,
+  }, [candles, type, tf, theme, spreadPaneOn, shownPts, smode, spreadPending,
       layerPts, bigTrades, rpsTrades, layers, layersOk]);
+
+  // СРЕДНИЙ УРОВЕНЬ СПРЕДА — по ВИДИМОЙ зоне, а не по всему окну: зум в месяц
+  // должен давать среднее месяца, иначе пунктир отвечает на вопрос про другой
+  // период, чем тот, на который человек смотрит. Отдельным эффектом, потому что
+  // пересоздавать график на каждый сдвиг видимого диапазона нельзя — линия
+  // снимается и ставится заново на той же серии.
+  const avgLineRef = useRef(null);
+  useEffect(() => {
+    const s = seriesRef.current.yidx;
+    if (!s) return undefined;
+    if (avgLineRef.current) {
+      try { s.removePriceLine(avgLineRef.current); } catch { /* серия пересоздана */ }
+      avgLineRef.current = null;
+    }
+    const pts = visTimes
+      ? shownPts.filter((p) => p.time >= visTimes.from && p.time <= visTimes.to)
+      : shownPts;
+    const fin = pts.map((p) => p.value).filter((x) => Number.isFinite(x));
+    if (fin.length <= 2) return undefined;
+    const avg = fin.reduce((a, x) => a + x, 0) / fin.length;
+    avgLineRef.current = s.createPriceLine({
+      price: Math.round(avg), color: alpha(theme?.spread || "#888", 0.55),
+      lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "ср.",
+    });
+    return undefined;
+  }, [shownPts, visTimes, theme, spreadPaneOn, smode, hasYidx]);
 
   // при смене окна/таймфрейма старая строка легенды осталась бы висеть от
   // предыдущего курсора — гасим
@@ -1086,16 +1220,12 @@ export default function ChartPage() {
       // самой точки (то, что рисует линия в режиме «линия»).
       const yd = s.yidx ? param.seriesData.get(s.yidx) : null;
       const pt = yd ? spreadPts.find((x) => x.time === param.time) : null;
-      // в режиме HLC максимум/минимум лежат в отдельных сериях, а не в баре
       setLegend({
         time: param.time,
         o: p.open, h: p.high ?? val(s.hi), l: p.low ?? val(s.lo), c: p.close ?? p.value,
         v: param.seriesData.get(s.vol)?.value,
         y: yd ? (yd.value ?? yd.close) : null,
-        yClose: !!(yd && (yd.value == null || s.yhi)),
         yAvg: pt?.value,
-        yo: yd?.open ?? pt?.o,
-        yh: yd?.high ?? val(s.yhi), yl: yd?.low ?? val(s.ylo),
         // база спреда: цена, по которой он посчитан, и какая именно это цена
         yPx: pt?.px, yPxKind: pt?.src === "daily" ? "закр. дня (снапшот)"
           : on("vwap") ? "ср.взвес" : "закр.",
@@ -1180,11 +1310,31 @@ export default function ChartPage() {
               onClick={() => setParam({ p: k, from: null, to: null, tf: null })}>{l}</button>
           ))}
         </span>
-        <span className="cp-group" role="group" aria-label="Таймфрейм">
-          {TFS.map(([k, l]) => (
-            <button key={k} type="button" className={"cp-btn" + (tf === k ? " on" : "")}
-              onClick={() => setParam({ tf: k })}>{l}</button>
-          ))}
+        {/* произвольное окно — под календарь: два поля с датами занимали
+            половину панели ради того, чем пользуются изредка */}
+        <span className="cp-cal-wrap" ref={calRef}>
+          <button type="button" title="Произвольный период"
+            aria-label="Произвольный период" aria-expanded={calOpen}
+            className={"cp-btn cp-cal-btn" + (isCustom || calOpen ? " on" : "")}
+            onClick={() => setCalOpen((v) => !v)}>
+            <IconCalendar size={13} />
+          </button>
+          {calOpen && (
+            <div className="cp-cal-pop" role="dialog" aria-label="Произвольный период">
+              <label className="cp-date">с
+                <input type="date" value={custom.from || ""} max={custom.to || iso(new Date())}
+                  onChange={(e) => setParam({ from: e.target.value || null, p: null })} />
+              </label>
+              <label className="cp-date">по
+                <input type="date" value={custom.to || ""} min={custom.from || ""} max={iso(new Date())}
+                  onChange={(e) => setParam({ to: e.target.value || null, p: null })} />
+              </label>
+              {isCustom && (
+                <button type="button" className="cp-btn cp-reset"
+                  onClick={() => setParam({ from: null, to: null, p: "3m", tf: null })}>сброс дат</button>
+              )}
+            </div>
+          )}
         </span>
         <span className="cp-group" role="group" aria-label="Вид">
           {[["candles", "Свечи", "OHLC свечами"],
@@ -1196,18 +1346,12 @@ export default function ChartPage() {
               onClick={() => setParam({ type: k })}>{l}</button>
           ))}
         </span>
-        <label className="cp-date">с
-          <input type="date" value={custom.from || ""} max={custom.to || iso(new Date())}
-            onChange={(e) => setParam({ from: e.target.value || null, p: null })} />
-        </label>
-        <label className="cp-date">по
-          <input type="date" value={custom.to || ""} min={custom.from || ""} max={iso(new Date())}
-            onChange={(e) => setParam({ to: e.target.value || null, p: null })} />
-        </label>
-        {isCustom && (
-          <button type="button" className="cp-btn cp-reset"
-            onClick={() => setParam({ from: null, to: null, p: "3m", tf: null })}>сброс дат</button>
-        )}
+        {/* Панель спреда — тумблер рядом с видом цены: после отказа от HLC у неё
+            осталось два состояния, и группа из двух кнопок была лишней рамкой */}
+        <button type="button" className={"cp-btn cp-spread-btn" + (smode !== "off" ? " on" : "")}
+          aria-pressed={smode !== "off"}
+          title="Панель спреда под ценой (Y-IDX по средневзвешенной цене)"
+          onClick={() => setParam({ sm: smode === "off" ? "line" : "off" })}>СПРЕД</button>
         <span className="cp-hint">колесо — зум · драг — сдвиг · двойной клик по оси — сброс</span>
       </div>
 
@@ -1250,16 +1394,6 @@ export default function ChartPage() {
             </span>
           </>
         )}
-        <span className="cp-layers-k" style={cSp}>спред</span>
-        <span className="cp-group" role="group" aria-label="Панель спреда">
-          {[["line", "Линия", `${sLabel}: по средневзвесу при включённом слое СРЕДНЕВЗВЕС, иначе по цене закрытия`],
-            ["hlc", "HLC", "Три линии: макс/мин спреда за день и закрытие"],
-            ["off", "Выкл", "убрать панель спреда"]].map(([k, l, hint]) => (
-            <button key={k} type="button" title={hint}
-              className={"cp-btn" + (smode === k ? " on" : "")}
-              onClick={() => setParam({ sm: k })}>{l}</button>
-          ))}
-        </span>
         <button type="button" className={"cp-btn cp-reset" + (distOn ? " on" : "")}
           disabled={smode === "off"}
           title="Гистограмма распределения спреда за период + сводка"
@@ -1285,7 +1419,11 @@ export default function ChartPage() {
                       + (qTrades.data?.truncated
                           ? ` (из ${qTrades.data.total} — показаны самые крупные)` : "")
                     : null,
-                  on("rps") ? `${rpsTrades.length} адресных (РПС)` : null,
+                  on("rps")
+                    ? `${rpsTrades.length} адресных (РПС)`
+                      + (qBlocks.data?.truncated
+                          ? ` (из ${qBlocks.data.total} — показаны самые крупные)` : "")
+                    : null,
                   qTrades.data?.eff_spread_bps != null
                     ? `эфф. спред по крупным ${qTrades.data.eff_spread_bps} б.п. цены` : null,
                 ].filter(Boolean).join(" · ")
@@ -1317,12 +1455,8 @@ export default function ChartPage() {
             {legend.sl != null && <span style={cLo}> · продажи {fmt.pct(legend.sl)}</span>}
             {/* всё про спред одной группой: иначе «ср.взвес» цены и «ср.взвес»
                 спреда стоят рядом в строке и читаются как одно и то же */}
-            {legend.y != null && (legend.yClose
-              ? <span style={cSp}> · {sLabel} bps:{legend.yo != null && <> откр. {Math.round(legend.yo)} ·</>} закр. {Math.round(legend.y)}
-                  {legend.yAvg != null && <> · ср. {Math.round(legend.yAvg)}</>}
-                  {legend.yh != null && legend.yl != null && legend.yh !== legend.yl &&
-                    <> · день {Math.round(legend.yl)} … {Math.round(legend.yh)}</>}</span>
-              : <span style={cSp}> · {sLabel} {Math.round(legend.y)} bps</span>)}
+            {legend.y != null &&
+              <span style={cSp}> · {sLabel} {Math.round(legend.y)} bps</span>}
             {/* по какой цене посчитан спред: без этого цифру не сверить с
                 ценовым графиком (средневзвес / закрытие / снапшот дня) */}
             {legend.y != null && legend.yPx != null && (
@@ -1354,6 +1488,7 @@ export default function ChartPage() {
 
       <div className="cp-row" ref={rowRef}>
         <div className="cp-chart" ref={hostRef}>
+          <LoadProgress tasks={loadTasks} />
           {distOn && <SpreadDist dist={dist} theme={theme}
             geom={distGeom} rightPad={rightPad} />}
         </div>
@@ -1391,8 +1526,6 @@ export default function ChartPage() {
               </span>
             )}
             {spreadPaneOn && !hasYidx && ` · история ${sLabel} за период пуста`}
-            {spreadPaneOn && hasYidx && !spreadOHLC && smode === "hlc" &&
-              " · HLC спреда нет: в архиве только спред по средневзвесу (бары до пересчёта)"}
             {!spreadPaneOn && " · панель спреда выключена"}
             {on("big") && !bigTrades.length &&
               ` · сделок крупнее ${bigMln} млн ₽ в архиве нет (глубина тиков ~30 дней)`}

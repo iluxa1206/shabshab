@@ -27,7 +27,10 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
   };
 
   const active = sort.key === col.key;
+  // col-<key> — адрес колонки для CSS (компактные паддинги узких колонок и т.п.);
+  // тот же класс ставится и на td, чтобы правило било по всей колонке
   const cls =
+    `col-${col.key} ` +
     (col.align === "left" ? "left " : col.align === "num" ? "num " : "") +
     (col.sep ? "col-sep " : "") + (col.grp ? "col-grp " : "") +
     (dragKey === col.key ? "th-drag " : "") +
@@ -47,7 +50,10 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
       tabIndex={0}
       draggable={!!onMoveCol}
       aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
-      title="Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"
+      // безымянной колонке подсказка объясняет, что это вообще за столбец
+      aria-label={col.label || col.title || col.key}
+      title={(col.title ? col.title + ". " : "")
+             + "Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"}
       onClick={() => onSort(col.key)}
       onKeyDown={onKeyDown}
       // источник переноса держим в ref, а не только в state: state обновляется

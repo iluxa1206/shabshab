@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings } from "../api.js";
+import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings,
+         fetchTradeFlags, addTradeFlag, removeTradeFlag } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
+import { IconFlag } from "./icons.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import { usePageStatus } from "../pageStatus.jsx";
@@ -142,10 +144,16 @@ const COLS = [
   // максимуму формата «p 10.10.2029 (4.2)».
   { key: "mat",    label: "ПОГАШЕНИЕ",  sub: "(ЛЕТ) · ОФЕРТА",
     align: "left", w: 17, get: (r) => r.maturity || "" },
-  { key: "board",  label: "РЕЖИМ",      align: "left", w: 10, get: (r) => r.board_short || r.board || "" },
+  // Режим — без заголовка: в ячейке стоит тег («Т+», «РПС»), он сам себя
+  // объясняет, а слово РЕЖИМ занимало вдвое больше места, чем данные.
+  // w=8 — не по «Т+», а по самому длинному тегу («РПС с ЦК»): у́же он обрезался
+  // бы многоточием ровно на адресных сделках, ради которых режим и смотрят
+  { key: "board",  label: "",           align: "left", w: 8, get: (r) => r.board_short || r.board || "" },
   { key: "price",  label: "ЦЕНА",  sub: "%",   align: "num",  w: 8,  get: (r) => r.price },
   { key: "value",  label: "СУММА", sub: "МЛН", align: "num",  w: 9,  get: (r) => r.value },
-  { key: "side",   label: "СТОРОНА",           align: "left", w: 9,  get: (r) => r.side || "" },
+  // B/S вместо «СТОРОНА»: заголовок был длиннее самих значений (buy/sell)
+  { key: "side",   label: "B/S",        align: "left", w: 5,  get: (r) => r.side || "",
+    title: "сторона агрессора: buy — сделка по аску, sell — по биду" },
   { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
   // Насколько сделка ушла от того уровня, по которому бумага торговалась неделю:
@@ -302,6 +310,11 @@ export default function TradesTape() {
   const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
   const watch = useMemo(() => readLS("watch", []) || [], []);
   const [ratingOpts, setRatingOpts] = useState([]);
+  // ФЛАЖКИ. Отметка сделки живёт на сервере (per-user): стол смотрит ленту с
+  // разных машин, а localStorage привязан к браузеру. Локально держим только
+  // множество id — чтобы флажок перекрашивался мгновенно, не дожидаясь ответа.
+  const [flagIds, setFlagIds] = useState(() => new Set());
+  const [onlyFlagged, setOnlyFlagged] = useState(() => pick(savedFilters().onlyFlagged, false));
   // «по дням» — агрегат бумага/режим/день вместо поштучной ленты. Только для
   // адресных: у безадресных поштучный архив полный, агрегировать нечего.
   const [byDay, setByDay] = useState(() => pick(savedFilters().byDay, false));
@@ -345,16 +358,45 @@ export default function TradesTape() {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
-      onlyWatch }));
+      onlyWatch, onlyFlagged }));
   }, [minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
-      onlyWatch]);
+      onlyWatch, onlyFlagged]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
     fetchTapeRatings().then(setRatingOpts).catch(() => setRatingOpts([]));
+    fetchTradeFlags()
+      .then((rows) => setFlagIds(new Set(rows.map((r) => r.trade_id))))
+      .catch(() => {});
   }, []);
+
+  // Клик по флажку: состояние перекрашиваем сразу, на ошибке откатываем —
+  // отметка не должна ощущаться как «нажал и жди». Строка целиком кликабельна
+  // (уводит на график), поэтому событие останавливаем.
+  const toggleFlag = (r, e) => {
+    e.stopPropagation();
+    const on = flagIds.has(r.trade_id);
+    setFlagIds((s) => {
+      const n = new Set(s);
+      on ? n.delete(r.trade_id) : n.add(r.trade_id);
+      return n;
+    });
+    const req = on
+      ? removeTradeFlag(r.trade_id)
+      : addTradeFlag({
+          trade_id: r.trade_id, isin: r.isin, ts: r.ts, price: r.price,
+          qty: r.qty, value: r.value, side: r.side, board: r.board,
+          market: r.negotiated ? "ndm" : "bonds", cur: r.cur,
+          y_idx_bps: r.y_idx_bps, yld: r.yld,
+        });
+    req.catch(() => setFlagIds((s) => {
+      const n = new Set(s);
+      on ? n.add(r.trade_id) : n.delete(r.trade_id);
+      return n;
+    }));
+  };
 
   useEffect(() => {
     abort.current?.abort();
@@ -370,13 +412,18 @@ export default function TradesTape() {
                           isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-                          hideSubord: hideSub, hideAmort,
+                          hideSubord: hideSub, hideAmort, flagged: onlyFlagged,
                           isins: onlyWatch ? watch : undefined }, ac.signal)
-        .then((d) => { setData(d); setPages([]); setMore(!!d.has_more); });
+        .then((d) => {
+          setData(d); setPages([]); setMore(!!d.has_more);
+          // список флагов приезжает вместе с лентой — держим множество в
+          // синхроне, иначе отметка с другой машины видна только после F5
+          if (d.flagged) setFlagIds(new Set((d.trades || []).map((t) => t.trade_id)));
+        });
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [minValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch,
+  }, [minValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch, onlyFlagged,
       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
@@ -610,6 +657,14 @@ export default function TradesTape() {
               title="Только избранные бумаги — тот же watchlist, что в МОНИТОРЕ">
               ★ {watch.length}
             </button>
+            {/* отмеченные сделки: не срез рынка, а СВОЙ список — поэтому
+                остальные фильтры ленты к нему не применяются (бэк отдаёт
+                снимки), и это сказано в подсказке */}
+            <button className={"chip-btn chip-flag" + (onlyFlagged ? " on" : "")}
+              onClick={() => setOnlyFlagged((v) => !v)}
+              title="Только отмеченные флажком сделки. Список свой, фильтры ленты к нему не применяются">
+              <IconFlag size={11} /> {flagIds.size}
+            </button>
           </div>
 
           <div className="fgroup">
@@ -751,11 +806,17 @@ export default function TradesTape() {
           <div className="ia-table-wrap">
             <table className="grid tape-table packed cols-fixed">
               <colgroup>
-                {cols.map((c) => <col key={c.key} style={{ "--cw": (c.w || 8) + "ch" }} />)}
+                {/* флажок — служебная колонка у левого края: в COLS её нет
+                    намеренно, иначе её можно было бы утащить перетаскиванием
+                    или отсортировать по ней ленту */}
+                <col className="col-flag" style={{ "--cw": "3ch" }} />
+                {cols.map((c) => <col key={c.key} className={`col-${c.key}`}
+                  style={{ "--cw": (c.w || 8) + "ch" }} />)}
                 <col className="col-fill" />
               </colgroup>
               <thead>
                 <tr>
+                  <th className="tape-flag-th" title="отметить сделку флажком" />
                   {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
                     onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
                     overKey={overKey} setOverKey={setOverKey} />)}
@@ -809,7 +870,7 @@ export default function TradesTape() {
                     <Fragment key={r.trade_id}>
                     {head && (
                       <tr className="tape-day">
-                        <td className="left" colSpan={cols.length + 1}>{dayTitle(head)}</td>
+                        <td className="left" colSpan={cols.length + 2}>{dayTitle(head)}</td>
                       </tr>
                     )}
                     <tr
@@ -817,9 +878,19 @@ export default function TradesTape() {
                                  + (r.negotiated ? "blk-ndm" : "")}
                       onClick={clickable ? () => openBond(r.isin, "chart") : undefined}
                       title={`${r.isin} · ${r.ts} · ${r.board_title || r.board}`}>
+                      <td className="tape-flag-td">
+                        <button type="button"
+                          className={"tape-flag" + (flagIds.has(r.trade_id) ? " on" : "")}
+                          aria-pressed={flagIds.has(r.trade_id)}
+                          title={flagIds.has(r.trade_id) ? "снять флажок" : "отметить сделку"}
+                          onClick={(e) => toggleFlag(r, e)}>
+                          <IconFlag size={12} />
+                        </button>
+                      </td>
                       {cols.map((c) => (
                         <td key={c.key}
-                          className={c.align === "left" ? "left" : c.align === "num" ? "num" : ""}
+                          className={`col-${c.key} `
+                            + (c.align === "left" ? "left" : c.align === "num" ? "num" : "")}
                           style={c.key === "yidx" && r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
                           title={c.key === "yidx" && r.dm_bps != null
                             ? `DM ${fmt.num(r.dm_bps, 0)} бп` : undefined}>
