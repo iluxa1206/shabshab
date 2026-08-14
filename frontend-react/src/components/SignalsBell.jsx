@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clearSignalEvents, fetchSignalEvents, markSignalEventsSeen } from "../api.js";
 import { fmt } from "../format.js";
+import { bookMode, maturityTxt, sideInfo, tradeMode } from "../signalFormat.js";
 import { IconBell, IconAlert } from "./icons.jsx";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
@@ -159,27 +160,30 @@ export default function SignalsBell() {
                       <span className="sb-time num">{timeOf(e.fired_at)}</span>
                     </span>
                     {e.reason === "block" ? (
-                      // у сделки нет ни спреда набора, ни стороны стакана —
-                      // показываем то, что есть: сумма, цена и агрессор
+                      // у сделки нет ни спреда набора, ни стороны стакана:
+                      // сторона здесь — агрессор, а у адресной его нет вовсе
                       <span className="sb-row-2 num">
-                        <b>{money(e.money_rub)} млн</b>
+                        <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
+                        {e.val_bps != null && (
+                          <b><span className="sb-k">Y-IDX</span> {fmt.num(e.val_bps, 0)} бп</b>
+                        )}
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
-                        {e.side && (
-                          <span className={e.side === "buy" ? "pos" : "neg"}>
-                            {e.side === "buy" ? "buy" : "sell"}</span>)}
+                        <span className="sb-vol">{money(e.money_rub)} млн</span>
                       </span>
                     ) : (
                       <span className="sb-row-2 num">
-                        <span className={e.side === "ask" ? "pos" : "neg"}>
-                          {e.side === "ask" ? "оффер" : "бид"}</span>
-                        <b>{fmt.num(e.val_bps, 0)} бп</b>
+                        <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
+                        <b><span className="sb-k">Y-IDX</span> {fmt.num(e.val_bps, 0)} бп</b>
                         <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />
-                        <span className="sb-vol">{money(e.money_rub)} млн
-                          {e.levels ? ` · ${e.levels} ур` : ""}</span>
+                        <span className="sb-vol">{money(e.money_rub)} млн</span>
                       </span>
                     )}
+                    <span className="sb-row-mode">
+                      {[tradeMode(e), bookMode(e), maturityTxt(e)]
+                        .filter(Boolean).join(" · ")}
+                    </span>
                     <span className="sb-row-3">
                       {/* у блока filter_name пустой, когда звонило умолчание
                           (env-порог), а не заведённый пользователем фильтр */}

@@ -1778,6 +1778,14 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sig-hit-name { font-size: 12.5px; font-weight: 700; }
 .sig-hit-time { font-family: var(--mono); font-size: 10px; color: var(--mut); }
 .sig-hit-body { font-size: 12px; margin-top: 3px; text-align: left; }
+/* подписи величин («Y-IDX», «цена») — тише самих чисел, но читаются */
+.sig-hit-k, .sb-k { font-family: var(--mono); font-size: 9.5px; color: var(--mut-2);
+                    letter-spacing: .06em; }
+/* режим торгов / режим набора / срок до погашения */
+.sig-hit-mode, .sb-row-mode { display: block; font-size: 10.5px; color: var(--mut);
+                              margin-top: 3px; }
+.sig-hit-mode:empty, .sb-row-mode:empty { display: none; }
+.sig-hit-body .dim, .sb-row-2 .dim { color: var(--mut); }
 .sig-hit-why { font-size: 10.5px; color: var(--mut); margin-top: 3px; }
 .sig-hit-why .num { font-family: var(--mono); }
 .sig-hit-meta { font-family: var(--mono); font-size: 9.5px; color: var(--mut-2); margin-top: 3px;

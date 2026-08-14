@@ -6,6 +6,7 @@ import {
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
+import { bookMode, maturityTxt, sideInfo, tradeMode } from "../signalFormat.js";
 
 const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 // Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
@@ -774,16 +775,16 @@ export default function SignalsModule() {
                 <div className="sig-hit-body num">
                   {/* у крупной сделки сторона — агрессор (buy/sell), а не сторона
                       стакана; у адресной её нет вообще */}
-                  {h.reason === "block"
-                    ? (h.side === "buy" || h.side === "sell") && (
-                        <span className={h.side === "buy" ? "pos" : "neg"}>
-                          {h.side === "buy" ? "buy" : "sell"}</span>)
-                    : <span className={h.side === "ask" ? "pos" : "neg"}>
-                        {h.side === "ask" ? "оффер" : "бид"}</span>}
-                  {h.val_bps != null && <> <b>{fmt.num(h.val_bps, 0)} бп</b></>}
+                  <span className={sideInfo(h).cls}>{sideInfo(h).text}</span>
+                  {h.val_bps != null && (
+                    <> · <span className="sig-hit-k">Y-IDX</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
+                  )}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
-                  {h.levels ? <> · {h.levels} ур</> : null}
+                </div>
+                <div className="sig-hit-mode">
+                  {[tradeMode(h), bookMode(h), maturityTxt(h)]
+                    .filter(Boolean).join(" · ")}
                 </div>
                 <WhyLine h={h} />
                 <div className="sig-hit-meta">

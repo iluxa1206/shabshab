@@ -338,6 +338,10 @@ _MIGRATIONS = [
     # бот получает их события копией
     "DROP TABLE IF EXISTS tg_filters",
     "DROP TABLE IF EXISTS tg_filter_hits",
+    # режим торгов у события-сделки: в ленте «блок на 600 млн» без пометки
+    # адресный/биржевой читается как принт по стакану, а это разные новости
+    "ALTER TABLE signal_events ADD COLUMN board TEXT",
+    "ALTER TABLE signal_events ADD COLUMN negotiated INTEGER",
 ]
 
 

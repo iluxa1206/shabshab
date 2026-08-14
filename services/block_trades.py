@@ -864,10 +864,11 @@ async def notify_blocks() -> int:
         with _lock, _connect() as c:
             c.executemany(
                 "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
-                "price,money_rub,val_bps,reason,fired_at,seen) "
-                "VALUES(?,?,?,?,?,?,?,?,'block',?,0)",
+                "price,money_rub,val_bps,board,negotiated,reason,fired_at,seen) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,'block',?,0)",
                 [(fid, u, m["isin"], m["name"], m["side"], m["price"],
-                  m["money_rub"], m["val_bps"], now)
+                  m["money_rub"], m["val_bps"], m["board"],
+                  1 if m["negotiated"] else 0, now)
                  for (u, fid, _n, _s, _d), ms in payloads.items() for m in ms])
     await asyncio.to_thread(_persist)
 

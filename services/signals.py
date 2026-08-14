@@ -14,7 +14,7 @@
 живут в services/screener_core.py."""
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
@@ -198,14 +198,55 @@ def _reset_state(fid: int) -> None:
 
 # --- лента событий ---
 
+def _with_maturity(rows: List[dict]) -> List[dict]:
+    """Дописывает погашение и срок до него. Считаем НА ЧТЕНИИ, а не пишем в
+    событие: срок тает каждый день, а лента живёт неделями — записанное число
+    лет к моменту просмотра уже врёт. Реестр недоступен — просто без срока."""
+    if not rows:
+        return rows
+    try:
+        from services import instruments_registry as reg
+        labels = reg.labels_map(sorted({r["isin"] for r in rows}))
+    except Exception:
+        return rows
+    today = date.today()
+    for r in rows:
+        mat = (labels.get(r["isin"]) or {}).get("maturity")
+        r["maturity"] = mat
+        r["years"] = None
+        if mat:
+            try:
+                r["years"] = max(
+                    0.0, (date.fromisoformat(mat) - today).days / 365.25)
+            except ValueError:
+                pass
+    return rows
+
+
 def events_for_user(user_email: str, limit: int = EVENTS_LIMIT) -> List[dict]:
     with _connect() as c:
         rows = c.execute(
-            "SELECT e.*, f.name AS filter_name FROM signal_events e "
+            "SELECT e.*, f.name AS filter_name, f.kind AS filter_kind, "
+            "f.params_json AS filter_params FROM signal_events e "
             "LEFT JOIN signal_filters f ON f.id = e.filter_id "
             "WHERE e.user_email=? ORDER BY e.fired_at DESC, e.id DESC LIMIT ?",
             (user_email, int(limit))).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # режим набора объёма показываем в ленте словами; фильтр могли уже
+        # удалить — тогда single_px остаётся единственной уликой режима
+        params = d.pop("filter_params", None)
+        mode = None
+        if params:
+            try:
+                mode = (json.loads(params) or {}).get("money_mode")
+            except (TypeError, ValueError):
+                mode = None
+        d["money_mode"] = mode or ("single" if d.get("single_px") is not None
+                                   else None)
+        out.append(d)
+    return _with_maturity(out)
 
 
 def unseen_count(user_email: str) -> int:
