@@ -1,7 +1,12 @@
-"""Тонкий async-клиент Telegram Bot API (без aiogram: команд мало, вся
-настройка уйдёт в Mini App). Ретраи на 429 с уважением retry_after и на 5xx.
+"""Тонкий async-клиент Telegram Bot API (без aiogram: команд мало, настройка
+живёт на сайте). Ретраи на 429 с уважением retry_after и на 5xx.
 Токен из env TG_BOT_TOKEN; без него клиент выключен (enabled() == False) —
-все send_* тихо no-op, чтобы дев без бота не сыпал ошибками."""
+все send_* тихо no-op, чтобы дев без бота не сыпал ошибками.
+
+TG_PROXY (socks5://user:pass@host:port или http://...) уводит ТОЛЬКО вызовы
+Bot API в прокси — биржевой трафик (Alor/MOEX/ЦБ) идёт напрямую, вебхук тоже
+не затронут (он входящий). На проде это сайдкар xray с Reality-туннелем,
+см. docker-compose.prod.yml. Пустой TG_PROXY = прямое соединение."""
 import asyncio
 import logging
 import os
@@ -24,6 +29,10 @@ def enabled() -> bool:
     return _token() is not None
 
 
+def _proxy() -> Optional[str]:
+    return (os.getenv("TG_PROXY") or "").strip() or None
+
+
 async def call(method: str, payload: Optional[dict] = None,
                files: Optional[dict] = None, timeout: float = 30.0) -> Optional[dict]:
     """POST {method} → result из конверта Bot API. None при выключенном клиенте
@@ -32,7 +41,7 @@ async def call(method: str, payload: Optional[dict] = None,
     if not token:
         return None
     url = f"https://api.telegram.org/bot{token}/{method}"
-    async with httpx.AsyncClient(timeout=timeout) as cli:
+    async with httpx.AsyncClient(timeout=timeout, proxy=_proxy()) as cli:
         for attempt in range(_RETRIES):
             try:
                 if files:
@@ -52,11 +61,14 @@ async def call(method: str, payload: Optional[dict] = None,
                     return None
                 return body.get("result")
             except httpx.ConnectError as e:
-                # На прод-VPS имя api.telegram.org резолвится провайдерским DNS
-                # только в IPv6 (маршрута нет), а часть IPv4-пула Telegram
-                # блокируется — лечится extra_hosts/TG_API_IP в compose.
-                logger.warning("tg %s connect error (attempt %d): %s — проверь "
-                               "TG_API_IP/extra_hosts", method, attempt + 1, e)
+                # Без прокси: на прод-VPS имя api.telegram.org резолвится
+                # провайдерским DNS только в IPv6 (маршрута нет), а часть
+                # IPv4-пула Telegram блокируется — лечится extra_hosts/TG_API_IP.
+                # С прокси сюда же приходит падение сайдкара tgproxy.
+                logger.warning("tg %s connect error (attempt %d): %s — проверь %s",
+                               method, attempt + 1, e,
+                               "сайдкар tgproxy (TG_PROXY)" if _proxy()
+                               else "TG_API_IP/extra_hosts")
                 await asyncio.sleep(1.5 * (attempt + 1))
             except httpx.HTTPError as e:
                 logger.warning("tg %s http error (attempt %d): %s", method, attempt + 1, e)

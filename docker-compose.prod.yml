@@ -44,6 +44,32 @@ services:
     volumes:
       # Аккаунты дашборда (data/users.json) — переживают редеплой.
       - ./data:/app/data
+    # Только порядок старта: доставка в TG и так с ретраями, падение сайдкара
+    # приложение не роняет.
+    depends_on:
+      - tgproxy
+
+  # Сайдкар-выход в Telegram: Xray держит VLESS/Reality-туннель наружу и отдаёт
+  # внутрь сети SOCKS5 на 1080. Порт наружу НЕ публикуется — только по имени
+  # `tgproxy` из сети astra-prod_default, вход под паролем (см. config.json).
+  # Через него ходят ТОЛЬКО вызовы Bot API (TG_PROXY в .env); биржевой трафик
+  # идёт напрямую. Вебхук входящий — его это не касается.
+  #
+  # Конфиг лежит ВНЕ репозитория (/root/xray/config.json, chmod 600): в нём
+  # UUID VPN-подписки и пароль SOCKS, rsync деплоя его не трогает. Смена узла
+  # или подписки = правка этого файла + `docker compose restart tgproxy`.
+  # user 0:0 обязателен: образ стартует не под root и не читает root-owned mount.
+  tgproxy:
+    image: ghcr.io/xtls/xray-core:latest
+    restart: unless-stopped
+    user: "0:0"
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    networks:
+      - web
+    volumes:
+      - /root/xray:/usr/local/etc/xray:ro
 
 networks:
   web:
