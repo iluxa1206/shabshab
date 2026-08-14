@@ -846,9 +846,22 @@ async def notify_blocks() -> int:
         from services import trade_yidx
         await trade_yidx.for_rows(todo)
 
+    today = datetime.now(_MSK).date()
+
+    def _years(mat: Optional[str]) -> Optional[float]:
+        """Срок до погашения — в уведомление: «блок на 600 млн» читается
+        по-разному для годовой бумаги и для десятилетней."""
+        if not mat:
+            return None
+        try:
+            return max(0.0, (date.fromisoformat(mat) - today).days / 365.25)
+        except ValueError:
+            return None
+
     def _match(r: dict) -> dict:
         lb = labels.get(r["isin"]) or {}
         return {
+            "maturity": lb.get("maturity"), "years": _years(lb.get("maturity")),
             "isin": r["isin"],
             "name": lb.get("name") or names.get(r["isin"]) or r["isin"],
             "price": r["price"], "money_rub": r["value"],

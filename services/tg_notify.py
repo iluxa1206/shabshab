@@ -135,27 +135,53 @@ def _fmt_money(v: Optional[float]) -> str:
     return f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽"
 
 
-def _fmt_match(m: dict) -> str:
+def _fmt_years(y: Optional[float]) -> str:
+    """Срок до погашения: меньше года — в месяцах, иначе годы с десятой."""
+    if y is None:
+        return ""
+    return f"{y * 12:.0f} мес" if y < 1 else f"{y:.1f} г"
+
+
+def _fmt_match(m: dict, kind: str) -> str:
+    """Строка одной бумаги/сделки. Подписываем всё, что иначе читается двояко:
+    базу спреда (Y-IDX), сторону, режим торгов и срок до погашения — те же
+    слова, что в ленте на сайте (frontend-react/src/signalFormat.js)."""
     name = m.get("name") or m.get("isin")
     bits = []
+    if kind == "block":
+        # сторона сделки — агрессор; у адресной его нет вовсе
+        bits.append({"buy": "покупка", "sell": "продажа"}.get(
+            m.get("side") or "", "без агрессора"))
     if m.get("val_bps") is not None:
-        bits.append(f"{m['val_bps']:.0f} бп")
+        bits.append(f"Y-IDX {m['val_bps']:.0f} бп")
     if m.get("price") is not None:
         bits.append(f"{m['price']:.2f}")
     money = _fmt_money(m.get("money_rub"))
     if money:
         bits.append(money)
+    if kind == "block":
+        if m.get("negotiated") is not None:
+            bits.append("адресная (РПС)" if m["negotiated"] else "по стакану")
+    elif m.get("single_px") is not None:
+        bits.append(f"одна заявка {m['single_px']:.2f}")
+    elif m.get("levels"):
+        bits.append(f"набор {m['levels']} ур")
+    years = _fmt_years(m.get("years"))
+    if years:
+        bits.append(years)
     reason = _REASON.get(m.get("reason") or "", "")
-    tail = f" · {reason}" if reason else ""
-    return f"• <b>{name}</b> — " + ", ".join(bits) + tail
+    if reason and kind != "block":
+        bits.append(reason)
+    return f"• <b>{name}</b> — " + " · ".join(bits)
 
 
 def _signal_text(buf: dict) -> str:
     side = {"ask": "оффер", "bid": "бид"}.get(buf.get("side") or "", "")
-    head = "💥 <b>Крупная сделка</b>" if buf.get("kind") == "block" else "📡 <b>Сигнал</b>"
+    kind = buf.get("kind") or "book"
+    head = "💥 <b>Крупная сделка</b>" if kind == "block" else "📡 <b>Сигнал</b>"
     lines = [f"{head} — {buf['name']}" + (f" ({side})" if side else "")]
     ms = buf["matches"]
-    lines += [_fmt_match(m) for m in ms[:MAX_MATCHES]]
+    lines += [_fmt_match(m, kind) for m in ms[:MAX_MATCHES]]
     if len(ms) > MAX_MATCHES:
         lines.append(f"…ещё {len(ms) - MAX_MATCHES}")
     return "\n".join(lines)
