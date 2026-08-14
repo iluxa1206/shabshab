@@ -414,6 +414,22 @@ _bg_backfill: set = set()               # isin'ы с уже запущенным
 _bg_sem = asyncio.Semaphore(2)          # честный as-of сетевой и тяжёлый — не флудим
 
 
+def _unpriced_in_window(isin: str, frm: str, till: str) -> int:
+    """Сколько баров окна имеют цену, но НЕ имеют спреда текущей версии.
+
+    Одной даты «самого раннего посчитанного бара» (_covered_from) мало: она
+    ничего не знает о ДЫРАХ в середине. ВЭБP-41 — покрытие «есть с февраля»,
+    а весь август пустой (одна оборванная выборка ISS), и пересчёт не
+    запускался, потому что covered левее начала окна."""
+    with _connect() as c:
+        r = c.execute(
+            "SELECT COUNT(*) FROM bar_hourly WHERE isin=? AND ts>=? AND ts<? "
+            "AND vwap_pct IS NOT NULL AND y_idx_bps IS NULL AND g_spread_bps IS NULL "
+            "AND (metrics_ver IS NULL OR metrics_ver<?)",
+            (isin, frm, till, BARS_METRICS_VERSION)).fetchone()
+    return r[0] if r else 0
+
+
 def _day_covered(isin: str, day: str) -> bool:
     with _connect() as c:
         r = c.execute(
@@ -443,21 +459,27 @@ async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
     n = await asyncio.to_thread(upsert_bars, tail)
 
     covered = await asyncio.to_thread(_covered_from, isin)
+    # Дыры ВНУТРИ окна: бары с ценой, но без спреда (см. _unpriced_in_window)
+    holes = await asyncio.to_thread(_unpriced_in_window, isin, frm, yesterday)
     # Считали ли это окно сегодня на текущей версии метрик (см. _past_depth).
     seen = _past_depth.get(isin)
     done_frm = (seen[2] if seen and seen[0] == date.today().isoformat()
                 and seen[1] == BARS_METRICS_VERSION else None)
     need_past = days > 1 and (
         stale > 0                                  # в окне нашлись стейл-строки
+        or (done_frm is None and holes > 0)        # дыры внутри окна
         or (done_frm is None and (covered is None or covered[:10] > frm))
         or (done_frm is not None and frm < done_frm))   # окно расширили влево
     if need_past and isin not in _bg_backfill:
         _bg_backfill.add(isin)
-        # Инкремент: если стейла нет и часть окна уже посчитана — считаем только
-        # НЕДОСТАЮЩИЙ кусок слева [frm, граница). Раньше расширение окна
+        if holes:
+            logger.info("bars %s: %d баров окна без спреда — досчитываем", isin, holes)
+        # Инкремент: если стейла и дыр нет, а часть окна посчитана — считаем
+        # только НЕДОСТАЮЩИЙ кусок слева [frm, граница). Раньше расширение окна
         # (6 месяцев → YTD) пересчитывало весь диапазон, включая готовые дни.
+        # При дырах внутри окна резать нельзя — они где угодно.
         edge = None
-        if stale == 0:
+        if stale == 0 and holes == 0:
             known = [d for d in (done_frm, covered[:10] if covered else None) if d]
             edge = min(known) if known else None
         till_day = edge if edge and edge > frm else None

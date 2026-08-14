@@ -128,3 +128,38 @@ def test_chunks_are_written_as_counted(bars, monkeypatch):
         n = c.execute("SELECT COUNT(*) FROM bar_hourly WHERE isin=?",
                       ("RU000TEST0003",)).fetchone()[0]
     assert n == 3
+
+
+def test_hole_inside_window_triggers_recalc(bars, calls):
+    """Дыра ВНУТРИ окна лечится. Одной даты «самого раннего посчитанного бара»
+    мало: у ВЭБP-41 покрытие начиналось с февраля, а весь август был без спреда
+    (оборванная выборка ISS) — пересчёт не запускался, линия не строилась."""
+    import services.portfolio_db as pdb
+    _run(bars, 90)                                  # окно посчитано
+    calls.clear()
+    # эмулируем дыру: у бара есть цена, но нет спреда и версии
+    day = (date.today() - timedelta(days=5)).isoformat()
+    with pdb._connect() as c:
+        c.execute("INSERT OR REPLACE INTO bar_hourly(isin,ts,kind,vwap_pct,close,"
+                  "y_idx_bps,metrics_ver) VALUES(?,?,'floater',100.0,100.0,NULL,NULL)",
+                  ("RU000TEST0001", f"{day} 12:00"))
+    # следующий заход (другой день / после рестарта): в тот же день повторять
+    # проход по тем же данным смысла нет — это вернуло бы вечный пересчёт
+    bars._past_depth.clear()
+    _run(bars, 90)
+    assert [c for c in calls if c[0] == 90], "дыра внутри окна не вызвала пересчёт"
+
+
+def test_hole_not_retried_within_same_pass(bars, calls):
+    """…и наоборот: сразу после прохода дыра пересчёт не перезапускает —
+    данные те же, а вечный цикл мы уже чинили."""
+    import services.portfolio_db as pdb
+    _run(bars, 90)
+    calls.clear()
+    day = (date.today() - timedelta(days=5)).isoformat()
+    with pdb._connect() as c:
+        c.execute("INSERT OR REPLACE INTO bar_hourly(isin,ts,kind,vwap_pct,close,"
+                  "y_idx_bps,metrics_ver) VALUES(?,?,'floater',100.0,100.0,NULL,NULL)",
+                  ("RU000TEST0001", f"{day} 12:00"))
+    _run(bars, 90)
+    assert [c for c in calls if c[0] == 90] == []
