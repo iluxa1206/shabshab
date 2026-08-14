@@ -33,10 +33,14 @@ const timeOf = (iso) => {
 const BASES = [["KEYRATE", "КС"], ["RUONIA", "RUONIA"], ["FIXED", "фикс"]];
 const MARKETS = [["all", "все"], ["main", "безадресные"], ["ndm", "адресные"]];
 const SIDES = [["any", "любая"], ["buy", "buy"], ["sell", "sell"]];
-// ОФЗ или корпораты — режется одним переключателем в обоих видах сигналов:
-// суверен и корп живут в разных диапазонах спреда, вместе они шумят друг другу.
-const ISSUERS = [["all", "все"], ["ofz", "ОФЗ"], ["corp", "корп"]];
+// ОФЗ или корпораты — режется в обоих видах сигналов: суверен и корп живут в
+// разных диапазонах спреда, вместе они шумят друг другу. В форме это два чипа
+// рядом с рейтингом (ни одного = весь рынок, как у рейтинга), в API — одно
+// значение issuer, поэтому «оба отмечены» это тоже «все».
+const ISSUERS = [["ofz", "ОФЗ"], ["corp", "корп"]];
 const ISSUER_TXT = { ofz: "только ОФЗ", corp: "без ОФЗ" };
+const issuerChips = (v) => (v === "ofz" || v === "corp" ? [v] : []);
+const chipsIssuer = (a) => (a.length === 1 ? a[0] : "all");
 const labelOfPair = (pairs, v) => (pairs.find(([x]) => x === v) || [null, v])[1];
 
 /** Сегментированный переключатель одного значения. */
@@ -81,7 +85,7 @@ function RangeInputs({ min, max, setMin, setMax, step }) {
 
 /** Блок «какие бумаги» — общий у обеих форм: один порядок полей, одни подписи.
  *  Отбор бумаг ОДИНАКОВ у стакана и у сделок, поэтому и выглядеть должен так же. */
-function BondScope({ issuer, setIssuer, ratings, setRatings, emitters, setEmitters,
+function BondScope({ issuers, setIssuers, ratings, setRatings, emitters, setEmitters,
                      isins, setIsins, hideSub, setHideSub }) {
   const searchEmitters = useCallback(
     async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
@@ -93,7 +97,14 @@ function BondScope({ issuer, setIssuer, ratings, setRatings, emitters, setEmitte
       <div className="sig-row">
         <div className="sig-field">
           <label className="sig-label">Эмитент</label>
-          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
+          <div className="sig-chips">
+            {ISSUERS.map(([v, t]) => (
+              <button type="button" key={v}
+                className={"sig-chip" + (issuers.includes(v) ? " on" : "")}
+                onClick={() => setIssuers(issuers.includes(v)
+                  ? issuers.filter((x) => x !== v) : [...issuers, v])}>{t}</button>
+            ))}
+          </div>
         </div>
         <div className="sig-field">
           <label className="sig-label">Рейтинг</label>
@@ -260,7 +271,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
-  const [issuer, setIssuer] = useState(ep.issuer || "all");
+  const [issuers, setIssuers] = useState(issuerChips(ep.issuer));
   const [side, setSide] = useState(ep.side || "ask");
   const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
   const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
@@ -276,7 +287,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, issuer, side,
+    ratings, emitters, isins, issuer: chipsIssuer(issuers), side,
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     min_money_rub: mlnToRub(minMoney),
@@ -284,7 +295,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
     hide_subord: hideSub,
-  }), [ratings, emitters, isins, issuer, side, smin, smax, minMoney, moneyMode,
+  }), [ratings, emitters, isins, issuers, side, smin, smax, minMoney, moneyMode,
        ymin, ymax, hideSub]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
@@ -311,7 +322,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       await onSubmit({ name: name.trim(), kind: "book", params,
                        change_pct: changePct, sound, desktop });
       if (edit) return;      // правка закрывает форму снаружи
-      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuer("all");
+      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
       setMoneyMode("book"); setHideSub(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
@@ -330,7 +341,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <BondScope issuer={issuer} setIssuer={setIssuer} ratings={ratings} setRatings={setRatings}
+      <BondScope issuers={issuers} setIssuers={setIssuers} ratings={ratings} setRatings={setRatings}
         emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
         hideSub={hideSub} setHideSub={setHideSub} />
 
@@ -414,7 +425,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
-  const [issuer, setIssuer] = useState(ep.issuer || "all");
+  const [issuers, setIssuers] = useState(issuerChips(ep.issuer));
   const [bases, setBases] = useState(ep.bases || ["KEYRATE", "RUONIA"]);
   const [minValue, setMinValue] = useState(rubToMln(ep.min_value_rub ?? 100000000));  // млн ₽
   const [markets, setMarkets] = useState(ep.markets || "all");
@@ -430,13 +441,14 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, issuer, bases, markets, side, hide_subord: hideSub,
+    ratings, emitters, isins, issuer: chipsIssuer(issuers), bases, markets,
+    side, hide_subord: hideSub,
     min_value_rub: mlnToRub(minValue),
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
-  }), [ratings, emitters, isins, issuer, bases, markets, side, hideSub, minValue,
+  }), [ratings, emitters, isins, issuers, bases, markets, side, hideSub, minValue,
        smin, smax, ymin, ymax]);
 
   // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
@@ -462,7 +474,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     try {
       await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop });
       if (edit) return;
-      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuer("all");
+      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setSmin(""); setSmax(""); setYmin(""); setYmax(""); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
@@ -480,7 +492,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
           onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <BondScope issuer={issuer} setIssuer={setIssuer} ratings={ratings} setRatings={setRatings}
+      <BondScope issuers={issuers} setIssuers={setIssuers} ratings={ratings} setRatings={setRatings}
         emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
         hideSub={hideSub} setHideSub={setHideSub} />
 
