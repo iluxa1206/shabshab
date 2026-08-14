@@ -266,7 +266,18 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
                 "y_open_bps": None, "y_high_bps": None,
                 "y_low_bps": None, "y_close_bps": None,
-                "metrics_ver": BARS_METRICS_VERSION,
+                # ВЕРСИЮ ШТАМПУЕМ ТОЛЬКО НА ПОСЧИТАННЫЙ БАР. Строка без спреда,
+                # помеченная текущей версией, считается «посчитанной» и больше
+                # не пересчитывается никогда: при одном флаке ISS (пустая
+                # история → as-of молча отвечает {}) бумага получала недели
+                # пустой линии (ВЭБP-41, 01-13.08). Без штампа её подберёт
+                # следующий заход, а от молотьбы в течение дня прикрывает
+                # _past_depth.
+                "metrics_ver": (BARS_METRICS_VERSION
+                                if (not with_metrics
+                                    or m.get("y_idx_bps") is not None
+                                    or m.get("g_spread_bps") is not None)
+                                else None),
                 "horizon": m.get("horizon"),
                 "y_idx_alt_bps": m.get("y_idx_alt_bps"),
                 "alt_horizon": m.get("alt_horizon"),
@@ -292,8 +303,18 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
             bars.sort(key=lambda b: b["ts"])
         return bars
 
+    def _warn_if_unpriced(bars: list[dict]) -> list[dict]:
+        """Диагностика: окно посчитано, а спреда нет НИ У ОДНОГО бара — значит
+        модель или as-of не отработали (флак сети, пустая история MOEX)."""
+        if with_metrics and bars and not any(
+                b.get("y_idx_bps") is not None or b.get("g_spread_bps") is not None
+                for b in bars):
+            logger.warning("bars %s: спред не посчитан ни по одному бару из %d — "
+                           "версию не штампуем, пересчитаем позже", isin, len(bars))
+        return bars
+
     from services.heavy import run_heavy
-    return await run_heavy(_crunch)
+    return _warn_if_unpriced(await run_heavy(_crunch))
 
 
 # Версия модели спреда в барах. Поднять при правке, меняющей цифру спреда бара:

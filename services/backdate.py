@@ -551,6 +551,15 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
         raise CalculationException("Текущая кривая недоступна — as-of сшить не из чего")
     ru_hist = hist_pairs if ref.base == "RUONIA" else _index_provider("RUONIA", warns, None)[1]
 
+    # ПУСТАЯ ИСТОРИЯ = фабрика не собралась, а не «спреда нет». Раньше она молча
+    # возвращала fn, отвечающую {} на любую дату: при флаке ISS (одна оборванная
+    # выборка) бары писались БЕЗ спреда, но со штампом текущей версии — и
+    # считались посчитанными навсегда. ВЭБP-41: 01-13.08 без единой точки, при
+    # том что модель и история в порядке.
+    if not rows:
+        raise CalculationException(
+            f"история MOEX за окно пуста ({isin}) — as-of считать не из чего")
+
     dates = [r["date"] for r in rows]
     curve_memo: dict = {}
     # ГОРИЗОНТ ФИКСИРУЕМ НА ВСЮ СЕРИЮ, по последней цене окна. Пересчитывать
