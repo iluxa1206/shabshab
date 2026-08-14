@@ -23,8 +23,9 @@ const LINE_COLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9",
 const GREY = "var(--mut-2)";
 const colorAt = (i) => (i < LINE_COLORS.length ? LINE_COLORS[i] : GREY);
 // Потолок линий вообще: «выбрать все» на широком фильтре иначе шлёт на бэк
-// сотни ISIN и рисует кашу.
-export const CMP_MAX = 100;
+// сотни ISIN и рисует кашу. Двадцать — столько, сколько ещё читается глазом и
+// не грузит ни запрос, ни отрисовку.
+export const CMP_MAX = 20;
 export const CMP_COLORS = LINE_COLORS.length;
 
 const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];

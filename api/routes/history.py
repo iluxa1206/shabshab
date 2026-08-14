@@ -482,7 +482,7 @@ async def yidx_aggregate(body: YidxAggBody):
 # Потолок линий вкладки СРАВНЕНИЕ. Цветом различаются первые десять, остальные
 # идут серым фоном — предел здесь про размер ответа и читаемость графика, не про
 # палитру (фронт держит тот же CMP_MAX).
-_CMP_MAX_ISINS = 100
+_CMP_MAX_ISINS = 20
 
 
 class MultiSpreadBody(BaseModel):
