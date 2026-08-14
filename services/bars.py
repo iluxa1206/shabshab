@@ -99,14 +99,43 @@ async def fetch_daily_face(client: httpx.AsyncClient, secid: str, board: str,
     return out
 
 
-def _face_for(faces: dict[str, float], day: str, fallback: float) -> float:
-    """Номинал на день бара. Дня нет в истории (свеча вечерней сессии, отнесённая
-    биржей к следующему торговому дню) — берём ближайший предыдущий."""
-    f = faces.get(day)
-    if f:
-        return f
-    prev = [d for d in faces if d <= day]
-    return faces[max(prev)] if prev else fallback
+def _settle_face_fn(faces: dict[str, float], fallback: float):
+    """Функция «день бара → номинал, по которому биржа считала VALUE его сделок».
+
+    Это номинал ДАТЫ РАСЧЁТОВ (Т+1), а не дня заключения. В дни перед
+    амортизацией сделка исполняется уже после списания части номинала: VALUE
+    приходит по новому номиналу, а FACEVALUE дневной истории меняется только в
+    саму дату амортизации. Итог — vwap = value/volume/face занижался ровно на
+    шаг амортизации, и слой средневзвеса проваливался отвесной ступенькой при
+    неподвижных свечах (БалтЛизП10 RU000A108777: 10–12.07.2026 88.2 против close
+    98.0 — считалось по 1000 вместо 900; 08–10.08.2026 87.7 против 98.6 — по 900
+    вместо 800; обе «дыры» кончались ровно в дату амортизации).
+
+    Два шага, потому что выходные сессии биржа относит к следующему торговому
+    дню: сначала день бара сводится к своей СЕССИИ (для субботы и воскресенья
+    это понедельник — первый день, который есть в дневной истории), затем берётся
+    номинал СЛЕДУЮЩЕГО за сессией торгового дня. Проверено на обоих провалах:
+    пятница 07.08 → расчёты 10.08 (900, цена верна), суббота 08.08 → сессия
+    10.08 → расчёты 11.08 (800).
+
+    В обычные дни номинал соседних дней одинаков и сдвиг ничего не меняет. На
+    правом крае окна следующего дня ещё нет — остаётся номинал самой сессии;
+    сегодняшние бары и так считаются по тикам либо по номиналу, выведенному из
+    самих свечей (_implied_face)."""
+    import bisect
+    days = sorted(faces)
+
+    def face_of(day: str) -> float:
+        if not days:
+            return fallback
+        i = bisect.bisect_left(days, day)        # сессия дня (выходной → пн)
+        if i >= len(days):
+            # день правее всей истории (сегодня): ближайший известный номинал
+            return faces[days[-1]]
+        j = i + 1                                 # расчёты: следующий торговый день
+        return faces[days[j]] if j < len(days) else faces[days[i]]
+
+    return face_of
 
 
 def tick_vwap_hours(isin: str, day: str) -> dict[str, float]:
@@ -198,6 +227,8 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
     else:
         face_ref = None
     fallback_face = float(face_ref) if face_ref else _DEFAULT_FACE
+    # номинал сделок дня — на дату расчётов (Т+1), см. _settle_face_fn
+    face_of = _settle_face_fn(faces, fallback_face)
     today_iso = date.today().isoformat()
 
     # Сегодняшний номинал ISS не отдаёт (см. _implied_face), поэтому цена
@@ -223,7 +254,7 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 continue
             ts = str(begin)[:13] + ":00"          # 'YYYY-MM-DD HH:00'
             day = ts[:10]
-            face = _face_for(faces, day, fallback_face)
+            face = face_of(day)
             if day == today_iso and today_face:
                 face = today_face
             tv = tick_vwap.get(ts) if day == today_iso else None
