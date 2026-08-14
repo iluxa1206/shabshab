@@ -145,14 +145,24 @@ def _implied_face(candles_of_day: list[dict]) -> Optional[float]:
 
 # ─────────────────────────── сборка баров ───────────────────────────
 
+# Порция потоковой выдачи баров (см. on_chunk в build_bars): ~2 недели торгов.
+# Мельче — лишние транзакции на запись, крупнее — линия появляется рывками.
+_CHUNK_BARS = 150
+
+
 async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                      board: Optional[str] = None, with_metrics: bool = True,
-                     till: Optional[str] = None) -> list[dict]:
+                     till: Optional[str] = None, on_chunk=None) -> list[dict]:
     """Часовые бары бумаги за последние `days` календарных дней (без записи в БД).
     with_metrics=False — только цена/объём (быстро, без загрузки модели бумаги).
     till — правая граница окна ('YYYY-MM-DD', по умолчанию сегодня): расширение
     окна графика досчитывает ТОЛЬКО недостающий кусок слева, а не весь диапазон
-    заново (см. ensure_bars)."""
+    заново (см. ensure_bars).
+
+    on_chunk(bars) — колбэк потоковой выдачи: вызывается по ходу счёта, порциями
+    примерно по две недели торгов, из heavy-потока (значит пишет синхронно, как
+    upsert_bars). Нужен, чтобы посчитанные дни появлялись на графике сразу, а не
+    все разом в конце длинного окна."""
     from services.backdate import resolve_market
 
     secid, brd = await resolve_market(isin, board)
@@ -202,7 +212,12 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
     def _crunch() -> list[dict]:
         memo: dict[tuple, dict] = {}
         bars: list[dict] = []
-        for c in candles:
+        chunk: list[dict] = []
+        chunk_day: Optional[str] = None
+        # ОТ СВЕЖИХ К СТАРЫМ при потоковой выдаче: человек смотрит правый край
+        # графика, и заполняться он должен первым. Порядок самого результата
+        # восстанавливаем в конце — потребители ждут хронологию.
+        for c in (reversed(candles) if on_chunk is not None else candles):
             vol, val, begin = c.get("volume"), c.get("value"), c.get("begin")
             if not begin:
                 continue
@@ -243,7 +258,7 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
             # цифра самого спреда (y_idx_bps по vwap) не изменилась, поэтому
             # BARS_METRICS_VERSION не бампаем — пересчитывать нечего.
             o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
-            bars.append({
+            bar = {
                 "isin": isin, "ts": ts, "kind": kind,
                 "open": o, "high": h, "low": l, "close": cl,
                 "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
@@ -255,7 +270,26 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
                 "horizon": m.get("horizon"),
                 "y_idx_alt_bps": m.get("y_idx_alt_bps"),
                 "alt_horizon": m.get("alt_horizon"),
-            })
+            }
+            bars.append(bar)
+            # ПОРЦИОННАЯ ВЫДАЧА: посчитанные дни отдаются наружу сразу, не
+            # дожидаясь конца окна. Без неё линия спреда на длинном окне
+            # появлялась разом через минуты — человек не видел, считается
+            # вообще что-нибудь или нет. Режем по границе дня и накопленному
+            # объёму: писать каждый бар отдельно — лишние транзакции.
+            if on_chunk is not None:
+                if chunk_day is None:
+                    chunk_day = day
+                elif day != chunk_day:
+                    if len(chunk) >= _CHUNK_BARS:
+                        on_chunk(chunk)
+                        chunk = []
+                    chunk_day = day
+                chunk.append(bar)
+        if on_chunk is not None and chunk:
+            on_chunk(chunk)
+        if on_chunk is not None:
+            bars.sort(key=lambda b: b["ts"])
         return bars
 
     from services.heavy import run_heavy
@@ -410,8 +444,17 @@ async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
         async def _past():
             try:
                 async with _bg_sem:
-                    bars = await build_bars(isin, days, kind, board, till=till_day)
-                    m = await asyncio.to_thread(upsert_bars, bars)
+                    # пишем ПОРЦИЯМИ по ходу счёта: посчитанные дни видны на
+                    # графике сразу (фронт переспрашивает, пока покрытие
+                    # неполное), а не все разом через минуты
+                    written = [0]
+
+                    def _flush(part):
+                        written[0] += upsert_bars(part)
+
+                    bars = await build_bars(isin, days, kind, board, till=till_day,
+                                            on_chunk=_flush)
+                    m = written[0] or await asyncio.to_thread(upsert_bars, bars)
                 logger.info("bars honest backfill %s: %d строк (%d дн%s)",
                             isin, m, days, f", досчёт до {till_day}" if till_day else "")
                 # глубину помним, даже если строк не приехало: данных левее может

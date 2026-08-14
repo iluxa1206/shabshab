@@ -674,6 +674,18 @@ export default function ChartPage() {
   // нет. Рисовать такую линию сплошной нельзя — она выглядит как готовая, хотя
   // перескакивает дни. Считаем покрытие: сколько дней окна с ценой закрыто
   // точками спреда.
+  // Покрытие окна: сколько ТОРГОВЫХ дней уже имеют точку спреда. Бэк считает
+  // порциями и пишет их по ходу (bars.build_bars/on_chunk), поэтому цифра
+  // растёт на глазах — по ней и видно, что посчитано, а что ещё нет.
+  const spreadCover = useMemo(() => {
+    if (!spreadPaneOn || !candles.length) return null;
+    const tradeDays = new Set(candles.map((c) => c.t.slice(0, 10)));
+    const have = new Set(spreadPts.map((p) => String(p.time).slice(0, 10)));
+    let n = 0;
+    for (const d of tradeDays) if (have.has(d)) n += 1;
+    return { have: n, need: tradeDays.size };
+  }, [spreadPaneOn, candles, spreadPts]);
+
   const spreadPending = useMemo(() => {
     if (!spreadPaneOn || !candles.length) return false;
     if (barsOn && qBars.isFetching) return true;
@@ -722,7 +734,9 @@ export default function ChartPage() {
       } finally {
         pollingRef.current = false;
       }
-    }, Math.min(10_000 * 2 ** Math.floor(pollN / 2), 60_000));
+      // пауза растёт: 5с, 5с, 10с, 20с, 40с, 60с… Первые заходы частые —
+      // бэк пишет первые порции уже через секунды, и их видно сразу
+    }, Math.min(5_000 * 2 ** Math.floor(pollN / 2), 60_000));
     return () => clearTimeout(id);
   }, [spreadPending, pollN, barsOn, spreadOn]); // eslint-disable-line
 
@@ -746,15 +760,19 @@ export default function ChartPage() {
           : "done",
         // при догрузке говорим, что ждём бэк и сколько раз уже переспросили —
         // «пунктир навсегда» больше не выглядит как молчаливое зависание
+        // при досчёте показываем РЕАЛЬНОЕ покрытие окна (растёт по мере того,
+        // как бэк пишет посчитанные порции), а не номер попытки опроса
         detail: spreadPending
           ? (pollN >= POLL_MAX ? "часть дней без спреда"
-             : `досчитывается на сервере · ${pollN + 1}/${POLL_MAX}`)
+             : spreadCover
+               ? `${spreadCover.have} из ${spreadCover.need} дней`
+               : "досчитывается на сервере")
           : spreadPts.length ? `${spreadPts.length} точек` : "пусто" },
     ];
   }, [qCandles.isPending, qCandles.isFetching, qCandles.isError, candles.length, tf,
       qBars.isPending, qBars.isFetching, qBars.isError, barsOn, layerPts.length,
       qSpread.isPending, qSpread.isFetching, qSpread.isError, spreadOn,
-      spreadPaneOn, spreadPending, spreadPts.length, pollN]);
+      spreadPaneOn, spreadPending, spreadPts.length, pollN, spreadCover]);
 
   // В распределение идут ВСЕ дни, включая тонкие: сделка есть сделка, а отбор
   // «нормальных» оборотов делал статистику несравнимой с самой линией.

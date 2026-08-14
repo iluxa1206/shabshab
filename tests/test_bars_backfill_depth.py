@@ -33,7 +33,7 @@ def calls(bars, monkeypatch):
     seen = []
 
     async def fake_build(isin, days=30, kind="floater", board=None,
-                         with_metrics=True, till=None):
+                         with_metrics=True, till=None, on_chunk=None):
         seen.append((days, till))
         # бумага торгуется только последние 20 дней — левее данных НЕТ
         start = date.today() - timedelta(days=20)
@@ -96,3 +96,35 @@ def test_version_bump_forces_full_recalc(bars, calls, monkeypatch):
     _run(bars, 90)
     past = [c for c in calls if c[0] == 90]
     assert len(past) == 1 and past[0][1] is None
+
+
+def test_chunks_are_written_as_counted(bars, monkeypatch):
+    """Потоковая выдача: посчитанные дни уходят в базу ПОРЦИЯМИ по ходу счёта,
+    а не одним батчем в конце. Иначе на длинном окне (замер: 730 дней = 144 с
+    на бумагу) линия спреда минутами выглядела мёртвой."""
+    flushes = []
+
+    async def fake_build(isin, days=30, kind="floater", board=None,
+                         with_metrics=True, till=None, on_chunk=None):
+        # эмулируем счёт: три порции по ходу, от свежих к старым
+        out = []
+        for i in range(3):
+            part = [{"isin": isin, "ts": f"2026-08-{10 - i:02d} 12:00", "kind": kind,
+                     "close": 100.0, "vwap_pct": 100.0, "volume": 1, "value": 1000,
+                     "y_idx_bps": 50, "metrics_ver": bars.BARS_METRICS_VERSION}]
+            if on_chunk:
+                on_chunk(part)
+                flushes.append(part[0]["ts"])
+            out += part
+        return out
+
+    monkeypatch.setattr(bars, "build_bars", fake_build)
+    asyncio.run(bars.ensure_bars("RU000TEST0003", days=90, wait_past=True))
+    assert len(flushes) == 3, "порции не отдавались по ходу счёта"
+    assert flushes == sorted(flushes, reverse=True), "порядок не от свежих к старым"
+    # всё, что отдано порциями, лежит в базе
+    import services.portfolio_db as pdb
+    with pdb._connect() as c:
+        n = c.execute("SELECT COUNT(*) FROM bar_hourly WHERE isin=?",
+                      ("RU000TEST0003",)).fetchone()[0]
+    assert n == 3

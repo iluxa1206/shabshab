@@ -646,9 +646,13 @@ def _honest_memo_put(key: tuple, day, result: dict) -> None:
         _honest_memo.popitem(last=False)
 
 
+# Порция потоковой выдачи честной серии (см. on_chunk): ~месяц торгов.
+_HONEST_CHUNK = 20
+
+
 async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] = None,
                                price_overrides: Optional[dict] = None,
-                               till: Optional["date"] = None) -> dict:
+                               till: Optional["date"] = None, on_chunk=None) -> dict:
     """Честная динамика спредов: для КАЖДОГО торгового дня — свой calc_date,
     своя as-of кривая, фактические НКД/номинал/close того дня → SM/DM/y-idx.
     В отличие от candle-оценки (историч. цена × сегодняшняя модель) серия не
@@ -661,6 +665,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     # ЛЕВОГО куска расширенного окна: ensure_honest_backfill не пересчитывает
     # то, что уже лежит в базе.
     key = (isin, days, board, till.isoformat() if till else None)
+    flushed = [0]                       # сколько точек уже отдано через on_chunk
     hit = None if price_overrides else _honest_memo.get(key)
     if hit and hit[0] == _date.today():
         _honest_memo.move_to_end(key)      # свежеиспользованное вытесняется последним
@@ -711,7 +716,9 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             logger.debug("honest %s: горизонт по правилу цены не определился (%s)", isin, e)
 
     points = []
-    for r in rows:
+    # ОТ СВЕЖИХ К СТАРЫМ при потоковой выдаче (on_chunk): правый край графика
+    # человек видит первым, туда и должны ложиться первые посчитанные точки.
+    for r in (reversed(rows) if on_chunk is not None else rows):
         try:
             d = _date.fromisoformat(r["date"])
         except (TypeError, ValueError):
@@ -746,8 +753,16 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
                 "curve_mode": mode, "src": "honest", "horizon": hz.get("horizon"),
                 "alt_horizon": alt.get("horizon") if alt else None,
             })
+            # порция готова — отдаём наружу, не дожидаясь конца окна
+            if on_chunk is not None and len(points) - flushed[0] >= _HONEST_CHUNK:
+                on_chunk(points[flushed[0]:])
+                flushed[0] = len(points)
         except Exception as e:
             logger.debug(f"honest point {isin}@{r['date']}: {e}")
+    if on_chunk is not None:
+        if len(points) > flushed[0]:
+            on_chunk(points[flushed[0]:])
+        points.sort(key=lambda p: p["date"])
     result = {"isin": isin, "points": points, "warnings": ctx["ctx_warnings"]}
     if not price_overrides:
         _honest_memo_put(key, _date.today(), result)
@@ -838,14 +853,30 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     if span < 1:
         _backfill_done[(isin, board)] = (_date.today(), days)
         return dropped
+    # Пишем ПОРЦИЯМИ по ходу счёта: точки появляются на графике по мере расчёта
+    # (фронт переспрашивает, пока покрытие неполное), а не все разом в конце —
+    # на длинном окне это минуты, в течение которых линия выглядела мёртвой.
+    written = [0]
+    ex_dates = set(existing)
+
+    def _flush(part: list) -> None:
+        fresh = [p for p in part if p["date"] not in existing or p["date"] in overrides]
+        if fresh:
+            written[0] += upsert_honest(isin, fresh, ex_dates, HONEST_ENGINE_VERSION,
+                                        retrust_dates=untrusted)
+
     series = await honest_spread_series(isin, span, board,
                                         price_overrides=overrides or None,
-                                        till=till)
-    missing_or_null = [p for p in series["points"]
-                       if p["date"] not in existing or p["date"] in overrides]
-    n = (upsert_honest(isin, missing_or_null, set(existing), HONEST_ENGINE_VERSION,
-                       retrust_dates=untrusted)
-         if missing_or_null else 0)
+                                        till=till, on_chunk=_flush)
+    n = written[0]
+    if not n and series["points"]:
+        # серия пришла из memo (её уже считали сегодня) — порций не было,
+        # пишем как раньше, одним заходом
+        missing_or_null = [p for p in series["points"]
+                           if p["date"] not in existing or p["date"] in overrides]
+        if missing_or_null:
+            n = upsert_honest(isin, missing_or_null, ex_dates, HONEST_ENGINE_VERSION,
+                              retrust_dates=untrusted)
     # недоверенные даты, до которых честный движок не дотянулся (нет строки
     # MOEX history — выходные сессии/дыры) — сносим, иначе мусор рисуется вечно
     # пустая серия — скорее сбой MOEX/сети, чем «дат нет»: не сносим, дождёмся
