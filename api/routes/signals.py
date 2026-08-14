@@ -17,6 +17,7 @@ class SignalParams(BaseModel):
     ratings: List[str] = []
     emitters: List[str] = []
     isins: List[str] = []
+    issuer: str = "all"                 # all | ofz | corp
     # условия сделки (всегда И)
     side: str = "ask"                   # ask (оффер) | bid
     spread_min: Optional[float] = None  # Y-IDX, бп
@@ -34,10 +35,15 @@ class BlockParams(BaseModel):
     ratings: List[str] = []
     emitters: List[str] = []
     isins: List[str] = []
+    issuer: str = "all"                 # all | ofz | corp
     bases: List[str] = []               # KEYRATE/RUONIA/FIXED, пусто = любая
     min_value_rub: Optional[float] = None
     markets: str = "all"                # all | main (безадресные) | ndm (РПС)
     side: str = "any"                   # any | buy | sell — агрессор
+    spread_min: Optional[float] = None  # Y-IDX сделки, бп (только флоатеры)
+    spread_max: Optional[float] = None
+    years_min: Optional[float] = None   # срок до погашения, лет
+    years_max: Optional[float] = None
     hide_subord: bool = False
 
 

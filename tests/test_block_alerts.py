@@ -120,3 +120,43 @@ def test_disabled_filter_does_not_fall_back_to_default(bt, sig, monkeypatch):
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
     assert mod.get_cursor("alert") == 1
+
+
+def test_spread_filter_prices_trade_before_matching(bt, sig, monkeypatch):
+    """Фильтр со спредом: y_idx досчитывается ДО отбора, иначе сделка терялась
+    бы (непосчитанный спред такой фильтр трактует как «не подходит»)."""
+    pdb, mod = bt
+    sig.create("u@x.ru", "широкие блоки",
+               {"min_value_rub": 5_000_000, "spread_min": 250}, kind="block")
+    _seed(pdb, [(1, "RU000FLOAT01", 6_000_000)])
+
+    from services import trade_yidx
+
+    async def _for_rows(rows):
+        for r in rows:
+            r["y_idx_bps"] = 300.0
+        return len(rows)
+    monkeypatch.setattr(trade_yidx, "for_rows", _for_rows)
+
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [m["val_bps"] for p in sent for m in p["matches"]] == [300.0]
+
+
+def test_spread_filter_skips_trade_outside_range(bt, sig, monkeypatch):
+    pdb, mod = bt
+    sig.create("u@x.ru", "узкие блоки",
+               {"min_value_rub": 5_000_000, "spread_max": 100}, kind="block")
+    _seed(pdb, [(1, "RU000FLOAT01", 6_000_000)])
+
+    from services import trade_yidx
+
+    async def _for_rows(rows):
+        for r in rows:
+            r["y_idx_bps"] = 300.0
+        return len(rows)
+    monkeypatch.setattr(trade_yidx, "for_rows", _for_rows)
+
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0
+    assert mod.get_cursor("alert") == 1        # знак всё равно сдвинут

@@ -24,10 +24,18 @@ RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"]
 # («ВТБСУБ1-12», «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
 _SUBORD_RE = re.compile(r"СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])", re.I)
 
+# Эмитент государства vs корпорат: отдельного признака в реестре нет (у ОФЗ
+# MOEX не отдаёт EMITTER_ID вовсе), поэтому опознаём по трём уликам —
+# SECID ленты (SU26248RMFS3), синтетическому имени эмитента из реестра
+# («Минфин России») и названию выпуска («ОФЗ 29014»).
+ISSUERS = ("all", "ofz", "corp")
+_OFZ_NAME_RE = re.compile(r"^\s*(ОФЗ|SU\d)", re.I)
+
 PARAM_DEFAULTS = {
     "ratings": [],          # ['AAA','AA'] — ИЛИ
     "emitters": [],         # ['Газпром капитал'] — ИЛИ, точное имя из реестра
     "isins": [],            # ['RU000A10AU99'] — ИЛИ
+    "issuer": "all",        # all | ofz (только ОФЗ) | corp (без ОФЗ)
     "side": "ask",          # 'ask' — оффер (можно купить) | 'bid' — бид (продать)
     "spread_min": None,     # Y-IDX бп, нижняя граница диапазона
     "spread_max": None,     # Y-IDX бп, верхняя граница
@@ -62,6 +70,54 @@ def _str_list(raw, field: str, upper: bool = False) -> list:
     return out
 
 
+def _issuer(raw) -> str:
+    v = (raw or "all").strip().lower()
+    if v not in ISSUERS:
+        raise FilterError("issuer: " + " | ".join(ISSUERS))
+    return v
+
+
+def _years_bounds(raw: dict, p: dict) -> None:
+    """Срок до погашения: общая валидация book- и block-фильтра."""
+    for k in ("years_min", "years_max"):
+        if p[k] is not None and p[k] < 0:
+            raise FilterError("Срок до погашения: неотрицательное число")
+    if (p["years_min"] is not None and p["years_max"] is not None
+            and p["years_min"] > p["years_max"]):
+        raise FilterError("Срок до погашения: «от» больше «до»")
+
+
+def _floats(raw: dict, p: dict, keys) -> None:
+    for k in keys:
+        v = raw.get(k)
+        if v is None or v == "":
+            continue
+        try:
+            p[k] = float(v)
+        except (TypeError, ValueError):
+            raise FilterError(f"{k}: должно быть числом")
+
+
+def is_ofz(u: dict) -> bool:
+    """Выпуск Минфина. Улики берём по очереди: SECID ленты (у ОФЗ он SU…),
+    имя эмитента из реестра, название выпуска."""
+    if (u.get("secid") or "").strip().upper().startswith("SU"):
+        return True
+    # Именно федеральный Минфин: субфедералы в реестре тоже идут «Минфин
+    # <области>» («Амур 24001» — Минфин Амурской обл.), а это корпоративный
+    # по спреду выпуск, не ОФЗ.
+    if (u.get("emitter_name") or "").strip().upper() == "МИНФИН РОССИИ":
+        return True
+    return bool(_OFZ_NAME_RE.match(u.get("name") or ""))
+
+
+def issuer_ok(u: dict, params: dict) -> bool:
+    who = params.get("issuer") or "all"
+    if who == "all":
+        return True
+    return is_ofz(u) if who == "ofz" else not is_ofz(u)
+
+
 def normalize_params(raw: dict) -> dict:
     raw = raw or {}
     p = dict(PARAM_DEFAULTS)
@@ -74,15 +130,10 @@ def normalize_params(raw: dict) -> dict:
     p["side"] = raw.get("side") or "ask"
     if p["side"] not in ("ask", "bid"):
         raise FilterError("side: ask | bid")
+    p["issuer"] = _issuer(raw.get("issuer"))
     p["hide_subord"] = bool(raw.get("hide_subord"))
-    for k in ("spread_min", "spread_max", "min_money_rub", "years_min", "years_max"):
-        v = raw.get(k)
-        if v is None or v == "":
-            continue
-        try:
-            p[k] = float(v)
-        except (TypeError, ValueError):
-            raise FilterError(f"{k}: должно быть числом")
+    _floats(raw, p, ("spread_min", "spread_max", "min_money_rub",
+                     "years_min", "years_max"))
     if p["min_money_rub"] is not None and p["min_money_rub"] <= 0:
         raise FilterError("min_money_rub: положительное число")
     p["money_mode"] = raw.get("money_mode") or "book"
@@ -97,12 +148,7 @@ def normalize_params(raw: dict) -> dict:
     if (p["spread_min"] is None and p["spread_max"] is None
             and p["min_money_rub"] is None):
         raise FilterError("Задай границу спреда или объём — иначе условий нет")
-    for k in ("years_min", "years_max"):
-        if p[k] is not None and p[k] < 0:
-            raise FilterError("Срок до погашения: неотрицательное число")
-    if (p["years_min"] is not None and p["years_max"] is not None
-            and p["years_min"] > p["years_max"]):
-        raise FilterError("Срок до погашения: «от» больше «до»")
+    _years_bounds(raw, p)
     return p
 
 
@@ -117,10 +163,18 @@ BLOCK_PARAM_DEFAULTS = {
     "ratings": [],
     "emitters": [],
     "isins": [],
+    "issuer": "all",              # all | ofz | corp — как в фильтре стакана
     "bases": [],                  # KEYRATE/RUONIA/FIXED, пусто = любая база
     "min_value_rub": 100_000_000.0,
     "markets": "all",             # all | main (безадресные) | ndm (РПС/адресные)
     "side": "any",                # any | buy | sell — агрессор сделки
+    # Спред сделки (Y-IDX, бп) и срок до погашения — те же условия, что у
+    # фильтра стакана. Спред известен только флоатерам (солвер считает их), так
+    # что заданный диапазон сам по себе отсекает фиксы.
+    "spread_min": None,
+    "spread_max": None,
+    "years_min": None,
+    "years_max": None,
     "hide_subord": False,
 }
 
@@ -157,15 +211,23 @@ def normalize_block_params(raw: dict) -> dict:
     p["side"] = raw.get("side") or "any"
     if p["side"] not in ("any", "buy", "sell"):
         raise FilterError("side: any | buy | sell")
+    p["issuer"] = _issuer(raw.get("issuer"))
+    _floats(raw, p, ("spread_min", "spread_max", "years_min", "years_max"))
+    if (p["spread_min"] is not None and p["spread_max"] is not None
+            and p["spread_min"] > p["spread_max"]):
+        raise FilterError("Диапазон спреда: «от» больше «до»")
+    _years_bounds(raw, p)
     p["hide_subord"] = bool(raw.get("hide_subord"))
     return p
 
 
-def block_matches(trade: dict, meta: dict, params: dict) -> bool:
+def block_matches(trade: dict, meta: dict, params: dict,
+                  today: Optional[date] = None) -> bool:
     """Подходит ли сделка из ленты под условия block-фильтра.
 
-    trade — строка block_trade (value/market/side/isin), meta — подпись бумаги
-    из instruments_registry.labels_map: {name, emitter, base, rating}."""
+    trade — строка block_trade (value/market/side/isin/secid/y_idx_bps), meta —
+    подпись бумаги из instruments_registry.labels_map: {name, emitter, base,
+    rating, maturity}."""
     if (trade.get("value") or 0) < params["min_value_rub"]:
         return False
     if params["markets"] == "ndm" and trade.get("market") != "ndm":
@@ -182,8 +244,28 @@ def block_matches(trade: dict, meta: dict, params: dict) -> bool:
             return False
     if params["hide_subord"] and is_subord({"name": meta.get("name")}):
         return False
-    return selected({"isin": trade.get("isin"), "rating": meta.get("rating"),
-                     "emitter_name": meta.get("emitter")}, params)
+    u = {"isin": trade.get("isin"), "secid": trade.get("secid"),
+         "name": meta.get("name"), "rating": meta.get("rating"),
+         "emitter_name": meta.get("emitter")}
+    if not issuer_ok(u, params):
+        return False
+    lo, hi = params.get("spread_min"), params.get("spread_max")
+    if lo is not None or hi is not None:
+        # Спред считается только флоатерам и только сделкам крупнее
+        # BLOCK_YIDX_MIN_RUB: непосчитанный спред — это НЕ «подходит».
+        val = trade.get("y_idx_bps")
+        if val is None:
+            return False
+        if (lo is not None and val < lo) or (hi is not None and val > hi):
+            return False
+    ylo, yhi = params.get("years_min"), params.get("years_max")
+    if ylo is not None or yhi is not None:
+        yrs = years_left(meta.get("maturity"), today or date.today())
+        if yrs is None:      # без даты погашения срок не проверить — не пускаем
+            return False
+        if (ylo is not None and yrs < ylo) or (yhi is not None and yrs > yhi):
+            return False
+    return selected(u, params)
 
 
 def is_subord(u: dict) -> bool:
@@ -314,7 +396,7 @@ def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:
 
 def static_candidates(params: dict, uni: List[dict],
                       today: Optional[date] = None) -> List[dict]:
-    """Отбор по НЕподвижным признакам: рейтинг/эмитент/ISIN, срок, суборд.
+    """Отбор по НЕподвижным признакам: рейтинг/эмитент/ISIN, ОФЗ/корп, срок, суборд.
     Считается редко — множество меняется только с реестром, а не с рынком.
     Дальше мониторится только глубина этих бумаг (см. evaluate_candidates)."""
     today = today or date.today()
@@ -323,6 +405,8 @@ def static_candidates(params: dict, uni: List[dict],
     out = []
     for u in uni:
         if hide_sub and is_subord(u):
+            continue
+        if not issuer_ok(u, params):
             continue
         yrs = years_left(u.get("maturity_date"), today)
         if ylo is not None or yhi is not None:

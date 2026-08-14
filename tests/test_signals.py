@@ -422,3 +422,102 @@ def test_delete_all_by_kind_keeps_other_column():
     assert signals.get(blk["id"]) is None
     assert signals.delete_all(USER, kind="book") == 1
     assert signals.list_for_user(USER) == []
+
+
+# --- ОФЗ / корп: один переключатель на оба вида сигналов ---
+
+def _ofz_market():
+    """К рынку из _market() добавлена ОФЗ-ПК — распознаётся по имени/эмитенту."""
+    uni, metrics, depth = _market()
+    uni.append({"isin": "RU000A0000O7", "name": "ОФЗ 29014", "rating": "AAA",
+                "emitter_name": "Минфин России", "maturity_date": "2030-08-11"})
+    metrics["RU000A0000O7"] = {"yoi_ask": 150.0, "yoi_bid": 165.0, "ask": 99.5,
+                               "bid": 99.3, "face_px": 1000.0, "accrued_settle": 0.0,
+                               "yoi_slope": -100.0}
+    return uni, metrics, depth
+
+
+def test_issuer_switch_book_filter():
+    uni, metrics, depth = _ofz_market()
+    p = core.normalize_params({"spread_min": 100, "issuer": "ofz"})
+    assert [m["isin"] for m in core.evaluate(p, uni, metrics, depth)] == ["RU000A0000O7"]
+
+    p2 = core.normalize_params({"spread_min": 100, "issuer": "corp"})
+    assert "RU000A0000O7" not in [m["isin"] for m in core.evaluate(p2, uni, metrics, depth)]
+
+    p3 = core.normalize_params({"spread_min": 100})
+    assert p3["issuer"] == "all"
+    assert "RU000A0000O7" in [m["isin"] for m in core.evaluate(p3, uni, metrics, depth)]
+
+
+def test_is_ofz_by_secid_and_name_not_by_subfederal():
+    assert core.is_ofz({"secid": "SU26248RMFS3", "name": "ОФЗ 26248"})
+    assert core.is_ofz({"name": "ОФЗ 29014"})
+    assert core.is_ofz({"name": "Что-то", "emitter_name": "Минфин России"})
+    # субфедерал идёт с «Минфин <области>» — это НЕ ОФЗ
+    assert not core.is_ofz({"secid": "RU000A0JX0J2", "name": "Амур 24001",
+                            "emitter_name": "Минфин Амурской обл."})
+    assert not core.is_ofz({"secid": "RU000A10AU99", "name": "СУЭК 1Р5"})
+
+
+def test_issuer_validation():
+    with pytest.raises(core.FilterError):
+        core.normalize_params({"spread_min": 100, "issuer": "муни"})
+
+
+# --- блок-фильтр: спред, срок, ОФЗ/корп ---
+
+def _blk(**kw):
+    return core.normalize_block_params({"min_value_rub": 5_000_000, **kw})
+
+
+def _trade(**kw):
+    return {"isin": "RU000A0000A1", "secid": "RU000A0000A1", "value": 6_000_000,
+            "market": "bonds", "side": "buy", "y_idx_bps": 300.0, **kw}
+
+
+def _meta(**kw):
+    return {"name": "Газпром 1", "emitter": "Газпром капитал", "base": "KEYRATE",
+            "rating": "AA", "maturity": "2029-08-11", **kw}
+
+
+def test_block_spread_range():
+    from datetime import date as _d
+    today = _d(2026, 8, 11)
+    assert core.block_matches(_trade(), _meta(), _blk(spread_min=250, spread_max=350), today)
+    assert not core.block_matches(_trade(), _meta(), _blk(spread_min=350), today)
+    assert not core.block_matches(_trade(), _meta(), _blk(spread_max=250), today)
+    # спред не посчитан (фикс или сделка мельче порога расчёта) — при заданном
+    # диапазоне это «не подходит», а не «пропустить условие»
+    assert not core.block_matches(_trade(y_idx_bps=None), _meta(),
+                                  _blk(spread_min=250), today)
+    # без диапазона несчитанный спред ничему не мешает
+    assert core.block_matches(_trade(y_idx_bps=None), _meta(), _blk(), today)
+
+
+def test_block_years_range():
+    from datetime import date as _d
+    today = _d(2026, 8, 11)
+    assert core.block_matches(_trade(), _meta(), _blk(years_min=2, years_max=4), today)
+    assert not core.block_matches(_trade(), _meta(), _blk(years_max=1), today)
+    # без даты погашения срок не проверить — не пускаем
+    assert not core.block_matches(_trade(), _meta(maturity=None), _blk(years_max=5), today)
+    assert core.block_matches(_trade(), _meta(maturity=None), _blk(), today)
+
+
+def test_block_issuer_switch():
+    from datetime import date as _d
+    today = _d(2026, 8, 11)
+    ofz = _trade(isin="RU000A0000O7", secid="SU29014RMFS6")
+    ofz_meta = _meta(name="ОФЗ 29014", emitter="Минфин России")
+    assert core.block_matches(ofz, ofz_meta, _blk(issuer="ofz"), today)
+    assert not core.block_matches(ofz, ofz_meta, _blk(issuer="corp"), today)
+    assert not core.block_matches(_trade(), _meta(), _blk(issuer="ofz"), today)
+    assert core.block_matches(_trade(), _meta(), _blk(issuer="corp"), today)
+
+
+def test_block_params_validation():
+    with pytest.raises(core.FilterError):
+        _blk(spread_min=400, spread_max=100)
+    with pytest.raises(core.FilterError):
+        _blk(years_min=5, years_max=2)

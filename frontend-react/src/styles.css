@@ -1835,6 +1835,10 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
                   cursor: pointer; }
 .sig-note { font-size: 11px; color: var(--mut); line-height: 1.45; margin-top: 5px;
             max-width: 62ch; }
+/* Форма раскрывается по этой кнопке — список фильтров не тонет под её полями */
+.sig-add { width: 100%; margin-top: 12px; padding: 9px; border-style: dashed;
+           color: var(--mut); }
+.sig-add:hover { color: var(--fg); border-style: solid; }
 
 /* ---- Колокольчик сигналов в нижней строке ---- */
 .sb-chip { position: relative; }

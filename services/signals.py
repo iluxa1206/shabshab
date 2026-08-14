@@ -369,12 +369,14 @@ def preview_block(params: dict, limit: int = 20) -> dict:
     day = date.today().isoformat()
     with _connect() as c:
         rows = [dict(r) for r in c.execute(
-            "SELECT trade_id,isin,ts,market,side,value FROM block_trade "
+            "SELECT trade_id,isin,secid,ts,market,side,value,y_idx_bps FROM block_trade "
             "WHERE ts >= ? AND value >= ? AND (cur IS NULL OR cur='SUR') "
             "ORDER BY value DESC LIMIT 500",
             (day, p["min_value_rub"])).fetchall()]
     labels = reg.labels_map()
-    hits = [r for r in rows if block_matches(r, labels.get(r["isin"]) or {}, p)]
+    today = date.today()
+    hits = [r for r in rows
+            if block_matches(r, labels.get(r["isin"]) or {}, p, today)]
     return {"ready": True, "total": len(hits), "capped": len(rows) >= 500,
             "matches": [{"isin": h["isin"],
                          "name": (labels.get(h["isin"]) or {}).get("name") or h["isin"],

@@ -804,6 +804,18 @@ async def notify_blocks() -> int:
     labels = await asyncio.to_thread(reg.labels_map)
     names = {v["isin"]: v.get("name") for v in _secmap["map"].values() if v.get("isin")}
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
+    today = datetime.now(_MSK).date()
+
+    # Спред нужен ДО отбора, если хоть один фильтр ограничивает его диапазоном:
+    # непосчитанный y_idx такой фильтр трактует как «не подходит», и сделка
+    # молча терялась бы. Обычно он уже посчитан демоном (price_new_trades), тут
+    # закрывается только хвост — строк в выборке единицы.
+    if any(f["params"].get("spread_min") is not None
+           or f["params"].get("spread_max") is not None for f in bfilters):
+        cold = [r for r in rows if r.get("y_idx_bps") is None]
+        if cold:
+            from services import trade_yidx
+            await trade_yidx.for_rows(cold)
 
     # Знак двигаем по ВСЕМУ просмотренному куску, а не по разосланному: иначе
     # пачка отфильтрованных сделок подряд встала бы перед выборкой намертво и
@@ -828,7 +840,7 @@ async def notify_blocks() -> int:
             # первый подошедший фильтр забирает сделку: два письма об одном
             # принте — шум, а не два разных события
             for f in fs:
-                if signals.block_matches(r, meta, f["params"]):
+                if signals.block_matches(r, meta, f["params"], today):
                     routed.setdefault((u, f["id"], f["name"], f["sound"],
                                        f["desktop"]), []).append(r)
                     break
@@ -845,8 +857,6 @@ async def notify_blocks() -> int:
     if todo:
         from services import trade_yidx
         await trade_yidx.for_rows(todo)
-
-    today = datetime.now(_MSK).date()
 
     def _years(mat: Optional[str]) -> Optional[float]:
         """Срок до погашения — в уведомление: «блок на 600 млн» читается

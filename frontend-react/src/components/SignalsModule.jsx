@@ -33,7 +33,47 @@ const timeOf = (iso) => {
 const BASES = [["KEYRATE", "КС"], ["RUONIA", "RUONIA"], ["FIXED", "фикс"]];
 const MARKETS = [["all", "все"], ["main", "безадресные"], ["ndm", "адресные"]];
 const SIDES = [["any", "любая"], ["buy", "buy"], ["sell", "sell"]];
+// ОФЗ или корпораты — режется одним переключателем в обоих видах сигналов:
+// суверен и корп живут в разных диапазонах спреда, вместе они шумят друг другу.
+const ISSUERS = [["all", "все"], ["ofz", "ОФЗ"], ["corp", "корп"]];
+const ISSUER_TXT = { ofz: "только ОФЗ", corp: "без ОФЗ" };
 const labelOfPair = (pairs, v) => (pairs.find(([x]) => x === v) || [null, v])[1];
+
+/** Сегментированный переключатель одного значения. */
+function Seg({ pairs, value, onChange, tone }) {
+  return (
+    <div className="sig-seg">
+      {pairs.map(([v, t]) => (
+        <button type="button" key={v}
+          className={value === v ? "on" + (tone ? " " + tone(v) : "") : ""}
+          onClick={() => onChange(v)}>{t}</button>
+      ))}
+    </div>
+  );
+}
+
+/** Способ оповещения — общий хвост обеих форм. */
+function Notify({ sound, setSound, desktop, setDesktop }) {
+  return (
+    <div className="sig-field">
+      <label className="sig-label">Как оповещать</label>
+      <div className="sig-checks">
+        <label><input type="checkbox" checked={sound}
+          onChange={(e) => setSound(e.target.checked)} /> звук</label>
+        <label><input type="checkbox" checked={desktop}
+          onChange={(e) => setDesktop(e.target.checked)} /> окно системы</label>
+      </div>
+    </div>
+  );
+}
+
+/** «250–400 бп» / «от 250 бп» / «до 400 бп» — одна подпись на все диапазоны. */
+function rangeTxt(min, max, unit) {
+  if (min != null && max != null) return `${min}–${max} ${unit}`;
+  if (min != null) return `от ${min} ${unit}`;
+  if (max != null) return `до ${max} ${unit}`;
+  return null;
+}
 // «1 сделка / 2 сделки / 5 сделок» — счётчик превью читается как текст, а не как лог
 const plural = (n, one, few, many) => {
   const a = Math.abs(n) % 100, b = a % 10;
@@ -46,8 +86,12 @@ const plural = (n, one, few, many) => {
 function describeBlock(p) {
   const bases = p.bases?.length
     ? p.bases.map((b) => labelOfPair(BASES, b)).join("/") : "любая база";
-  return `от ${fmt.mln(p.min_value_rub)} млн · ${labelOfPair(MARKETS, p.markets)} · ${bases}`
-    + (p.side !== "any" ? ` · ${labelOfPair(SIDES, p.side)}` : "");
+  const spread = rangeTxt(p.spread_min, p.spread_max, "бп");
+  const years = rangeTxt(p.years_min, p.years_max, "л");
+  return [`от ${fmt.mln(p.min_value_rub)} млн`, labelOfPair(MARKETS, p.markets), bases,
+          p.side !== "any" ? labelOfPair(SIDES, p.side) : null,
+          spread ? `R-spread ${spread}` : null,
+          years ? `срок ${years}` : null].filter(Boolean).join(" · ");
 }
 
 /** Человеческое описание условий фильтра — одной строкой, как в карточке. */
@@ -57,21 +101,18 @@ function describe(p) {
   if (p.emitters?.length)
     who.push(p.emitters.length === 1 ? p.emitters[0] : p.emitters.length + " эмитентов");
   if (p.isins?.length) who.push(p.isins.length + " бумаг");
-  let scope = who.length ? who.join(" или ") : "весь рынок";
+  let scope = who.length ? who.join(" или ")
+    : p.issuer === "ofz" ? "все ОФЗ"
+    : p.issuer === "corp" ? "весь рынок без ОФЗ" : "весь рынок";
+  if (who.length && ISSUER_TXT[p.issuer]) scope += ", " + ISSUER_TXT[p.issuer];
   if (p.hide_subord) scope += ", без субордов";
-  let range = null;
-  if (p.spread_min != null && p.spread_max != null) range = `${p.spread_min}–${p.spread_max} бп`;
-  else if (p.spread_min != null) range = `от ${p.spread_min} бп`;
-  else if (p.spread_max != null) range = `до ${p.spread_max} бп`;
+  const range = rangeTxt(p.spread_min, p.spread_max, "бп");
+  const years = rangeTxt(p.years_min, p.years_max, "л");
   let moneyTxt = null;
   if (p.min_money_rub) {
     const m = fmt.mln(p.min_money_rub);
     moneyTxt = p.money_mode === "single" ? `заявка от ${m} млн` : `набор от ${m} млн`;
   }
-  let years = null;
-  if (p.years_min != null && p.years_max != null) years = `${p.years_min}–${p.years_max} л`;
-  else if (p.years_min != null) years = `от ${p.years_min} л`;
-  else if (p.years_max != null) years = `до ${p.years_max} л`;
   return { scope, range, years, moneyTxt };
 }
 
@@ -158,6 +199,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
+  const [issuer, setIssuer] = useState(ep.issuer || "all");
   const [side, setSide] = useState(ep.side || "ask");
   const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
   const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
@@ -173,7 +215,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, side,
+    ratings, emitters, isins, issuer, side,
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     min_money_rub: mlnToRub(minMoney),
@@ -181,7 +223,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
     hide_subord: hideSub,
-  }), [ratings, emitters, isins, side, smin, smax, minMoney, moneyMode, ymin, ymax, hideSub]);
+  }), [ratings, emitters, isins, issuer, side, smin, smax, minMoney, moneyMode,
+       ymin, ymax, hideSub]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
@@ -211,7 +254,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       await onSubmit({ name: name.trim(), kind: "book", params,
                        change_pct: changePct, sound, desktop });
       if (edit) return;      // правка закрывает форму снаружи
-      setName(""); setRatings([]); setEmitters([]); setIsins([]);
+      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuer("all");
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
       setMoneyMode("book"); setHideSub(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
@@ -221,9 +264,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     <form className={"sig-form" + (edit ? " editing" : "")} onSubmit={submit}>
       <div className="sig-form-head">
         {edit ? `Правка: ${edit.name}` : "Новый сигнал"}
-        {edit && (
-          <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
-        )}
+        <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
       </div>
 
       <div className="sig-field">
@@ -232,17 +273,23 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <div className="sig-section">Какие бумаги <span>условия объединяются по «или»</span></div>
+      <div className="sig-section">Какие бумаги <span>селекторы объединяются по «или»</span></div>
 
-      <div className="sig-field">
-        <label className="sig-label">Рейтинг</label>
-        <div className="sig-chips">
-          {RATINGS.map((r) => (
-            <button type="button" key={r}
-              className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
-              onClick={() => setRatings(ratings.includes(r)
-                ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
-          ))}
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Эмитент</label>
+          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Рейтинг</label>
+          <div className="sig-chips">
+            {RATINGS.map((r) => (
+              <button type="button" key={r}
+                className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
+                onClick={() => setRatings(ratings.includes(r)
+                  ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -256,15 +303,11 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
         subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
 
       <div className="sig-field">
-        <label className="sig-check-line">
+        <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет. Суборды дают широчайший спред из-за риска списания и иначе занимают весь верх выдачи.">
           <input type="checkbox" checked={hideSub}
             onChange={(e) => setHideSub(e.target.checked)} />
           <span>Прятать суборды</span>
         </label>
-        <div className="sig-note">
-          Определяем по названию (СУБ, Т1, перп) — отдельного признака в реестре нет.
-          Такие выпуски дают широчайший спред из-за риска списания и иначе занимают весь верх.
-        </div>
       </div>
 
       <div className="sig-section">Условия</div>
@@ -272,12 +315,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       <div className="sig-row">
         <div className="sig-field">
           <label className="sig-label">Сторона стакана</label>
-          <div className="sig-seg">
-            <button type="button" className={side === "ask" ? "on up" : ""}
-              onClick={() => setSide("ask")}>Оффер</button>
-            <button type="button" className={side === "bid" ? "on down" : ""}
-              onClick={() => setSide("bid")}>Бид</button>
-          </div>
+          <Seg pairs={[["ask", "оффер"], ["bid", "бид"]]} value={side} onChange={setSide}
+            tone={(v) => (v === "ask" ? "up" : "down")} />
         </div>
         <div className="sig-field">
           <label className="sig-label">Диапазон R-spread, бп</label>
@@ -311,41 +350,26 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       <div className="sig-row">
         <div className="sig-field">
           <label className="sig-label">Повторно сообщать при сдвиге</label>
-          <div className="sig-seg">
-            {CHANGES.map(([v, t]) => (
-              <button type="button" key={v} className={changePct === v ? "on" : ""}
-                onClick={() => setChangePct(v)}>{t}</button>
-            ))}
-          </div>
+          <Seg pairs={CHANGES} value={changePct} onChange={setChangePct} />
         </div>
+        {minMoney !== "" && (
+          <div className="sig-field">
+            <label className="sig-label">Как считать объём</label>
+            <Seg pairs={[["book", "набором"], ["single", "одной заявкой"]]}
+              value={moneyMode} onChange={setMoneyMode} />
+          </div>
+        )}
       </div>
 
       {minMoney !== "" && (
-        <div className="sig-field">
-          <label className="sig-label">Как считать объём</label>
-          <div className="sig-seg">
-            <button type="button" className={moneyMode === "book" ? "on" : ""}
-              onClick={() => setMoneyMode("book")}>Набором по стакану</button>
-            <button type="button" className={moneyMode === "single" ? "on" : ""}
-              onClick={() => setMoneyMode("single")}>Одной заявкой</button>
-          </div>
-          <div className="sig-note">
-            {moneyMode === "book"
-              ? "Собираем сумму по лестнице от лучшей цены; цена и спред — по средневзвесу набора."
-              : "Ждём ОДНУ заявку не меньше суммы; двадцать мелких на ту же сумму сигналом не считаются."}
-          </div>
+        <div className="sig-note">
+          {moneyMode === "book"
+            ? "Сумма набирается по лестнице от лучшей цены; цена и спред — по средневзвесу набора."
+            : "Ждём ОДНУ заявку не меньше суммы; двадцать мелких на ту же сумму сигналом не считаются."}
         </div>
       )}
 
-      <div className="sig-field">
-        <label className="sig-label">Как оповещать</label>
-        <div className="sig-checks">
-          <label><input type="checkbox" checked={sound}
-            onChange={(e) => setSound(e.target.checked)} /> звук</label>
-          <label><input type="checkbox" checked={desktop}
-            onChange={(e) => setDesktop(e.target.checked)} /> окно системы</label>
-        </div>
-      </div>
+      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop} />
 
       {preview && (
         <div className="sig-preview">
@@ -373,10 +397,15 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
+  const [issuer, setIssuer] = useState(ep.issuer || "all");
   const [bases, setBases] = useState(ep.bases || ["KEYRATE", "RUONIA"]);
   const [minValue, setMinValue] = useState(rubToMln(ep.min_value_rub ?? 100000000));  // млн ₽
   const [markets, setMarkets] = useState(ep.markets || "all");
   const [side, setSide] = useState(ep.side || "any");
+  const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
+  const [smax, setSmax] = useState(numOrEmpty(ep.spread_max));
+  const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
+  const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
@@ -384,9 +413,14 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, bases, markets, side, hide_subord: hideSub,
+    ratings, emitters, isins, issuer, bases, markets, side, hide_subord: hideSub,
     min_value_rub: mlnToRub(minValue),
-  }), [ratings, emitters, isins, bases, markets, side, hideSub, minValue]);
+    spread_min: smin === "" ? null : Number(smin),
+    spread_max: smax === "" ? null : Number(smax),
+    years_min: ymin === "" ? null : Number(ymin),
+    years_max: ymax === "" ? null : Number(ymax),
+  }), [ratings, emitters, isins, issuer, bases, markets, side, hideSub, minValue,
+       smin, smax, ymin, ymax]);
 
   // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
   // выставленный порог либо молчит неделю, либо звонит каждые пять минут.
@@ -415,7 +449,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     try {
       await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop });
       if (edit) return;
-      setName(""); setRatings([]); setEmitters([]); setIsins([]); setPreview(null);
+      setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuer("all");
+      setSmin(""); setSmax(""); setYmin(""); setYmax(""); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -423,9 +458,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     <form className={"sig-form" + (edit ? " editing" : "")} onSubmit={submit}>
       <div className="sig-form-head">
         {edit ? `Правка: ${edit.name}` : "Новый сигнал: крупная сделка"}
-        {edit && (
-          <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
-        )}
+        <button type="button" className="sig-cancel" onClick={onCancel}>Отмена</button>
       </div>
 
       <div className="sig-field">
@@ -444,16 +477,12 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
         </div>
         <div className="sig-field">
           <label className="sig-label">Режим торгов</label>
-          <div className="sig-seg">
-            {MARKETS.map(([v, t]) => (
-              <button type="button" key={v} className={markets === v ? "on" : ""}
-                onClick={() => setMarkets(v)}>{t}</button>
-            ))}
-          </div>
+          <Seg pairs={MARKETS} value={markets} onChange={setMarkets} />
         </div>
       </div>
       <div className="sig-note">
-        Адресные — РПС, размещения и выкупы: в стакане их не видно вообще, крупняк чаще идёт именно так.
+        Адресные — РПС, размещения и выкупы: в стакане их не видно вообще, крупняк чаще идёт именно так
+        (стороны у них нет).
       </div>
 
       <div className="sig-row">
@@ -470,30 +499,54 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
         </div>
         <div className="sig-field">
           <label className="sig-label">Сторона (агрессор)</label>
-          <div className="sig-seg">
-            {SIDES.map(([v, t]) => (
-              <button type="button" key={v} className={side === v ? "on" : ""}
-                onClick={() => setSide(v)}>{t}</button>
-            ))}
+          <Seg pairs={SIDES} value={side} onChange={setSide} />
+        </div>
+      </div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Диапазон R-spread, бп</label>
+          <div className="sig-row tight">
+            <input className="sig-input num" type="number" placeholder="от" value={smin}
+              onChange={(e) => setSmin(e.target.value)} />
+            <input className="sig-input num" type="number" placeholder="до" value={smax}
+              onChange={(e) => setSmax(e.target.value)} />
+          </div>
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Срок до погашения, лет</label>
+          <div className="sig-row tight">
+            <input className="sig-input num" type="number" step="any" placeholder="от"
+              value={ymin} onChange={(e) => setYmin(e.target.value)} />
+            <input className="sig-input num" type="number" step="any" placeholder="до"
+              value={ymax} onChange={(e) => setYmax(e.target.value)} />
           </div>
         </div>
       </div>
-      <div className="sig-note">
-        Пустая база — любые бумаги. Крупняк рынка в рублях почти целиком ОФЗ-ПД,
-        поэтому без КС/RUONIA лента уведомлений вырождается в фиксы. У адресных сделок стороны нет.
-      </div>
+      {(smin !== "" || smax !== "") && (
+        <div className="sig-note">
+          Спред сделки считается только флоатерам — с заданным диапазоном фиксы отсеются,
+          даже если база «фикс» отмечена.
+        </div>
+      )}
 
-      <div className="sig-section">Какие бумаги <span>условия объединяются по «или»</span></div>
+      <div className="sig-section">Какие бумаги <span>селекторы объединяются по «или»</span></div>
 
-      <div className="sig-field">
-        <label className="sig-label">Рейтинг</label>
-        <div className="sig-chips">
-          {RATINGS.map((r) => (
-            <button type="button" key={r}
-              className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
-              onClick={() => setRatings(ratings.includes(r)
-                ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
-          ))}
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Эмитент</label>
+          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Рейтинг</label>
+          <div className="sig-chips">
+            {RATINGS.map((r) => (
+              <button type="button" key={r}
+                className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
+                onClick={() => setRatings(ratings.includes(r)
+                  ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -507,22 +560,14 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
         subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
 
       <div className="sig-field">
-        <label className="sig-check-line">
+        <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет.">
           <input type="checkbox" checked={hideSub}
             onChange={(e) => setHideSub(e.target.checked)} />
           <span>Прятать суборды</span>
         </label>
       </div>
 
-      <div className="sig-field">
-        <label className="sig-label">Как оповещать</label>
-        <div className="sig-checks">
-          <label><input type="checkbox" checked={sound}
-            onChange={(e) => setSound(e.target.checked)} /> звук</label>
-          <label><input type="checkbox" checked={desktop}
-            onChange={(e) => setDesktop(e.target.checked)} /> окно системы</label>
-        </div>
-      </div>
+      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop} />
 
       {preview && (
         <div className="sig-preview">
@@ -613,22 +658,16 @@ const REPEAT = {
   money: ["объём", "money_rub", (v) => money(v) + " ₽"],
 };
 
-function WhyLine({ h }) {
+/** Почему прилетело: «нашлась» либо «цена 100,10 → 99,80». Строкой, а не
+ *  отдельным блоком — иначе на событие уходит пять строк ленты. */
+function whyTxt(h) {
   const r = REPEAT[h.reason];
-  if (!r) {
-    return h.reason === "new"
-      ? <div className="sig-hit-why">нашлась под условия</div> : null;
-  }
+  if (!r) return h.reason === "new" ? "нашлась под условия" : null;
   const [what, field, fmtv] = r;
   const prev = h["prev_" + field];
   const cur = h[field];
-  return (
-    <div className="sig-hit-why">
-      повтор: {what}{" "}
-      {prev != null && <span className="num">{fmtv(prev)} → </span>}
-      <span className="num">{cur != null ? fmtv(cur) : "—"}</span>
-    </div>
-  );
+  return `${what} ${prev != null ? fmtv(prev) + " → " : ""}`
+    + (cur != null ? fmtv(cur) : "—");
 }
 
 /** Колонка одного вида сигналов: список фильтров + своя форма под ним.
@@ -637,6 +676,10 @@ function WhyLine({ h }) {
 function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loading,
                         busy, onToggle, onEdit, onDelete, onCancel, onSubmit,
                         onDeleteAll }) {
+  // Форма длинная (два десятка полей). Пока её держали раскрытой, список уже
+  // заведённых фильтров тонул под ней — открываем по кнопке; правка открывает сама.
+  const [adding, setAdding] = useState(false);
+  const open = adding || !!editing;
   return (
     <div className="sig-col">
       <div className="sig-head">
@@ -656,9 +699,17 @@ function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loadin
                 onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />
             ))}
 
+      {!open && (
+        <button className="btn sig-add" onClick={() => setAdding(true)}>
+          + Новый сигнал</button>
+      )}
+
       {/* key переинициализирует поля при смене правимого фильтра */}
-      <Form key={editing?.id ?? formKey} edit={editing} busy={busy}
-        onCancel={onCancel} onSubmit={onSubmit} />
+      {open && (
+        <Form key={editing?.id ?? formKey} edit={editing} busy={busy}
+          onCancel={() => { setAdding(false); onCancel(); }}
+          onSubmit={async (body) => { await onSubmit(body); setAdding(false); }} />
+      )}
     </div>
   );
 }
@@ -783,10 +834,9 @@ export default function SignalsModule() {
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
                 </div>
                 <div className="sig-hit-mode">
-                  {[tradeMode(h), bookMode(h), maturityTxt(h)]
+                  {[tradeMode(h), bookMode(h), maturityTxt(h), whyTxt(h)]
                     .filter(Boolean).join(" · ")}
                 </div>
-                <WhyLine h={h} />
                 <div className="sig-hit-meta">
                   {/* у блока filter_name пустой, когда звонило умолчание
                       (env-порог), а не заведённый пользователем фильтр */}
