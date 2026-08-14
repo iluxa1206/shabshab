@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from api.routes.auth import require_user
 from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _scope_isins,
-                               board_short)
+                               _win, board_short)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -202,6 +202,11 @@ async def drop_flag(trade_id: int = Path(...), user: dict = Depends(require_user
 @router.get("", tags=["Trades"])
 async def tape(
     days: int = Query(1, ge=1, le=400, description="окно в календарных днях назад"),
+    # Произвольное окно календарём. Задан date_from — он побеждает days (окно
+    # «столько-то дней назад» и явные даты это один и тот же фильтр периода,
+    # и складывать их нечего); date_to без date_from сужает только правый край.
+    date_from: Optional[str] = Query(None, description="начало окна, YYYY-MM-DD (вместо days)"),
+    date_to: Optional[str] = Query(None, description="конец окна, YYYY-MM-DD (включительно)"),
     min_value: float = Query(0, ge=0, description="порог суммы сделки, ₽"),
     side: Optional[str] = Query(None, description="buy | sell (агрессор)"),
     market: Optional[str] = Query(None, description="bonds (безадресные) | ndm (адресные)"),
@@ -236,6 +241,7 @@ async def tape(
     isin = (isin or "").strip().upper() or None
     if isin and not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    date_from, date_to = _win(date_from, date_to)
 
     from services import tape as tape_svc
     from services import trade_flags
@@ -315,17 +321,20 @@ async def tape(
                                 "by_market": {}, "top": [], "archive_till": None},
                     "warning": "под фильтры срока/рейтинга бумаг нет"}
 
-    frm = (date.today() - timedelta(days=days - 1)).isoformat()
+    frm = date_from or (date.today() - timedelta(days=days - 1)).isoformat()
+    till = date_to
     # строки и агрегат независимы — читаем параллельно (WAL допускает
     # конкурентных читателей), ответ приходит за время медленного из двух
     rows, summary = await asyncio.gather(
-        asyncio.to_thread(tape_svc.read_tape, frm=frm, min_value=min_value, side=side,
+        asyncio.to_thread(tape_svc.read_tape, frm=frm, till=till,
+                          min_value=min_value, side=side,
                           market=market, boards=board, isins=isins, limit=limit,
                           y_min=spread_min, y_max=spread_max, max_value=max_value,
                           before_ts=before_ts, before_id=before_id),
         # Итоги — по ВСЕМУ окну, поэтому считаются один раз, на первой странице:
         # догрузка следующей порции их не меняет, а стоит агрегат секунд.
-        asyncio.to_thread(tape_svc.tape_stats, frm=frm, min_value=min_value, side=side,
+        asyncio.to_thread(tape_svc.tape_stats, frm=frm, till=till,
+                          min_value=min_value, side=side,
                           market=market, boards=board, isins=isins,
                           y_min=spread_min, y_max=spread_max, max_value=max_value)
         if not before_ts else asyncio.sleep(0, result={}))
@@ -356,7 +365,7 @@ async def tape(
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]
         t["emitter"] = lb.get("emitter")
 
-    return {"from": frm, "days": days, "min_value": min_value, "side": side,
+    return {"from": frm, "till": till, "days": days, "min_value": min_value, "side": side,
             "market": market, "board": board, "scope": scope,
             # has_more — есть ли следующая страница: на страницах пагинации
             # итогов нет (их считает только первый запрос), поэтому полный

@@ -18,6 +18,29 @@ router = APIRouter()
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
+
+def _win(date_from: Optional[str], date_to: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Проверить и нормализовать произвольное окно календаря (YYYY-MM-DD).
+
+    Перевёрнутое окно (от позже, чем до) молча меняем местами: в двух полях
+    даты набирают в любом порядке, а пустая лента вместо ответа выглядит как
+    поломка фильтра."""
+    out = []
+    for v in (date_from, date_to):
+        v = (v or "").strip()
+        if not v:
+            out.append(None)
+            continue
+        try:
+            out.append(date.fromisoformat(v).isoformat())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Дата окна: YYYY-MM-DD")
+    frm, till = out
+    if frm and till and frm > till:
+        frm, till = till, frm
+    return frm, till
+
+
 # Человеческие названия режимов: BOARDID сам по себе трейдеру ничего не говорит.
 BOARD_TITLES = {
     "TQCB": "Безадресный: корп.", "TQOB": "Безадресный: ОФЗ",
@@ -195,6 +218,9 @@ async def boards(days: int = Query(30, ge=1, le=400)):
 async def days_agg(
     isin: Optional[str] = Query(None),
     days: int = Query(30, ge=1, le=400),
+    # то же произвольное окно, что и в ленте: date_from побеждает days
+    date_from: Optional[str] = Query(None, description="начало окна, YYYY-MM-DD (вместо days)"),
+    date_to: Optional[str] = Query(None, description="конец окна, YYYY-MM-DD (включительно)"),
     min_value: float = Query(0, ge=0),
     scope: str = Query("market", description="market | universe | float | fixed"),
     issuer: Optional[list[str]] = Query(None, description="эмитенты (по реестру)"),
@@ -213,6 +239,7 @@ async def days_agg(
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
     if scope not in SCOPES:
         raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
+    date_from, date_to = _win(date_from, date_to)
     from api.routes.trades import _rating_isins, _ttm_isins
     from services import block_trades as bt
     labels = await asyncio.to_thread(_labels)
@@ -232,8 +259,8 @@ async def days_agg(
             rating)
         if isins is not None and not isins:
             return {"from": None, "days": days, "rows": []}
-    frm = (date.today() - timedelta(days=days)).isoformat()
-    rows = await asyncio.to_thread(bt.read_days, isin=isin, frm=frm,
+    frm = date_from or (date.today() - timedelta(days=days)).isoformat()
+    rows = await asyncio.to_thread(bt.read_days, isin=isin, frm=frm, till=date_to,
                                    min_value=min_value, limit=limit, isins=isins)
     moex = await asyncio.to_thread(_moex_names)
     for r in rows:
@@ -242,7 +269,7 @@ async def days_agg(
         r["emitter"] = lb.get("emitter")
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
         r["board_short"] = board_short(r.get("board"))
-    return {"from": frm, "days": days, "rows": rows}
+    return {"from": frm, "till": date_to, "days": days, "rows": rows}
 
 
 @router.get("/{isin}", tags=["Blocks"])

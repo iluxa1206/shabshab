@@ -5,7 +5,7 @@ import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings,
 import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
-import { IconFlag } from "./icons.jsx";
+import { IconCalendar, IconFlag } from "./icons.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import { usePageStatus } from "../pageStatus.jsx";
@@ -24,9 +24,13 @@ import { usePageStatus } from "../pageStatus.jsx";
 // сделок за прошлые сессии ISS не отдаёт вообще, и за дни до старта нашего
 // сбора агрегат — единственный след блока.
 
-// Окна периода в фильтрах больше нет: лента всегда открыта на всю глубину
-// архива, а вниз идёт страницами (курсор before_ts/before_id).
+// Период. По умолчанию лента открыта на всю глубину архива (вниз идёт
+// страницами, курсор before_ts/before_id), но окно сужается кнопками 1/7/30
+// дней или произвольными датами из календаря. Окно уезжает НА БЭК (date_from/
+// date_to), а не режет загруженные строки: иначе итоги и «показать ещё»
+// считались бы по другому периоду, чем видит таблица.
 const MAX_DAYS = 400;
+const PERIODS = [[1, "1д"], [7, "7д"], [30, "30д"], [null, "всё"]];
 const PAGE = 500;
 // РПС здесь = дневной агрегат адресных режимов (см. шапку файла)
 const MARKETS = [[null, "все"], ["bonds", "Т+"], ["ndm", "РПС"]];
@@ -186,7 +190,9 @@ const DEFAULTS = {
   minValue: 10e6, scopes: ["float"], hideSub: true, hideAmort: false,
   side: null, market: null, ratings: [], bases: [], cls: [], emitters: [],
   onlyWatch: false, spreadMin: "", spreadMax: "", ttmMin: "", ttmMax: "",
+  periodDays: null, dateFrom: "", dateTo: "",
 };
+const todayIso = () => new Date().toISOString().slice(0, 10);
 // поля объёма — в млн ₽; в состоянии и в API по-прежнему рубли
 const mlnToRub = (v) => {
   const n = parseFloat(String(v).replace(",", "."));
@@ -284,6 +290,12 @@ export default function TradesTape() {
 
   const [minValue, setMinValue] = useState(() => pick(savedFilters().minValue, DEFAULTS.minValue));
   const [side, setSide] = useState(() => pick(savedFilters().side, null));
+  // период: либо окно в днях назад (кнопки), либо произвольные даты (календарь).
+  // Одновременно они не живут — выбор одного гасит другое.
+  const [periodDays, setPeriodDays] = useState(() => pick(savedFilters().periodDays, null));
+  const [dateFrom, setDateFrom] = useState(() => pick(savedFilters().dateFrom, ""));
+  const [dateTo, setDateTo] = useState(() => pick(savedFilters().dateTo, ""));
+  const [calOpen, setCalOpen] = useState(false);
   const [market, setMarket] = useState(() => pick(savedFilters().market, null));
   const [emitters, setEmitters] = useState(() => pick(savedFilters().emitters, []));
   // Охват — два независимых флажка: можно смотреть и флоатеры, и фиксы разом.
@@ -342,6 +354,20 @@ export default function TradesTape() {
   const [dragKey, setDragKey] = useState(null);
   const [overKey, setOverKey] = useState(null);
   const abort = useRef(null);
+  const calRef = useRef(null);
+
+  // календарь закрывается кликом мимо и по Esc — как выпадающий топ оборота
+  useEffect(() => {
+    if (!calOpen) return undefined;
+    const onDoc = (e) => { if (!calRef.current?.contains(e.target)) setCalOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setCalOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [calOpen]);
 
   // ISIN в поиске — не текстовый фильтр по загруженным строкам, а сужение
   // запроса: тогда и лента, и итоги считаются бэком ПО ЭТОЙ бумаге целиком,
@@ -353,15 +379,23 @@ export default function TradesTape() {
   const isinReq = qIsin;
   const scope = scopes.length === 1 ? scopes[0] : "market";
   const daysView = market === "ndm" && byDay;
+  // окно периода одним объектом — уезжает и в ленту, и в дневной агрегат, и в
+  // догрузку страниц: разъехавшиеся окна дали бы итоги от другого периода
+  const custom = !!(dateFrom || dateTo);
+  const win = {
+    days: custom ? MAX_DAYS : (periodDays || MAX_DAYS),
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
+  };
 
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
       minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
-      onlyWatch, onlyFlagged }));
+      onlyWatch, onlyFlagged, periodDays, dateFrom, dateTo }));
   }, [minValue, side, market, emitters, scopes, spreadMin, spreadMax,
       ttmMin, ttmMax, ratings, byDay, bases, cls, hideSub, hideAmort,
-      onlyWatch, onlyFlagged]);
+      onlyWatch, onlyFlagged, periodDays, dateFrom, dateTo]);
   useEffect(() => { localStorage.setItem(LS_ORDER, JSON.stringify(colOrder)); }, [colOrder]);
 
   useEffect(() => {
@@ -404,11 +438,11 @@ export default function TradesTape() {
     abort.current = ac;
     setStatus("loading");
     const req = daysView
-      ? fetchBlockDays({ isin: isinReq, days: MAX_DAYS, minValue: minValue || 1e6,
+      ? fetchBlockDays({ isin: isinReq, ...win, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
                          ttmMax: num(ttmMax), rating: ratings, limit: PAGE }, ac.signal)
         .then((d) => { setDayData(d); })
-      : fetchMarketTape({ days: MAX_DAYS, minValue, side, market, issuer: emitters,
+      : fetchMarketTape({ ...win, minValue, side, market, issuer: emitters,
                           isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
@@ -424,7 +458,8 @@ export default function TradesTape() {
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
   }, [minValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch, onlyFlagged,
-      spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort, tick]);
+      spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort,
+      periodDays, dateFrom, dateTo, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
   // демонами (тик Alor и лента ISS), поэтому в сокете не было бы ничего, чего
@@ -530,7 +565,7 @@ export default function TradesTape() {
     setLoadingMore(true);
     try {
       const d = await fetchMarketTape({
-        days: MAX_DAYS, minValue, side, market, issuer: emitters, isin: isinReq,
+        ...win, minValue, side, market, issuer: emitters, isin: isinReq,
         scope, limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
         ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
         hideSubord: hideSub, hideAmort,
@@ -554,6 +589,7 @@ export default function TradesTape() {
     + (onlyWatch ? 1 : 0) + (side ? 1 : 0) + (market ? 1 : 0)
     + (minValue === DEFAULTS.minValue ? 0 : 1)
     + (spreadMin ? 1 : 0) + (spreadMax ? 1 : 0) + (ttmMin ? 1 : 0) + (ttmMax ? 1 : 0)
+    + (periodDays || custom ? 1 : 0)
     + (scopes.length === 1 && scopes[0] === DEFAULTS.scopes[0] ? 0 : 1);
 
   // Сброс возвращает НАБОР ПО УМОЛЧАНИЮ, а не пустоту: пустой фильтр — это
@@ -567,7 +603,14 @@ export default function TradesTape() {
     setSide(DEFAULTS.side); setMarket(DEFAULTS.market);
     setMinValue(DEFAULTS.minValue);
     setScopes(DEFAULTS.scopes);
+    setPeriodDays(DEFAULTS.periodDays);
+    setDateFrom(DEFAULTS.dateFrom); setDateTo(DEFAULTS.dateTo);
   };
+
+  // Кнопки окна и календарь — один фильтр в двух видах: выбор дней стирает
+  // даты, ввод даты снимает выделение с кнопки (иначе на витрине висели бы
+  // два взаимоисключающих периода, а работал бы один).
+  const pickDays = (d) => { setPeriodDays(d); setDateFrom(""); setDateTo(""); };
 
   // ── колонки: порядок, ширина, сортировка ─────────────────────────────────
   const cols = useMemo(() => {
@@ -745,6 +788,41 @@ export default function TradesTape() {
             <button className="chip-btn reset-btn" disabled={!activeFilters}
               onClick={resetFilters} aria-label="Сбросить все фильтры"
               title="Снять все фильтры ленты">✕</button>
+          </div>
+
+          {/* Период — сразу за воронкой: окно кнопками 1/7/30 дней либо
+              произвольные даты под иконкой календаря. Окно считает бэк, так
+              что итоги внизу и «показать ещё» живут в том же периоде. */}
+          <div className="fgroup tape-period" ref={calRef}>
+            <span className="fg-lbl">ПЕРИОД</span>
+            {PERIODS.map(([d, label]) => (
+              <button key={label} className={"chip-btn" + (!custom && periodDays === d ? " on" : "")}
+                onClick={() => pickDays(d)}
+                title={d ? `сделки за последние ${d} календарных дн.`
+                  : "вся глубина архива (крупные принты — дальше 35 дней)"}>{label}</button>
+            ))}
+            <button className={"chip-btn tape-cal-btn" + (custom || calOpen ? " on" : "")}
+              aria-label="Произвольный период" aria-expanded={calOpen}
+              title="Произвольный период календарём"
+              onClick={() => setCalOpen((v) => !v)}>
+              <IconCalendar size={12} />
+            </button>
+            {calOpen && (
+              <div className="tape-cal-pop" role="dialog" aria-label="Произвольный период">
+                <label className="cp-date">с
+                  <input type="date" value={dateFrom} max={dateTo || todayIso()}
+                    onChange={(e) => { setDateFrom(e.target.value); setPeriodDays(null); }} />
+                </label>
+                <label className="cp-date">по
+                  <input type="date" value={dateTo} min={dateFrom || undefined} max={todayIso()}
+                    onChange={(e) => { setDateTo(e.target.value); setPeriodDays(null); }} />
+                </label>
+                {custom && (
+                  <button className="chip-btn"
+                    onClick={() => { setDateFrom(""); setDateTo(""); }}>сброс дат</button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="fgroup">
