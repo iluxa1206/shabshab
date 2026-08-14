@@ -166,6 +166,24 @@ CREATE INDEX IF NOT EXISTS ix_block_ts ON block_trade(ts);
 CREATE INDEX IF NOT EXISTS ix_block_isin_ts ON block_trade(isin, ts);
 CREATE INDEX IF NOT EXISTS ix_block_value ON block_trade(value);
 
+-- Отмеченные сделки («красный флажок» в ленте), per-user. Со СНИМКОМ строки:
+-- trade_tick подчищается ретеншеном (мелочь старше TICK_RAW_DAYS удаляется), и
+-- ссылка по одному trade_id через месяц указывала бы в пустоту. Снимок делает
+-- список флагов самодостаточным — отмеченная сделка не исчезает никогда.
+CREATE TABLE IF NOT EXISTS trade_flag(
+  user_email TEXT NOT NULL,
+  trade_id INTEGER NOT NULL,      -- TRADENO MOEX (== id сделки Alor)
+  isin TEXT NOT NULL,
+  ts TEXT NOT NULL,               -- 'YYYY-MM-DD HH:MM:SS' МСК
+  price REAL, qty REAL, value REAL,
+  side TEXT, board TEXT, market TEXT, cur TEXT,
+  y_idx_bps REAL, yld REAL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_email, trade_id)
+);
+CREATE INDEX IF NOT EXISTS ix_trade_flag_user ON trade_flag(user_email, ts DESC);
+
 -- Дневные агрегаты РПС (ISS history market=ndm). Поштучных адресных сделок за
 -- прошлые дни ISS не отдаёт вообще — только «бумага/борд/день: оборот, число
 -- сделок, средневзвес». Нужны, чтобы видеть блоки ДО запуска поштучного сбора.

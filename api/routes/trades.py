@@ -23,8 +23,10 @@ import re
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel
 
+from api.routes.auth import require_user
 from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _scope_isins,
                                board_short)
 
@@ -124,6 +126,79 @@ def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[s
     return keep
 
 
+def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict) -> None:
+    """Разметка строк ленты справочниками (имя/эмитент/формула/оферта/база
+    спреда). Общая для ленты архива и для списка отмеченных сделок — иначе у
+    флажков был бы свой, отстающий набор полей."""
+    for r in rows:
+        lb = labels.get(r["isin"]) or {}
+        r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
+        r["emitter"] = lb.get("emitter")
+        r["base"] = lb.get("base")
+        r["rating"] = lb.get("rating")
+        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        r["board_short"] = board_short(r.get("board"))
+        r["maturity"] = lb.get("maturity")
+        # формула купона рисуется тем же компонентом, что в СПИСКЕ
+        r["margin_bps"] = lb.get("margin_bps")
+        r["coupons_per_year"] = lb.get("coupons_per_year")
+        r["coupon_text"] = lb.get("coupon_text")
+        mx = um.get(r["isin"]) or {}
+        r["offer_date"] = mx.get("offer_date")
+        r["offer_kind"] = mx.get("offer_kind")
+        r["preferred_horizon"] = mx.get("horizon")
+        r["has_call"] = lb.get("has_call")
+        r["y_idx_avg7_bps"] = avg7.get(r["isin"])
+
+
+class TradeFlagBody(BaseModel):
+    """Снимок отмечаемой сделки: лента отдаёт эти поля, мы их и сохраняем."""
+    trade_id: int
+    isin: str
+    ts: str
+    price: Optional[float] = None
+    qty: Optional[float] = None
+    value: Optional[float] = None
+    side: Optional[str] = None
+    board: Optional[str] = None
+    market: Optional[str] = None
+    cur: Optional[str] = None
+    y_idx_bps: Optional[float] = None
+    yld: Optional[float] = None
+    note: Optional[str] = None
+
+
+@router.get("/flags", tags=["Trades"])
+async def list_flags(limit: int = Query(1000, ge=1, le=5000),
+                     user: dict = Depends(require_user)):
+    """Отмеченные сделки пользователя (снимки), новые сверху."""
+    from services import trade_flags
+    rows = await asyncio.to_thread(trade_flags.listing, user["email"], limit)
+    return {"trades": rows, "n": len(rows)}
+
+
+@router.post("/flags", tags=["Trades"])
+async def add_flag(body: TradeFlagBody, user: dict = Depends(require_user)):
+    """Поставить флажок. Идемпотентно — повторный вызов обновляет снимок."""
+    from services import trade_flags
+    isin = (body.isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=422, detail="Некорректный ISIN")
+    try:
+        return await asyncio.to_thread(
+            trade_flags.add, user["email"],
+            {**body.model_dump(), "isin": isin}, body.note)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.delete("/flags/{trade_id}", tags=["Trades"])
+async def drop_flag(trade_id: int = Path(...), user: dict = Depends(require_user)):
+    from services import trade_flags
+    ok = await asyncio.to_thread(trade_flags.remove, user["email"], trade_id)
+    return {"ok": ok, "trade_id": trade_id, "flagged": False}
+
+
 @router.get("", tags=["Trades"])
 async def tape(
     days: int = Query(1, ge=1, le=400, description="окно в календарных днях назад"),
@@ -148,6 +223,8 @@ async def tape(
     before_ts: Optional[str] = Query(None, description="курсор пагинации: ts последней показанной сделки"),
     before_id: Optional[int] = Query(None, description="курсор пагинации: её trade_id"),
     limit: int = Query(500, ge=1, le=20000),
+    flagged: bool = Query(False, description="только отмеченные флажком сделки"),
+    user: dict = Depends(require_user),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
     if side is not None and side not in ("buy", "sell"):
@@ -161,6 +238,37 @@ async def tape(
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
 
     from services import tape as tape_svc
+    from services import trade_flags
+
+    # СПИСОК ОТМЕЧЕННЫХ — отдельная ветка: строки берутся из снимков флагов, а не
+    # из архива. Так отметка переживает ретеншен тикового архива (мелочь старше
+    # ~35 дней он удаляет), и список не зависит от фильтров ленты — «мои сделки»
+    # должны показываться все, независимо от того, какой срез стоит на витрине.
+    if flagged:
+        rows = await asyncio.to_thread(trade_flags.listing, user["email"], limit)
+        if isin:
+            rows = [r for r in rows if r["isin"] == isin]
+        labels = await asyncio.to_thread(_labels)
+        moex = await asyncio.to_thread(_moex_names)
+        from services.market_data import MarketDataService as _MD
+        from services import bars as _bars
+        um = _MD.universe_metrics() or {}
+        try:
+            avg7 = await asyncio.to_thread(_bars.spread_avg_map, 7)
+        except Exception:
+            avg7 = {}
+        _decorate(rows, labels, moex, um, avg7)
+        val = sum(r.get("value") or 0 for r in rows if (r.get("cur") or "SUR") == "SUR")
+        return {"from": rows[-1]["ts"][:10] if rows else None, "days": days,
+                "scope": scope, "flagged": True, "truncated": False, "has_more": False,
+                "y_idx_rows": sum(1 for r in rows if r.get("y_idx_bps") is not None),
+                "trades": rows,
+                "summary": {"n": len(rows), "value": val,
+                            "buy_value": sum(r.get("value") or 0 for r in rows if r.get("side") == "buy"),
+                            "sell_value": sum(r.get("value") or 0 for r in rows if r.get("side") == "sell"),
+                            "by_market": {"ndm": {"value": sum(r.get("value") or 0
+                                                               for r in rows if r.get("negotiated"))}},
+                            "top": [], "archive_till": None}}
 
     # SQLite тут синхронный, а агрегат ленты на миллионах тиков меряется
     # секундами (замер на проде: до 2.2с) — в event loop это встало бы ВСЁ
@@ -239,25 +347,10 @@ async def tape(
         logger.warning("spread_avg_map failed: %s", e)
         avg7 = {}
 
+    _decorate(rows, labels, moex, um, avg7)
+    flags = await asyncio.to_thread(trade_flags.ids, user["email"])
     for r in rows:
-        lb = labels.get(r["isin"]) or {}
-        r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
-        r["emitter"] = lb.get("emitter")
-        r["base"] = lb.get("base")
-        r["rating"] = lb.get("rating")
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
-        r["board_short"] = board_short(r.get("board"))
-        r["maturity"] = lb.get("maturity")
-        # формула купона рисуется тем же компонентом, что в СПИСКЕ
-        r["margin_bps"] = lb.get("margin_bps")
-        r["coupons_per_year"] = lb.get("coupons_per_year")
-        r["coupon_text"] = lb.get("coupon_text")
-        mx = um.get(r["isin"]) or {}
-        r["offer_date"] = mx.get("offer_date")
-        r["offer_kind"] = mx.get("offer_kind")
-        r["preferred_horizon"] = mx.get("horizon")
-        r["has_call"] = lb.get("has_call")
-        r["y_idx_avg7_bps"] = avg7.get(r["isin"])
+        r["flagged"] = r.get("trade_id") in flags
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]
