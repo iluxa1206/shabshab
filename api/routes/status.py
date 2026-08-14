@@ -66,6 +66,81 @@ def _blocks_stat() -> dict:
                 "ndm": 0, "days": 0, "days_from": None, "isins": set()}
 
 
+def _rss_mb() -> float:
+    """RSS процесса, МБ — без psutil (его в образе нет)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+@router.get("/memory", tags=["Status"])
+async def memory():
+    """Сколько памяти держит процесс и НА ЧЁМ. Кэши в этом приложении живут
+    внутри процесса, снаружи их не видно — а без размеров искать утечку можно
+    только гаданием (13.08 RSS вырос 599 → 1004 МБ за ночь и подошёл к лимиту
+    контейнера 1.2 ГБ). Здесь — длины всех долгоживущих словарей: у кого длина
+    растёт со временем, тот и течёт."""
+    caches: dict = {}
+
+    def _len(name, obj):
+        try:
+            caches[name] = len(obj)
+        except Exception:
+            caches[name] = None
+
+    try:
+        from services import backdate as bd
+        _len("backdate.honest_memo", bd._honest_memo)
+        _len("backdate.anchor_memo", bd._anchor_memo)
+    except Exception:
+        pass
+    try:
+        from services.market_data import MarketDataService as MD
+        _len("market_data.full_mem", MD._full_mem)
+        _len("market_data.secid_cache", MD._secid_cache)
+        _len("market_data.sec_cache", MD._sec_cache)
+        _len("market_data.snap_cache", MD._snap_cache)
+    except Exception:
+        pass
+    try:
+        from services import universe_stream as us
+        _len("universe_stream.level_memo", us._level_memo)
+    except Exception:
+        pass
+    try:
+        from services import trade_yidx as ty
+        _len("trade_yidx.ctx_cache", ty._ctx_cache)
+    except Exception:
+        pass
+    try:
+        from services import coupon_calib as cc
+        _len("coupon_calib.parse_cache", cc._parse_cache)
+        _len("coupon_calib.idx_cache", cc._idx_cache)
+        _len("coupon_calib.cache", cc._cache)
+    except Exception:
+        pass
+    try:
+        from services import instruments as ins
+        _len("instruments.desc_cache", ins._desc_cache)
+    except Exception:
+        pass
+    # market_cache — общий мешок горячих данных: интересны размеры его веток
+    mc = {}
+    for k, v in list(market_cache.items()):
+        try:
+            mc[k] = len(v) if hasattr(v, "__len__") else 1
+        except Exception:
+            mc[k] = None
+    import gc
+    return {"rss_mb": _rss_mb(), "gc_objects": len(gc.get_objects()),
+            "caches": caches, "market_cache": mc}
+
+
 @router.get("", tags=["Status"])
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress

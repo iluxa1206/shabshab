@@ -22,6 +22,7 @@ import asyncio
 import logging
 import math
 from bisect import bisect_right
+from collections import OrderedDict
 from datetime import date, timedelta
 from typing import Optional, Tuple
 
@@ -625,8 +626,24 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
     return fn
 
 
-_honest_memo: dict = {}     # (isin, days, board) → (msk_day, result); прошлое не меняется,
-                            # хвост realized-кривой обновляется раз в день — TTL сутки
+# (isin, days, board) → (msk_day, result). Прошлое не меняется, хвост realized-
+# кривой обновляется раз в день — TTL сутки. РАЗМЕР ОГРАНИЧЕН: в словаре лежат
+# полные серии точек (150 дней × dict на день), и за проход по универсу их
+# набиралось на сотни мегабайт — процесс за ночь дорастал с 599 МБ до 1 ГБ и
+# подходил к лимиту контейнера. Вытесняем самые старые записи (FIFO) и чистим
+# вчерашние: серия пересчитывается за секунды из уже готовых строк spread_daily.
+_HONEST_MEMO_MAX = 64
+_honest_memo: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+
+def _honest_memo_put(key: tuple, day, result: dict) -> None:
+    _honest_memo[key] = (day, result)
+    _honest_memo.move_to_end(key)
+    # сначала прочь вчерашние (они всё равно невалидны), потом самые старые
+    for k in [k for k, (d, _) in list(_honest_memo.items()) if d != day]:
+        _honest_memo.pop(k, None)
+    while len(_honest_memo) > _HONEST_MEMO_MAX:
+        _honest_memo.popitem(last=False)
 
 
 async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] = None,
@@ -642,6 +659,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     key = (isin, days, board)
     hit = None if price_overrides else _honest_memo.get(key)
     if hit and hit[0] == _date.today():
+        _honest_memo.move_to_end(key)      # свежеиспользованное вытесняется последним
         return hit[1]
     d_till = _date.today() - _td(days=1)
     d_from = d_till - _td(days=int(days * 1.55) + 7)   # запас на выходные
@@ -728,7 +746,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             logger.debug(f"honest point {isin}@{r['date']}: {e}")
     result = {"isin": isin, "points": points, "warnings": ctx["ctx_warnings"]}
     if not price_overrides:
-        _honest_memo[key] = (_date.today(), result)
+        _honest_memo_put(key, _date.today(), result)
     return result
 
 
