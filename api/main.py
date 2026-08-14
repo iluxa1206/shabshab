@@ -398,13 +398,31 @@ async def nightly_spread_warm():
             logger.info("nightly warm 03:00: старт (топ %d, окно %d дн)",
                         NIGHTLY_WARM_TOP, NIGHTLY_WARM_DAYS)
             await bars_svc.warm_hot(days=NIGHTLY_WARM_DAYS, top=NIGHTLY_WARM_TOP)
-            # Свёртка дней по ВСЕМУ юниверсу — она дешёвая (агрегация уже
-            # посчитанных часов, ни сети, ни солвера) и трогает только новые дни,
-            # поэтому идёт после прогрева и по всем бумагам, а не по топу.
-            stat = await bars_svc.build_daily_universe()
-            logger.info("nightly daily rollup: %s", stat)
         except Exception as e:
             logger.warning("nightly warm error: %s", e)
+
+
+async def nightly_daily_rollup():
+    """Каждую ночь в 03:30 МСК — свёртка часов в дни по ВСЕМУ юниверсу.
+
+    Дешёвая (агрегация уже посчитанных часов: ни сети, ни солвера) и трогает
+    только новые дни, поэтому идёт по всем бумагам, а не по топу.
+
+    Своим тактом, а не хвостом ночного прогрева: и прогрев, и часовой демон
+    (:07 каждого часа) пишут в ту же базу на 2 ГБ, и три писателя в одну минуту
+    дают взаимные блокировки. 03:30 — свободная от обоих точка."""
+    from services import bars as bars_svc
+    while True:
+        now = datetime.now(_MSK)
+        target = now.replace(hour=3, minute=30, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (target - now).total_seconds()))
+        try:
+            stat = await bars_svc.build_daily_universe()
+            logger.info("nightly daily rollup 03:30: %s", stat)
+        except Exception as e:
+            logger.warning("nightly daily rollup error: %s", e)
 
 
 async def memory_watch(period_sec: int = 1800):
@@ -772,6 +790,7 @@ async def lifespan(app: FastAPI):
     spread_snap = asyncio.create_task(spread_snapshotter())
     bars_worker = asyncio.create_task(hourly_bars_worker())
     night_warm = asyncio.create_task(nightly_spread_warm())
+    night_roll = asyncio.create_task(nightly_daily_rollup())
     mem_watch = asyncio.create_task(memory_watch())
     depth_task = asyncio.create_task(depth_poller())
     archive_task = asyncio.create_task(archive_maintenance())
@@ -813,6 +832,7 @@ async def lifespan(app: FastAPI):
     spread_snap.cancel()
     bars_worker.cancel()
     night_warm.cancel()
+    night_roll.cancel()
     mem_watch.cancel()
     depth_task.cancel()
     archive_task.cancel()
