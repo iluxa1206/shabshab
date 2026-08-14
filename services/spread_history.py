@@ -29,15 +29,23 @@ def write_snapshot() -> int:
     for isin, m in um.items():
         if not isin or not isinstance(m, dict):
             continue
+        # ГОРИЗОНТ пишем вместе со спредом: он у бумаги меняется во времени
+        # (подтянулась дата колла из corpbonds, цена перешла порог выкупа), и
+        # число без него несопоставимо со вчерашним — линия истории обрывалась
+        # на 200+ б.п. без движения цены (СибурХ1Р04/05/06, 12.08.2026).
+        # Рядом кладём спред ко ВТОРОМУ горизонту: график сам выберет ту ветку,
+        # что совпадает с сегодняшним горизонтом бумаги.
         rows.append((isin, d, "floater", m.get("last"), m.get("disc_dm"),
-                     None, m.get("z_model"), m.get("ytm"), m.get("yoi"), "snap"))
+                     None, m.get("z_model"), m.get("ytm"), m.get("yoi"), "snap",
+                     m.get("horizon"), m.get("y_idx_alt"), m.get("alt_horizon")))
 
     fxm = market_cache.get("fixed_metrics") or {}
     for isin, m in fxm.items():
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "fixed", m.get("last"), None,
-                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, "snap"))
+                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, "snap",
+                     m.get("horizon"), None, None))
 
     # пишем только строки с хоть каким-то спредом (иначе шум пустых)
     rows = [r for r in rows if r[4] is not None or r[5] is not None
@@ -47,7 +55,8 @@ def write_snapshot() -> int:
     with _lock, _connect() as c:
         c.executemany(
             "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-            "g_spread_bps,z_bps,ytm,y_idx,src) VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
+            "g_spread_bps,z_bps,ytm,y_idx,src,horizon,y_idx_alt,alt_horizon) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     logger.info("spread snapshot %s: %d строк", d, len(rows))
     return len(rows)
 
@@ -106,6 +115,36 @@ def drop_untrusted(isin: str, dates: set) -> int:
                 (isin, d))
             n += cur.rowcount or 0
     return n
+
+
+def rows_without_horizon(isin: str, days: int = 400) -> List[dict]:
+    """Строки архива, у которых горизонт неизвестен (писались до того, как снимок
+    начал его сохранять). Их спред несопоставим с сегодняшним, если горизонт
+    бумаги с тех пор сменился — scripts/backfill_horizon.py пересчитывает их
+    честным as-of движком на их же цене."""
+    from datetime import date, timedelta
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with _connect() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT date, price_pct, y_idx FROM spread_daily "
+            "WHERE isin=? AND kind='floater' AND horizon IS NULL AND date >= ? "
+            "ORDER BY date", (isin, cutoff)).fetchall()]
+
+
+def update_horizon(isin: str, points: list) -> int:
+    """Проставляет горизонт (и спред к нему + ко второму) у строк, где его нет.
+    Трогает только строки с horizon IS NULL: прошлое, уже посчитанное с горизонтом,
+    не переписываем. Возвращает число обновлённых строк."""
+    upd = [(p.get("y_idx_bps"), p.get("y_idx_alt_bps"), p.get("horizon"),
+            p.get("alt_horizon"), isin, p["date"])
+           for p in points if p.get("horizon") and p.get("y_idx_bps") is not None]
+    if not upd:
+        return 0
+    with _lock, _connect() as c:
+        cur = c.executemany(
+            "UPDATE spread_daily SET y_idx=?, y_idx_alt=?, horizon=?, alt_horizon=? "
+            "WHERE isin=? AND date=? AND kind='floater' AND horizon IS NULL", upd)
+        return cur.rowcount or 0
 
 
 def upsert_honest(isin: str, points: list, existing_dates: set,

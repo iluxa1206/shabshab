@@ -560,14 +560,10 @@ async def fetch_history_range(secid: str, d_from: date, d_till: date,
 
 
 def _alt_horizon(hz_key: str, horizons: dict) -> Optional[str]:
-    """Второй горизонт для свитчера графика: к погашению ↔ к ближайшей оферте.
-    None, если у бумаги оферт нет и переключать не на что."""
-    if hz_key != "maturity":
-        return "maturity"
-    for k in ("put", "call"):
-        if k in (horizons or {}):
-            return k
-    return None
+    """Обёртка над общим valuation.alt_horizon (импорт ленивый — как всё, что
+    этот модуль берёт из valuation: там свои тяжёлые зависимости)."""
+    from services.valuation import alt_horizon
+    return alt_horizon(hz_key, horizons)
 
 
 # Собранная as-of фабрика: кэш на день по (isin, board) с ЗАПОМНЕННЫМ окном.

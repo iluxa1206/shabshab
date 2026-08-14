@@ -12,7 +12,7 @@ from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
 )
-from services.valuation import calculate_valuation_metrics
+from services.valuation import calculate_valuation_metrics, alt_horizon as _alt_horizon
 from core.valuation import next_offer_info
 from services.zspread import compute_z_bps
 from services import metrics
@@ -89,6 +89,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     face_px = accrued_settle = yoi_slope = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
+    hz_alt, yoi_alt = None, None
     # Маркер оферты для таблицы (даты из MOEX bondization). offertype у MOEX
     # колл не различает — на всём универсе только 'Оферта'/'Оферта (состоялось)'/
     # 'Оферта/Погашение', поэтому kind тут практически всегда 'put'. Call приходит
@@ -122,6 +123,14 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             # сравнивал бы бумагу с офертой через год по потоку на десять лет.
             hz = m.get("preferred_horizon", "maturity")
             _hzm = (m.get("horizons") or {}).get(hz) or {}
+            # ВТОРОЙ ГОРИЗОНТ рядом с основным (к погашению ↔ к ближайшей оферте):
+            # горизонт бумаги меняется во времени (появилась дата колла, цена
+            # перешла порог выкупа), и дневной снимок спреда без него склеивает
+            # несопоставимые числа в одну линию истории — обрыв на 200+ б.п. без
+            # движения цены. Держим оба, чтобы график мог взять сопоставимое.
+            hz_alt = _alt_horizon(hz, m.get("horizons") or {})
+            _altm = (m.get("horizons") or {}).get(hz_alt) or {} if hz_alt else {}
+            yoi_alt = _altm.get("yield_over_index_bps")
             dirty = m.get("dirty_price_rub")
             dm = _hzm.get("sm_bps", m.get("dm_bps"))
             disc_dm = _hzm.get("disc_margin_bps", m.get("disc_margin_bps"))
@@ -207,6 +216,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             # читает _uni_item прямо из u — не плодим второй источник той же правды
             # (эти метрики ещё и уходят в WS-патч, где место только цено-зависимым).
             "horizon": hz, "offer_date": off_d, "offer_kind": off_kind,
+            "y_idx_alt": yoi_alt, "alt_horizon": hz_alt,
             "sm_to_offer": sm_off, "dm_to_offer": dm_off}
 
 

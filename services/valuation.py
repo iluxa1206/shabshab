@@ -463,6 +463,19 @@ def calculate_valuation_metrics(
     }
 
 
+def alt_horizon(hz_key: str, horizons: Dict[str, Any]) -> Optional[str]:
+    """Второй горизонт: к погашению ↔ к ближайшей оферте. None, если у бумаги
+    оферт нет и переключать не на что. Им живут свитчер графика и дневной снимок
+    спреда (там второй горизонт держит линию истории сопоставимой, когда горизонт
+    бумаги меняется во времени)."""
+    if hz_key != "maturity":
+        return "maturity"
+    for k in ("put", "call"):
+        if k in (horizons or {}):
+            return k
+    return None
+
+
 def pick_horizon(m: Dict[str, Any], horizon: str = "auto") -> Dict[str, Any]:
     """Метрики ВЫБРАННОГО горизонта из ответа calculate_valuation_metrics.
 

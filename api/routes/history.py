@@ -380,7 +380,7 @@ async def yidx_aggregate(body: YidxAggBody):
     def _read_daily():
         with _connect() as c:
             return c.execute(
-                "SELECT isin, date, y_idx FROM spread_daily "
+                "SELECT isin, date, y_idx, y_idx_alt, horizon, alt_horizon FROM spread_daily "
                 "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
                 "ORDER BY date", (cutoff,)).fetchall()
 
@@ -388,8 +388,35 @@ async def yidx_aggregate(body: YidxAggBody):
     lo, hi = _YIDX_BAND
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
-    rows = [r for r in rows if lo < r["y_idx"] < hi
-            and (want is None or r["isin"] in want)]
+    rows = [r for r in rows if want is None or r["isin"] in want]
+    # ОДИН ГОРИЗОНТ НА ВСЮ ЛИНИЮ. Горизонт бумаги меняется во времени (появилась
+    # дата колла, цена перешла порог выкупа), а строка архива хранит спред к тому
+    # горизонту, что действовал в её день: СибурХ1Р06 12.08.2026 переключился с
+    # погашения (5,6 г) на колл (0,3 г) и медиана обвалилась на 220 б.п. без
+    # движения цены. Берём ветку, совпадающую с ПОСЛЕДНИМ известным горизонтом
+    # бумаги (сегодняшняя таблица считает по нему же), при несовпадении — второй
+    # горизонт из той же строки. Нет ни того, ни другого (легаси-строки до
+    # появления колонок — лечатся scripts/backfill_horizon.py) — точку отбрасываем,
+    # линия рвётся вместо обвала.
+    cur_hz: dict = {}
+    for r in rows:
+        if r["horizon"]:
+            cur_hz[r["isin"]] = r["horizon"]     # строки идут по возрастанию даты
+    picked = []
+    for r in rows:
+        hz = cur_hz.get(r["isin"])
+        v = r["y_idx"]
+        if hz is not None:
+            if r["horizon"] == hz:
+                v = r["y_idx"]
+            elif r["alt_horizon"] == hz and r["y_idx_alt"] is not None:
+                v = r["y_idx_alt"]
+            else:
+                continue
+        if v is None or not (lo < v < hi):
+            continue
+        picked.append({"isin": r["isin"], "date": r["date"], "y_idx": v})
+    rows = picked
     if not rows:
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
 
