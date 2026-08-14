@@ -1,53 +1,35 @@
-"""Webhook Telegram-бота. Вне require_user: защита — секрет-заголовок
-X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) + allowlist tg_users.
-Идентичность бота автономна: алерты в общей таблице alerts под
-user_email 'tg:<tg_user_id>' (см. services/tg_users.py).
+"""Телеграм-бот: вебхук + управление привязкой чатов (только админ).
 
-Команды фазы 1 (CRUD руками, Mini App — фаза 2):
-  /alert <ISIN> <buy|sell> <метрика> <=|>= <порог> [vol <N> [rub]]
-  /alerts, /del <id>, /mute, /unmute, /status, /help"""
+Настройки у бота своей нет — алерты и сигналы заводятся на сайте и дублируются
+в привязанный чат (services/tg_notify.py). Вебхук вне require_user: защита —
+секрет-заголовок X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) плюс
+статус привязки в tg_users. Команды бота — только чтение и пауза доставки:
+  /start — заявка на доступ, /alerts — список, /signals — последние события,
+  /mute, /unmute, /status, /help
+"""
 import logging
 import os
-import re
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel
 
-from services import alerts, telegram, tg_users
-from services.tg_webapp import InitDataError, validate_init_data
+from api.routes.auth import require_admin
+from services import alerts, auth_users, signals, telegram, tg_users
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-def _webapp_url() -> Optional[str]:
-    return os.getenv("TG_WEBAPP_URL") or None
-
-
-def _webapp_markup() -> Optional[dict]:
-    url = _webapp_url()
-    if not url:
-        return None
-    return {"inline_keyboard": [[{"text": "⚙️ Настройка алертов",
-                                  "web_app": {"url": url}}]]}
-
-_METRICS = "price|ytm|dm|yidx|gspread"
-_ALERT_RE = re.compile(
-    rf"^/alert\s+(?P<isin>[A-Za-z0-9]{{12}})\s+(?P<side>buy|sell)\s+"
-    rf"(?P<metric>{_METRICS})\s*(?P<op><=|>=)\s*(?P<thr>-?[\d.]+)"
-    rf"(?:\s+vol\s+(?P<vol>[\d.eE+]+)\s*(?P<unit>rub|руб|шт|bonds)?)?\s*$",
-    re.IGNORECASE)
+_SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/")
 
 _HELP = (
-    "<b>Команды</b>\n"
-    "/alert &lt;ISIN&gt; buy|sell price|ytm|dm|yidx|gspread &lt;=|&gt;= порог"
-    " [vol N [rub]] — новый алерт\n"
-    "  пример: <code>/alert RU000A10AU99 buy yidx >= 250 vol 1000000 rub</code>\n"
-    "/alerts — список\n"
-    "/del &lt;id&gt; — удалить\n"
+    "<b>Что умеет бот</b>\n"
+    "Алерты по стакану и сигналы рынка настраиваются на сайте — сюда приходят "
+    "их копии.\n\n"
+    "/alerts — мои алерты\n"
+    "/signals — последние сигналы\n"
     "/mute, /unmute — пауза доставки\n"
-    "/status — состояние")
+    "/status — состояние привязки\n"
+    f'<a href="{_SITE_URL}">Открыть дашборд</a>')
 
 
 def _fmt_alert(a: dict) -> str:
@@ -59,16 +41,27 @@ def _fmt_alert(a: dict) -> str:
             f"{a['metric']} {a['op']} {a['threshold']:g}{vol}")
 
 
+def _fmt_event(e: dict) -> str:
+    name = e.get("name") or e.get("isin")
+    bits = []
+    if e.get("val_bps") is not None:
+        bits.append(f"{e['val_bps']:.0f} бп")
+    if e.get("price") is not None:
+        bits.append(f"{e['price']:.2f}")
+    if e.get("money_rub"):
+        v = e["money_rub"]
+        bits.append(f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽")
+    ts = (e.get("fired_at") or "")[11:16]
+    return f"• {ts} <b>{name}</b> — " + ", ".join(bits)
+
+
 async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> str:
     email = tg_users.email_for(uid)
     text = text.strip()
 
     if text.startswith("/start"):
-        tg_users.upsert(uid, chat_id, username)
-        await telegram.send_message(
-            chat_id, "Флоатер-деск на связи. Алерты по стакану придут сюда "
-            "картинкой.\n\n" + _HELP, reply_markup=_webapp_markup())
-        return ""
+        return ("Флоатер-деск на связи. Алерты и сигналы, заведённые на сайте, "
+                "будут дублироваться сюда.\n\n" + _HELP)
 
     if text.startswith("/help"):
         return _HELP
@@ -76,15 +69,14 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
     if text.startswith("/alerts"):
         rows = alerts.list_for_user(email)
         if not rows:
-            return "Алертов нет. Создать: см. /help"
+            return "Алертов нет. Заводятся на сайте, в стакане выпуска."
         return "\n".join(_fmt_alert(a) for a in rows[:30])
 
-    if text.startswith("/del"):
-        m = re.match(r"^/del\s+(\d+)", text)
-        if not m:
-            return "Формат: /del <id>"
-        ok = alerts.delete(email, int(m.group(1)))
-        return "Удалён." if ok else "Не найден (чужой id?)."
+    if text.startswith("/signals"):
+        rows = signals.events_for_user(email, limit=15)
+        if not rows:
+            return "Сигналов пока не было. Фильтры — на сайте, вкладка СИГНАЛЫ."
+        return "\n".join(_fmt_event(e) for e in rows)
 
     if text.startswith("/mute"):
         tg_users.set_muted(uid, True)
@@ -99,24 +91,11 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
         active = sum(1 for a in rows if a["status"] == "active")
         fired = sum(1 for a in rows if a["status"] == "fired")
         u = tg_users.get(uid) or {}
-        return (f"Алертов: {active} активных, {fired} сработавших.\n"
+        nfilters = len(signals.list_for_user(email))
+        return (f"Аккаунт: {email}\n"
+                f"Алертов: {active} активных, {fired} сработавших.\n"
+                f"Фильтров сигналов: {nfilters}.\n"
                 f"Доставка: {'🔇 mute' if u.get('muted') else '🔔 on'}")
-
-    m = _ALERT_RE.match(text)
-    if m:
-        unit = (m.group("unit") or "bonds").lower()
-        unit = "rub" if unit in ("rub", "руб") else "bonds"
-        try:
-            a = alerts.create(
-                email, isin=m.group("isin").upper(), side=m.group("side").lower(),
-                metric=m.group("metric").lower(), op=m.group("op"),
-                threshold=float(m.group("thr")),
-                min_volume=float(m.group("vol") or 0), volume_unit=unit)
-        except alerts.AlertError as e:
-            return f"Ошибка: {e}"
-        return "Создан:\n" + _fmt_alert(a)
-    if text.startswith("/alert"):
-        return "Не разобрал. Формат: см. /help"
 
     return "Не понял. /help"
 
@@ -138,15 +117,39 @@ async def tg_webhook(request: Request,
     frm = msg.get("from") or {}
     chat = msg.get("chat") or {}
     uid, chat_id = frm.get("id"), chat.get("id")
+    username = frm.get("username") or ""
     if not text or not uid or not chat_id or chat.get("type") != "private":
         return {"ok": True}
+
     if not tg_users.is_allowed(uid):
-        logger.warning("tg webhook: отказ чужому tg_user_id=%s (@%s)",
-                       uid, frm.get("username"))
-        await telegram.send_message(chat_id, "Доступ закрыт.", parse_mode=None)
+        # Заявку заводим на любое сообщение: юзер мог начать не с /start.
+        # Одобряет админ на сайте, до этого бот молчит по делу.
+        try:
+            row = tg_users.request_access(uid, chat_id, username)
+        except Exception as e:
+            logger.warning("tg webhook: заявка %s не сохранена: %s", uid, e)
+            row = None
+        logger.info("tg webhook: заявка от tg_user_id=%s (@%s) status=%s",
+                    uid, username, (row or {}).get("status"))
+        if (row or {}).get("status") == "rejected":
+            await telegram.send_message(chat_id, "Доступ закрыт.", parse_mode=None)
+        else:
+            await telegram.send_message(
+                chat_id,
+                "Заявка на доступ принята. Админ привяжет этот чат к вашему "
+                "аккаунту на сайте — после этого сюда пойдут алерты и сигналы."
+                + (f"\nВаш ник: @{username}" if username else
+                   f"\nВаш ID: {uid} (ника нет — передайте админу его)"),
+                parse_mode=None)
         return {"ok": True}
+
+    # известный чат: держим chat_id/username свежими (юзер мог сменить ник)
     try:
-        reply = await _handle_command(text, uid, chat_id, frm.get("username") or "")
+        tg_users.request_access(uid, chat_id, username)
+    except Exception as e:
+        logger.warning("tg webhook: upsert %s: %s", uid, e)
+    try:
+        reply = await _handle_command(text, uid, chat_id, username)
     except Exception as e:
         logger.warning("tg webhook handler error: %s", e)
         reply = "Внутренняя ошибка, см. логи."
@@ -155,190 +158,60 @@ async def tg_webhook(request: Request,
     return {"ok": True}
 
 
-# --- REST для Mini App (фаза 2). Auth — подписанный initData в заголовке
-# Authorization: tma <initData>; per-request, серверной сессии нет. ---
+# --- привязка чатов к аккаунтам (админка сайта) ---
 
-async def require_tg(authorization: str = Header(default="")) -> dict:
-    if not authorization.startswith("tma "):
-        raise HTTPException(status_code=401, detail="Нет initData")
+class ApproveBody(BaseModel):
+    email: str
+
+
+def _link_row(r: dict) -> dict:
+    return {"tg_user_id": r["tg_user_id"], "username": r.get("username"),
+            "email": r.get("email"), "status": r.get("status"),
+            "muted": bool(r.get("muted")), "created_at": r.get("created_at"),
+            "approved_at": r.get("approved_at"), "approved_by": r.get("approved_by")}
+
+
+@router.get("/links", tags=["TG"])
+async def tg_list_links(_admin: dict = Depends(require_admin)):
+    return {"links": [_link_row(r) for r in tg_users.list_all()],
+            "enabled": telegram.enabled()}
+
+
+@router.post("/links/{uid}/approve", tags=["TG"])
+async def tg_approve_link(body: ApproveBody, uid: int = Path(...),
+                          admin: dict = Depends(require_admin)):
+    email = (body.email or "").strip().lower()
+    if not auth_users.get_user(email):
+        raise HTTPException(status_code=400, detail=f"нет пользователя {email}")
     try:
-        user = validate_init_data(authorization[4:])
-    except InitDataError as e:
-        raise HTTPException(status_code=401, detail=f"initData: {e}")
-    if not tg_users.is_allowed(user["tg_user_id"]):
-        raise HTTPException(status_code=403, detail="Доступ закрыт")
-    return user
-
-
-class TgAlertCreate(BaseModel):
-    isin: str
-    side: str                    # buy | sell
-    metric: str                  # price | ytm | dm | yidx | gspread
-    op: str                      # '<=' | '>='
-    threshold: float
-    min_volume: float = 0.0
-    volume_unit: str = "bonds"   # bonds | rub
-    kind: str = "floater"
-    note: Optional[str] = None
-
-
-class TgAlertPatch(BaseModel):
-    side: Optional[str] = None
-    metric: Optional[str] = None
-    op: Optional[str] = None
-    threshold: Optional[float] = None
-    min_volume: Optional[float] = None
-    volume_unit: Optional[str] = None
-    note: Optional[str] = None
-
-
-@router.get("/me", tags=["TG"])
-async def tg_me(user: dict = Depends(require_tg)):
-    row = tg_users.get(user["tg_user_id"]) or {}
-    return {"tg_user_id": user["tg_user_id"], "username": user.get("username"),
-            "muted": bool(row.get("muted")), "registered": bool(row)}
-
-
-@router.get("/alerts", tags=["TG"])
-async def tg_list_alerts(user: dict = Depends(require_tg)):
-    rows = alerts.list_for_user(tg_users.email_for(user["tg_user_id"]))
-    try:
-        from services import instruments_registry
-        labels = instruments_registry.labels_map([a["isin"] for a in rows])
-        for a in rows:
-            a["name"] = (labels.get(a["isin"]) or {}).get("name")
-    except Exception:
-        pass
-    return {"alerts": rows}
-
-
-@router.post("/alerts", tags=["TG"])
-async def tg_create_alert(body: TgAlertCreate, user: dict = Depends(require_tg)):
-    try:
-        return alerts.create(
-            tg_users.email_for(user["tg_user_id"]), isin=body.isin, side=body.side,
-            metric=body.metric, op=body.op, threshold=body.threshold,
-            min_volume=body.min_volume, volume_unit=body.volume_unit,
-            kind=body.kind, note=body.note)
-    except alerts.AlertError as e:
+        row = tg_users.approve(uid, email, admin["email"])
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.patch("/alerts/{aid}", tags=["TG"])
-async def tg_patch_alert(body: TgAlertPatch, aid: int = Path(...),
-                         user: dict = Depends(require_tg)):
+    if row is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    logger.info("tg link approved: %s → %s by %s", uid, email, admin["email"])
     try:
-        a = alerts.update(tg_users.email_for(user["tg_user_id"]), aid,
-                          **body.model_dump(exclude_none=True))
-    except alerts.AlertError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if a is None:
-        raise HTTPException(status_code=404, detail="Алерт не найден")
-    return a
+        await telegram.send_message(
+            row["chat_id"],
+            f"Доступ открыт: чат привязан к аккаунту {email}.\n"
+            "Алерты и сигналы с сайта пойдут сюда. /help — команды.")
+    except Exception as e:
+        logger.warning("tg approve notify error: %s", e)
+    return _link_row(row)
 
 
-@router.delete("/alerts/{aid}", tags=["TG"])
-async def tg_delete_alert(aid: int = Path(...), user: dict = Depends(require_tg)):
-    if not alerts.delete(tg_users.email_for(user["tg_user_id"]), aid):
-        raise HTTPException(status_code=404, detail="Алерт не найден")
-    return {"ok": True}
+@router.post("/links/{uid}/revoke", tags=["TG"])
+async def tg_revoke_link(uid: int = Path(...), admin: dict = Depends(require_admin)):
+    row = tg_users.revoke(uid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Привязка не найдена")
+    logger.info("tg link revoked: %s by %s", uid, admin["email"])
+    return _link_row(row)
 
 
-class MuteBody(BaseModel):
-    muted: bool
-
-
-@router.post("/mute", tags=["TG"])
-async def tg_mute(body: MuteBody, user: dict = Depends(require_tg)):
-    tg_users.set_muted(user["tg_user_id"], body.muted)
-    return {"muted": body.muted}
-
-
-@router.get("/search", tags=["TG"])
-async def tg_search(q: str = "", user: dict = Depends(require_tg)):
-    from services import instruments_registry
-    return {"results": instruments_registry.search(q, limit=10)}
-
-
-@router.get("/emitters", tags=["TG"])
-async def tg_emitters(q: str = "", user: dict = Depends(require_tg)):
-    """Эмитенты универса для пикера фильтра (218 имён — отдаём с поиском)."""
-    from services import instruments_registry
-    rows = instruments_registry.universe_rows()
-    q = (q or "").strip().lower()
-    names = sorted({(r.get("emitter_name") or "").strip()
-                    for r in rows if r.get("emitter_name")})
-    if q:
-        names = [n for n in names if q in n.lower()]
-    return {"emitters": names[:30], "total": len(names)}
-
-
-# --- скринер-фильтры (фаза 3) ---
-
-class FilterParams(BaseModel):
-    # отбор бумаг: три селектора по ИЛИ (пусто = весь рынок)
-    ratings: List[str] = []
-    emitters: List[str] = []
-    isins: List[str] = []
-    # условия сделки (всегда И)
-    side: str = "ask"                   # ask (оффер) | bid
-    spread_min: Optional[float] = None  # Y-IDX бп
-    spread_max: Optional[float] = None
-    min_money_rub: Optional[float] = None
-    money_mode: str = "book"           # book — набор по лестнице | single — одна заявка
-    years_min: Optional[float] = None   # срок до погашения, лет
-    years_max: Optional[float] = None
-    hide_subord: bool = False           # прятать суборды
-
-
-class FilterCreate(BaseModel):
-    name: str
-    params: FilterParams
-    cooldown_min: int = 240
-
-
-class FilterPatch(BaseModel):
-    name: Optional[str] = None
-    enabled: Optional[bool] = None
-    params: Optional[FilterParams] = None
-    cooldown_min: Optional[int] = None
-
-
-@router.get("/filters", tags=["TG"])
-async def tg_list_filters(user: dict = Depends(require_tg)):
-    from services import tg_screener
-    return {"filters": tg_screener.list_for_user(user["tg_user_id"])}
-
-
-@router.post("/filters", tags=["TG"])
-async def tg_create_filter(body: FilterCreate, user: dict = Depends(require_tg)):
-    from services import tg_screener
-    try:
-        return tg_screener.create(user["tg_user_id"], body.name,
-                                  body.params.model_dump(), body.cooldown_min)
-    except tg_screener.FilterError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.patch("/filters/{fid}", tags=["TG"])
-async def tg_patch_filter(body: FilterPatch, fid: int = Path(...),
-                          user: dict = Depends(require_tg)):
-    from services import tg_screener
-    try:
-        f = tg_screener.update(
-            user["tg_user_id"], fid, name=body.name, enabled=body.enabled,
-            params=body.params.model_dump() if body.params else None,
-            cooldown_min=body.cooldown_min)
-    except tg_screener.FilterError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if f is None:
-        raise HTTPException(status_code=404, detail="Фильтр не найден")
-    return f
-
-
-@router.delete("/filters/{fid}", tags=["TG"])
-async def tg_delete_filter(fid: int = Path(...), user: dict = Depends(require_tg)):
-    from services import tg_screener
-    if not tg_screener.delete(user["tg_user_id"], fid):
-        raise HTTPException(status_code=404, detail="Фильтр не найден")
+@router.delete("/links/{uid}", tags=["TG"])
+async def tg_delete_link(uid: int = Path(...), admin: dict = Depends(require_admin)):
+    if not tg_users.delete(uid):
+        raise HTTPException(status_code=404, detail="Привязка не найдена")
+    logger.info("tg link deleted: %s by %s", uid, admin["email"])
     return {"ok": True}

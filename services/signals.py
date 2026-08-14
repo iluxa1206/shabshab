@@ -400,6 +400,10 @@ async def run_cycle() -> int:
                 "sound": f["sound"], "desktop": f["desktop"],
                 "matches": events,
             })
+            # копия в привязанный телеграм-чат (буфер, отправка пачкой)
+            from services import tg_notify
+            tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
+                                     f["params"]["side"], events)
             fired += 1
         except Exception as e:
             logger.warning("signal filter %s error: %s", f.get("id"), e)

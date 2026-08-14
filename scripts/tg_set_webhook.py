@@ -23,12 +23,18 @@ async def main() -> None:
     print("setWebhook:", res)
     info = await telegram.call("getWebhookInfo")
     print("getWebhookInfo:", info)
-    webapp = os.getenv("TG_WEBAPP_URL")
-    if webapp:
-        res = await telegram.call("setChatMenuButton", {
-            "menu_button": {"type": "web_app", "text": "Алерты",
-                            "web_app": {"url": webapp}}})
-        print("setChatMenuButton:", res)
+    # Mini App снесён: меню-кнопка возвращается к списку команд, иначе у старых
+    # чатов она осталась бы указывать на удалённую страницу
+    print("setChatMenuButton:", await telegram.call(
+        "setChatMenuButton", {"menu_button": {"type": "commands"}}))
+    print("setMyCommands:", await telegram.call("setMyCommands", {"commands": [
+        {"command": "alerts", "description": "мои алерты"},
+        {"command": "signals", "description": "последние сигналы"},
+        {"command": "mute", "description": "пауза доставки"},
+        {"command": "unmute", "description": "включить доставку"},
+        {"command": "status", "description": "состояние привязки"},
+        {"command": "help", "description": "справка"},
+    ]}))
 
 
 if __name__ == "__main__":

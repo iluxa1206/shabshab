@@ -232,9 +232,10 @@ cd frontend-react && npm install && npm run dev
   `vwap_for(levels, want_rub, face)`, `y_idx_at(row, px, side)`, `block_matches(trade, meta, params)`.
 * `signals.py` — фильтры веб-аккаунта + лента событий: `create`, `update`, `run_cycle()`,
   `detect_events(...)`, `preview`, `events_for_user`, `unseen_count`.
-* `telegram.py` / `tg_users.py` / `tg_notify.py` / `tg_render.py` / `tg_screener.py` / `tg_webapp.py` —
-  бот `@deskdeskdesk_bot`: клиент Bot API, allowlist, очередь доставки, PNG-рендер стакана (Pillow),
-  скринер-фильтры, валидация initData Mini App.
+* `telegram.py` / `tg_users.py` / `tg_notify.py` / `tg_render.py` — бот `@deskdeskdesk_bot`
+  как канал доставки: клиент Bot API, привязка чата к веб-аккаунту (заявка на `/start` →
+  одобрение админом на сайте), очередь алертов + буфер сигналов, PNG-рендер стакана (Pillow).
+  Своей настройки у бота нет — алерты и фильтры заводятся на сайте.
 * `progress.py` — реестр фоновых задач для страницы СТАТУС: `start/advance/finish/snapshot`.
 * `portfolio_db.init_db()` — схема `data/portfolio.db` (идемпотентно + аддитивные миграции).
 * `paths.py` — `cache_path(name)`, `atomic_write_json(path, obj)`.
@@ -406,8 +407,9 @@ cd frontend-react && npm install && npm run dev
 * **Alor**: `ALOR_REFRESH_TOKEN`, `ALOR_ENV`, `ALOR_ALLOWED_PORTFOLIOS`, `ALOR_POOL_SHARD` (150),
   `ALOR_TRADES_SHARD`, `ALOR_LIVE_CAP`.
 * **Авторизация**: `AUTH_SECRET`, `AUTH_COOKIE_SECURE`, `AUTH_USERS_FILE`.
-* **Telegram**: `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET`, `TG_WEBHOOK_URL`, `TG_WEBAPP_URL`,
-  `TG_ALLOWED_IDS`, `TG_SCREENER_INTERVAL`, `TG_API_IP` (обход IPv6-only DNS на VPS).
+* **Telegram**: `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET`, `TG_WEBHOOK_URL`, `TG_SITE_URL`,
+  `TG_SIGNAL_FLUSH_SEC` (30 — период слива буфера сигналов),
+  `TG_API_IP` (обход IPv6-only DNS на VPS).
 * **Такты воркеров**: `QUOTES_POLL_INTERVAL`, `SIGNALS_INTERVAL`, `DEPTH_POLL_INTERVAL`,
   `BLOCK_POLL_INTERVAL`, `BARS_WORKER`(0/1), `BARS_WORKER_DAYS`, `BLOCK_WORKER`, `TRADES_STREAM`,
   `DEPTH_STREAM`, `TRADES_STREAM_FLUSH`.

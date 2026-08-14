@@ -1,12 +1,15 @@
-"""Доставка сработавших алертов в Telegram: очередь + фоновый consumer
-(api.main запускает tg_notify_worker). Монитор алертов кладёт событие
-неблокирующе — рендер PNG и HTTP к Bot API не тормозят цикл мониторинга.
+"""Доставка в Telegram того, что настроено на сайте: алерты по стакану и
+события вкладки СИГНАЛЫ. Своей настройки у бота нет — адресат ищется по
+user_email через привязку чата (services/tg_users.py).
 
-Доставляются только алерты пользователей бота (user_email 'tg:<id>');
-веб-алерты живут как раньше. Ошибки доставки логируются и глотаются —
-алерт-механика (mark_fired) уже отработала."""
+Алерты уходят сразу (очередь + consumer: рендер PNG и HTTP к Bot API не тормозят
+цикл мониторинга). Сигналы копятся в буфере и уходят пачкой раз в
+TG_SIGNAL_FLUSH_SEC — тик скринера секундный, поштучная отправка выбила бы
+лимиты Bot API и превратила чат в ленту. Ошибки доставки логируются и глотаются:
+веб-механика (mark_fired, лента событий) уже отработала."""
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -16,24 +19,35 @@ logger = logging.getLogger(__name__)
 
 _queue: "asyncio.Queue[dict]" = asyncio.Queue(maxsize=200)
 
+# (chat_id, filter_id) → {name, side, kind, matches} — буфер коалесценции сигналов
+_pending: dict = {}
+SIGNAL_FLUSH_SEC = float(os.getenv("TG_SIGNAL_FLUSH_SEC", "30"))
+MAX_MATCHES = 8              # в одном сообщении; остальное сворачиваем в «ещё N»
+
 _MSK = timezone(timedelta(hours=3))
 _METRIC_LABEL = {"price": "цена", "ytm": "YTM", "dm": "DM",
                  "yidx": "R-spread", "gspread": "G-спред"}
 _METRIC_UNIT = {"price": "", "ytm": "%", "dm": " бп", "yidx": " бп", "gspread": " бп"}
+_REASON = {"new": "новая", "price": "цена", "spread": "спред", "money": "объём",
+           "block": "крупная сделка"}
 
+
+# --- алерты по стакану ---
 
 def enqueue(alert: dict, bids: List[dict], asks: List[dict],
             face: Optional[float], hit: dict) -> None:
     """Из alerts_monitor, сразу после mark_fired. Никогда не бросает."""
     if not telegram.enabled():
         return
-    if not (alert.get("user_email") or "").startswith(tg_users.EMAIL_PREFIX):
-        return
     try:
-        _queue.put_nowait({"alert": alert, "bids": bids, "asks": asks,
-                           "face": face, "hit": hit})
+        if not tg_users.has_chats(alert.get("user_email") or ""):
+            return
+        _queue.put_nowait({"kind": "alert", "alert": alert, "bids": bids,
+                           "asks": asks, "face": face, "hit": hit})
     except asyncio.QueueFull:
         logger.warning("tg_notify queue full, drop alert id=%s", alert.get("id"))
+    except Exception as e:                       # БД недоступна — не роняем монитор
+        logger.warning("tg_notify enqueue error: %s", e)
 
 
 def _short_name(isin: str) -> Optional[str]:
@@ -62,13 +76,10 @@ def _caption(alert: dict, face: Optional[float], hit: dict, name: Optional[str])
     return "\n".join(lines)
 
 
-async def _deliver(ev: dict) -> None:
+async def _deliver_alert(ev: dict) -> None:
     alert, hit = ev["alert"], ev["hit"]
-    user = tg_users.chat_for_email(alert["user_email"])
-    if not user:
-        logger.warning("tg_notify: нет tg_users для %s", alert["user_email"])
-        return
-    if user.get("muted"):
+    chats = tg_users.chats_for_email(alert.get("user_email") or "")
+    if not chats:
         return
     name = _short_name(alert["isin"])
     caption = _caption(alert, ev["face"], hit, name)
@@ -84,23 +95,106 @@ async def _deliver(ev: dict) -> None:
             title="АЛЕРТ", ts=datetime.now(_MSK))
     except Exception as e:
         logger.warning("tg render error (alert %s): %s", alert.get("id"), e)
-    if png:
-        ok = await telegram.send_photo(user["chat_id"], png, caption)
-    else:
-        ok = await telegram.send_message(user["chat_id"], caption)
-    if ok is None:
-        logger.warning("tg_notify: доставка алерта %s не удалась", alert.get("id"))
+    for u in chats:
+        if png:
+            ok = await telegram.send_photo(u["chat_id"], png, caption)
+        else:
+            ok = await telegram.send_message(u["chat_id"], caption)
+        if ok is None:
+            logger.warning("tg_notify: доставка алерта %s в чат %s не удалась",
+                           alert.get("id"), u["chat_id"])
 
+
+# --- события вкладки СИГНАЛЫ ---
+
+def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
+                   side: Optional[str], matches: List[dict],
+                   kind: str = "book") -> None:
+    """Из signals.run_cycle / block_trades.notify_blocks — рядом с WS-пушем.
+    Складывает в буфер: отправка пачкой из flush-воркера. Никогда не бросает."""
+    if not telegram.enabled() or not matches:
+        return
+    try:
+        chats = tg_users.chats_for_email(user_email)
+        if not chats:
+            return
+        for u in chats:
+            buf = _pending.setdefault(
+                (u["chat_id"], filter_id),
+                {"name": filter_name, "side": side, "kind": kind, "matches": []})
+            buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
+            # хвост длинной серии интереснее её начала: держим последние
+            buf["matches"] = (buf["matches"] + list(matches))[-40:]
+    except Exception as e:
+        logger.warning("tg_notify enqueue_signal error: %s", e)
+
+
+def _fmt_money(v: Optional[float]) -> str:
+    if not v:
+        return ""
+    return f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽"
+
+
+def _fmt_match(m: dict) -> str:
+    name = m.get("name") or m.get("isin")
+    bits = []
+    if m.get("val_bps") is not None:
+        bits.append(f"{m['val_bps']:.0f} бп")
+    if m.get("price") is not None:
+        bits.append(f"{m['price']:.2f}")
+    money = _fmt_money(m.get("money_rub"))
+    if money:
+        bits.append(money)
+    reason = _REASON.get(m.get("reason") or "", "")
+    tail = f" · {reason}" if reason else ""
+    return f"• <b>{name}</b> — " + ", ".join(bits) + tail
+
+
+def _signal_text(buf: dict) -> str:
+    side = {"ask": "оффер", "bid": "бид"}.get(buf.get("side") or "", "")
+    head = "💥 <b>Крупная сделка</b>" if buf.get("kind") == "block" else "📡 <b>Сигнал</b>"
+    lines = [f"{head} — {buf['name']}" + (f" ({side})" if side else "")]
+    ms = buf["matches"]
+    lines += [_fmt_match(m) for m in ms[:MAX_MATCHES]]
+    if len(ms) > MAX_MATCHES:
+        lines.append(f"…ещё {len(ms) - MAX_MATCHES}")
+    return "\n".join(lines)
+
+
+async def _flush_signals() -> None:
+    if not _pending:
+        return
+    batch = list(_pending.items())
+    _pending.clear()
+    for (chat_id, _fid), buf in batch:
+        try:
+            await telegram.send_message(chat_id, _signal_text(buf))
+        except Exception as e:
+            logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
+
+
+# --- воркеры ---
 
 async def tg_notify_worker() -> None:
-    """Фон: разбирает очередь доставки. Троттлинг лимитов Bot API внутри
-    telegram.call (ретраи на 429)."""
+    """Фон: разбирает очередь доставки алертов. Троттлинг лимитов Bot API
+    внутри telegram.call (ретраи на 429)."""
     logger.info("tg_notify worker started (enabled=%s)", telegram.enabled())
     while True:
         ev = await _queue.get()
         try:
-            await _deliver(ev)
+            await _deliver_alert(ev)
         except Exception as e:
             logger.warning("tg_notify deliver error: %s", e)
         finally:
             _queue.task_done()
+
+
+async def tg_signal_worker() -> None:
+    """Фон: раз в SIGNAL_FLUSH_SEC сливает буфер сигналов в чаты."""
+    logger.info("tg_signal worker started (flush=%.0fs)", SIGNAL_FLUSH_SEC)
+    while True:
+        await asyncio.sleep(SIGNAL_FLUSH_SEC)
+        try:
+            await _flush_signals()
+        except Exception as e:
+            logger.warning("tg_notify flush error: %s", e)

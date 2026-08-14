@@ -43,9 +43,6 @@ def _market():
 
 
 def test_core_shared_with_tg():
-    from services import tg_screener
-    assert tg_screener.normalize_params is core.normalize_params
-    assert tg_screener.evaluate is core.evaluate
     assert signals.normalize_params is core.normalize_params
     assert signals.evaluate is core.evaluate
 

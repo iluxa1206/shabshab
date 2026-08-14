@@ -97,6 +97,20 @@ export const adminUpdateUser = (email, patch) =>
 export const adminDeleteUser = (email) =>
   request(`/api/auth/users/${encodeURIComponent(email)}`, { method: "DELETE" });
 
+// --- Привязка телеграм-чатов к аккаунтам (только admin) ---
+// Бот своей настройки не имеет: одобренный чат получает копии алертов и
+// сигналов того аккаунта, к которому привязан.
+export const adminListTgLinks = () => request("/api/tg/links");
+
+export const adminApproveTgLink = (uid, email) =>
+  request(`/api/tg/links/${uid}/approve`, { method: "POST", json: { email } });
+
+export const adminRevokeTgLink = (uid) =>
+  request(`/api/tg/links/${uid}/revoke`, { method: "POST" });
+
+export const adminDeleteTgLink = (uid) =>
+  request(`/api/tg/links/${uid}`, { method: "DELETE" });
+
 // --- Реестр инструментов (admin): ревью новых бумаг + ручной ввод параметров ---
 export const fetchUnreviewedInstruments = () => request("/api/instruments/unreviewed");
 

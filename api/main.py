@@ -538,25 +538,6 @@ async def signals_worker():
         await asyncio.sleep(SIGNALS_INTERVAL)
 
 
-TG_SCREENER_INTERVAL = int(os.getenv("TG_SCREENER_INTERVAL", "180"))
-
-
-async def tg_screener_worker():
-    """Фон: скринер-фильтры Telegram-бота против снапшота метрик универса.
-    Вся логика в services.tg_screener.run_cycle; тут только такт и торговые часы."""
-    from services import tg_screener
-    await asyncio.sleep(90)     # ждём прогрева движка метрик
-    while True:
-        try:
-            if _in_moex_trading_hours():
-                sent = await tg_screener.run_cycle()
-                if sent:
-                    logger.info("tg screener: %d сообщений", sent)
-        except Exception as e:
-            logger.warning(f"tg_screener_worker error: {e}")
-        await asyncio.sleep(TG_SCREENER_INTERVAL)
-
-
 async def spread_snapshotter():
     """Дневной снапшот спред-метрик (точная история). Разово при старте (если
     метрики прогреты) + каждый день ~19:00 МСК (после основной сессии, метрики
@@ -795,13 +776,13 @@ async def lifespan(app: FastAPI):
     tape_task = asyncio.create_task(trades_stream_pool())
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
-    from services.tg_notify import tg_notify_worker
+    from services.tg_notify import tg_notify_worker, tg_signal_worker
     tg_task = asyncio.create_task(tg_notify_worker())
-    tg_scr_task = asyncio.create_task(tg_screener_worker())
+    tg_sig_task = asyncio.create_task(tg_signal_worker())
     signals_task = asyncio.create_task(signals_worker())
     yield
     tg_task.cancel()
-    tg_scr_task.cancel()
+    tg_sig_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()

@@ -3,9 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   changePassword, adminListUsers, adminCreateUser, adminUpdateUser, adminDeleteUser,
   adminResetPassword, setInstrumentParams, fetchInstrument, parseCouponFormula,
+  adminListTgLinks, adminApproveTgLink, adminRevokeTgLink, adminDeleteTgLink,
 } from "../api.js";
 
 const USERS_KEY = ["admin", "users"];
+const TG_KEY = ["admin", "tg-links"];
 
 // Модалка настроек аккаунта. Всем — смена своего пароля. Админам — управление
 // юзерами и реестром инструментов.
@@ -23,6 +25,7 @@ export default function AdminPanel({ user, onClose }) {
         <PasswordSection />
         {/* Управление бумагами переехало в отдельную страницу «Справочник» */}
         {isAdmin && <UsersSection me={user.email} />}
+        {isAdmin && <TelegramSection />}
       </div>
     </div>
   );
@@ -325,6 +328,113 @@ function UserRow({ u, me, setErr, onIssued }) {
       <td className="admin-actions">
         <button className="btn admin-btn-sm" onClick={resetPw} disabled={busy}>Сбросить пароль</button>
         <button className="btn admin-btn-sm admin-btn-danger" onClick={del} disabled={busy || isSelf}>
+          Удалить
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// Привязка телеграм-чатов. Бот сам ничего не настраивает: /start заводит заявку,
+// админ выбирает аккаунт — в чат идут копии алертов и сигналов этого аккаунта.
+const TG_STATUS = { pending: "заявка", approved: "привязан", rejected: "отклонён" };
+
+function TelegramSection() {
+  const [err, setErr] = useState("");
+  const q = useQuery({ queryKey: TG_KEY, queryFn: adminListTgLinks });
+  const users = useQuery({ queryKey: USERS_KEY, queryFn: adminListUsers });
+  const links = q.data?.links || [];
+  const loadErr = q.isError ? (q.error?.message || "Не удалось загрузить заявки") : "";
+  const pending = links.filter((l) => l.status === "pending").length;
+
+  return (
+    <section className="admin-sec">
+      <h3 className="admin-h">
+        Телеграм{pending > 0 && <span className="admin-you"> — заявок: {pending}</span>}
+      </h3>
+      {q.data && q.data.enabled === false && (
+        <div className="admin-msg">Бот выключен: не задан TG_BOT_TOKEN.</div>
+      )}
+      {(err || loadErr) && <Msg err={err || loadErr} />}
+      {q.isPending ? (
+        <div className="admin-msg">Загрузка…</div>
+      ) : links.length === 0 ? (
+        <div className="admin-msg">Заявок нет. Пользователь пишет боту /start — заявка появится здесь.</div>
+      ) : (
+        <table className="admin-table">
+          <thead>
+            <tr><th>Телеграм</th><th>Статус</th><th>Аккаунт</th><th></th></tr>
+          </thead>
+          <tbody>
+            {links.map((l) => (
+              <TgRow key={l.tg_user_id} l={l} emails={(users.data || []).map((u) => u.email)}
+                setErr={setErr} />
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="admin-hint">
+        Отвязка выключает доставку, но чат может подать заявку заново; удаление
+        стирает запись целиком.
+      </div>
+    </section>
+  );
+}
+
+function TgRow({ l, emails, setErr }) {
+  const qc = useQueryClient();
+  const [email, setEmail] = useState(l.email || "");
+
+  const mut = useMutation({
+    mutationFn: (fn) => fn(),
+    onMutate: () => setErr(""),
+    onSuccess: () => qc.invalidateQueries({ queryKey: TG_KEY }),
+    onError: (ex) => setErr(ex.message || "Ошибка"),
+  });
+  const busy = mut.isPending;
+
+  const approve = () => {
+    if (!email) { setErr("Выберите аккаунт"); return; }
+    mut.mutate(() => adminApproveTgLink(l.tg_user_id, email));
+  };
+  const revoke = () => {
+    if (!confirm(`Отвязать чат ${l.username ? "@" + l.username : l.tg_user_id}?`)) return;
+    mut.mutate(() => adminRevokeTgLink(l.tg_user_id));
+  };
+  const del = () => {
+    if (!confirm(`Удалить запись ${l.username ? "@" + l.username : l.tg_user_id}?`)) return;
+    mut.mutate(() => adminDeleteTgLink(l.tg_user_id));
+  };
+
+  return (
+    <tr>
+      <td>
+        {l.username ? `@${l.username}` : "—"}
+        <span className="admin-you"> id {l.tg_user_id}</span>
+      </td>
+      <td>
+        {TG_STATUS[l.status] || l.status}
+        {/* mute пережил переделку: старый /start-юзер мог уйти в паузу и не
+            получать ничего после одобрения, пока не сделает /unmute */}
+        {l.muted ? " · пауза" : ""}
+      </td>
+      <td>
+        <select value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy}>
+          <option value="">— выбрать аккаунт —</option>
+          {/* привязанный email мог быть удалён из юзеров — не теряем его из виду */}
+          {email && !emails.includes(email) && <option value={email}>{email}</option>}
+          {emails.map((e) => <option key={e} value={e}>{e}</option>)}
+        </select>
+      </td>
+      <td className="admin-actions">
+        <button className="btn admin-btn-sm" onClick={approve}
+          disabled={busy || !email || (l.status === "approved" && email === l.email)}>
+          {l.status === "approved" ? "Перепривязать" : "Одобрить"}
+        </button>
+        {l.status === "approved" && (
+          <button className="btn admin-btn-sm" onClick={revoke} disabled={busy}>Отвязать</button>
+        )}
+        <button className="btn admin-btn-sm admin-btn-danger" onClick={del} disabled={busy}>
           Удалить
         </button>
       </td>

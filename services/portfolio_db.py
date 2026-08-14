@@ -212,38 +212,23 @@ CREATE TABLE IF NOT EXISTS block_cursor(
   updated_at TEXT NOT NULL
 );
 
--- Пользователи Telegram-бота (регистрация на /start). Идентичность бота своя,
--- без привязки к веб-аккаунтам: алерты таких юзеров живут в общей таблице
--- alerts с user_email = 'tg:<tg_user_id>' (движок alerts_monitor не в курсе).
+-- Телеграм-чаты, привязанные к веб-аккаунтам. Своей настройки у бота нет:
+-- он лишь дублирует алерты и сигналы владельца email в чат. /start заводит
+-- строку в статусе pending, привязку делает админ на сайте (status=approved,
+-- email заполнен). Один аккаунт — сколько угодно чатов (телефон + десктоп).
 CREATE TABLE IF NOT EXISTS tg_users(
   tg_user_id INTEGER PRIMARY KEY,
   chat_id    INTEGER NOT NULL,
   username   TEXT,
   muted      INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  email       TEXT,                              -- веб-аккаунт (NULL до одобрения)
+  status      TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+  approved_at TEXT,
+  approved_by TEXT
 );
-
--- Скринер-фильтры бота: «любая бумага рынка, где Y-IDX ≥ X при ограничениях».
--- params_json: {op, threshold, src, base, rating_min, max_years, min_depth_rub}
-CREATE TABLE IF NOT EXISTS tg_filters(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tg_user_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  params_json TEXT NOT NULL,
-  cooldown_min INTEGER NOT NULL DEFAULT 240,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_tg_filters_user ON tg_filters(tg_user_id);
-
--- Анти-спам скринера: когда бумага в последний раз уходила в чат по фильтру.
--- Повторное оповещение — только после cooldown_min фильтра.
-CREATE TABLE IF NOT EXISTS tg_filter_hits(
-  filter_id INTEGER NOT NULL,
-  isin TEXT NOT NULL,
-  fired_at TEXT NOT NULL,
-  PRIMARY KEY(filter_id, isin)
-);
+-- индекс по email — в _MIGRATIONS: на старой базе колонки ещё нет, а
+-- CREATE TABLE IF NOT EXISTS её не добавит (упало бы прямо здесь)
 
 -- Вкладка СИГНАЛЫ: те же фильтры скринера, но владелец — веб-аккаунт, а
 -- доставка идёт в браузер (WS-пуш + тост/уведомление). Условия фильтра
@@ -341,6 +326,18 @@ _MIGRATIONS = [
     # очередь расчёта ходит по (metrics_at, value) — без индекса это фулскан
     # многомиллионной таблицы на каждом такте демона
     "CREATE INDEX IF NOT EXISTS ix_tick_unpriced ON trade_tick(metrics_at, value)",
+    # привязка телеграм-чата к веб-аккаунту вместо автономной идентичности бота
+    # (см. services/tg_users.py). Прод-строки поднимаются как pending — админ
+    # одобряет и выбирает email, тогда же старые алерты 'tg:<id>' переезжают.
+    "ALTER TABLE tg_users ADD COLUMN email TEXT",
+    "ALTER TABLE tg_users ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+    "ALTER TABLE tg_users ADD COLUMN approved_at TEXT",
+    "ALTER TABLE tg_users ADD COLUMN approved_by TEXT",
+    "CREATE INDEX IF NOT EXISTS ix_tg_users_email ON tg_users(email)",
+    # свой скринер бота удалён: фильтры живут на сайте (вкладка СИГНАЛЫ),
+    # бот получает их события копией
+    "DROP TABLE IF EXISTS tg_filters",
+    "DROP TABLE IF EXISTS tg_filter_hits",
 ]
 
 

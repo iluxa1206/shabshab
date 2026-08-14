@@ -871,11 +871,14 @@ async def notify_blocks() -> int:
                  for (u, fid, _n, _s, _d), ms in payloads.items() for m in ms])
     await asyncio.to_thread(_persist)
 
+    from services import tg_notify
     for (u, fid, fname, snd, desk), ms in payloads.items():
         await wsmod.manager.broadcast_signal(u, {
             "type": "block", "filter_id": fid, "filter_name": fname,
             "side": None, "sound": bool(snd), "desktop": bool(desk), "matches": ms,
         })
+        # копия в привязанный телеграм-чат (буфер, отправка пачкой)
+        tg_notify.enqueue_signal(u, fid, fname, None, ms, kind="block")
     mark_alerted(seen_till)
     return len(hot)
 
