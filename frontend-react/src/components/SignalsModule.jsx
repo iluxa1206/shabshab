@@ -67,6 +67,67 @@ function Notify({ sound, setSound, desktop, setDesktop }) {
   );
 }
 
+/** Пара «от / до» — все диапазоны обеих форм вводятся одинаково. */
+function RangeInputs({ min, max, setMin, setMax, step }) {
+  return (
+    <div className="sig-row tight">
+      <input className="sig-input num" type="number" step={step} placeholder="от"
+        value={min} onChange={(e) => setMin(e.target.value)} />
+      <input className="sig-input num" type="number" step={step} placeholder="до"
+        value={max} onChange={(e) => setMax(e.target.value)} />
+    </div>
+  );
+}
+
+/** Блок «какие бумаги» — общий у обеих форм: один порядок полей, одни подписи.
+ *  Отбор бумаг ОДИНАКОВ у стакана и у сделок, поэтому и выглядеть должен так же. */
+function BondScope({ issuer, setIssuer, ratings, setRatings, emitters, setEmitters,
+                     isins, setIsins, hideSub, setHideSub }) {
+  const searchEmitters = useCallback(
+    async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
+  const searchBonds = useCallback(async (q) => (await searchInstruments(q)).results, []);
+  return (
+    <>
+      <div className="sig-section">Какие бумаги <span>селекторы объединяются по «или»</span></div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Эмитент</label>
+          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Рейтинг</label>
+          <div className="sig-chips">
+            {RATINGS.map((r) => (
+              <button type="button" key={r}
+                className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
+                onClick={() => setRatings(ratings.includes(r)
+                  ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <MultiPicker label="Эмитенты" placeholder="начни вводить название"
+        items={emitters} onChange={setEmitters} search={searchEmitters}
+        keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
+
+      <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
+        items={isins} onChange={setIsins} search={searchBonds}
+        keyOf={(r) => r.isin} labelOf={(r) => r.name}
+        subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
+
+      <div className="sig-field">
+        <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет. Суборды дают широчайший спред из-за риска списания и иначе занимают весь верх выдачи.">
+          <input type="checkbox" checked={hideSub}
+            onChange={(e) => setHideSub(e.target.checked)} />
+          <span>Прятать суборды</span>
+        </label>
+      </div>
+    </>
+  );
+}
+
 /** «250–400 бп» / «от 250 бп» / «до 400 бп» — одна подпись на все диапазоны. */
 function rangeTxt(min, max, unit) {
   if (min != null && max != null) return `${min}–${max} ${unit}`;
@@ -240,10 +301,6 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     return () => { dead = true; clearTimeout(t); };
   }, [params, smin, smax, minMoney]);
 
-  const searchEmitters = useCallback(
-    async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
-  const searchBonds = useCallback(async (q) => (await searchInstruments(q)).results, []);
-
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
@@ -273,44 +330,11 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <div className="sig-section">Какие бумаги <span>селекторы объединяются по «или»</span></div>
+      <BondScope issuer={issuer} setIssuer={setIssuer} ratings={ratings} setRatings={setRatings}
+        emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
+        hideSub={hideSub} setHideSub={setHideSub} />
 
-      <div className="sig-row">
-        <div className="sig-field">
-          <label className="sig-label">Эмитент</label>
-          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
-        </div>
-        <div className="sig-field">
-          <label className="sig-label">Рейтинг</label>
-          <div className="sig-chips">
-            {RATINGS.map((r) => (
-              <button type="button" key={r}
-                className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
-                onClick={() => setRatings(ratings.includes(r)
-                  ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <MultiPicker label="Эмитенты" placeholder="начни вводить название"
-        items={emitters} onChange={setEmitters} search={searchEmitters}
-        keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
-
-      <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
-        items={isins} onChange={setIsins} search={searchBonds}
-        keyOf={(r) => r.isin} labelOf={(r) => r.name}
-        subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
-
-      <div className="sig-field">
-        <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет. Суборды дают широчайший спред из-за риска списания и иначе занимают весь верх выдачи.">
-          <input type="checkbox" checked={hideSub}
-            onChange={(e) => setHideSub(e.target.checked)} />
-          <span>Прятать суборды</span>
-        </label>
-      </div>
-
-      <div className="sig-section">Условия</div>
+      <div className="sig-section">Условия <span>складываются по «и»</span></div>
 
       <div className="sig-row">
         <div className="sig-field">
@@ -320,12 +344,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
         </div>
         <div className="sig-field">
           <label className="sig-label">Диапазон R-spread, бп</label>
-          <div className="sig-row tight">
-            <input className="sig-input num" type="number" placeholder="от" value={smin}
-              onChange={(e) => setSmin(e.target.value)} />
-            <input className="sig-input num" type="number" placeholder="до" value={smax}
-              onChange={(e) => setSmax(e.target.value)} />
-          </div>
+          <RangeInputs min={smin} max={smax} setMin={setSmin} setMax={setSmax} />
         </div>
       </div>
 
@@ -338,12 +357,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
         </div>
         <div className="sig-field">
           <label className="sig-label">Срок до погашения, лет</label>
-          <div className="sig-row tight">
-            <input className="sig-input num" type="number" step="any" placeholder="от"
-              value={ymin} onChange={(e) => setYmin(e.target.value)} />
-            <input className="sig-input num" type="number" step="any" placeholder="до"
-              value={ymax} onChange={(e) => setYmax(e.target.value)} />
-          </div>
+          <RangeInputs min={ymin} max={ymax} setMin={setYmin} setMax={setYmax} step="any" />
         </div>
       </div>
 
@@ -389,8 +403,11 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   );
 }
 
-/** Форма фильтра крупной сделки. Условий стакана здесь нет: событие — факт
- *  сделки в ленте (в т.ч. адресной РПС, которой в стакане не бывает). */
+/** Форма фильтра крупной сделки. Скелет тот же, что у фильтра стакана
+ *  (название → какие бумаги → условия → оповещение → превью), и условия идут в
+ *  том же порядке: сторона+спред, объём+срок, третьей строкой своё для вида.
+ *  Разница только в смысле полей: событие — факт сделки в ленте (в т.ч.
+ *  адресной РПС, которой в стакане не бывает), а не состояние очереди. */
 function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const ep = edit?.params || {};
   const [name, setName] = useState(edit?.name || "");
@@ -436,10 +453,6 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     return () => { dead = true; clearTimeout(t); };
   }, [params, minValue]);
 
-  const searchEmitters = useCallback(
-    async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
-  const searchBonds = useCallback(async (q) => (await searchInstruments(q)).results, []);
-
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
@@ -467,7 +480,22 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
           onChange={(e) => setName(e.target.value)} />
       </div>
 
-      <div className="sig-section">Какие сделки</div>
+      <BondScope issuer={issuer} setIssuer={setIssuer} ratings={ratings} setRatings={setRatings}
+        emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
+        hideSub={hideSub} setHideSub={setHideSub} />
+
+      <div className="sig-section">Условия <span>складываются по «и»</span></div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Сторона (агрессор)</label>
+          <Seg pairs={SIDES} value={side} onChange={setSide} />
+        </div>
+        <div className="sig-field">
+          <label className="sig-label">Диапазон R-spread, бп</label>
+          <RangeInputs min={smin} max={smax} setMin={setSmin} setMax={setSmax} />
+        </div>
+      </div>
 
       <div className="sig-row">
         <div className="sig-field">
@@ -476,16 +504,16 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
             value={minValue} onChange={(e) => setMinValue(e.target.value)} />
         </div>
         <div className="sig-field">
-          <label className="sig-label">Режим торгов</label>
-          <Seg pairs={MARKETS} value={markets} onChange={setMarkets} />
+          <label className="sig-label">Срок до погашения, лет</label>
+          <RangeInputs min={ymin} max={ymax} setMin={setYmin} setMax={setYmax} step="any" />
         </div>
-      </div>
-      <div className="sig-note">
-        Адресные — РПС, размещения и выкупы: в стакане их не видно вообще, крупняк чаще идёт именно так
-        (стороны у них нет).
       </div>
 
       <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label">Режим торгов</label>
+          <Seg pairs={MARKETS} value={markets} onChange={setMarkets} />
+        </div>
         <div className="sig-field">
           <label className="sig-label">База купона</label>
           <div className="sig-chips">
@@ -497,31 +525,11 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
             ))}
           </div>
         </div>
-        <div className="sig-field">
-          <label className="sig-label">Сторона (агрессор)</label>
-          <Seg pairs={SIDES} value={side} onChange={setSide} />
-        </div>
       </div>
 
-      <div className="sig-row">
-        <div className="sig-field">
-          <label className="sig-label">Диапазон R-spread, бп</label>
-          <div className="sig-row tight">
-            <input className="sig-input num" type="number" placeholder="от" value={smin}
-              onChange={(e) => setSmin(e.target.value)} />
-            <input className="sig-input num" type="number" placeholder="до" value={smax}
-              onChange={(e) => setSmax(e.target.value)} />
-          </div>
-        </div>
-        <div className="sig-field">
-          <label className="sig-label">Срок до погашения, лет</label>
-          <div className="sig-row tight">
-            <input className="sig-input num" type="number" step="any" placeholder="от"
-              value={ymin} onChange={(e) => setYmin(e.target.value)} />
-            <input className="sig-input num" type="number" step="any" placeholder="до"
-              value={ymax} onChange={(e) => setYmax(e.target.value)} />
-          </div>
-        </div>
+      <div className="sig-note">
+        Адресные — РПС, размещения и выкупы: в стакане их не видно вообще, крупняк чаще идёт
+        именно так (стороны у них нет). Пустая база — любые бумаги.
       </div>
       {(smin !== "" || smax !== "") && (
         <div className="sig-note">
@@ -529,43 +537,6 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
           даже если база «фикс» отмечена.
         </div>
       )}
-
-      <div className="sig-section">Какие бумаги <span>селекторы объединяются по «или»</span></div>
-
-      <div className="sig-row">
-        <div className="sig-field">
-          <label className="sig-label">Эмитент</label>
-          <Seg pairs={ISSUERS} value={issuer} onChange={setIssuer} />
-        </div>
-        <div className="sig-field">
-          <label className="sig-label">Рейтинг</label>
-          <div className="sig-chips">
-            {RATINGS.map((r) => (
-              <button type="button" key={r}
-                className={"sig-chip" + (ratings.includes(r) ? " on" : "")}
-                onClick={() => setRatings(ratings.includes(r)
-                  ? ratings.filter((x) => x !== r) : [...ratings, r])}>{r}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <MultiPicker label="Эмитенты" placeholder="начни вводить название"
-        items={emitters} onChange={setEmitters} search={searchEmitters}
-        keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
-
-      <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
-        items={isins} onChange={setIsins} search={searchBonds}
-        keyOf={(r) => r.isin} labelOf={(r) => r.name}
-        subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
-
-      <div className="sig-field">
-        <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет.">
-          <input type="checkbox" checked={hideSub}
-            onChange={(e) => setHideSub(e.target.checked)} />
-          <span>Прятать суборды</span>
-        </label>
-      </div>
 
       <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop} />
 
