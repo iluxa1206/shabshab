@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { fmt } from "../format.js";
+import { fmt, yearsTo } from "../format.js";
 import { fetchSpreadMulti } from "../api.js";
+import { OfferMarks, wapSpread } from "./BondTable.jsx";
 import {
   linearScale, niceTicks, linePath, ChartFrame,
   dateTickIdx, tickLabel, spanDays,
@@ -13,9 +14,18 @@ import {
 // Палитра линий: восемь различимых цветов. Цвет закреплён за ПОЗИЦИЕЙ в списке
 // выбора, а не за бумагой: снял одну — остальные цвет не меняют (иначе взгляд
 // каждый раз заново ищет свою линию).
-const LINE_COLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66",
-                     "#b07cf9", "#3fc6c6", "#d4b83f", "#f97cc0"];
-export const CMP_MAX = LINE_COLORS.length;
+const LINE_COLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9",
+                     "#3fc6c6", "#d4b83f", "#f97cc0", "#8fbf3f", "#c07a4f"];
+// Цвет — дефицитный ресурс: десять различимых оттенков есть, одиннадцатый уже
+// путается с одним из первых. Всё сверх — СЕРЫМ ФОНОМ: линии видно (форма,
+// уровень, разброс), но конкретную бумагу в них не ищут, для этого её выбирают
+// в первую десятку.
+const GREY = "var(--mut-2)";
+const colorAt = (i) => (i < LINE_COLORS.length ? LINE_COLORS[i] : GREY);
+// Потолок линий вообще: «выбрать все» на широком фильтре иначе шлёт на бэк
+// сотни ISIN и рисует кашу.
+export const CMP_MAX = 100;
+export const CMP_COLORS = LINE_COLORS.length;
 
 const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
 // СПРЕД — первичная метрика платформы (Y-IDX). Цена — вспомогательная, в двух
@@ -100,18 +110,22 @@ function CompareChart({ series, names, metric, height, hi, onHi }) {
       height={height} pad={PAD} label={`сравнение: ${axisLabel(metric)}`}
       data={idxPts} build={build} px={(p, s) => s.sx(p.i)}
       tooltip={(p) => {
+        // В тултипе только ЦВЕТНЫЕ линии: сто строк серого фона перекрыли бы
+        // весь график, а найти в них бумагу глазом всё равно нельзя.
         const at = lines
-          .map((l) => ({ l, pt: l.pts.find((q) => q.date === p.date) }))
-          .filter((x) => x.pt)
-          .sort((a, b) => b.pt.v - a.pt.v);
+          .map((l, i) => ({ l, i, pt: l.pts.find((q) => q.date === p.date) }))
+          .filter((x) => x.pt);
+        const named = at.filter((x) => x.i < CMP_COLORS).sort((a, b) => b.pt.v - a.pt.v);
+        const rest = at.length - named.length;
         return (
           <>
             <div className="an-tt-h">{fmt.date(p.date)}</div>
-            {at.map(({ l, pt }) => (
-              <div key={l.isin} style={{ color: LINE_COLORS[series.findIndex((s) => s.isin === l.isin) % LINE_COLORS.length] }}>
+            {named.map(({ l, i, pt }) => (
+              <div key={l.isin} style={{ color: colorAt(i) }}>
                 {trunc(names[l.isin] || l.isin, 12)} {fmtVal(pt.v, metric)}
               </div>
             ))}
+            {rest > 0 && <div className="an-tt-n">ещё {rest} серым</div>}
           </>
         );
       }}
@@ -121,7 +135,7 @@ function CompareChart({ series, names, metric, height, hi, onHi }) {
       )}
     >
       {(s) => lines.map((l, i) => {
-        const c = LINE_COLORS[i % LINE_COLORS.length];
+        const c = colorAt(i);
         const pts = l.pts.map((p) => ({ x: di.get(p.date), y: p.v }));
         const on = hi == null ? null : l.isin === hi;
         const d = pts.length > 1 ? linePath(pts, (p) => s.sx(p.x), (p) => s.sy(p.y)) : null;
@@ -144,9 +158,10 @@ function CompareChart({ series, names, metric, height, hi, onHi }) {
 
 // ── Легенда: тикер, значение на конец окна, изменение за окно ──
 function CompareLegend({ series, names, metric, hi, onHi, onDrop }) {
+  const grey = Math.max(0, series.length - CMP_COLORS);
   return (
     <div className="an-legend">
-      {series.map((ser, i) => {
+      {series.slice(0, CMP_COLORS).map((ser, i) => {
         const first = metric === "chg"
           ? ser.points.find((p) => p.price != null)?.price ?? null : null;
         const vs = ser.points.map((p) => valueOf(p, metric, first)).filter((v) => v != null);
@@ -157,7 +172,7 @@ function CompareLegend({ series, names, metric, hi, onHi, onDrop }) {
           <button key={ser.isin} type="button" className={"an-leg-btn" + (on === false ? " dim" : "")}
             onMouseEnter={() => onHi(ser.isin)} onMouseLeave={() => onHi(null)}
             onClick={() => onDrop(ser.isin)} title={`${names[ser.isin] || ser.isin} — клик: убрать с графика`}>
-            <span className="an-leg-swatch" style={{ background: LINE_COLORS[i % LINE_COLORS.length] }} />
+            <span className="an-leg-swatch" style={{ background: colorAt(i) }} />
             {trunc(names[ser.isin] || ser.isin)}
             <span className="an-mut2">{fmtVal(last, metric)}</span>
             {delta != null && (
@@ -168,29 +183,75 @@ function CompareLegend({ series, names, metric, hi, onHi, onDrop }) {
           </button>
         );
       })}
+      {grey > 0 && (
+        <span className="an-leg-item" title={`сверх ${CMP_COLORS} линий цвет не назначается — фон`}>
+          <span className="an-leg-swatch" style={{ background: GREY }} />+{grey} серым
+        </span>
+      )}
     </div>
   );
 }
 
+// ── ISIN одним кликом в буфер: на СРАВНЕНИИ выпуски кидают в чат/терминал
+//    чаще, чем открывают карточку, а выделять мышью моноширинную строку в
+//    скроллящейся таблице неудобно ──
+function IsinCell({ isin }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(isin); } catch { return; }
+    setDone(true);
+    setTimeout(() => setDone(false), 900);
+  };
+  return (
+    <button type="button" className={"cmp-isin" + (done ? " ok" : "")} onClick={copy}
+      title={done ? "скопировано" : `${isin} — клик: копировать`}>{done ? "скопировано" : isin}</button>
+  );
+}
+
 // ── Витрина выбора: те же строки, что в МОНИТОРЕ, плюс чекбокс ──
-function PickTable({ rows, sel, onToggle, onOpen, hi, onHi }) {
+// Колонки короткие: слева от графика места мало, и всё, что не помогает
+// выбрать линию (оборот, рейтинг, дюрация), живёт в МОНИТОРЕ.
+function PickTable({ rows, sel, onToggle, onSetAll, onClear, onOpen, hi, onHi }) {
   if (!rows.length) return <div className="an-empty">под фильтры не попала ни одна бумага</div>;
   const full = sel.length >= CMP_MAX;
+  // «все» = все строки под текущими фильтрами уже на графике (с учётом потолка
+  // линий: при широком фильтре «все» — это первые CMP_MAX строк).
+  const capped = rows.slice(0, CMP_MAX).map((b) => b.isin);
+  const allOn = capped.length > 0 && capped.every((i) => sel.includes(i));
   return (
-    <div className="cmp-pick">
+    <div className="cmp-pickwrap">
+      <div className="cmp-bar">
+        <button type="button" className="cmp-all" onClick={() => onSetAll(allOn ? [] : capped)}>
+          {allOn ? "снять все" : "выбрать все"}
+        </button>
+        {/* сброс рядом с выбором: снять одну галку — дело чекбокса, а снять ВСЁ
+            иначе значит искать по списку, какие строки отмечены */}
+        <button type="button" className="cmp-all" onClick={onClear} disabled={!sel.length}
+          title="снять все отметки, включая бумаги вне текущего фильтра">сброс</button>
+        <span className="cmp-mut">
+          {sel.length} из {rows.length}
+          {!allOn && rows.length > CMP_MAX && ` · «все» возьмёт первые ${CMP_MAX}`}
+        </span>
+      </div>
+      <div className="cmp-pick">
       <table className="cmp-tbl">
         <thead>
           <tr>
             <th className="cmp-cb" />
-            <th>выпуск</th><th>эмитент</th><th>рейт</th>
-            <th className="num">Y-IDX</th><th className="num">цена</th>
-            <th className="num">срок</th><th className="num">оборот</th>
+            <th>выпуск</th><th>isin</th><th>эмитент</th>
+            <th className="num">погашение <span className="cmp-mut">(лет)</span></th>
+            <th className="num">цена ср</th><th className="num">R-spread ср</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((b) => {
             const i = sel.indexOf(b.isin);
             const on = i >= 0;
+            const hz = b.preferred_horizon;
+            // выбор горизонта есть только когда есть оферта/колл — иначе синяя
+            // подсветка лет стояла бы у каждой строки и ничего не сообщала
+            const hasChoice = !!b.offer_date || b.has_call === true;
+            const wap = wapSpread(b);
             return (
               <tr key={b.isin} className={(on ? "on" : "") + (hi === b.isin ? " hi" : "")}
                 onMouseEnter={() => on && onHi(b.isin)} onMouseLeave={() => on && onHi(null)}>
@@ -199,23 +260,47 @@ function PickTable({ rows, sel, onToggle, onOpen, hi, onHi }) {
                     onChange={() => onToggle(b.isin)}
                     aria-label={`сравнить ${b.short_name || b.isin}`}
                     title={!on && full ? `на графике максимум ${CMP_MAX} линий` : undefined}
-                    style={on ? { accentColor: LINE_COLORS[i % LINE_COLORS.length] } : undefined} />
+                    style={on ? { accentColor: colorAt(i) } : undefined} />
                 </td>
                 <td>
                   <button type="button" className="cmp-name" onClick={(e) => onOpen(b.isin, e.currentTarget)}
                     title="карточка выпуска">{b.short_name || b.isin}</button>
                 </td>
-                <td className="cmp-mut">{trunc(b.emitter_name, 22)}</td>
-                <td className="cmp-mut">{b.rating || "—"}</td>
-                <td className="num">{fmt.bps(b.yield_over_index_bps) ?? "—"}</td>
-                <td className="num">{fmt.pct(b.last_price_pct) ?? "—"}</td>
-                <td className="num">{fmt.yrs(b.spread_dur_yrs) ?? "—"}</td>
-                <td className="num">{fmt.mln(b.val_today) ?? "—"}</td>
+                <td><IsinCell isin={b.isin} /></td>
+                <td className="cmp-mut">{trunc(b.emitter_name, 20)}</td>
+                {/* Дата погашения, под ней — оферта с маркерами p/c. СИНИЕ годы
+                    стоят у той даты, к которой посчитаны метрики строки
+                    (горизонт прайсинга) — та же конвенция, что в МОНИТОРЕ. */}
+                <td className="num cmp-mat">
+                  <div>
+                    {!b.offer_date && <OfferMarks b={b} />}
+                    {fmt.date(b.maturity_date) ?? "—"}
+                    {yearsTo(b.maturity_date) != null && (
+                      <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
+                        {" (" + yearsTo(b.maturity_date) + ")"}</span>
+                    )}
+                  </div>
+                  {b.offer_date && (
+                    <div className="mat-offer"
+                      title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
+                      <OfferMarks b={b} />{fmt.date(b.offer_date)}
+                      {yearsTo(b.offer_date) != null && (
+                        <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
+                          {" (" + yearsTo(b.offer_date) + ")"}</span>
+                      )}
+                    </div>
+                  )}
+                </td>
+                <td className="num" title="средневзвешенная цена дня (WAP биржи)">
+                  {fmt.pct(b.wap_price_pct) ?? "—"}</td>
+                <td className="num" title="R-spread по средневзвешенной цене (линеаризация от торгового якоря)">
+                  {fmt.bps(wap) ?? "—"}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -233,7 +318,7 @@ function Seg({ items, value, onChange, label }) {
 
 // rows — отфильтрованный набор МОНИТОРА; sel/onToggle — выбор линий (живёт в
 // App, чтобы переживать F5 и уходить в ссылку).
-export default function CompareModule({ rows, sel, onToggle, onClear, onOpen }) {
+export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, onOpen }) {
   const [metric, setMetric] = useState(() => localStorage.getItem("cmpMetric") || "spread");
   const [base, setBase] = useState(() => localStorage.getItem("cmpBase") || "close");
   const [days, setDays] = useState(() => Number(localStorage.getItem("cmpDays")) || 91);
@@ -272,10 +357,15 @@ export default function CompareModule({ rows, sel, onToggle, onClear, onOpen }) 
 
   return (
     <section className="cmp">
+      {/* Витрина слева, график справа: отбор бумаги и линия видны одновременно,
+          чекбокс не уезжает под сгиб при листании списка. */}
+      <PickTable rows={rows} sel={sel} onToggle={onToggle} onSetAll={onSetAll}
+        onClear={onClear} onOpen={onOpen} hi={hi} onHi={setHi} />
+
       <div className="an-card">
         <div className="an-title an-head">
           <span className="an-title-txt">
-            СРАВНЕНИЕ · {sel.length}/{CMP_MAX}
+            СРАВНЕНИЕ · {sel.length} лин.
             {sel.length > 0 && (
               <button type="button" className="an-sel-clear" onClick={onClear}
                 style={{ marginLeft: 8 }}>сброс</button>
@@ -297,14 +387,16 @@ export default function CompareModule({ rows, sel, onToggle, onClear, onOpen }) 
         </div>
 
         {!sel.length ? (
-          <div className="an-empty">отметьте выпуски в таблице ниже — до {CMP_MAX} линий</div>
+          <div className="an-empty">
+            отметьте выпуски слева — цветом идут первые {CMP_COLORS}, дальше серым фоном
+          </div>
         ) : err ? (
           <div className="an-empty">не загрузилось: {err}</div>
         ) : !data ? (
           <div className="an-empty">загрузка…</div>
         ) : (
           <>
-            <CompareChart series={series} names={names} metric={metric} height={300}
+            <CompareChart series={series} names={names} metric={metric} height={420}
               hi={hi} onHi={setHi} />
             <CompareLegend series={series} names={names} metric={metric}
               hi={hi} onHi={setHi} onDrop={onToggle} />
@@ -320,9 +412,6 @@ export default function CompareModule({ rows, sel, onToggle, onClear, onOpen }) 
           </>
         )}
       </div>
-
-      <PickTable rows={rows} sel={sel} onToggle={onToggle} onOpen={onOpen}
-        hi={hi} onHi={setHi} />
     </section>
   );
 }

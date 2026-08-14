@@ -41,7 +41,7 @@ function Chip({ value }) {
 // линеаризуем от известного якоря через dY/dP (y_idx_slope_bps_per_pct), как это
 // делает фильтр по объёму для VWAP стакана. Якорь — цена последней сделки (обе
 // цены торговые, шаг между ними мал), иначе верх стакана.
-function wapSpread(b) {
+export function wapSpread(b) {
   const k = b.y_idx_slope_bps_per_pct, px = b.wap_price_pct;
   if (px == null || k == null) return null;
   const anchors = [[b.last_price_pct, b.yield_over_index_bps],
@@ -107,7 +107,7 @@ function qTitle(b, side) {
 // (даты нет: MOEX в offertype колл не различает вовсе). У бумаги может быть и то,
 // и другое → рисуем «pc». has_call === false («колла нет») и null («не знаем»)
 // одинаково молчат: маркер утверждает наличие, а не отсутствие.
-function OfferMarks({ b }) {
+export function OfferMarks({ b }) {
   const put = b.offer_kind === "put" && b.offer_date;
   const call = b.has_call === true || b.offer_kind === "call";
   if (!put && !call) return null;

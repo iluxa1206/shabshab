@@ -669,6 +669,15 @@ function Dashboard() {
       return n;
     }, { replace: true });
   }, [setSearchParams]);
+  // массовая установка набора («выбрать все» / «снять все» на вкладке)
+  const setCmpAll = useCallback((isins) => {
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      n.delete("cmp");
+      isins.slice(0, CMP_MAX).forEach((v) => n.append("cmp", v));
+      return n;
+    }, { replace: true });
+  }, [setSearchParams]);
   const clearCmp = useCallback(() => {
     setSearchParams((sp) => {
       const n = new URLSearchParams(sp);
@@ -752,7 +761,7 @@ function Dashboard() {
   const compareView = (
     <>
       {toolbar(false)}
-      <CompareModule rows={filtered} sel={cmpSel} onToggle={toggleCmp}
+      <CompareModule rows={filtered} sel={cmpSel} onToggle={toggleCmp} onSetAll={setCmpAll}
         onClear={clearCmp} onOpen={openDrawer} />
     </>
   );
