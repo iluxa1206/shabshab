@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -551,6 +551,165 @@ def last_bar_ts(isin: str) -> Optional[str]:
     with _connect() as c:
         r = c.execute("SELECT MAX(ts) t FROM bar_hourly WHERE isin=?", (isin,)).fetchone()
     return r["t"] if r and r["t"] else None
+
+
+# ── Дневная свёртка (bar_daily) ────────────────────────────────────────────
+# Цена и спред каждого ЧАСА уже посчитаны и проштампованы metrics_ver, поэтому
+# день — чистая агрегация: ни сети, ни солвера. Считается один раз и лежит в
+# базе; повторный прогон трогает только новые дни, дни прошлой версии движка и
+# дни, где с прошлой свёртки прибавилось оборота (дозалив хвоста, тики).
+#
+# Вес — ОБОРОТ ЧАСА В РУБЛЯХ: так средневзвес дня совпадает с определением
+# средневзвеса внутри часа (value/volume/face), и час с одной сделкой не тянет
+# цену дня наравне с часом на сто миллионов.
+
+def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
+    """Свёртка часов бумаги в дни (без записи). frm — 'YYYY-MM-DD'."""
+    q = ("SELECT substr(ts,1,10) d, kind, ts, vwap_pct, close, y_idx_bps, y_close_bps, "
+         "volume, value, trades FROM bar_hourly WHERE isin=?")
+    args: list = [isin]
+    if frm:
+        q += " AND ts >= ?"
+        args.append(frm)
+    q += " ORDER BY ts"
+    with _connect() as c:
+        rows = c.execute(q, args).fetchall()
+
+    acc: dict[str, dict] = {}
+    for r in rows:
+        d = r["d"]
+        a = acc.get(d)
+        if a is None:
+            a = acc[d] = {"isin": isin, "date": d, "kind": r["kind"] or "floater",
+                          "pw": 0.0, "w": 0.0, "yw": 0.0, "yws": 0.0,
+                          "close_pct": None, "y_idx_close_bps": None,
+                          "volume": 0.0, "value": 0.0, "trades": 0, "hours": 0}
+        w = r["value"] or 0.0
+        a["volume"] += r["volume"] or 0.0
+        a["value"] += w
+        a["trades"] += r["trades"] or 0
+        # ЗАКРЫТИЕ ДНЯ — последний час, где была цена (часы идут по возрастанию).
+        # Спред закрытия берём из того же часа: y_close_bps посчитан ровно по
+        # этой цене, а не по средневзвесу.
+        if r["close"] is not None:
+            a["close_pct"] = r["close"]
+            a["y_idx_close_bps"] = r["y_close_bps"]
+        if w <= 0 or r["vwap_pct"] is None:
+            continue          # час без оборота в средневзвес не идёт
+        a["hours"] += 1
+        a["pw"] += r["vwap_pct"] * w
+        a["w"] += w
+        if r["y_idx_bps"] is not None:
+            a["yw"] += r["y_idx_bps"] * w
+            a["yws"] += w
+
+    out = []
+    for d, a in sorted(acc.items()):
+        wap = a["pw"] / a["w"] if a["w"] > 0 else None
+        ywap = a["yw"] / a["yws"] if a["yws"] > 0 else None
+        out.append({
+            "isin": isin, "date": d, "kind": a["kind"],
+            "wap_pct": round(wap, 4) if wap is not None else None,
+            "close_pct": a["close_pct"],
+            "y_idx_wap_bps": round(ywap, 1) if ywap is not None else None,
+            "y_idx_close_bps": (round(a["y_idx_close_bps"], 1)
+                                if a["y_idx_close_bps"] is not None else None),
+            "volume": a["volume"] or None, "value": a["value"] or None,
+            "trades": a["trades"] or None, "hours": a["hours"],
+        })
+    return out
+
+
+_DAILY_COLS = ("isin", "date", "kind", "wap_pct", "close_pct", "y_idx_wap_bps",
+               "y_idx_close_bps", "volume", "value", "trades", "hours")
+
+
+def build_daily(isin: str, days: Optional[int] = None, force: bool = False) -> int:
+    """Свернуть часы бумаги в bar_daily. Возвращает число ЗАПИСАННЫХ дней.
+
+    Готовые дни не трогаются: пишем только те, которых нет, те, что посчитаны
+    прошлой версией движка, и те, где оборот дня изменился (в часы дозалились
+    сделки). Поэтому прогон по всему универсу безопасно гонять хоть каждую ночь —
+    второй раз он ничего не считает."""
+    frm = (date.today() - timedelta(days=days)).isoformat() if days else None
+    rows = _daily_rows(isin, frm)
+    if not rows:
+        return 0
+    with _connect() as c:
+        q = "SELECT date, value, metrics_ver FROM bar_daily WHERE isin=?"
+        args: list = [isin]
+        if frm:
+            q += " AND date >= ?"
+            args.append(frm)
+        have = {r["date"]: (r["value"], r["metrics_ver"]) for r in c.execute(q, args)}
+
+    fresh = []
+    for r in rows:
+        prev = have.get(r["date"])
+        if not force and prev is not None:
+            old_val, ver = prev
+            same_val = (old_val or 0) == (r["value"] or 0)
+            if same_val and (ver or 0) >= BARS_METRICS_VERSION:
+                continue
+        fresh.append(r)
+    if not fresh:
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ph = ",".join("?" * (len(_DAILY_COLS) + 2))
+    upd = ",".join(f"{k}=excluded.{k}" for k in _DAILY_COLS[2:])
+    data = [tuple(r.get(k) for k in _DAILY_COLS) + (BARS_METRICS_VERSION, now)
+            for r in fresh]
+    with _lock, _connect() as c:
+        c.executemany(
+            f"INSERT INTO bar_daily({','.join(_DAILY_COLS)},metrics_ver,built_at) "
+            f"VALUES({ph}) ON CONFLICT(isin,date) DO UPDATE SET {upd}, "
+            "metrics_ver=excluded.metrics_ver, built_at=excluded.built_at", data)
+    return len(fresh)
+
+
+def read_daily(isin: str, frm: Optional[str] = None) -> list[dict]:
+    """Дневные строки бумаги по возрастанию даты — как есть, БЕЗ пересчёта."""
+    q = "SELECT * FROM bar_daily WHERE isin=?"
+    args: list = [isin]
+    if frm:
+        q += " AND date >= ?"
+        args.append(frm)
+    q += " ORDER BY date"
+    with _connect() as c:
+        return [dict(r) for r in c.execute(q, args)]
+
+
+async def build_daily_universe(days: Optional[int] = None, limit: Optional[int] = None,
+                               kinds: tuple = ("floater", "fixed"),
+                               force: bool = False) -> dict:
+    """Свёртка дней по всему юниверсу. Чистый SQLite — гоним последовательно в
+    отдельном потоке, чтобы не держать loop."""
+    targets = await universe_targets(kinds)
+    if limit:
+        targets = targets[:limit]
+    stat = {"papers": len(targets), "days": 0, "failed": 0}
+
+    from services import progress
+    progress.start("bars_daily", "Свёртка дневных баров", total=len(targets),
+                   detail=f"окно {days} дн" if days else "вся глубина")
+
+    def _run():
+        for n, (isin, _kind) in enumerate(targets, 1):
+            try:
+                stat["days"] += build_daily(isin, days=days, force=force)
+            except Exception as e:
+                stat["failed"] += 1
+                logger.warning("build_daily %s: %s", isin, e)
+            if n % 50 == 0:
+                progress.set_done("bars_daily", n)
+                logger.info("build_daily: %d/%d, дней %d", n, len(targets), stat["days"])
+
+    await asyncio.to_thread(_run)
+    progress.finish("bars_daily",
+                    detail=f"{stat['days']} дней, ошибок {stat['failed']}")
+    logger.info("build_daily_universe готово: %s", stat)
+    return stat
 
 
 async def universe_targets(kinds: tuple = ("floater", "fixed")) -> list[tuple[str, str]]:

@@ -488,10 +488,13 @@ _CMP_MAX_ISINS = 20
 class MultiSpreadBody(BaseModel):
     days: int = Field(91, ge=7, le=400)
     isins: list[str] = Field(default_factory=list)
-    # база дня: 'close' — вечерний снапшот/бэкфилл из spread_daily (глубокая
-    # история), 'vwap' — средневзвешенная цена дня из часовых баров и спред по
-    # ней (честнее для неликвида, но глубина = архиву баров, он копится с
-    # августа 2026).
+    # база дня:
+    #   'close'     — вечерний снапшот/бэкфилл из spread_daily (as-of, глубокая история)
+    #   'vwap'      — средневзвешенная цена дня и спред по ней (bar_daily)
+    #   'bar_close' — цена закрытия дня и спред по ней (bar_daily)
+    # Обе барные базы читаются ИЗ АРХИВА как есть: свёртка дней считается один
+    # раз (services.bars.build_daily) и штампуется версией движка — запрос
+    # витрины ничего не пересчитывает.
     base: str = "close"
 
 
@@ -502,8 +505,8 @@ async def multi_spread(body: MultiSpreadBody):
     candle-оценки, ни honest-бэкфилла по запросу — восемь параллельных
     бэкфиллов вешают воркер на десятки секунд. Дыры в покрытии видны как более
     короткая линия."""
-    if body.base not in ("close", "vwap"):
-        raise HTTPException(status_code=400, detail="base: close | vwap")
+    if body.base not in ("close", "vwap", "bar_close"):
+        raise HTTPException(status_code=400, detail="base: close | vwap | bar_close")
     isins, seen = [], set()
     for raw in body.isins:
         i = (raw or "").strip().upper()
@@ -536,34 +539,28 @@ async def multi_spread(body: MultiSpreadBody):
             acc[r["isin"]].append({"date": r["date"], "y_idx": round(r["y_idx"], 1),
                                    "price": r["price"]})
     else:
-        # день из часовых баров: цена — VWAP дня (взвешивание по обороту в
-        # рублях, как внутри часа), спред — тем же весом по y_idx часа. Часы без
-        # оборота (бар из свечи без сделок) в вес не идут.
-        def _read_bars():
+        # ДЕНЬ ИЗ АРХИВА, БЕЗ ПЕРЕСЧЁТА: bar_daily — готовая свёртка часов
+        # (средневзвешенная цена дня и спред по ней либо закрытие дня и спред по
+        # нему). Наполняет её ночной проход services.bars.build_daily_universe;
+        # витрина только читает.
+        pcol = "wap_pct" if body.base == "vwap" else "close_pct"
+        ycol = "y_idx_wap_bps" if body.base == "vwap" else "y_idx_close_bps"
+
+        def _read_daily():
             with _connect() as c:
                 return c.execute(
-                    "SELECT isin, substr(ts,1,10) AS date, vwap_pct, y_idx_bps, value "
-                    f"FROM bar_hourly WHERE kind='floater' AND substr(ts,1,10) >= ? "
-                    f"AND isin IN ({ph}) ORDER BY ts", (cutoff, *isins)).fetchall()
+                    f"SELECT isin, date, {pcol} AS price, {ycol} AS y_idx FROM bar_daily "
+                    f"WHERE kind='floater' AND date >= ? AND isin IN ({ph}) "
+                    "ORDER BY date", (cutoff, *isins)).fetchall()
 
-        rows = await asyncio.to_thread(_read_bars)
-        agg: dict = {}
+        rows = await asyncio.to_thread(_read_daily)
         for r in rows:
-            w = r["value"] or 0
-            if w <= 0 or r["vwap_pct"] is None:
+            if r["price"] is None and r["y_idx"] is None:
                 continue
-            a = agg.setdefault((r["isin"], r["date"]), [0.0, 0.0, 0.0, 0.0])
-            a[0] += r["vwap_pct"] * w
-            a[1] += w
-            if r["y_idx_bps"] is not None:
-                a[2] += r["y_idx_bps"] * w
-                a[3] += w
-        for (isin, date), (pw, w, yw, yws) in sorted(agg.items(), key=lambda kv: kv[0][1]):
-            y = yw / yws if yws > 0 else None
+            y = r["y_idx"]
             if y is not None and not (lo < y < hi):
-                y = None
-            acc[isin].append({"date": date, "y_idx": round(y, 1) if y is not None else None,
-                              "price": round(pw / w, 4)})
+                y = None      # бэнд тот же, что у снапшотов: мусор стейл-цен
+            acc[r["isin"]].append({"date": r["date"], "y_idx": y, "price": r["price"]})
 
     # порядок серий — как прислал клиент: цвет линии закреплён за позицией выбора
     series = [{"isin": i, "points": acc[i]} for i in isins if acc[i]]

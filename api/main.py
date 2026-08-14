@@ -398,6 +398,11 @@ async def nightly_spread_warm():
             logger.info("nightly warm 03:00: старт (топ %d, окно %d дн)",
                         NIGHTLY_WARM_TOP, NIGHTLY_WARM_DAYS)
             await bars_svc.warm_hot(days=NIGHTLY_WARM_DAYS, top=NIGHTLY_WARM_TOP)
+            # Свёртка дней по ВСЕМУ юниверсу — она дешёвая (агрегация уже
+            # посчитанных часов, ни сети, ни солвера) и трогает только новые дни,
+            # поэтому идёт после прогрева и по всем бумагам, а не по топу.
+            stat = await bars_svc.build_daily_universe()
+            logger.info("nightly daily rollup: %s", stat)
         except Exception as e:
             logger.warning("nightly warm error: %s", e)
 
@@ -591,6 +596,10 @@ async def hourly_bars_worker():
             stat = await bars_svc.refresh_universe(days=BARS_WORKER_DAYS, full=full,
                                                    concurrency=2)
             logger.info("hourly bars (full=%s): %s", full, stat)
+            # хвост дневной свёртки тем же тактом: окно то же, что у налива
+            # часов, и трогаются только дни, где оборот изменился
+            daily = await bars_svc.build_daily_universe(days=BARS_WORKER_DAYS)
+            logger.info("daily rollup (хвост): %s", daily)
         except asyncio.CancelledError:
             raise
         except Exception as e:

@@ -91,6 +91,32 @@ CREATE TABLE IF NOT EXISTS bar_hourly(
 );
 CREATE INDEX IF NOT EXISTS ix_bar_isin ON bar_hourly(isin, ts);
 
+-- Дневная свёртка часовых баров: средневзвешенная цена дня и спред по ней,
+-- плюс закрытие дня и спред по закрытию. ЧИСТАЯ АГРЕГАЦИЯ bar_hourly — ни сети,
+-- ни солвера: цена и спред каждого часа уже посчитаны и проштампованы версией
+-- движка. Отдельная таблица, а не GROUP BY на чтении, чтобы витрины (СРАВНЕНИЕ)
+-- брали готовые числа: свёртка сотни бумаг × 400 дней на каждый запрос — это
+-- миллион строк bar_hourly через сортировку.
+-- Идемпотентно: день пересобирается, только если его нет, если он посчитан
+-- прошлой версией метрик или если в часах прибавилось оборота (дозалив хвоста).
+CREATE TABLE IF NOT EXISTS bar_daily(
+  isin TEXT NOT NULL,
+  date TEXT NOT NULL,           -- 'YYYY-MM-DD' МСК
+  kind TEXT NOT NULL DEFAULT 'floater',
+  wap_pct REAL,                 -- средневзвешенная чистая цена дня (вес — оборот часа)
+  close_pct REAL,               -- цена закрытия дня (последний час с ценой)
+  y_idx_wap_bps REAL,           -- спред по средневзвесу дня
+  y_idx_close_bps REAL,         -- спред по закрытию дня
+  volume REAL, value REAL,      -- бумаг / рублей за день
+  trades INTEGER,
+  hours INTEGER,                -- сколько часов с оборотом свёрнуто (диагностика)
+  metrics_ver INTEGER,          -- версия движка спреда (см. bars.BARS_METRICS_VERSION)
+  built_at TEXT,
+  PRIMARY KEY(isin, date)
+);
+CREATE INDEX IF NOT EXISTS ix_bard_isin ON bar_daily(isin, date);
+CREATE INDEX IF NOT EXISTS ix_bard_date ON bar_daily(date);
+
 -- Прогресс фоновых задач (см. services/progress.py). В базе, а не в памяти:
 -- бэкфиллы запускаются отдельным процессом и иначе не были бы видны, плюс после
 -- рестарта видно, что задача оборвалась, а не молча исчезла.
