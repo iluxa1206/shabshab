@@ -158,10 +158,13 @@ export default function Toolbar({
         )}
       </div>
 
-      {/* группа: столбцы */}
-      <div className="fgroup">
-        <ColumnsMenu visibleCols={visibleCols} onToggle={onToggleCol} onReset={onResetCols} onMove={onMoveCol} />
-      </div>
+      {/* группа: столбцы. На вкладках без витрины МОНИТОРА (СРАВНЕНИЕ) меню
+          столбцов — мёртвая кнопка: там своя короткая таблица выбора. */}
+      {visibleCols && (
+        <div className="fgroup">
+          <ColumnsMenu visibleCols={visibleCols} onToggle={onToggleCol} onReset={onResetCols} onMove={onMoveCol} />
+        </div>
+      )}
 
       <span className="grow" />
       <span className="hint">{total ? `${shown} из ${total}` : "—"}</span>

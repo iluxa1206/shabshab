@@ -14,6 +14,7 @@ import { IconChart } from "./components/icons.jsx";
 import Toolbar from "./components/Toolbar.jsx";
 import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
+import CompareModule, { CMP_MAX } from "./components/CompareModule.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
@@ -651,6 +652,31 @@ function Dashboard() {
     if (el && el.focus) requestAnimationFrame(() => el.focus());
   }, [setSearchParams]);
 
+  // Выбор линий вкладки СРАВНЕНИЕ — в URL (?cmp=ISIN&cmp=…): набор графика
+  // уходит в ссылку целиком, вместе с фильтрами. Ключ не в FILTER_KEYS: его
+  // чистит только «сброс» самой вкладки, а не панель фильтров.
+  const cmpSelKey = searchParams.getAll("cmp").join(",");
+  const cmpSel = useMemo(() => (cmpSelKey ? cmpSelKey.split(",") : []), [cmpSelKey]);
+  const toggleCmp = useCallback((isin) => {
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      const cur = n.getAll("cmp");
+      n.delete("cmp");
+      const next = cur.includes(isin)
+        ? cur.filter((x) => x !== isin)
+        : [...cur, isin].slice(0, CMP_MAX);
+      next.forEach((v) => n.append("cmp", v));
+      return n;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const clearCmp = useCallback(() => {
+    setSearchParams((sp) => {
+      const n = new URLSearchParams(sp);
+      n.delete("cmp");
+      return n;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const onFloaters = useLocation().pathname.startsWith("/floaters");
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
@@ -668,8 +694,10 @@ function Dashboard() {
     setSpreadFrom(""); setSpreadTo("");
   }, []);
 
-  const floatersView = (
-    <>
+  // Панель фильтров общая у МОНИТОРА и СРАВНЕНИЯ: состояние одно, значит
+  // переключение вкладок не сбрасывает отбор. withCols=false прячет меню
+  // столбцов — на СРАВНЕНИИ витрина своя.
+  const toolbar = (withCols) => (
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
@@ -691,8 +719,14 @@ function Dashboard() {
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={tableRows.length} total={bonds.length}
-        visibleCols={visibleCols} onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
+        visibleCols={withCols ? visibleCols : null}
+        onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
       />
+  );
+
+  const floatersView = (
+    <>
+      {toolbar(true)}
       {showAnalytics && <AnalyticsPanel rows={filtered} focus={anFocus} onFocus={setAnFocus} />}
       <BondTable
         rows={tableRows}
@@ -715,6 +749,14 @@ function Dashboard() {
     </>
   );
 
+  const compareView = (
+    <>
+      {toolbar(false)}
+      <CompareModule rows={filtered} sel={cmpSel} onToggle={toggleCmp}
+        onClear={clearCmp} onOpen={openDrawer} />
+    </>
+  );
+
   return (
     <PageStatusProvider>
     <div id="app" className={theme === "light" ? "" : "theme-" + theme}>
@@ -734,6 +776,7 @@ function Dashboard() {
       <Routes>
         <Route path="/" element={<Navigate to="/floaters" replace />} />
         <Route path="/floaters" element={floatersView} />
+        <Route path="/compare" element={compareView} />
         {/* Вкладка «Эмитенты» снята: агрегаты повторяли фильтр по эмитенту в
             «Мониторе», а разрез по медианам спреда даёт «Аналитика» (распределение
             R-spread по эмитентам). Старый путь ведёт в Монитор — на вкладку могли

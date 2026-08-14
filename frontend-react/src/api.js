@@ -209,6 +209,13 @@ export const fetchBondRow = async (isin) => {
 export const fetchYidxHistory = (days, by, isins, signal) =>
   request(`/api/history/aggregate/yidx`, { method: "POST", json: { days, by, isins }, signal });
 
+// Сырые дневные ряды Y-IDX/цены по нескольким выпускам (вкладка СРАВНЕНИЕ) —
+// одна линия на бумагу. base: "close" — вечерний снапшот (глубокая история),
+// "vwap" — средневзвешенная цена дня из часовых баров и спред по ней (глубина
+// = архиву баров).
+export const fetchSpreadMulti = (isins, { days = 91, base = "close" } = {}, signal) =>
+  request(`/api/history/multi/spread`, { method: "POST", json: { isins, days, base }, signal });
+
 // Паспорт бумаги: провенанс всех данных + бэктест спеки + waterfall PV + чеки.
 export const fetchBondAudit = (isin) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/audit`);
@@ -276,9 +283,13 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   issuer, isin, scope = "market", limit = 500,
                                   spreadMin, spreadMax, ttmMin, ttmMax, rating,
                                   base, cls, hideSubord, hideAmort,
-                                  beforeTs, beforeId, isins, maxValue, flagged } = {},
+                                  beforeTs, beforeId, isins, maxValue, flagged,
+                                  dateFrom, dateTo } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
+  // произвольное окно календаря: заданное начало побеждает days на бэке
+  if (dateFrom) p.set("date_from", dateFrom);
+  if (dateTo) p.set("date_to", dateTo);
   for (const r of [].concat(rating || [])) if (r) p.append("rating", r);
   // признаки выпуска: база купона, класс эмитента, суборды/амортизация —
   // те же условия, что в СПИСКЕ (фильтры-воронка)
@@ -343,8 +354,11 @@ export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500,
 
 // дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
 export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
-                                 scope, issuer, ttmMin, ttmMax, rating } = {}, signal) => {
+                                 scope, issuer, ttmMin, ttmMax, rating,
+                                 dateFrom, dateTo } = {}, signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit });
+  if (dateFrom) p.set("date_from", dateFrom);
+  if (dateTo) p.set("date_to", dateTo);
   if (isin) p.set("isin", isin);
   if (scope) p.set("scope", scope);
   for (const e of [].concat(issuer || [])) if (e) p.append("issuer", e);

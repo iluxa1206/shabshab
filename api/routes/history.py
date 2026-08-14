@@ -353,6 +353,38 @@ _AGG_MIN_N_FRAC = 0.5
 from pydantic import BaseModel, Field
 
 
+def _one_horizon(rows, lo: float, hi: float) -> list[dict]:
+    """ОДИН ГОРИЗОНТ НА ВСЮ ЛИНИЮ. Горизонт бумаги меняется во времени (появилась
+    дата колла, цена перешла порог выкупа), а строка архива хранит спред к тому
+    горизонту, что действовал в её день: СибурХ1Р06 12.08.2026 переключился с
+    погашения (5,6 г) на колл (0,3 г) и линия обвалилась на 220 б.п. без движения
+    цены. Берём ветку, совпадающую с ПОСЛЕДНИМ известным горизонтом бумаги
+    (сегодняшняя таблица считает по нему же), при несовпадении — второй горизонт
+    из той же строки. Нет ни того, ни другого (легаси-строки до появления колонок —
+    лечатся scripts/backfill_horizon.py) — точку отбрасываем, линия рвётся вместо
+    обвала. rows должны идти по возрастанию даты."""
+    cur_hz: dict = {}
+    for r in rows:
+        if r["horizon"]:
+            cur_hz[r["isin"]] = r["horizon"]
+    out = []
+    for r in rows:
+        hz = cur_hz.get(r["isin"])
+        v = r["y_idx"]
+        if hz is not None:
+            if r["horizon"] == hz:
+                v = r["y_idx"]
+            elif r["alt_horizon"] == hz and r["y_idx_alt"] is not None:
+                v = r["y_idx_alt"]
+            else:
+                continue
+        if v is None or not (lo < v < hi):
+            continue
+        out.append({"isin": r["isin"], "date": r["date"], "y_idx": v,
+                    "price": r["price_pct"] if "price_pct" in r.keys() else None})
+    return out
+
+
 class YidxAggBody(BaseModel):
     days: int = Field(91, ge=7, le=400)
     by: str = "rating"
@@ -389,34 +421,7 @@ async def yidx_aggregate(body: YidxAggBody):
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
     rows = [r for r in rows if want is None or r["isin"] in want]
-    # ОДИН ГОРИЗОНТ НА ВСЮ ЛИНИЮ. Горизонт бумаги меняется во времени (появилась
-    # дата колла, цена перешла порог выкупа), а строка архива хранит спред к тому
-    # горизонту, что действовал в её день: СибурХ1Р06 12.08.2026 переключился с
-    # погашения (5,6 г) на колл (0,3 г) и медиана обвалилась на 220 б.п. без
-    # движения цены. Берём ветку, совпадающую с ПОСЛЕДНИМ известным горизонтом
-    # бумаги (сегодняшняя таблица считает по нему же), при несовпадении — второй
-    # горизонт из той же строки. Нет ни того, ни другого (легаси-строки до
-    # появления колонок — лечатся scripts/backfill_horizon.py) — точку отбрасываем,
-    # линия рвётся вместо обвала.
-    cur_hz: dict = {}
-    for r in rows:
-        if r["horizon"]:
-            cur_hz[r["isin"]] = r["horizon"]     # строки идут по возрастанию даты
-    picked = []
-    for r in rows:
-        hz = cur_hz.get(r["isin"])
-        v = r["y_idx"]
-        if hz is not None:
-            if r["horizon"] == hz:
-                v = r["y_idx"]
-            elif r["alt_horizon"] == hz and r["y_idx_alt"] is not None:
-                v = r["y_idx_alt"]
-            else:
-                continue
-        if v is None or not (lo < v < hi):
-            continue
-        picked.append({"isin": r["isin"], "date": r["date"], "y_idx": v})
-    rows = picked
+    rows = _one_horizon(rows, lo, hi)
     if not rows:
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
 
@@ -471,6 +476,98 @@ async def yidx_aggregate(body: YidxAggBody):
 
     dates = sorted({p["date"] for s in series for p in s["points"]})
     return {"by": by, "days": days, "dates": dates, "series": series,
+            "exact_from": dates[0] if dates else None}
+
+
+# Сколько линий держит вкладка СРАВНЕНИЕ. Больше восьми — палитра начинает
+# повторяться и график перестаёт читаться, а не упирается в производительность.
+_CMP_MAX_ISINS = 8
+
+
+class MultiSpreadBody(BaseModel):
+    days: int = Field(91, ge=7, le=400)
+    isins: list[str] = Field(default_factory=list)
+    # база дня: 'close' — вечерний снапшот/бэкфилл из spread_daily (глубокая
+    # история), 'vwap' — средневзвешенная цена дня из часовых баров и спред по
+    # ней (честнее для неликвида, но глубина = архиву баров, он копится с
+    # августа 2026).
+    base: str = "close"
+
+
+@router.post("/multi/spread", tags=["History"])
+async def multi_spread(body: MultiSpreadBody):
+    """Сырые дневные ряды Y-IDX и цены по нескольким выпускам — одна линия на
+    бумагу (вкладка СРАВНЕНИЕ). Только то, что уже лежит в базе: ни
+    candle-оценки, ни honest-бэкфилла по запросу — восемь параллельных
+    бэкфиллов вешают воркер на десятки секунд. Дыры в покрытии видны как более
+    короткая линия."""
+    if body.base not in ("close", "vwap"):
+        raise HTTPException(status_code=400, detail="base: close | vwap")
+    isins, seen = [], set()
+    for raw in body.isins:
+        i = (raw or "").strip().upper()
+        if _ISIN_RE.fullmatch(i) and i not in seen:
+            seen.add(i)
+            isins.append(i)
+    isins = isins[:_CMP_MAX_ISINS]
+    if not isins:
+        return {"days": body.days, "base": body.base, "series": [], "dates": [],
+                "exact_from": None}
+
+    from datetime import date as _date, timedelta
+    from services.portfolio_db import _connect
+
+    cutoff = (_date.today() - timedelta(days=body.days)).isoformat()
+    ph = ",".join("?" * len(isins))
+    lo, hi = _YIDX_BAND
+    acc: dict = {i: [] for i in isins}
+
+    if body.base == "close":
+        def _read():
+            with _connect() as c:
+                return c.execute(
+                    "SELECT isin, date, price_pct, y_idx, y_idx_alt, horizon, alt_horizon "
+                    f"FROM spread_daily WHERE kind='floater' AND date >= ? AND isin IN ({ph}) "
+                    "ORDER BY date", (cutoff, *isins)).fetchall()
+
+        rows = await asyncio.to_thread(_read)
+        for r in _one_horizon(rows, lo, hi):
+            acc[r["isin"]].append({"date": r["date"], "y_idx": round(r["y_idx"], 1),
+                                   "price": r["price"]})
+    else:
+        # день из часовых баров: цена — VWAP дня (взвешивание по обороту в
+        # рублях, как внутри часа), спред — тем же весом по y_idx часа. Часы без
+        # оборота (бар из свечи без сделок) в вес не идут.
+        def _read_bars():
+            with _connect() as c:
+                return c.execute(
+                    "SELECT isin, substr(ts,1,10) AS date, vwap_pct, y_idx_bps, value "
+                    f"FROM bar_hourly WHERE kind='floater' AND substr(ts,1,10) >= ? "
+                    f"AND isin IN ({ph}) ORDER BY ts", (cutoff, *isins)).fetchall()
+
+        rows = await asyncio.to_thread(_read_bars)
+        agg: dict = {}
+        for r in rows:
+            w = r["value"] or 0
+            if w <= 0 or r["vwap_pct"] is None:
+                continue
+            a = agg.setdefault((r["isin"], r["date"]), [0.0, 0.0, 0.0, 0.0])
+            a[0] += r["vwap_pct"] * w
+            a[1] += w
+            if r["y_idx_bps"] is not None:
+                a[2] += r["y_idx_bps"] * w
+                a[3] += w
+        for (isin, date), (pw, w, yw, yws) in sorted(agg.items(), key=lambda kv: kv[0][1]):
+            y = yw / yws if yws > 0 else None
+            if y is not None and not (lo < y < hi):
+                y = None
+            acc[isin].append({"date": date, "y_idx": round(y, 1) if y is not None else None,
+                              "price": round(pw / w, 4)})
+
+    # порядок серий — как прислал клиент: цвет линии закреплён за позицией выбора
+    series = [{"isin": i, "points": acc[i]} for i in isins if acc[i]]
+    dates = sorted({p["date"] for s in series for p in s["points"]})
+    return {"days": body.days, "base": body.base, "series": series, "dates": dates,
             "exact_from": dates[0] if dates else None}
 
 
