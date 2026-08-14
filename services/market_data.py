@@ -74,6 +74,65 @@ def _call_dates_cached() -> Dict[str, list]:
 CALL_OFFER_SOURCE = "corpbonds"   # метка синтетической записи (см. call_offers_asof)
 
 
+# --- гашение «эха» неопределённых купонов источника ---
+# MOEX у старых ОФЗ-ПК (29006–29010) проставляет ВСЕМ будущим купонам последнее
+# известное значение (29010: 16.59% до 2034 года). Ядро считает непустой value
+# фактом и не перепрогнозирует его — эхо текло в PV/SM/DM/карточку. Чистим на
+# ЧТЕНИИ расписания (а не при записи в дневной кэш): спека фиксинга живёт в
+# Справочнике, и её правка обязана менять купоны сразу — отсюда ключ по
+# data_version реестра. Кэш нужен, чтобы не резолвить спеку на каждое чтение
+# расписания в цикле по юниверсу.
+_CLEAN_CACHE: Dict[str, tuple] = {}
+
+
+def _strip_echo_values(isin: str, sched: dict, kind: str = "dict") -> dict:
+    """Копия расписания без неопределённых купонов источника (value→None).
+    Не-флоатеры и бумаги без эха возвращаются как есть (тот же объект)."""
+    coupons = sched.get("coupons")
+    if not coupons:
+        return sched
+    try:
+        from services import instruments_registry as reg
+        from services import ref_data
+        from services.coupon_calib import strip_undetermined_values
+        ver = (reg.data_version(), _trading_day(), len(coupons))
+        hit = _CLEAN_CACHE.get((isin, kind))
+        if hit is not None and hit[0] == ver:
+            clean, dropped = hit[1], hit[2]
+        else:
+            # база — из РЕЕСТРА (источник истины для BondRefData), с фолбэком на
+            # слитые params: ref_data.params() тянет реестровые поля только у
+            # manual_locked-строк, и ОФЗ 29008–29010 (lock снят) проходили мимо
+            # фильтра как «не флоатер» — эхо 16.59% до 2034 оставалось фактом
+            base = ((reg.calc_params_map().get(isin) or {}).get("base")
+                    or ref_data.params(isin).get("base"))
+            clean, dropped = strip_undetermined_values(isin, base, coupons)
+            _CLEAN_CACHE[(isin, kind)] = (ver, clean, dropped)
+            if dropped:
+                logger.info("%s: %d будущих купонов источника не определены "
+                            "(эхо MOEX) — считаем форвардом с %s",
+                            isin, len(dropped), dropped[0])
+    except Exception as e:
+        logger.warning("strip_echo %s: %s", isin, e)
+        return sched
+    if not dropped:
+        return sched
+    out = dict(sched)
+    out["coupons"] = clean
+    return out
+
+
+def _strip_echo_triples(isin: str, sched: list) -> list:
+    """То же для формата fetch_coupon_schedules: [(start, end, value),...]."""
+    if not sched:
+        return sched
+    dicts = [{"start": s, "end": e, "value": v} for s, e, v in sched]
+    clean = _strip_echo_values(isin, {"coupons": dicts}, kind="triples")["coupons"]
+    if clean is dicts:
+        return sched
+    return [(c["start"], c["end"], c["value"]) for c in clean]
+
+
 def _with_call_offers(isin: str, sched: dict, asof: Optional[date] = None) -> dict:
     """Копия расписания с добавленной ближайшей будущей датой колла (если есть).
     Дубль не создаём: если MOEX сам отдал оферту на эту дату — она авторитетнее.
@@ -537,14 +596,17 @@ class MarketDataService:
         прошлых/зафиксированных) + амортизации (погашение принципала) + оферты
         (offerdate/offertype/price — тот же запрос bondization, бесплатно).
         Кэш память+диск с TTL на день (bondization стабилен внутри дня; критично для
-        фонового расчёта метрик всего юниверса — иначе 453 запроса каждый цикл)."""
+        фонового расчёта метрик всего юниверса — иначе 453 запроса каждый цикл).
+
+        На выдаче гасится «эхо» неопределённых купонов (_strip_echo_values): на
+        диск/в память ложится сырой ответ MOEX, потребители видят чистый."""
         # первый доступ дня/после рестарта = json.load ~5 МБ с диска: синхронно
         # в loop это давало лаг до 4.7с на старте — грузим в потоке
         if cls._full_mem_date != _trading_day():
             await asyncio.to_thread(cls._ensure_full_mem)
         cls._ensure_full_mem()
         if isin in cls._full_mem:
-            return _with_call_offers(isin, cls._full_mem[isin])
+            return _with_call_offers(isin, _strip_echo_values(isin, cls._full_mem[isin]))
 
         async def _fetch(sec: str) -> dict:
             out = {"coupons": [], "amorts": [], "offers": []}
@@ -627,7 +689,7 @@ class MarketDataService:
             # дамп ~5 МБ JSON: дебаунс пишет раз в 60с, но и одна такая запись в
             # event loop — сотни мс фриза; в поток
             await asyncio.to_thread(cls._save_full_disk)
-        return _with_call_offers(isin, out)
+        return _with_call_offers(isin, _strip_echo_values(isin, out))
 
     _sec_cache: Dict[str, dict] = {}
     _sec_loaded: bool = False
@@ -987,12 +1049,24 @@ class MarketDataService:
         "1w": (7, 365 * 4, None),
     }
 
+    # Свечи в памяти на короткий TTL: окно дневных — 550 дней, это до нескольких
+    # страниц ISS по 500 строк на КАЖДЫЙ заход на график. Внутри дня меняется
+    # только последняя свеча, поэтому минутного кэша достаточно, чтобы повторные
+    # открытия/обновления графика не били по ISS заново.
+    _candles_mem: Dict[tuple, tuple] = {}
+    _CANDLES_TTL = 120.0
+
     @classmethod
     async def fetch_candles(cls, security: str, tf: str = "1d", board: str = "TQCB") -> List[dict]:
         """OHLCV-свечи MOEX для карточки. tf ∈ 5m/1h/1d/1w. security — SECID/ISIN
         бумаги на борде board (корпораты TQCB: SECID=ISIN; ОФЗ TQOB: SECID=SU26…,
         по ISIN не резолвится). Возвращает [{'t','o','h','l','c','v'}] по возрастанию
-        времени. 5-мин собираются агрегацией 1-мин свечей (MOEX не отдаёт нативно)."""
+        времени. 5-мин собираются агрегацией 1-мин свечей (MOEX не отдаёт нативно).
+        Кэш в памяти на _CANDLES_TTL (см. выше)."""
+        ckey = (security, tf, board)
+        hit = cls._candles_mem.get(ckey)
+        if hit and time.time() - hit[0] < cls._CANDLES_TTL:
+            return hit[1]
         interval, days, bucket_min = cls._CANDLE_TF.get(tf, cls._CANDLE_TF["1d"])
         frm = (date.today() - timedelta(days=days)).isoformat()
         url = (f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/"
@@ -1035,6 +1109,12 @@ class MarketDataService:
         raw.sort(key=lambda x: x["t"])  # ISO-строки → лексикографически = хронологически
         if bucket_min:
             raw = cls._agg_candles(raw, bucket_min)
+        # пустой ответ не кэшируем: это скорее сбой ISS, чем «свечей нет»
+        if raw:
+            cls._candles_mem[ckey] = (time.time(), raw)
+            if len(cls._candles_mem) > 400:      # окно памяти, не вечный рост
+                for k in list(cls._candles_mem)[:100]:
+                    cls._candles_mem.pop(k, None)
         return raw
 
     @staticmethod
@@ -1254,7 +1334,10 @@ class MarketDataService:
             async with httpx.AsyncClient() as client:
                 await asyncio.gather(*(fetch_one(client, i) for i in missing))
             _save_schedule_cache({"date": today, "items": disk})
-        return result
+        # тот же фильтр «эха», что в fetch_bond_schedule_full: этот путь кормит
+        # НКД/текущий купон карточки, и неопределённый купон источника здесь
+        # тоже обязан уходить в прогноз, а не считаться фактом
+        return {i: _strip_echo_triples(i, s) for i, s in result.items()}
             
     @classmethod
     async def search_bonds(cls, q: str) -> List[dict]:

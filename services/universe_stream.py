@@ -319,6 +319,22 @@ async def universe_stream_pool() -> None:
 
 # ── событийный пересчёт с кэшем уровней ──────────────────────────────────────
 
+def invalidate_params(isin: Optional[str] = None) -> None:
+    """Правка Справочника (спека фиксинга, маржа, даты) → строка пересчитывается
+    на ближайшем такте. Кэш уровней (isin, цена)→строка держит СТАРЫЕ параметры,
+    а сам пересчёт заказывается только сменой цены: без этого пинка правка
+    доезжала до таблицы со следующей сделкой, а в неликвиде не доезжала вовсе.
+    isin=None — массовая правка (импорт xlsx): чистим весь кэш."""
+    if isin:
+        for k in [k for k in _level_memo if k[0] == isin]:
+            _level_memo.pop(k, None)
+        if isin in _last_quote:
+            _dirty.add(isin)
+    else:
+        _level_memo.clear()
+        _dirty.update(_last_quote.keys())
+
+
 def _px_key(px: float) -> float:
     return round(float(px), _PRICE_KEY_DIGITS)
 

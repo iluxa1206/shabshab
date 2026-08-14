@@ -663,6 +663,98 @@ def _last_obs_date(spec: dict, start: date, end: date) -> Optional[date]:
     return None
 
 
+def spec_of(isin: str, base: str = None) -> Optional[dict]:
+    """Спека фиксинга выпуска в форме {mode, lag, lag_unit, avg_window_days} из
+    реестра/парсера (БЕЗ калибровки по истории купонов — дёшево, годится для
+    вызова на весь юниверс). None, если режим не определён ни одним слоём."""
+    try:
+        from services.ref_data import coupon_formula
+        s = coupon_formula(isin)
+    except Exception:
+        return None
+    if not s.get("coupon_mode") and not s.get("avg_window_days"):
+        return None
+    return {"mode": s.get("coupon_mode"), "lag": s.get("fixing_lag") or 0,
+            "lag_unit": s.get("fixing_lag_unit") or "cal",
+            "avg_window_days": s.get("avg_window_days"),
+            "base": base or s.get("base")}
+
+
+def coupon_determined(spec: Optional[dict], start: date, end: date,
+                      calc_date: date) -> Optional[bool]:
+    """Определён ли купон периода на calc_date: окно наблюдения индекса по спеке
+    полностью в прошлом. None — спека неизвестна (судить нечем)."""
+    if not spec:
+        return None
+    obs = _last_obs_date(spec, start, end)
+    return None if obs is None else obs <= calc_date
+
+
+def strip_undetermined_values(isin: str, base: str, coupons: list,
+                              calc_date: Optional[date] = None,
+                              spec: Optional[dict] = None) -> tuple:
+    """Гасит value/valueprc купонов, которые источник знать НЕ МОГ.
+
+    MOEX bondization у старых ОФЗ-ПК (29006–29010) заполняет ВСЕ будущие купоны
+    последним известным значением — эхо 16.59% на 8 лет вперёд у 29010. Ядро
+    трактует непустой value как факт (не перепрогнозирует), и такой купон уходил
+    в PV/SM/DM как «известный». Здесь он превращается в None → прайсинг считает
+    его нашей логикой (спека фиксинга + форвард кривой).
+
+    Правило (только для флоатеров, база RUONIA/KEYRATE):
+      • БУДУЩИЙ период (start > calc_date) — гасим, если окно наблюдения спеки
+        ещё не реализовано (coupon_determined = False);
+      • НАЧАВШИЙСЯ период — гасим только при ЭХО (value равен предыдущему
+        купону) и нереализованном окне: у начавшегося купона факт кормит НКД,
+        и ошибочная спека не должна его сносить;
+      • спека неизвестна — судим только по эху (окно посчитать нечем).
+
+    Возвращает (coupons, [end-даты погашенных купонов]). Список копируется
+    только при реальных правках."""
+    if base not in ("RUONIA", "KEYRATE") or not coupons:
+        return coupons, []
+    calc_date = calc_date or date.today()
+    if spec is None:
+        spec = spec_of(isin, base)
+
+    def _d(v):
+        if isinstance(v, date):
+            return v
+        try:
+            return date.fromisoformat(v) if v else None
+        except (ValueError, TypeError):
+            return None
+
+    # сравниваем СТАВКУ (valueprc), когда она есть: у амортизируемых равная
+    # ставка даёт разные рублёвые value, и эхо ловилось бы мимо
+    def _rate(c):
+        return c.get("valueprc") if c.get("valueprc") is not None else c.get("value")
+
+    rows = sorted(coupons, key=lambda c: (c.get("end") or ""))
+    out, dropped, prev_val = [], [], None
+    for c in rows:
+        s, e, v = _d(c.get("start")), _d(c.get("end")), c.get("value")
+        if not e or v is None or e <= calc_date:
+            out.append(c)
+            prev_val = _rate(c) if v is not None else prev_val
+            continue
+        det = coupon_determined(spec, s or e, e, calc_date)
+        cur = _rate(c)
+        echo = (prev_val is not None and cur is not None
+                and abs(float(cur) - float(prev_val)) < 1e-9)
+        future = s is None or s > calc_date
+        kill = (det is False and future) or (det is not True and echo)
+        if kill:
+            c = dict(c)
+            c["value"] = None
+            c["valueprc"] = None
+            dropped.append(e)
+        else:
+            prev_val = cur
+        out.append(c)
+    return (out, dropped) if dropped else (coupons, [])
+
+
 def period_index_pct(isin: str, base: str, coupons: list, face: float,
                      start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float],

@@ -235,7 +235,7 @@ def set_manual(isin: str, params: dict, lock: bool = True) -> None:
             vals.append(isin)
             c.execute(f"UPDATE instruments SET {','.join(sets)} WHERE isin=?", vals)
     # правка должна попасть в расчёт немедленно, не через TTL
-    invalidate_params_cache()
+    invalidate_params_cache(isin)
 
 
 # Кэш calc_params_map: юниверс-циклы зовут её на каждую бумагу (700+), а
@@ -256,8 +256,9 @@ def data_version() -> int:
     return _data_version
 
 
-def invalidate_params_cache() -> None:
-    """Сброс кэша calc_params_map (после ручной правки/импорта справочника)."""
+def invalidate_params_cache(isin: str = None) -> None:
+    """Сброс кэша calc_params_map (после ручной правки/импорта справочника).
+    isin задан — правка одной бумаги, None — массовая (импорт xlsx)."""
     global _data_version
     _data_version += 1
     _calc_params_cache["map"] = None
@@ -267,6 +268,14 @@ def invalidate_params_cache() -> None:
     try:
         from services import ref_data
         ref_data.invalidate_registry_cache()
+    except Exception:
+        pass
+    # Событийный движок метрик считает бумагу только на смену ЦЕНЫ и держит
+    # кэш уровней (isin, цена)→строка: без этого пинка правка спеки/маржи
+    # доезжала до таблицы лишь со следующей сделкой (в неликвиде — никогда).
+    try:
+        from services import universe_stream
+        universe_stream.invalidate_params(isin)
     except Exception:
         pass
 
@@ -315,7 +324,7 @@ def reset_manual(isin: str) -> Optional[dict]:
         sets = ", ".join(f"{k}=NULL" for k in _RESET_SPEC_FIELDS)
         c.execute(f"UPDATE instruments SET {sets}, manual_locked=0, updated_at=? WHERE isin=?",
                   (_now(), isin))
-    invalidate_params_cache()
+    invalidate_params_cache(isin)
     return removed
 
 
