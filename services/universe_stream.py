@@ -144,6 +144,13 @@ async def _broadcast_quote(isin: str, data: dict) -> None:
 
 
 async def _on_quote(isin: str, data: dict) -> None:
+    # Нет стороны стакана — брокер отдаёт 0, а не null. Нормализуем НА ВХОДЕ,
+    # чтобы ноль не разошёлся по кэшу котировок, патчам WS и спреду по цене
+    # (см. market_data._px_or_none).
+    from services.market_data import _px_or_none
+    for k in ("bid", "ask"):
+        if k in data:
+            data[k] = _px_or_none(data[k])
     px = data.get("last_price")
     _seed_price(isin, px)
     prev = _last_quote.get(isin)
@@ -385,7 +392,12 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
         yoi = row.get("yoi")
         for side, fld in (("bid", "yoi_bid"), ("ask", "yoi_ask")):
             v = q.get(side)
+            # 0 = стороны в стакане нет: ни цены, ни спреда по ней. Раньше ноль
+            # ехал в колонку как «0,00», а наклон от него давал спред в тысячи
+            # б.п. (МТС 2Р-03 — 8960 при отсутствующем оффере).
+            v = v if (v or 0) > 0 else None
             row[side] = v
+            row[fld] = None
             if v is not None and yoi is not None and slope is not None:
                 row[fld] = int(round(yoi + (v - px) * slope))
         snap = ctx["board"].get(isin, {})

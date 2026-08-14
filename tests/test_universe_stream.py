@@ -115,3 +115,28 @@ def test_metrics_patch_maps_to_frontend_names():
 def test_unknown_isin_skipped():
     r = us._crunch([("RU000A999999", {"last_price": 100.0})], _ctx({}), enrich=_enrich_counter([]))
     assert r == {}
+
+
+def test_missing_side_is_none_not_zero():
+    """Нет стороны в стакане — источники отдают 0, а не null. Ноль не должен
+    доехать ни до колонки цены («0,00»), ни до спреда по ней: у МТС 2Р-03 при
+    отсутствующем оффере в таблице стояло 0,00 и 8960 б.п."""
+    uni = {"RU000A100001": {"isin": "RU000A100001"}}
+    calls = []
+    us._crunch([("RU000A100001", {"last_price": 100.0})], _ctx(uni),
+               enrich=_enrich_counter(calls))
+    r = us._crunch([("RU000A100001", {"last_price": 100.0, "bid": 99.8, "ask": 0})],
+                   _ctx(uni), enrich=_enrich_counter(calls))
+    row = r["RU000A100001"]
+    assert row["ask"] is None and row["yoi_ask"] is None    # стороны нет
+    assert row["bid"] == 99.8 and row["yoi_bid"] == 110     # живая сторона цела
+
+
+def test_px_or_none_normalizes_zero():
+    from services.market_data import _px_or_none
+    assert _px_or_none(0) is None          # нет стороны
+    assert _px_or_none(0.0) is None
+    assert _px_or_none(-1) is None         # мусор источника
+    assert _px_or_none(None) is None
+    assert _px_or_none("") is None
+    assert _px_or_none(99.75) == 99.75

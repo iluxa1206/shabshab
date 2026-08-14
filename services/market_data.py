@@ -74,6 +74,18 @@ def _call_dates_cached() -> Dict[str, list]:
 CALL_OFFER_SOURCE = "corpbonds"   # метка синтетической записи (см. call_offers_asof)
 
 
+def _px_or_none(v) -> Optional[float]:
+    """Цена котировки или None. Источники (MOEX BID/OFFER, котировки Alor) при
+    ОТСУТСТВИИ стороны отдают 0, а не NULL: без нормализации ноль показывался в
+    таблице как «0,00» и по нему считался спред (МТС 2Р-03 — 8960 б.п. на
+    несуществующем оффере). Нулевой и отрицательной цены у облигации не бывает."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 # --- гашение «эха» неопределённых купонов источника ---
 # MOEX у старых ОФЗ-ПК (29006–29010) проставляет ВСЕМ будущим купонам последнее
 # известное значение (29010: 16.59% до 2034 года). Ядро считает непустой value
@@ -872,13 +884,15 @@ class MarketDataService:
                 mg = lambda n: mrow[md_cols.index(n)] if (mrow is not None and n in md_cols) else None
                 if prev is None and mrow is not None:
                     prev = mg("PREVPRICE")
-                bid, ask = mg("BID"), mg("OFFER")
+                # НЕТ СТОРОНЫ = 0 у MOEX, а не NULL. Без нормализации ноль ехал
+                # в таблицу ценой «0,00» и в спред по ней (МТС 2Р-03: оффера нет,
+                # а в колонке 8960 б.п.). Пустая сторона — это отсутствие цены.
+                bid, ask = _px_or_none(mg("BID")), _px_or_none(mg("OFFER"))
                 out[isin] = {
                     "prev": float(prev) if prev is not None else None,
                     "accrued": float(accrued) if accrued is not None else None,
                     "prev_date": prev_date,
-                    "bid": float(bid) if bid is not None else None,
-                    "ask": float(ask) if ask is not None else None,
+                    "bid": bid, "ask": ask,
                 }
             except Exception:
                 pass
@@ -994,11 +1008,13 @@ class MarketDataService:
                             continue
                         # верх стакана MOEX (BID/OFFER — чистые цены, % номинала).
                         # OFFER здесь = ASK (лучшая заявка на продажу), НЕ оферта put/call.
-                        bd, ak = mg(mr, "BID"), mg(mr, "OFFER")
+                        # нет стороны → MOEX отдаёт 0: это ОТСУТСТВИЕ цены, а не
+                        # цена (см. _px_or_none) — иначе «0,00» и спред по нулю
+                        bd, ak = _px_or_none(mg(mr, "BID")), _px_or_none(mg(mr, "OFFER"))
                         if bd is not None:
-                            bid_by_secid[secid] = float(bd)
+                            bid_by_secid[secid] = bd
                         if ak is not None:
-                            ask_by_secid[secid] = float(ak)
+                            ask_by_secid[secid] = ak
                         wap = mg(mr, "WAPRICE")
                         if wap is not None:
                             wap_by_secid[secid] = float(wap)

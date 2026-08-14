@@ -50,6 +50,11 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     base = u.get("base_rate_type", "UNKNOWN")
     coupons_full = full.get("coupons") or []
     amorts, offers = full.get("amorts"), full.get("offers")
+    # Пустая сторона стакана приходит нулём (MOEX BID/OFFER=0, котировки Alor) —
+    # последний рубеж перед расчётом: ноль не цена, спред по нему бессмыслен
+    # (МТС 2Р-03: оффера нет, а в колонке стояло 0,00 и 8960 б.п.).
+    bid = bid if (bid or 0) > 0 else None
+    ask = ask if (ask or 0) > 0 else None
 
     # Номинал: сверяем с фактом купона (value/valueprc). Ловит тихий фолбэк на
     # 1000, когда бумаги нет в securities-кэше.
