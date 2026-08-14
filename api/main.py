@@ -777,12 +777,17 @@ async def lifespan(app: FastAPI):
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
     from services.tg_notify import tg_notify_worker, tg_signal_worker
+    from services.tg_poll import tg_poll_worker
     tg_task = asyncio.create_task(tg_notify_worker())
     tg_sig_task = asyncio.create_task(tg_signal_worker())
+    # команды бота: на этом VPS Telegram до нас не достучится (вебхук молчит),
+    # поэтому апдейты забираем сами — см. services/tg_poll.py
+    tg_poll_task = asyncio.create_task(tg_poll_worker())
     signals_task = asyncio.create_task(signals_worker())
     yield
     tg_task.cancel()
     tg_sig_task.cancel()
+    tg_poll_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()

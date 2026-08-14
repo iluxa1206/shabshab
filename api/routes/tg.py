@@ -100,18 +100,10 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
     return "Не понял. /help"
 
 
-@router.post("/webhook")
-async def tg_webhook(request: Request,
-                     x_telegram_bot_api_secret_token: str = Header(default="")):
-    secret = os.getenv("TG_WEBHOOK_SECRET") or ""
-    if not secret or x_telegram_bot_api_secret_token != secret:
-        # 200 без обработки: 4xx заставит Telegram ретраить мусор бесконечно
-        logger.warning("tg webhook: неверный secret token")
-        return {"ok": True}
-    try:
-        update = await request.json()
-    except Exception:
-        return {"ok": True}
+async def process_update(update: dict) -> None:
+    """Разбор одного апдейта Bot API. Общий для вебхука и long polling
+    (services/tg_poll.py): на прод-VPS вебхук недоступен — Telegram не может
+    открыть к нам соединение, — поэтому боевой путь именно поллер."""
     msg = update.get("message") or {}
     text = msg.get("text") or ""
     frm = msg.get("from") or {}
@@ -119,7 +111,7 @@ async def tg_webhook(request: Request,
     uid, chat_id = frm.get("id"), chat.get("id")
     username = frm.get("username") or ""
     if not text or not uid or not chat_id or chat.get("type") != "private":
-        return {"ok": True}
+        return
 
     if not tg_users.is_allowed(uid):
         # Заявку заводим на любое сообщение: юзер мог начать не с /start.
@@ -127,9 +119,9 @@ async def tg_webhook(request: Request,
         try:
             row = tg_users.request_access(uid, chat_id, username)
         except Exception as e:
-            logger.warning("tg webhook: заявка %s не сохранена: %s", uid, e)
+            logger.warning("tg: заявка %s не сохранена: %s", uid, e)
             row = None
-        logger.info("tg webhook: заявка от tg_user_id=%s (@%s) status=%s",
+        logger.info("tg: заявка от tg_user_id=%s (@%s) status=%s",
                     uid, username, (row or {}).get("status"))
         if (row or {}).get("status") == "rejected":
             await telegram.send_message(chat_id, "Доступ закрыт.", parse_mode=None)
@@ -141,20 +133,37 @@ async def tg_webhook(request: Request,
                 + (f"\nВаш ник: @{username}" if username else
                    f"\nВаш ID: {uid} (ника нет — передайте админу его)"),
                 parse_mode=None)
-        return {"ok": True}
+        return
 
     # известный чат: держим chat_id/username свежими (юзер мог сменить ник)
     try:
         tg_users.request_access(uid, chat_id, username)
     except Exception as e:
-        logger.warning("tg webhook: upsert %s: %s", uid, e)
+        logger.warning("tg: upsert %s: %s", uid, e)
     try:
         reply = await _handle_command(text, uid, chat_id, username)
     except Exception as e:
-        logger.warning("tg webhook handler error: %s", e)
+        logger.warning("tg handler error: %s", e)
         reply = "Внутренняя ошибка, см. логи."
     if reply:
         await telegram.send_message(chat_id, reply)
+
+
+@router.post("/webhook")
+async def tg_webhook(request: Request,
+                     x_telegram_bot_api_secret_token: str = Header(default="")):
+    """Оставлен для сети, где Telegram до нас достучится. На текущем VPS не
+    работает (Connection timed out со стороны Telegram) — там включён поллер."""
+    secret = os.getenv("TG_WEBHOOK_SECRET") or ""
+    if not secret or x_telegram_bot_api_secret_token != secret:
+        # 200 без обработки: 4xx заставит Telegram ретраить мусор бесконечно
+        logger.warning("tg webhook: неверный secret token")
+        return {"ok": True}
+    try:
+        update = await request.json()
+    except Exception:
+        return {"ok": True}
+    await process_update(update)
     return {"ok": True}
 
 
