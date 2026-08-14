@@ -63,6 +63,23 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
     return await _cum(uni, isins, _cache_path("isins_cache.json"))
 
 
+def _horizon_dur(mx, mat_dur):
+    """Спред-дюрация к ГОРИЗОНТУ ОЦЕНКИ, а не к погашению. Бумага с путом/коллом
+    считается к оферте (правило цены выбрало горизонт) — значит и точка на графике
+    аналитики, и «срок» строки должны стоять на дате оферты. Иначе Сибур с путом
+    через 0.9 года висел на 5.6 лет по кросс-секции, хотя спред посчитан к оферте.
+    Фолбэк — срок до погашения из cross_section_map."""
+    from services.metrics import years_to
+    hz, off = mx.get("horizon"), mx.get("offer_date")
+    if hz in ("put", "call") and off is not None:
+        try:
+            d = off if isinstance(off, date) else date.fromisoformat(str(off))
+            return years_to(d, date.today())
+        except (ValueError, TypeError):
+            pass
+    return mat_dur
+
+
 def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond)
     + spread duration (кросс-секция)."""
@@ -91,7 +108,7 @@ def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
         price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
         rating=u.get("rating"),
-        z_model_bps=mx.get("z_model"), spread_dur_yrs=spread_dur,
+        z_model_bps=mx.get("z_model"), spread_dur_yrs=_horizon_dur(mx, spread_dur),
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
         offer_kind=mx.get("offer_kind"), has_call=u.get("has_call"),
