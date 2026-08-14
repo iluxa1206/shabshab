@@ -479,10 +479,50 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
     }
 
 
+# Дневная история MOEX по бумаге: кэш на день. Она НЕИЗМЕННА (прошлые торговые
+# дни не переписываются), а стоит дорого — окно 730 дней это ~8 последовательных
+# страниц ISS, и запрашивают её три места сразу (as-of фабрика баров, honest-
+# серия, контекст бэкдейта). Хранится САМОЕ ШИРОКОЕ окно на бумагу: запрос
+# поуже отдаётся срезом, без единого похода в сеть.
+_HIST_MEMO_MAX = 200
+_hist_memo: "OrderedDict[tuple, tuple]" = OrderedDict()   # (secid,board) → (день, frm, till, rows)
+
+
+def _hist_memo_get(secid: str, board: str, d_from: date, d_till: date) -> Optional[list]:
+    from datetime import date as _date
+    hit = _hist_memo.get((secid, board))
+    if not hit or hit[0] != _date.today():
+        return None
+    _day, frm, till, rows = hit
+    if frm > d_from or till < d_till:
+        return None                      # кэш у́же запроса — досчитывать нечем
+    _hist_memo.move_to_end((secid, board))
+    a, b = d_from.isoformat(), d_till.isoformat()
+    return [r for r in rows if a <= (r.get("date") or "") <= b]
+
+
+def _hist_memo_put(secid: str, board: str, d_from: date, d_till: date, rows: list) -> None:
+    from datetime import date as _date
+    key = (secid, board)
+    prev = _hist_memo.get(key)
+    if prev and prev[0] == _date.today() and prev[1] <= d_from and prev[2] >= d_till:
+        return                           # в кэше уже более широкое окно
+    _hist_memo[key] = (_date.today(), d_from, d_till, rows)
+    _hist_memo.move_to_end(key)
+    for k in [k for k, v in list(_hist_memo.items()) if v[0] != _date.today()]:
+        _hist_memo.pop(k, None)
+    while len(_hist_memo) > _HIST_MEMO_MAX:
+        _hist_memo.popitem(last=False)
+
+
 async def fetch_history_range(secid: str, d_from: date, d_till: date,
                               board: str = "TQCB") -> list:
     """Все дневные строки MOEX history за диапазон (пагинация start=): по датам
-    возрастания, [{date, close, legalclose, accint, facevalue}, ...]."""
+    возрастания, [{date, close, legalclose, accint, facevalue}, ...].
+    Кэш на день (см. _hist_memo): прошлые торговые дни не меняются."""
+    cached = _hist_memo_get(secid, board, d_from, d_till)
+    if cached is not None:
+        return cached
     url = (f"https://iss.moex.com/iss/history/engines/stock/markets/bonds/"
            f"boards/{board}/securities/{secid}.json")
     out, start = [], 0
@@ -512,6 +552,10 @@ async def fetch_history_range(secid: str, d_from: date, d_till: date,
                 start += len(data)
     except Exception as e:
         logger.warning(f"MOEX history range fetch {secid}: {e}")
+    # пустой ответ не кэшируем: это сбой сети, а не «истории нет» — иначе один
+    # флак ISS замораживал бы бумагу без спреда на весь день (см. ВЭБP-41)
+    if out:
+        _hist_memo_put(secid, board, d_from, d_till, out)
     return out
 
 
@@ -526,14 +570,31 @@ def _alt_horizon(hz_key: str, horizons: dict) -> Optional[str]:
     return None
 
 
+# Собранная as-of фабрика: кэш на день по (isin, board) с ЗАПОМНЕННЫМ окном.
+# Сборка — это сеть (история, кривые) плюс контексты по дням; её просят и бары,
+# и маркеры сделок, и стакан, причём с разными окнами. Фабрика умеет любую дату
+# внутри своего окна, поэтому запрос поуже обслуживается уже построенной.
+_ASOF_MEMO_MAX = 120
+_asof_memo: "OrderedDict[tuple, tuple]" = OrderedDict()   # (isin,board) → (день, days, fn)
+
+
 async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
     """Sync-фабрика ЧЕСТНЫХ метрик для прошлых дней: fn(day_iso, price_pct) →
     {y_idx_bps, dm_bps, g_spread_bps, yield_pct}. Кривая/НКД/номинал — as-of
     дня (та же математика, что honest_spread_series), но прайсит ЛЮБУЮ цену дня
     (часовые бары: vwap/OHLC), а не только close. I/O — только здесь, при сборке;
     сама fn — чистый CPU, можно звать из heavy-потока. Поднимает исключение,
-    если as-of контекст не собрался (бумага погашена/только размещена/нет кривой)."""
+    если as-of контекст не собрался (бумага погашена/только размещена/нет кривой).
+
+    Готовая фабрика кэшируется на день (_asof_memo): её строят и бары, и маркеры
+    сделок, и honest-серия — каждый раз заново это была сеть плюс контексты по
+    дням (на холодную до сотни секунд на длинном окне)."""
     from datetime import date as _date, timedelta as _td
+    mkey = (isin, board)
+    hit = _asof_memo.get(mkey)
+    if hit and hit[0] == _date.today() and hit[1] >= days:
+        _asof_memo.move_to_end(mkey)     # окно кэша шире запроса — годится
+        return hit[2]
     d_till = _date.today() - _td(days=1)
     d_from = d_till - _td(days=days + 7)
     ctx = await load_backdate_ctx(isin, d_till, board)
@@ -632,6 +693,12 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
                 "y_idx_alt_bps": alt.get("yield_over_index_bps"),
                 "alt_horizon": alt.get("horizon") if alt else None}
 
+    _asof_memo[mkey] = (_date.today(), days, fn)
+    _asof_memo.move_to_end(mkey)
+    for k in [k for k, v in list(_asof_memo.items()) if v[0] != _date.today()]:
+        _asof_memo.pop(k, None)
+    while len(_asof_memo) > _ASOF_MEMO_MAX:
+        _asof_memo.popitem(last=False)
     return fn
 
 
