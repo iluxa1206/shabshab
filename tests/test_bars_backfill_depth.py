@@ -44,7 +44,8 @@ def calls(bars, monkeypatch):
                 continue
             out.append({"isin": isin, "ts": f"{d.isoformat()} 12:00", "kind": kind,
                         "close": 100.0, "vwap_pct": 100.0, "volume": 1, "value": 1000,
-                        "y_idx_bps": 50, "metrics_ver": bars.BARS_METRICS_VERSION})
+                        "y_idx_bps": 50, "y_close_bps": 50,
+                        "metrics_ver": bars.BARS_METRICS_VERSION})
         return out
 
     monkeypatch.setattr(bars, "build_bars", fake_build)

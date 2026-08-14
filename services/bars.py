@@ -252,20 +252,22 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 
             m = _metrics(vwap)
             # HLC-режим панели спреда убран (2026-08-14): свеча спреда читалась
-            # плохо, а стоила ЧЕТЫРЁХ reprice на бар вместо одного — это и был
-            # главный вклад в долгий фоновый пересчёт длинных окон. Колонки
-            # y_*_bps остаются в схеме (старые строки), но больше не заполняются;
-            # цифра самого спреда (y_idx_bps по vwap) не изменилась, поэтому
-            # BARS_METRICS_VERSION не бампаем — пересчитывать нечего.
+            # плохо, а стоила ЧЕТЫРЁХ reprice на бар. Но спред ПО ЗАКРЫТИЮ нужен
+            # и без неё: панель считает базу по цене закрытия, когда слой
+            # СРЕДНЕВЗВЕС выключен. Без y_close_bps фронт молча падал на
+            # vwap-спред — переключатель менял подпись, а линия оставалась той
+            # же. Считаем одну доп. цену вместо четырёх; o/h/l больше не нужны.
             o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
+            spread_key = "g_spread_bps" if kind == "fixed" else "y_idx_bps"
+            y_close = _metrics(cl).get(spread_key) if cl is not None else None
             bar = {
                 "isin": isin, "ts": ts, "kind": kind,
                 "open": o, "high": h, "low": l, "close": cl,
                 "vwap_pct": vwap, "volume": vol, "value": val, "face": face,
                 "y_idx_bps": m.get("y_idx_bps"), "dm_bps": m.get("dm_bps"),
                 "g_spread_bps": m.get("g_spread_bps"), "ytm": m.get("yield_pct"),
-                "y_open_bps": None, "y_high_bps": None,
-                "y_low_bps": None, "y_close_bps": None,
+                "y_open_bps": None, "y_high_bps": None, "y_low_bps": None,
+                "y_close_bps": y_close,
                 # ВЕРСИЮ ШТАМПУЕМ ТОЛЬКО НА ПОСЧИТАННЫЙ БАР. Строка без спреда,
                 # помеченная текущей версией, считается «посчитанной» и больше
                 # не пересчитывается никогда: при одном флаке ISS (пустая
@@ -424,8 +426,13 @@ def _unpriced_in_window(isin: str, frm: str, till: str) -> int:
     with _connect() as c:
         r = c.execute(
             "SELECT COUNT(*) FROM bar_hourly WHERE isin=? AND ts>=? AND ts<? "
-            "AND vwap_pct IS NOT NULL AND y_idx_bps IS NULL AND g_spread_bps IS NULL "
-            "AND (metrics_ver IS NULL OR metrics_ver<?)",
+            "AND vwap_pct IS NOT NULL AND (metrics_ver IS NULL OR metrics_ver<? "
+            # спред по закрытию вернулся отдельным полем: бары, налитые без него,
+            # тоже досчитываем — иначе панель в режиме «по цене закрытия» молча
+            # показывала бы vwap-спред. Бамп версии тут не годится: он обнулил
+            # бы ВЕСЬ спред окна и оставил пустую линию до конца пересчёта
+            "     OR (y_close_bps IS NULL AND close IS NOT NULL AND kind='floater')) "
+            "AND (y_idx_bps IS NULL OR y_close_bps IS NULL)",
             (isin, frm, till, BARS_METRICS_VERSION)).fetchone()
     return r[0] if r else 0
 
