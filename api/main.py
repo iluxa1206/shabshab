@@ -402,6 +402,34 @@ async def nightly_spread_warm():
             logger.warning("nightly warm error: %s", e)
 
 
+async def memory_watch(period_sec: int = 1800):
+    """Раз в полчаса пишет в лог RSS и длины долгоживущих кэшей.
+
+    Тот же снимок, что отдаёт /api/status/memory, но в лог: эндпоинт закрыт
+    авторизацией, а утечку надо ловить по ТРЕНДУ за часы. 13.08 процесс вырос
+    599 → 1004 МБ за ночь и почти упёрся в лимит контейнера — без истории по
+    кэшам виновника не найти."""
+    from api.routes.status import _rss_mb
+    while True:
+        try:
+            from services import backdate as bd
+            from services.market_data import MarketDataService as MD
+            from services import universe_stream as us
+            parts = [f"honest={len(bd._honest_memo)}", f"anchor={len(bd._anchor_memo)}",
+                     f"full={len(MD._full_mem)}", f"snap={len(MD._snap_cache)}",
+                     f"secid={len(MD._secid_cache)}", f"sec={len(MD._sec_cache)}",
+                     f"levels={len(us._level_memo)}"]
+            try:
+                from services import trade_yidx as ty
+                parts.append(f"tradectx={len(ty._ctx_cache)}")
+            except Exception:
+                pass
+            logger.info("memory: RSS %.0f МБ · %s", _rss_mb(), " ".join(parts))
+        except Exception as e:
+            logger.warning("memory watch error: %s", e)
+        await asyncio.sleep(period_sec)
+
+
 ALERT_POLL_INTERVAL = 12   # проверка алертов против стакана, сек
 
 
@@ -754,6 +782,7 @@ async def lifespan(app: FastAPI):
     spread_snap = asyncio.create_task(spread_snapshotter())
     bars_worker = asyncio.create_task(hourly_bars_worker())
     night_warm = asyncio.create_task(nightly_spread_warm())
+    mem_watch = asyncio.create_task(memory_watch())
     depth_task = asyncio.create_task(depth_poller())
     archive_task = asyncio.create_task(archive_maintenance())
     blocks_task = asyncio.create_task(block_trades_worker())
@@ -789,6 +818,7 @@ async def lifespan(app: FastAPI):
     spread_snap.cancel()
     bars_worker.cancel()
     night_warm.cancel()
+    mem_watch.cancel()
     depth_task.cancel()
     archive_task.cancel()
     blocks_task.cancel()
