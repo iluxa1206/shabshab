@@ -20,6 +20,7 @@ from services.bonds import (
 from services.valuation import calculate_valuation_metrics
 from services.exceptions import NotFoundException
 from services import instruments_registry
+from services import live_quotes
 from services.paths import cache_path as _cache_path
 from core.cashflow import read_isins_from_file
 
@@ -327,8 +328,14 @@ async def get_quotes():
     for isin, v in snap.items():
         if v.get("last") is None and v.get("bid") is None and v.get("ask") is None:
             continue
+        # средневзвес и оборот — свой счёт по тикам Alor, когда он есть: биржевые
+        # WAPRICE/VALTODAY в снапшоте отстают. Оборот берём большим из двух (свой
+        # полон только при живом стриме) — см. services/universe.
+        lv = live_quotes.get(isin) or {}
         it = {"isin": isin, "last": v.get("last"), "bid": v.get("bid"),
-              "ask": v.get("ask"), "wap": v.get("waprice"), "vol": v.get("vol")}
+              "ask": v.get("ask"),
+              "wap": lv.get("vwap_pct") or v.get("waprice"),
+              "vol": max(v.get("vol") or 0, lv.get("val_today") or 0) or None}
         m = um.get(isin)
         if m and m.get("yoi") is not None:
             it["yoi"] = m["yoi"]

@@ -229,9 +229,16 @@ async def alor_orderbook_ws():
                             await manager.broadcast_orderbook(isin, out)
                         elif chan == "t":
                             _seed_price(isin, data.get("price"))
+                            # рублёвый объём считаем и здесь: тик избранной бумаги
+                            # приходит и на этот сокет, и на сокет trades_stream —
+                            # кто первый, того и агрегат (второй уйдёт как дубль по
+                            # trade_id). Без value оборот бы терялся на этой ветке.
+                            from services.trades_stream import _tick_value
                             live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
                                                   tid=data.get("id"),
-                                                  ts=str(data.get("time") or "") or None)
+                                                  ts=str(data.get("time") or "") or None,
+                                                  value=_tick_value(isin, data.get("price"),
+                                                                    data.get("qty")))
                             # сделка двигает и цену, и средневзвес; при подписке Alor
                             # отдаёт пачку исторических сделок — троттл не даёт ей
                             # превратиться в череду пушей
@@ -244,6 +251,7 @@ async def alor_orderbook_ws():
                                 if v:
                                     out["vwap_pct"] = v["vwap_pct"]
                                     out["vwap_volume"] = v["volume"]
+                                    out["val_today"] = v["val_today"]
                                 await manager.broadcast_market_data(isin, out)
         except Exception as e:
             logger.warning(f"alor_ws error: {e}")

@@ -234,12 +234,14 @@ export const COLS = [
   { key: "dirty_price_rub", label: "DIRTY", sub: "RUB", align: "num", w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="dirty_price_rub">{fmt.num(b.dirty_price_rub) ?? <D />}</td> },
   // ── ликвидность: оборот сегодня и средний дневной за месяц ──
-  // Обе колонки в млн ₽. VOL — VALTODAY снапшота MOEX (обновляется тактом
-  // котировок), ADV — Σ денег архива часовых баров за 30 дней / число торговых
+  // Обе колонки в млн ₽. VOL — Σ сделок дня по тикам Alor (живой, растёт
+  // сделка в сделку), с откатом на биржевой VALTODAY снапшота, если своего
+  // счёта нет; ADV — Σ денег архива часовых баров за 30 дней / число торговых
   // дней рынка. Разные источники, поэтому подписи разведены.
   { key: "val_today", label: "VOL", sub: "СЕГОДНЯ, М₽", align: "num", grp: true, w: 9,
     cell: (b) => <td className="num" key="val_today"
-      title="оборот сегодня, ₽ (VALTODAY MOEX)">{fmt.mln(b.val_today) ?? <D />}</td> },
+      title={b._live ? "оборот сегодня, ₽ — Σ сделок по тикам (live)"
+        : "оборот сегодня, ₽ (тики Alor / VALTODAY MOEX)"}>{fmt.mln(b.val_today) ?? <D />}</td> },
   { key: "adv_1m_rub", label: "ADV", sub: "1М, М₽", align: "num", w: 8,
     cell: (b) => <td className="num" key="adv_1m_rub"
       title={"средний дневной оборот за 30 дней, ₽ — Σ денег архива часовых баров / "

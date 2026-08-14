@@ -17,6 +17,7 @@ from core.valuation import next_offer_info
 from services.zspread import compute_z_bps
 from services import metrics
 from services import instruments_registry
+from services import live_quotes
 
 logger = logging.getLogger(__name__)
 
@@ -257,8 +258,15 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
                 bid=snap.get("bid"), ask=snap.get("ask"),
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
-            out[isin]["val_today"] = snap.get("vol")   # оборот сегодня, ₽ (board snapshot)
-            out[isin]["wap"] = snap.get("waprice")     # средневзвес дня, % (WAPRICE)
+            # оборот и средневзвес дня: сначала свой счёт по тикам Alor (живой),
+            # биржевые VALTODAY/WAPRICE — запасной путь. Оборот берём БОЛЬШИМ из
+            # двух: свой счёт полон только при живом стриме, биржевой отстаёт —
+            # максимум не даёт занизить ни в одну, ни в другую сторону.
+            lv = live_quotes.get(isin) or {}
+            vol = snap.get("vol")
+            lvol = lv.get("val_today")
+            out[isin]["val_today"] = max(vol or 0, lvol or 0) or None
+            out[isin]["wap"] = lv.get("vwap_pct") or snap.get("waprice")
 
         # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
         # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках

@@ -52,7 +52,8 @@ def test_new_day_resets_accumulator(monkeypatch):
     monkeypatch.setattr(lq, "_today", lambda: "2099-01-01")
     assert lq.get("RU000A100001") is None                # вчерашний агрегат не отдаём
     lq.add_trade("RU000A100001", 50.0, 4, tid=1)         # тот же id, но новый день
-    assert lq.get("RU000A100001") == {"vwap_pct": 50.0, "volume": 4, "trades": 1}
+    assert lq.get("RU000A100001") == {"vwap_pct": 50.0, "volume": 4, "trades": 1,
+                                      "val_today": None}
 
 
 def test_drop_clears_state():
@@ -65,7 +66,8 @@ def test_drop_clears_state():
 def test_ensure_day_seeds_from_archive(monkeypatch):
     """Агрегат поднимается из архива, а поток дополняет его без двойного счёта."""
     day = lq._today()
-    archive = [(1, 100.0, 10, f"{day} 10:00:00"), (2, 102.0, 10, f"{day} 10:05:00")]
+    archive = [(1, 100.0, 10, f"{day} 10:00:00", 1000.0),
+               (2, 102.0, 10, f"{day} 10:05:00", 1020.0)]
     monkeypatch.setattr(lq, "read_day_ticks", lambda isin, d: archive)
 
     asyncio.run(lq.ensure_day("RU000A100001", drain=False))
@@ -85,10 +87,51 @@ def test_ensure_day_runs_once(monkeypatch):
 
     def fake_read(isin, d):
         calls.append(isin)
-        return [(1, 100.0, 10, f"{day} 10:00:00")]
+        return [(1, 100.0, 10, f"{day} 10:00:00", 1000.0)]
 
     monkeypatch.setattr(lq, "read_day_ticks", fake_read)
     asyncio.run(lq.ensure_day("RU000A100001", drain=False))
     asyncio.run(lq.ensure_day("RU000A100001", drain=False))
     assert len(calls) == 1
     assert lq.get("RU000A100001")["volume"] == 10
+
+
+def test_day_turnover_sums_rub():
+    """Оборот дня — Σ value тиков (₽), а не Σ штук: колонка VOL в млн ₽."""
+    lq.add_trade("RU000A100001", 100.0, 10, tid=1, value=1000.0)
+    lq.add_trade("RU000A100001", 101.0, 30, tid=2, value=3030.0)
+    lq.add_trade("RU000A100001", 101.0, 30, tid=2, value=3030.0)   # дубль
+    assert lq.get("RU000A100001")["val_today"] == 4030
+
+
+def test_seed_universe_lifts_whole_day(monkeypatch):
+    """Подъём пачкой: один проход по архиву наливает агрегаты всех бумаг."""
+    day = lq._today()
+    rows = [("RU000A100001", 1, 100.0, 10, f"{day} 10:00:00", 1000.0),
+            ("RU000A100002", 2, 99.0, 20, f"{day} 10:01:00", 1980.0),
+            ("RU000A100003", 3, 98.0, 5, f"{day} 10:02:00", 490.0)]   # не просили
+    monkeypatch.setattr(lq, "read_day_ticks_all", lambda d: rows)
+
+    n = asyncio.run(lq.seed_universe(["RU000A100001", "RU000A100002"]))
+    assert n == 2
+    assert lq.get("RU000A100001")["val_today"] == 1000
+    assert lq.get("RU000A100002")["vwap_pct"] == pytest.approx(99.0)
+    assert lq.get("RU000A100003") is None       # чужая бумага агрегат не завела
+
+    # повторный прогон — идемпотентен: объём не задваивается, архив не читается
+    monkeypatch.setattr(lq, "read_day_ticks_all",
+                        lambda d: pytest.fail("повторный подъём не нужен"))
+    assert asyncio.run(lq.seed_universe(["RU000A100001", "RU000A100002"])) == 0
+    assert lq.get("RU000A100001")["val_today"] == 1000
+
+
+def test_seed_universe_keeps_stream_ticks(monkeypatch):
+    """Тик, прилетевший до подъёма, не задваивается его архивной копией."""
+    day = lq._today()
+    lq.add_trade("RU000A100001", 100.0, 10, tid=1, value=1000.0)
+    monkeypatch.setattr(lq, "read_day_ticks_all",
+                        lambda d: [("RU000A100001", 1, 100.0, 10, f"{day} 10:00:00", 1000.0),
+                                   ("RU000A100001", 2, 100.0, 10, f"{day} 10:01:00", 1000.0)])
+    asyncio.run(lq.seed_universe(["RU000A100001"]))
+    v = lq.get("RU000A100001")
+    assert v["trades"] == 2 and v["val_today"] == 2000

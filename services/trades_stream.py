@@ -206,8 +206,8 @@ def _on_trade(isin: str, data: dict) -> None:
     (тот же, что у REST alltrades: id/price/qty/time/side/board)."""
     if data.get("id") is None or data.get("price") is None or not data.get("qty"):
         return
-    if isin not in _core and _OTHER_MIN_RUB > 0 \
-            and _tick_value(isin, data.get("price"), data.get("qty")) < _OTHER_MIN_RUB:
+    val = _tick_value(isin, data.get("price"), data.get("qty"))
+    if isin not in _core and _OTHER_MIN_RUB > 0 and val < _OTHER_MIN_RUB:
         _stats["skipped_small"] += 1
         return
     if not data.get("board"):
@@ -219,13 +219,16 @@ def _on_trade(isin: str, data: dict) -> None:
     })
     _stats["ticks"] += 1
     _stats["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    # живая цена и средневзвес избранного считаются в services/live_quotes —
-    # трогаем их только для бумаг, за которыми уже следит alor_ws (иначе
-    # дневной агрегат пришлось бы держать по всему юниверсу)
+    # живая цена, средневзвес и ОБОРОТ дня — services/live_quotes. Держим их по
+    # всему юниверсу: тик сюда уже пришёл, дневной счёт стоит двух сложений, а
+    # биржевые WAPRICE/VALTODAY из ISS-снапшота приезжают с задержкой. Вне
+    # юниверса — только то, за чем следит alor_ws (там поток обрезан порогом,
+    # оборот по нему был бы неполным).
     from services import live_quotes
-    if live_quotes.get(isin) is not None:
+    if isin in _core or live_quotes.get(isin) is not None:
         live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
-                              tid=data.get("id"), ts=str(data.get("time") or "") or None)
+                              tid=data.get("id"), ts=str(data.get("time") or "") or None,
+                              value=val)
 
 
 async def subscription_isins() -> list[str]:
@@ -263,6 +266,12 @@ async def trades_stream_pool() -> None:
         while True:
             try:
                 isins = await subscription_isins()
+                await _faces_map()      # номиналы нужны ДО первого тика: по ним
+                                        # считается рублёвый объём (_tick_value)
+                # дневные агрегаты юниверса из архива — счёт с открытия сессии, а
+                # не с момента старта процесса; сверка идемпотентна
+                from services import live_quotes
+                await live_quotes.seed_universe(_core)
                 key = tuple(isins)
                 if key != current:
                     for s in stops:

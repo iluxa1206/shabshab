@@ -407,6 +407,10 @@ function Dashboard() {
           applySideQuote(b, n, "bid", q.bid);
           applySideQuote(b, n, "ask", q.ask);
           if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
+          // оборот дня по тикам: биржевой VALTODAY из снапшота отстаёт, а свой
+          // счёт растёт сделка в сделку. Назад не откатываем — патч может
+          // прийти от сокета, чей агрегат ещё догоняется архивом.
+          if (q.val_today != null && !(b.val_today > q.val_today)) n.val_today = q.val_today;
           if (q.metrics) {
             for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
             n._mstale = false;   // производные свежие — строка не dim

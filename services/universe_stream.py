@@ -139,6 +139,7 @@ async def _broadcast_quote(isin: str, data: dict) -> None:
     if v:
         out["vwap_pct"] = v["vwap_pct"]
         out["vwap_volume"] = v["volume"]
+        out["val_today"] = v["val_today"]
     await wsmod.manager.broadcast_market_data(
         isin, {k: v for k, v in out.items() if v is not None})
 
@@ -401,9 +402,14 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
             if v is not None and yoi is not None and slope is not None:
                 row[fld] = int(round(yoi + (v - px) * slope))
         snap = ctx["board"].get(isin, {})
-        if snap.get("vol") is not None:
-            row["val_today"] = snap.get("vol")
-        row["wap"] = snap.get("waprice") or row.get("wap")
+        # свой тиковый счёт впереди биржевого (см. services/universe): VALTODAY и
+        # WAPRICE из ISS-снапшота отстают, тик уже здесь
+        from services import live_quotes
+        lv = live_quotes.get(isin) or {}
+        vol = max(snap.get("vol") or 0, lv.get("val_today") or 0) or None
+        if vol is not None:
+            row["val_today"] = vol
+        row["wap"] = lv.get("vwap_pct") or snap.get("waprice") or row.get("wap")
         out[isin] = row
     return out
 
