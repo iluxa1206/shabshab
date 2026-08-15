@@ -145,6 +145,24 @@ def mark_horizon(isin: str, horizon: str, days: int = 400) -> int:
         return cur.rowcount or 0
 
 
+def mark_horizon_dates(isin: str, by_date: dict) -> int:
+    """Ставит ТОЛЬКО метку горизонта на конкретные даты, не трогая спред.
+
+    Нужна, когда честный движок знает горизонт дня, но не может пересчитать сам
+    спред (y_idx=None: не брекетируется DM у глубокого дисконта, дыра в индексе
+    и т.п.). Без метки строка вылетает с графика целиком — правило «один горизонт
+    на линию» считает её несопоставимой, — хотя её собственный y_idx посчитан
+    живым движком в тот же день и к тому же горизонту."""
+    upd = [(h, isin, d) for d, h in by_date.items() if h]
+    if not upd:
+        return 0
+    with _lock, _connect() as c:
+        cur = c.executemany(
+            "UPDATE spread_daily SET horizon=? WHERE isin=? AND date=? "
+            "AND kind='floater' AND horizon IS NULL", upd)
+        return cur.rowcount or 0
+
+
 def update_horizon(isin: str, points: list) -> int:
     """Проставляет горизонт (и спред к нему + ко второму) у строк, где его нет.
     Трогает только строки с horizon IS NULL: прошлое, уже посчитанное с горизонтом,

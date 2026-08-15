@@ -45,7 +45,8 @@ async def backfill(days: int, limit: int | None, only_isin: str | None) -> None:
     from services.backdate import honest_spread_series
     from services.market_data import MarketDataService
     from services.portfolio_db import init_db
-    from services.spread_history import rows_without_horizon, update_horizon, mark_horizon
+    from services.spread_history import (rows_without_horizon, update_horizon,
+                                          mark_horizon, mark_horizon_dates)
 
     init_db()
     uni = await instruments_registry.fetch_floater_universe()
@@ -65,16 +66,32 @@ async def backfill(days: int, limit: int | None, only_isin: str | None) -> None:
         # сети это не стоит. Нет оферт → горизонт всегда погашение.
         try:
             sched = await MarketDataService.fetch_bond_schedule_full(isin)
-            has_offers = bool(sched.get("offers"))
+            offer_dates = sorted(str(o.get("date") or o.get("offerdate") or "")[:10]
+                                 for o in (sched.get("offers") or [])
+                                 if (o.get("date") or o.get("offerdate")))
         except Exception as e:
             skipped += 1
             log.warning("%s: расписание не прочиталось (%s)", isin, e)
             continue
-        if not has_offers:
+        if not offer_dates:
             n = mark_horizon(isin, "maturity", days=days)
             total += n
             marked += 1
             continue
+        # ОФЕРТА В ПРОШЛОМ ГОРИЗОНТОМ НЕ БЫВАЕТ. Строке за дату D альтернативный
+        # горизонт мог достаться только от оферты ПОЗЖЕ D: у дат левее последней
+        # оферты выбора не было, и метка maturity ставится без пересчёта. Это
+        # снимает основную массу дыр — у большинства бумаг оферты либо нет вовсе,
+        # либо она давно прошла, а ветка honest-пересчёта дорога.
+        last_offer = offer_dates[-1]
+        past = {r["date"]: "maturity" for r in gaps if r["date"] > last_offer}
+        if past:
+            n = mark_horizon_dates(isin, past)
+            total += n
+            marked += 1
+            gaps = [r for r in gaps if r["date"] not in past]
+            if not gaps:
+                continue
         # считать можно только там, где известна цена строки: спред пересчитываем
         # на ней, а не на close (иначе поедет и цена, и метрика)
         overrides = {r["date"]: r["price_pct"] for r in gaps if r.get("price_pct")}
@@ -84,10 +101,18 @@ async def backfill(days: int, limit: int | None, only_isin: str | None) -> None:
             series = await honest_spread_series(isin, days, price_overrides=overrides)
             pts = [p for p in (series.get("points") or []) if p["date"] in overrides]
             n = update_horizon(isin, pts)
-            total += n
+            # Движок знает горизонт дня, но не смог пересчитать спред (y_idx=None:
+            # DM не брекетируется у глубокого дисконта и т.п.) — ставим хотя бы
+            # метку. Раньше такие строки уходили из-под правила «один горизонт на
+            # линию» и просто исчезали с графика: на проде это была ВСЯ выдача
+            # ветки пересчёта (127 бумаг → 0 строк).
+            only_mark = {p["date"]: p.get("horizon") for p in pts
+                         if p.get("horizon") and p.get("y_idx_bps") is None}
+            m = mark_horizon_dates(isin, only_mark) if only_mark else 0
+            total += n + m
             recalced += 1
-            log.info("%s: оферта есть · %d строк без горизонта → пересчитано %d",
-                     isin, len(overrides), n)
+            log.info("%s: оферта есть · %d строк без горизонта → пересчитано %d, "
+                     "помечено %d", isin, len(overrides), n, m)
         except Exception as e:
             skipped += 1
             log.warning("%s: %s", isin, e)

@@ -2234,8 +2234,12 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* Витрина слева, график справа. min-width 0 у обеих колонок: иначе таблица с
    моноширинными датами задаёт min-content и распирает грид за окно. Узкий
    экран — колонки складываются в стопку. */
+/* flex:1 + min-height:0 + overflow-y — как у .issuer-agg и .calc-page: #app
+   это flex-колонка на 100vh, и без растяжения корня вкладки статусбар всплывает
+   вверх, к концу контента, вместо нижней границы экрана. */
 .cmp { padding: 0 16px 12px; display: grid; gap: 10px;
-  grid-template-columns: minmax(0, 560px) minmax(0, 1fr); align-items: start; }
+  grid-template-columns: minmax(0, 560px) minmax(0, 1fr); align-items: start;
+  flex: 1; min-height: 0; overflow-y: auto; }
 @media (max-width: 1100px) { .cmp { grid-template-columns: minmax(0, 1fr); } }
 .cmp > .an-card { min-width: 0; }
 .cmp .an-leg-btn .up { color: var(--up); }

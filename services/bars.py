@@ -597,7 +597,7 @@ def last_bar_ts(isin: str) -> Optional[str]:
 def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
     """Свёртка часов бумаги в дни (без записи). frm — 'YYYY-MM-DD'."""
     q = ("SELECT substr(ts,1,10) d, kind, ts, vwap_pct, close, y_idx_bps, y_close_bps, "
-         "volume, value, trades FROM bar_hourly WHERE isin=?")
+         "volume, value, trades, metrics_ver FROM bar_hourly WHERE isin=?")
     args: list = [isin]
     if frm:
         q += " AND ts >= ?"
@@ -614,8 +614,15 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
             a = acc[d] = {"isin": isin, "date": d, "kind": r["kind"] or "floater",
                           "pw": 0.0, "w": 0.0, "yw": 0.0, "yws": 0.0,
                           "close_pct": None, "y_idx_close_bps": None,
-                          "volume": 0.0, "value": 0.0, "trades": 0, "hours": 0}
+                          "volume": 0.0, "value": 0.0, "trades": 0, "hours": 0,
+                          "ver": None}
         w = r["value"] or 0.0
+        # ВЕРСИЯ ДНЯ — МИНИМУМ ПО ЧАСАМ (NULL = 0, легаси до штампа). День,
+        # собранный из часов старого движка, обязан выглядеть старым: иначе
+        # свёртка навсегда застревает на «уже посчитано текущей версией» и не
+        # пересобирается после пересчёта самих часов.
+        hv = r["metrics_ver"] or 0
+        a["ver"] = hv if a["ver"] is None else min(a["ver"], hv)
         a["volume"] += r["volume"] or 0.0
         a["value"] += w
         a["trades"] += r["trades"] or 0
@@ -647,6 +654,7 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
                                 if a["y_idx_close_bps"] is not None else None),
             "volume": a["volume"] or None, "value": a["value"] or None,
             "trades": a["trades"] or None, "hours": a["hours"],
+            "ver": a["ver"] or 0,
         })
     return out
 
@@ -680,7 +688,10 @@ def build_daily(isin: str, days: Optional[int] = None, force: bool = False) -> i
         if not force and prev is not None:
             old_val, ver = prev
             same_val = (old_val or 0) == (r["value"] or 0)
-            if same_val and (ver or 0) >= BARS_METRICS_VERSION:
+            # версия строки дня = версия его часов: совпала и оборот не менялся —
+            # пересобирать нечего (в т.ч. у дней на легаси-часах: они пересоберутся
+            # ровно тогда, когда пересчитают сами часы)
+            if same_val and (ver or 0) == r["ver"]:
                 continue
         fresh.append(r)
     if not fresh:
@@ -689,8 +700,7 @@ def build_daily(isin: str, days: Optional[int] = None, force: bool = False) -> i
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ph = ",".join("?" * (len(_DAILY_COLS) + 2))
     upd = ",".join(f"{k}=excluded.{k}" for k in _DAILY_COLS[2:])
-    data = [tuple(r.get(k) for k in _DAILY_COLS) + (BARS_METRICS_VERSION, now)
-            for r in fresh]
+    data = [tuple(r.get(k) for k in _DAILY_COLS) + (r["ver"], now) for r in fresh]
     with _lock, _connect() as c:
         c.executemany(
             f"INSERT INTO bar_daily({','.join(_DAILY_COLS)},metrics_ver,built_at) "
