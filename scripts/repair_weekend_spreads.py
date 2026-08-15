@@ -48,7 +48,12 @@ def _weekend_rows(days: int, only_isin: str, force: bool) -> dict:
     for r in rows:
         if only_isin and r["isin"] != only_isin:
             continue
-        if date.fromisoformat(r["date"]).weekday() < 5:
+        d = date.fromisoformat(r["date"])
+        if d.weekday() < 5:
+            continue
+        # СЕГОДНЯШНЮЮ строку не трогаем: as-of движок работает только по прошлому
+        # (для текущего дня есть живая модель), да и снимок дня ещё не финальный
+        if d >= date.today():
             continue
         if not force and r["src"] == "honest" and (r["engine_ver"] or 0) >= HONEST_ENGINE_VERSION:
             continue
@@ -65,8 +70,14 @@ async def repair_one(isin: str, items: list, dry: bool) -> int:
     upd = []
     for d_iso, px in items:
         d = date.fromisoformat(d_iso)
-        ctx = await load_backdate_ctx(isin, d)
-        m = reprice_asof(ctx, px)
+        try:
+            ctx = await load_backdate_ctx(isin, d)
+            m = reprice_asof(ctx, px)
+        except Exception as e:
+            # одна дата не должна ронять всю бумагу: у неликвида в отдельные дни
+            # нет ни строки истории, ни кривой
+            log.debug("%s %s: %s", isin, d_iso, e)
+            continue
         hz = m.get("preferred_horizon") or "maturity"
         alt_key = _alt_horizon(hz, m.get("horizons") or {})
         alt = pick_horizon(m, alt_key) if alt_key else {}
