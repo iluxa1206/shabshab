@@ -73,7 +73,11 @@ def test_accrue_across_coupon_payment_resets_to_new_period():
 
     assert acc_settle >= 0.0, "НКД на дату поставки не может быть отрицательным"
     assert acc_settle < 2.0, f"должно быть начало нового периода, получено {acc_settle}"
-    assert acc_settle == pytest.approx(accrued_at(per, settle), abs=1e-6)
+    # 1e-4, а не 1e-6: accrue_to_settle округляет копейки, а accrued_at — нет.
+    # Раньше сходилось точно только потому, что settle падал ровно в день
+    # выплаты (НКД 0.0); теперь calc приходится на воскресенье, settle — вторник
+    # (сессия выходного = понедельник, расчёты Т+1), и в новом периоде уже день.
+    assert acc_settle == pytest.approx(accrued_at(per, settle), abs=1e-4)
     assert note and "ex-coupon" in note
 
 
