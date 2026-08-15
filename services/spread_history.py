@@ -163,6 +163,17 @@ def mark_horizon_dates(isin: str, by_date: dict) -> int:
         return cur.rowcount or 0
 
 
+def prev_horizon(isin: str, date: str) -> Optional[str]:
+    """Горизонт ближайшей строки ЛЕВЕЕ даты (None — таких нет). Нужен для дней
+    без сделок: честная серия их не строит, а снимок строку всё равно писал."""
+    with _connect() as c:
+        r = c.execute(
+            "SELECT horizon FROM spread_daily WHERE isin=? AND kind='floater' "
+            "AND date < ? AND horizon IS NOT NULL ORDER BY date DESC LIMIT 1",
+            (isin, date)).fetchone()
+    return r["horizon"] if r else None
+
+
 def update_horizon(isin: str, points: list) -> int:
     """Проставляет горизонт (и спред к нему + ко второму) у строк, где его нет.
     Трогает только строки с horizon IS NULL: прошлое, уже посчитанное с горизонтом,

@@ -105,8 +105,12 @@ CREATE TABLE IF NOT EXISTS bar_daily(
   kind TEXT NOT NULL DEFAULT 'floater',
   wap_pct REAL,                 -- средневзвешенная чистая цена дня (вес — оборот часа)
   close_pct REAL,               -- цена закрытия дня (последний час с ценой)
-  y_idx_wap_bps REAL,           -- спред по средневзвесу дня
-  y_idx_close_bps REAL,         -- спред по закрытию дня
+  y_idx_wap_bps REAL,           -- Y-IDX по средневзвесу дня (флоатеры)
+  y_idx_close_bps REAL,         -- Y-IDX по закрытию дня (флоатеры)
+  -- у фиксов метрика к погашению другая — g-спред; держим её отдельными
+  -- колонками, а не в y_idx_*: имя должно говорить, что внутри
+  g_spread_wap_bps REAL,
+  g_spread_close_bps REAL,
   volume REAL, value REAL,      -- бумаг / рублей за день
   trades INTEGER,
   hours INTEGER,                -- сколько часов с оборотом свёрнуто (диагностика)
@@ -343,6 +347,8 @@ _MIGRATIONS = [
     # тип фильтра: book — условия по стакану (исторический, потому DEFAULT),
     # block — крупная сделка в ленте (см. services/block_trades.notify_blocks)
     "ALTER TABLE signal_filters ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'",
+    "ALTER TABLE bar_daily ADD COLUMN g_spread_wap_bps REAL",
+    "ALTER TABLE bar_daily ADD COLUMN g_spread_close_bps REAL",
     # спред у ТИКА Alor: раньше считался только для block_trade (ISS), из-за чего
     # свежая безадресная сделка висела с прочерком ~15 минут — ровно до того, как
     # та же сделка приедет из ISS. Тик приходит сразу, поэтому считаем и по нему.

@@ -46,7 +46,8 @@ async def backfill(days: int, limit: int | None, only_isin: str | None) -> None:
     from services.market_data import MarketDataService
     from services.portfolio_db import init_db
     from services.spread_history import (rows_without_horizon, update_horizon,
-                                          mark_horizon, mark_horizon_dates)
+                                          mark_horizon, mark_horizon_dates,
+                                          prev_horizon)
 
     init_db()
     uni = await instruments_registry.fetch_floater_universe()
@@ -109,10 +110,20 @@ async def backfill(days: int, limit: int | None, only_isin: str | None) -> None:
             only_mark = {p["date"]: p.get("horizon") for p in pts
                          if p.get("horizon") and p.get("y_idx_bps") is None}
             m = mark_horizon_dates(isin, only_mark) if only_mark else 0
-            total += n + m
+            # Дни БЕЗ СДЕЛОК честная серия не отдаёт вовсе (точка строится по
+            # свече), а снимок в такой день всё равно писал строку — со стейл
+            # ценой прошлой сессии. Горизонт у неё тот же, что у предыдущего
+            # торгового дня: сделок не было, значит и порог выкупа ценой не
+            # пересекался. Переносим метку с ближайшей известной строки слева —
+            # иначе выходные и праздники рвут линию.
+            done = {p["date"] for p in pts}
+            carry = {r["date"]: prev_horizon(isin, r["date"])
+                     for r in gaps if r["date"] not in done}
+            k = mark_horizon_dates(isin, {d: h for d, h in carry.items() if h})
+            total += n + m + k
             recalced += 1
             log.info("%s: оферта есть · %d строк без горизонта → пересчитано %d, "
-                     "помечено %d", isin, len(overrides), n, m)
+                     "помечено %d, перенесено %d", isin, len(overrides), n, m, k)
         except Exception as e:
             skipped += 1
             log.warning("%s: %s", isin, e)

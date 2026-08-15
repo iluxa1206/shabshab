@@ -596,8 +596,9 @@ def last_bar_ts(isin: str) -> Optional[str]:
 
 def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
     """Свёртка часов бумаги в дни (без записи). frm — 'YYYY-MM-DD'."""
-    q = ("SELECT substr(ts,1,10) d, kind, ts, vwap_pct, close, y_idx_bps, y_close_bps, "
-         "volume, value, trades, metrics_ver FROM bar_hourly WHERE isin=?")
+    q = ("SELECT substr(ts,1,10) d, kind, ts, vwap_pct, close, y_idx_bps, "
+         "g_spread_bps, y_close_bps, volume, value, trades, metrics_ver "
+         "FROM bar_hourly WHERE isin=?")
     args: list = [isin]
     if frm:
         q += " AND ts >= ?"
@@ -632,26 +633,33 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
         if r["close"] is not None:
             a["close_pct"] = r["close"]
             a["y_idx_close_bps"] = r["y_close_bps"]
+        # у ФИКСОВ в тех же часовых полях лежит g-спред (см. spread_key в
+        # build_bars): y_idx_bps там пуст, а y_close_bps — это спред к погашению
+        # по цене закрытия. Разводим по своим колонкам на свёртке.
         if w <= 0 or r["vwap_pct"] is None:
             continue          # час без оборота в средневзвес не идёт
         a["hours"] += 1
         a["pw"] += r["vwap_pct"] * w
         a["w"] += w
-        if r["y_idx_bps"] is not None:
-            a["yw"] += r["y_idx_bps"] * w
+        sp = r["g_spread_bps"] if a["kind"] == "fixed" else r["y_idx_bps"]
+        if sp is not None:
+            a["yw"] += sp * w
             a["yws"] += w
 
     out = []
     for d, a in sorted(acc.items()):
         wap = a["pw"] / a["w"] if a["w"] > 0 else None
         ywap = a["yw"] / a["yws"] if a["yws"] > 0 else None
+        ycl = a["y_idx_close_bps"]
+        fix = a["kind"] == "fixed"
         out.append({
             "isin": isin, "date": d, "kind": a["kind"],
             "wap_pct": round(wap, 4) if wap is not None else None,
             "close_pct": a["close_pct"],
-            "y_idx_wap_bps": round(ywap, 1) if ywap is not None else None,
-            "y_idx_close_bps": (round(a["y_idx_close_bps"], 1)
-                                if a["y_idx_close_bps"] is not None else None),
+            "y_idx_wap_bps": None if fix or ywap is None else round(ywap, 1),
+            "y_idx_close_bps": None if fix or ycl is None else round(ycl, 1),
+            "g_spread_wap_bps": round(ywap, 1) if fix and ywap is not None else None,
+            "g_spread_close_bps": round(ycl, 1) if fix and ycl is not None else None,
             "volume": a["volume"] or None, "value": a["value"] or None,
             "trades": a["trades"] or None, "hours": a["hours"],
             "ver": a["ver"] or 0,
@@ -660,7 +668,8 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
 
 
 _DAILY_COLS = ("isin", "date", "kind", "wap_pct", "close_pct", "y_idx_wap_bps",
-               "y_idx_close_bps", "volume", "value", "trades", "hours")
+               "y_idx_close_bps", "g_spread_wap_bps", "g_spread_close_bps",
+               "volume", "value", "trades", "hours")
 
 
 def build_daily(isin: str, days: Optional[int] = None, force: bool = False) -> int:
