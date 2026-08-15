@@ -34,8 +34,17 @@ const PERIODS = [
   // упиралось в ту же глубину, что и «ВСЁ» — две кнопки про одно и то же
   ["all", "ВСЁ", null],
 ];
-// глубина дневных свечей у бэка (services/market_data._CANDLE_TF)
-const TF_DEPTH_DAYS = { "1d": 550 };
+// глубина свечей у бэка (services/market_data._CANDLE_TF)
+const TF_DEPTH_DAYS = { "1d": 550, "1h": 45 };
+// Часовой масштаб предлагаем только на коротких окнах: ISS отдаёт часовые свечи
+// на 45 дней назад, а свой архив баров (bar_hourly) копится с августа 2026 —
+// на 3М и шире получилась бы половина пустого графика.
+const TF_MAX_DAYS = { "1h": 45 };
+const TFS = [
+  ["1d", "1Д", "Дневные свечи: средневзвес и спред склеены по календарному дню"],
+  ["1h", "1Ч", "Часовые свечи: средневзвес и спред — по каждому часу торгов "
+        + "(глубина 45 дней)"],
+];
 const BRUSH_H = 54;   // высота полосы-обзора под графиком
 
 // ── дополнительные слои (URL-параметр l=vwap,sides,big) ─────────────────────
@@ -461,12 +470,25 @@ export default function ChartPage() {
     : (periodRaw === "3y" ? "all" : "3m");
   const custom = { from: sp.get("from"), to: sp.get("to") };
   const isCustom = !!(custom.from || custom.to);
-  // ТОЛЬКО ДНЕВКИ. Переключатель таймфрейма убран: 5м/1ч/1н работали неровно
-  // (глубина ISS по внутридневным — считанные дни, недельная сетка не дружит с
-  // часовыми барами слоёв), а дневной масштаб — единственный, который даёт
-  // одинаково честную картину на всех окнах. Параметр tf в URL игнорируем:
-  // старые ссылки открываются дневками, а не пустым графиком.
-  const tf = "1d";
+  // ТАЙМФРЕЙМ. По умолчанию дневки — единственный масштаб, честный на любом
+  // окне. Часовой доступен только там, где под ним есть данные (окно ≤ 45 дней:
+  // глубина часовых свечей ISS), поэтому 5м/1н не вернулись, а неизвестный или
+  // недоступный tf в URL сводится к дневкам, а не к пустому графику.
+  // Календарных дней в выбранном окне (null — «всё»/YTD, там часового нет)
+  const winDays = useMemo(() => {
+    if (isCustom) {
+      if (!custom.from) return null;
+      const end = custom.to ? Date.parse(custom.to) : Date.now();
+      return Math.max(1, Math.ceil((end - Date.parse(custom.from)) / 864e5));
+    }
+    const p = PERIODS.find(([k]) => k === period);
+    return p && p[2] ? p[2] : null;
+  }, [isCustom, custom.from, custom.to, period]);
+  const tfOk = (k) => k === "1d"
+    || (winDays != null && winDays <= (TF_MAX_DAYS[k] ?? 0));
+  const tfRaw = sp.get("tf");
+  const tf = TFS.some(([k]) => k === tfRaw) && tfOk(tfRaw) ? tfRaw : "1d";
+  const intraday = tf === "1h";
   const type = sp.get("type") || "candles";
   // панель спреда: линия по средневзвесу / HLC / выкл (RVD-режим).
   // Свечи спреда убраны: дневная свеча склеивалась из часовых значений и на
@@ -659,6 +681,10 @@ export default function ChartPage() {
     // бумаги, часть дней в барах без спреда, и линия перескакивает через них.
     // Если бары покрывают меньше SPREAD_BARS_MIN_COVER дней снапшота — берём
     // снапшот целиком (одна база, без дыр), а не решето.
+    // На часовой сетке дневного резерва нет и быть не может: у снапшота время —
+    // календарная дата, а ось внутри дня идёт в секундах, и точки легли бы мимо
+    // сетки. Часовой масштаб живёт только на своём архиве баров.
+    if (intraday) return bars;
     if (bars.length < 2) return daily;
     if (daily.length > 4 && bars.length < daily.length * SPREAD_BARS_MIN_COVER) return daily;
     return bars;
@@ -677,26 +703,33 @@ export default function ChartPage() {
   // Покрытие окна: сколько ТОРГОВЫХ дней уже имеют точку спреда. Бэк считает
   // порциями и пишет их по ходу (bars.build_bars/on_chunk), поэтому цифра
   // растёт на глазах — по ней и видно, что посчитано, а что ещё нет.
+  // Единица покрытия — бар текущего таймфрейма: на дневках это торговый день,
+  // на часах — сам час (у точки спреда время там в секундах, и сравнивать её с
+  // датой нельзя). Ключ берём тем же toTime, что и данные серий, — сетка одна.
+  const barKey = (t) => toTime(t, tf);
   const spreadCover = useMemo(() => {
     if (!spreadPaneOn || !candles.length) return null;
-    const tradeDays = new Set(candles.map((c) => c.t.slice(0, 10)));
-    const have = new Set(spreadPts.map((p) => String(p.time).slice(0, 10)));
+    const tradeBars = new Set(candles.map((c) => barKey(c.t)));
+    const have = new Set(spreadPts.map((p) => p.time));
     let n = 0;
-    for (const d of tradeDays) if (have.has(d)) n += 1;
-    return { have: n, need: tradeDays.size };
-  }, [spreadPaneOn, candles, spreadPts]);
+    for (const d of tradeBars) if (have.has(d)) n += 1;
+    return { have: n, need: tradeBars.size };
+  }, [spreadPaneOn, candles, spreadPts, tf]); // eslint-disable-line
 
   const spreadPending = useMemo(() => {
     if (!spreadPaneOn || !candles.length) return false;
     if (barsOn && qBars.isFetching) return true;
     // сравниваем с днями, когда бумага РЕАЛЬНО торговалась (свечи MOEX): дырка
     // в спреде при наличии сделок = недосчитанный день, а не выходной
-    const tradeDays = new Set(candles.map((c) => c.t.slice(0, 10)));
-    const have = new Set(spreadPts.map((p) => String(p.time).slice(0, 10)));
+    const tradeBars = new Set(candles.map((c) => barKey(c.t)));
+    const have = new Set(spreadPts.map((p) => p.time));
     let missing = 0;
-    for (const d of tradeDays) if (!have.has(d)) missing += 1;
-    return spreadPts.length > 0 && missing > Math.max(1, tradeDays.size * 0.02);
-  }, [spreadPaneOn, candles, spreadPts, barsOn, qBars.isFetching]);
+    for (const d of tradeBars) if (!have.has(d)) missing += 1;
+    // На часах дырки нормальны: свеча ISS есть у любого часа с одной сделкой, а
+    // бар с посчитанным спредом — не у каждого. Порог поэтому мягче дневного.
+    const tol = intraday ? 0.25 : 0.02;
+    return spreadPts.length > 0 && missing > Math.max(1, tradeBars.size * tol);
+  }, [spreadPaneOn, candles, spreadPts, barsOn, qBars.isFetching, tf]); // eslint-disable-line
 
   // ДОГРУЗКА НЕ ЗАМЕЧАЛАСЬ. Бары прошлых дней бэк досчитывает ФОНОМ (честный
   // as-of, минуты на длинное окно) и отвечает на запрос тем, что уже есть.
@@ -1284,6 +1317,7 @@ export default function ChartPage() {
   const cSp = { color: theme?.spread };
 
   const tfDepth = TF_DEPTH_DAYS[tf];
+  const tfLabel = TFS.find(([k]) => k === tf)?.[1] || tf;
   const wantDays = isCustom || !from ? null : Math.round((Date.now() - Date.parse(from)) / 864e5);
   const depthShort = wantDays != null && tfDepth != null && wantDays > tfDepth;
 
@@ -1325,9 +1359,20 @@ export default function ChartPage() {
         <span className="cp-group" role="group" aria-label="Период">
           {PERIODS.map(([k, l]) => (
             <button key={k} type="button" className={"cp-btn" + (!isCustom && period === k ? " on" : "")}
-              onClick={() => setParam({ p: k, from: null, to: null, tf: null })}>{l}</button>
+              onClick={() => setParam({ p: k, from: null, to: null })}>{l}</button>
           ))}
         </span>
+        {/* Таймфрейм: показываем только там, где часовой вообще возможен —
+            кнопка, которая на 1Г всё равно откатится в дневки, только врёт */}
+        {tfOk("1h") && (
+          <span className="cp-group" role="group" aria-label="Таймфрейм">
+            {TFS.map(([k, l, hint]) => (
+              <button key={k} type="button" title={hint}
+                className={"cp-btn" + (tf === k ? " on" : "")}
+                onClick={() => setParam({ tf: k === "1d" ? null : k })}>{l}</button>
+            ))}
+          </span>
+        )}
         {/* произвольное окно — под календарь: два поля с датами занимали
             половину панели ради того, чем пользуются изредка */}
         <span className="cp-cal-wrap" ref={calRef}>
@@ -1521,12 +1566,12 @@ export default function ChartPage() {
       <div className="cp-foot">
         {qCandles.isPending && "загрузка свечей…"}
         {!qCandles.isPending && !candles.length && (depthShort
-          ? <span className="cp-warn">пусто: MOEX отдаёт по «{tf}» только {tfDepth} дней назад — окно шире доступной глубины</span>
+          ? <span className="cp-warn">пусто: MOEX отдаёт по «{tfLabel}» только {tfDepth} дней назад — окно шире доступной глубины</span>
           : "нет сделок за выбранный период")}
         {!!candles.length && (
           <>
-            {candles.length} свечей · {tf}
-            {depthShort && <span className="cp-warn"> · MOEX отдаёт по {tf} только {tfDepth} дней — окно урезано</span>}
+            {candles.length} свечей · {tfLabel}
+            {depthShort && <span className="cp-warn"> · MOEX отдаёт по {tfLabel} только {tfDepth} дней — окно урезано</span>}
             {/* источник смотрим по метке точки, а не по наличию OHLC: у часовых
                 баров OHLC спреда нет, и подпись врала про «снапшот» */}
             {spreadPaneOn && hasYidx && (
