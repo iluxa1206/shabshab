@@ -25,7 +25,7 @@ MAX_MATCHES = 8              # в одном сообщении; остальн�
 _MSK = timezone(timedelta(hours=3))
 # Ссылка на дашборд: имя выпуска в сообщении ведёт прямо в его карточку.
 _SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/app/")
-_REASON = {"new": "заявка", "price": "цена", "spread": "R-spread", "money": "объём",
+_REASON = {"new": "заявка", "price": "цена", "spread": "RS", "money": "объём",
            "block": "крупная сделка"}
 
 
@@ -39,16 +39,16 @@ def _reason_delta(m: dict) -> str:
         prev, cur = m.get("prev_money_ok_rub"), m.get("money_ok_rub")
         if prev is None or cur is None or abs(prev) < 1:
             return "объём"
-        pct = (cur - prev) / abs(prev) * 100.0
-        return f"объём {pct:+.0f} %".replace("-", "−")
+        pct = f"{(cur - prev) / abs(prev) * 100.0:+.0f}".replace("-", "−")
+        # прежнее значение зачёркнутым: видно, откуда пришли, и не надо считать
+        # проценты в уме от текущего числа
+        return f"объём {pct} % (<s>{_compact(prev)}</s>)"
     if r == "spread":
         prev, cur = m.get("prev_val_bps"), m.get("val_bps")
         if prev is None or cur is None:
-            return "R-spread"
-        # минус — только в самом числе: replace по всей строке съедал дефис
-        # в «R-spread» и превращал его в «R−spread»
+            return "RS"
         num = f"{cur - prev:+.0f}".replace("-", "−")
-        return f"R-spread {num} бп"
+        return f"RS {num} бп (<s>{prev:.0f}</s>)"
     if r == "price":
         prev, cur = m.get("prev_price"), m.get("price")
         if prev is None or cur is None:
@@ -130,17 +130,22 @@ _TRADE_ICON = {"buy": "👍", "sell": "👎"}
 _NDM_ICON = "🤝"
 
 
+def _compact(v: Optional[float]) -> str:
+    """«1м», «26,1м», «300к» — порядок суммы без валюты, для тесных мест."""
+    if not v:
+        return "0"
+    unit, scaled = ("м", v / 1e6) if abs(v) >= 1e6 else ("к", v / 1e3)
+    txt = _num(scaled, 1)
+    return (txt[:-2] if txt.endswith(",0") else txt) + unit
+
+
 def _short_money(v: Optional[float]) -> str:
     """Деньги коротко: «1м ₽», «26,1м ₽», «300к ₽». В строке сигнала важен
     порядок суммы, а не копейки — длинное «26,1 млн ₽» съедает место у цифр,
     ради которых сообщение и открывают."""
     if not v:
         return ""
-    unit, scaled = ("м", v / 1e6) if abs(v) >= 1e6 else ("к", v / 1e3)
-    txt = _num(scaled, 1)
-    if txt.endswith(",0"):          # «1,0м» читается хуже, чем «1м»
-        txt = txt[:-2]
-    return f"{txt}{unit} ₽"
+    return f"{_compact(v)} ₽"      # «1,0м» читается хуже, чем «1м» — см. _compact
 
 
 def _hhmm(m: dict) -> str:
@@ -228,11 +233,7 @@ def _book_money(v: Optional[float]) -> str:
     """Деньги уровня — в колонку фиксированной ширины (моноширинный блок)."""
     if not v:
         return "".rjust(6)
-    unit, scaled = ("м", v / 1e6) if abs(v) >= 1e6 else ("к", v / 1e3)
-    txt = _num(scaled, 1)
-    if txt.endswith(",0"):
-        txt = txt[:-2]
-    return f"{txt}{unit}".rjust(6)
+    return _compact(v).rjust(6)
 
 
 def _book_pre(m: dict, side: Optional[str]) -> str:
@@ -258,7 +259,7 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
                        and abs(lvl["price"] - px) < 0.005) else ""
         return f"{_num(lvl['price']).rjust(7)} {_book_money(lvl.get('money'))} {y_txt}{hit}"
 
-    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'R-SPR':>5}"]
+    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'RS':>5}"]
     lines += [row(l) for l in asks]
     lines.append("─" * 20)          # выше разделителя оффера, ниже биды
     lines += [row(l) for l in bids]

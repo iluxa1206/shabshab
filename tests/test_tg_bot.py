@@ -166,7 +166,9 @@ def test_reason_delta_shows_direction():
                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
                                      "val_bps": 240.0, "prev_val_bps": 300.0,
                                      "reason": "spread"}]})
-    assert "R-spread −60 бп" in txt
+    assert "RS −60 бп" in txt
+    # прежнее значение зачёркнутым: видно, откуда пришли
+    assert "<s>300</s>" in txt
 
 
 # --- снимок стакана в уведомлении о заявке ---
