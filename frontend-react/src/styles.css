@@ -1760,6 +1760,8 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* причина повтора дельтой («спред +15 бп») — заметнее прочих подписей режима:
    это и есть ответ на вопрос «что случилось», ради которого строку читают */
 .sig-why, .sb-why { color: var(--fg); font-weight: 700; }
+/* сторона сделки во всплывающем окне: цвет несёт агрессора, как в ленте */
+.sig-toast-side { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
 /* в тосте дельта стоит рядом с ярлыком причины, а не в строке режима */
 .sig-toast .sig-why { font-size: 10px; margin-left: 4px; }
 .sig-hit-body .dim, .sb-row-2 .dim { color: var(--mut); }

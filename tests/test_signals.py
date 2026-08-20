@@ -574,3 +574,37 @@ def test_block_params_validation():
         _blk(spread_min=400, spread_max=100)
     with pytest.raises(core.FilterError):
         _blk(years_min=5, years_max=2)
+
+
+def test_events_feed_sorted_chronologically(monkeypatch):
+    """Лента одна на два источника, а время в ней писалось двумя форматами:
+    события стакана — UTC с зоной, крупные сделки (до 2026-08-20) — строкой МСК.
+    Строковая сортировка мешала их в разнобой; читаем хронологически."""
+    from services.portfolio_db import _connect, _lock
+    from services import signals as sig
+
+    with _lock, _connect() as c:
+        c.execute("DELETE FROM signal_events WHERE user_email=?", (USER,))
+        rows = [
+            # (reason, fired_at) — МСК-строка 14:25 это 11:25 UTC, то есть ПОЗЖЕ 11:07
+            ("block", "2026-08-20 14:25:45", "RU000A0000B2"),
+            ("new", "2026-08-20T11:07:09.000000+00:00", "RU000A0000A1"),
+            ("block", "2026-08-20 13:00:00", "RU000A0000C3"),
+        ]
+        for reason, ts, isin in rows:
+            c.execute("INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
+                      "reason,fired_at,seen) VALUES(0,?,?,?,?,?,?,0)",
+                      (USER, isin, isin, "ask", reason, ts))
+
+    feed = sig.events_for_user(USER)
+    assert [e["isin"] for e in feed] == ["RU000A0000B2",   # 11:25 UTC
+                                         "RU000A0000A1",   # 11:07 UTC
+                                         "RU000A0000C3"]   # 10:00 UTC
+    sig.clear_events(USER)
+
+
+def test_event_moment_reads_naive_as_msk():
+    from services.signals import event_moment
+    aware = event_moment("2026-08-20T11:25:45+00:00")
+    naive = event_moment("2026-08-20 14:25:45")     # МСК без зоны — как писали блоки
+    assert aware == naive

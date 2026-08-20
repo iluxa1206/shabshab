@@ -805,7 +805,11 @@ async def notify_blocks() -> int:
 
     labels = await run_bg(reg.labels_map)
     names = {v["isin"]: v.get("name") for v in _secmap["map"].values() if v.get("isin")}
-    now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
+    # Время события — В UTC С ТАЙМЗОНОЙ, как у событий стакана (services/signals).
+    # Раньше блоки писались строкой МСК без зоны, и лента, сортированная строкой,
+    # мешала их с событиями стакана в разнобой; браузер к тому же считал такую
+    # строку локальным временем и рисовал не тот час.
+    now = datetime.now(timezone.utc).isoformat()
     today = datetime.now(_MSK).date()
 
     # Спред нужен ДО отбора, если хоть один фильтр ограничивает его диапазоном:

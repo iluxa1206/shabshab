@@ -4,7 +4,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectSignalsWs } from "../api.js";
 import { fmt, dmColor } from "../format.js";
-import { reasonDelta, reasonTitle } from "../signalFormat.js";
+import { maturityTxt, reasonDelta, reasonTitle, sideInfo } from "../signalFormat.js";
 
 // Двухтональный сигнал через WebAudio (без ассета). Отличается от бипа алертов
 // стакана, чтобы на слух было понятно, что именно сработало.
@@ -142,6 +142,8 @@ function SignalToast({ p, onOpen, onDismiss }) {
               onClick={() => onOpen(m, "ask")} title="Открыть карточку и стакан">
               <span className="sig-toast-nm">
                 <span className="nm">{m.name}</span>
+                {/* агрессор сделки: у адресной его нет — так и пишем */}
+                <span className={"sig-toast-side " + sideInfo(m).cls}>{sideInfo(m).text}</span>
                 <span className={"blk-tag" + (m.negotiated ? " blk-tag-ndm" : "")}>
                   {m.negotiated ? "адресная" : "стакан"}</span>
               </span>
@@ -155,6 +157,9 @@ function SignalToast({ p, onOpen, onDismiss }) {
               <span className="sig-toast-sub">
                 <span>{m.isin}</span>
                 <span>цена {fmt.num(m.price, 2)}%</span>
+                {/* срок бумаги: «блок на 600 млн» читается по-разному для
+                    годовой бумаги и для десятилетней */}
+                {maturityTxt(m) && <span>{maturityTxt(m)}</span>}
                 <span>{(m.ts || "").slice(11, 16)}</span>
                 {m.rating && <span>{m.rating}</span>}
               </span>
@@ -214,7 +219,7 @@ function SignalToast({ p, onOpen, onDismiss }) {
               {m.money_rub != null && (
                 <span>объём {money(m.money_rub)}{m.levels ? ` · ${m.levels} ур` : ""}
                   {m.partial ? " (частично)" : ""}</span>)}
-              {m.years != null && <span>{fmt.num(m.years, 1)} л</span>}
+              {maturityTxt(m) && <span>{maturityTxt(m)}</span>}
               {m.rating && <span>{m.rating}</span>}
             </span>
           </button>

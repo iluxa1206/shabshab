@@ -15,7 +15,7 @@
 import json
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
@@ -231,7 +231,13 @@ def events_for_user(user_email: str, limit: int = EVENTS_LIMIT) -> List[dict]:
             "f.params_json AS filter_params FROM signal_events e "
             "LEFT JOIN signal_filters f ON f.id = e.filter_id "
             "WHERE e.user_email=? ORDER BY e.fired_at DESC, e.id DESC LIMIT ?",
-            (user_email, int(limit))).fetchall()
+            (user_email, int(limit) * 2)).fetchall()
+    # Порядок правим уже на прочитанном: два формата времени в одной колонке
+    # (см. event_moment) SQL сортирует как строки, а нам нужен хронологический.
+    # Читаем с запасом (×2) — иначе строковый LIMIT мог бы отрезать событие,
+    # которое после нормализации времени попадает на страницу.
+    rows = sorted(rows, key=lambda r: (event_moment(r["fired_at"]), r["id"]),
+                  reverse=True)[:int(limit)]
     out = []
     for r in rows:
         d = dict(r)
@@ -248,6 +254,26 @@ def events_for_user(user_email: str, limit: int = EVENTS_LIMIT) -> List[dict]:
                                    else None)
         out.append(d)
     return _with_maturity(out)
+
+
+_MSK = timezone(timedelta(hours=3))
+
+
+def event_moment(iso: Optional[str]) -> datetime:
+    """Время события к одному масштабу — для сортировки ленты.
+
+    В таблице два формата: события стакана всегда писались UTC с зоной
+    ('2026-08-20T11:07:09+00:00'), а крупные сделки до 2026-08-20 — строкой
+    МСК без зоны ('2026-08-20 14:25:45'). Строковая сортировка мешала их в
+    разнобой (пробел < 'T'), и лента прыгала между заявками и сделками.
+    Наивную строку читаем как МСК — ровно так её и писали."""
+    if not iso:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return (t if t.tzinfo else t.replace(tzinfo=_MSK)).astimezone(timezone.utc)
 
 
 def unseen_count(user_email: str) -> int:
@@ -518,6 +544,9 @@ async def run_cycle() -> int:
                                    f["params"].get("min_money_rub"))
             if not events:
                 continue
+            # дата погашения и срок — во всплывающее окно и в телеграм: «спред
+            # 380 бп» читается по-разному для годовой бумаги и для пятилетней
+            _with_maturity(events)
             _trim_events(f["user_email"])
             await wsmod.manager.broadcast_signal(f["user_email"], {
                 "type": "signal",
