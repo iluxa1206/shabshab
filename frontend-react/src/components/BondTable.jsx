@@ -1,8 +1,6 @@
 import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
 import { baseLabel, fmt, dmColor, ratingColor, yearsTo } from "../format.js";
-import { fetchAlerts } from "../api.js";
 import { copyText } from "../clipboard.js";
 import CouponFormula from "./CouponFormula.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
@@ -270,7 +268,7 @@ export const DEFAULT_COLS = COLS.map((c) => c.key);
 // остальных ~450 строк. Требует стабильных onOpen/onToggleStar (useCallback в App)
 // и стабильного cols (useMemo ниже). Flash — CSS-анимация tr.flash (styles.css)
 // вместо framer-инстанса на строку.
-const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, alertFired }) {
+const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
   const prev = useRef(b.last_price_pct);
   const reduce = useReducedMotion();
   const [flash, setFlash] = useState(false);
@@ -287,7 +285,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
 
   return (
     <tr
-      className={(alertFired ? "row-alert-fired" : "") + (flash ? " flash" : "")}
+      className={flash ? "flash" : ""}
       onAnimationEnd={() => setFlash(false)}
       tabIndex={0}
       role="button"
@@ -331,11 +329,6 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
   const [overKey, setOverKey] = useState(null);
   // O(1) вместо watch.includes на каждую строку
   const watchSet = useMemo(() => new Set(watch), [watch]);
-  // isin'ы со сработавшим алертом → красная строка (общий кэш ['alerts'])
-  const alertsQ = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 8000 });
-  const firedIsins = useMemo(
-    () => new Set((alertsQ.data || []).filter((a) => a.status === "fired").map((a) => a.isin)),
-    [alertsQ.data]);
   const ncols = cols.length + 2; // + star + фиктивная колонка-филлер
 
   let body;
@@ -353,7 +346,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
     </td></tr>
   );
   else body = rows.map((b) => (
-    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} alertFired={firedIsins.has(b.isin)} />
+    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} />
   ));
 
   return (

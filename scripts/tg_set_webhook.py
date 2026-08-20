@@ -28,7 +28,6 @@ async def main() -> None:
     print("setChatMenuButton:", await telegram.call(
         "setChatMenuButton", {"menu_button": {"type": "commands"}}))
     print("setMyCommands:", await telegram.call("setMyCommands", {"commands": [
-        {"command": "alerts", "description": "мои алерты"},
         {"command": "signals", "description": "последние сигналы"},
         {"command": "mute", "description": "пауза доставки"},
         {"command": "unmute", "description": "включить доставку"},

@@ -1,10 +1,9 @@
 """Alor WebSocket — реал-тайм по бумагам, которые смотрит фронт. Персистентный
 WS к wss://api.alor.ru/ws, три вида подписок на одном сокете:
 
-* OrderBookGetAndSubscribe по manager.orderbook_subscriptions + бумагам активных
-  алертов — открытая карточка/стакан. На пуш фронтовой подписки reprice уровней
-  (memo price→metrics, тик повторяет цены → считаем только новые) →
-  broadcast_orderbook; сырой пуш кэшируется для alerts_monitor.
+* OrderBookGetAndSubscribe по manager.orderbook_subscriptions — открытая
+  карточка/стакан. На пуш reprice уровней (memo price→metrics, тик повторяет
+  цены → считаем только новые) → broadcast_orderbook.
 * AllTradesGetAndSubscribe по manager.market_subscriptions (избранное) — питает
   живой средневзвес дня (services/live_quotes): считаем свой VWAP по тикам, а не
   берём биржевой WAPRICE, чтобы цифра сходилась со слоем «Средневзвес» на графике.
@@ -148,20 +147,14 @@ async def alor_orderbook_ws():
                         # сверка подписок с фронтом
                         if now - last_reconcile >= _RECONCILE_SEC:
                             last_reconcile = now
-                            # стакан: фронт-подписчики (карточки) + бумаги активных
-                            # алертов (сеет alerts_monitor). Одна подписка пула
-                            # кормит обоих — alerts_monitor раньше дёргал HTTP-снапшот
-                            # на каждую группу каждые 12с
-                            from services.market_data import market_cache
+                            # стакан — только фронт-подписчики (открытые карточки)
                             want_ob = {i for i, socks in manager.orderbook_subscriptions.items() if socks}
-                            want_ob |= set(market_cache.get("alert_isins") or ())
                             for isin in want_ob - set(subs):
                                 guid = await _sub("OrderBookGetAndSubscribe", isin, "ob",
                                                   {"depth": _DEPTH, "frequency": _FREQ_MS})
                                 subs[isin] = _Sub(guid)
                             for isin in set(subs) - want_ob:
                                 await _unsub(subs.pop(isin).guid)
-                                (market_cache.get("ob_live") or {}).pop(isin, None)
 
                             # избранное: поток сделок → живой VWAP. Уже подписанные
                             # держим, добор — до потолка (котировки шардирует
@@ -207,17 +200,6 @@ async def alor_orderbook_ws():
                             sub = subs.get(isin)
                             if not sub:
                                 continue
-                            # сырой стакан — в кэш: его читает alerts_monitor
-                            # вместо HTTP-снапшота (формат тот же, что у
-                            # /md/v2/orderbooks: bids/asks с price/volume)
-                            from services.market_data import market_cache
-                            market_cache.setdefault("ob_live", {})[isin] = {
-                                "ts": time.time(),
-                                "bids": data.get("bids") or [],
-                                "asks": data.get("asks") or []}
-                            # reprice уровней — только для фронт-подписчиков:
-                            # алертной бумаге без открытой карточки метрики уровней
-                            # не нужны, а контекст стоит сборки модели
                             if not manager.orderbook_subscriptions.get(isin):
                                 continue
                             await _ensure_ctx(sub, isin)

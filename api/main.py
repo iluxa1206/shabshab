@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, alerts, history, trades, blocks, calc, tg, signals as signals_route
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, history, trades, blocks, calc, tg, signals as signals_route
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -46,7 +46,7 @@ async def ws_market_data_broadcaster():
     ключи карты, а опустевшие не удалялись: за аптайм список рос монотонно и
     каждые 5с уходил в Alor запросом цен по бумагам, которые никто не смотрит.
     Вне торговых часов не опрашиваем вовсе — цена не меняется (тот же гейт, что
-    у universe_price_poller / depth_poller / alerts_monitor).
+    у universe_price_poller / depth_poller).
 
     ПУШИМ ТОЛЬКО ИЗМЕНЕНИЯ. Раньше такт слал цену безусловно, а фронт на каждый
     пуш дёргал /reprice: 20 бумаг × 5с = 3.4 запроса/сек круглосуточно (6132 за
@@ -453,90 +453,6 @@ async def memory_watch(period_sec: int = 1800):
         await asyncio.sleep(period_sec)
 
 
-ALERT_POLL_INTERVAL = 12   # проверка алертов против стакана, сек
-
-
-def _ob_levels(raw, metrics_fn):
-    """[{price, volume}] Alor → [{price, qty, yield_pct, dm_bps, g_spread_bps}]."""
-    out = []
-    for e in raw:
-        p, q = e.get("price"), e.get("volume")
-        if p is None:
-            continue
-        lv = {"price": p, "qty": q, "yield_pct": None, "dm_bps": None, "g_spread_bps": None}
-        if metrics_fn:
-            try:
-                m = metrics_fn(p)
-                lv.update(yield_pct=m.get("yield_pct"), dm_bps=m.get("dm_bps"),
-                          y_idx_bps=m.get("y_idx_bps"), g_spread_bps=m.get("g_spread_bps"))
-            except Exception:
-                pass
-        out.append(lv)
-    return out
-
-
-async def alerts_monitor():
-    """Фон: активные алерты против Alor-стакана. При выполнении условия (метрика
-    op порог + накопленный объём «на уровне/лучше») переводит active→fired.
-    Батчит по (isin, kind): один снапшот + один reprice-контекст на выпуск."""
-    from services import alerts as alerts_svc
-    from services.market_data import market_cache
-    from services.orderbook_svc import build_metrics_fn
-    from api.routes.orderbook import fetch_alor_orderbook_snapshot
-    OB_LIVE_FRESH = 15   # свежесть пуша пула, сек: старше — фолбэк на HTTP
-    await asyncio.sleep(45)
-    while True:
-        try:
-            if _in_moex_trading_hours():
-                active = alerts_svc.active_all()
-                groups: dict = {}
-                for a in active:
-                    groups.setdefault((a["isin"], a.get("kind") or "floater"), []).append(a)
-                # алертные бумаги — в пул подписок alor_ws: стакан по ним течёт
-                # push'ем, и HTTP-снапшот ниже нужен только пока подписка
-                # раскачивается (или WS лежит)
-                market_cache["alert_isins"] = {isin for isin, _k in groups.keys()}
-                for (isin, kind), grp in groups.items():
-                    try:
-                        live = (market_cache.get("ob_live") or {}).get(isin)
-                        if live and time.time() - live["ts"] < OB_LIVE_FRESH:
-                            snap = live
-                        else:
-                            snap = await fetch_alor_orderbook_snapshot(isin, 30)
-                        if not snap:
-                            continue
-                        metrics_fn, face = None, None
-                        if any(a["metric"] != "price" for a in grp):
-                            try:
-                                metrics_fn, _cd, face = await build_metrics_fn(isin, kind)
-                            except Exception:
-                                metrics_fn = None
-                        asks_raw = sorted((e for e in snap.get("asks", []) if e.get("price") is not None),
-                                          key=lambda e: e["price"])
-                        bids_raw = sorted((e for e in snap.get("bids", []) if e.get("price") is not None),
-                                          key=lambda e: e["price"], reverse=True)
-                        asks = _ob_levels(asks_raw, metrics_fn)
-                        bids = _ob_levels(bids_raw, metrics_fn)
-                        for a in grp:
-                            levels = asks if a["side"] == "buy" else bids
-                            hit = alerts_svc.evaluate(a, levels, face)
-                            if hit:
-                                alerts_svc.mark_fired(a["id"], hit["price"], hit["volume"])
-                                logger.info("alert fired id=%s %s %s %s%s%s vol=%s",
-                                            a["id"], isin, a["side"], a["metric"],
-                                            a["op"], a["threshold"], hit["volume"])
-                                # Telegram: стакан уже на руках — рендер и HTTP
-                                # уходят в очередь, монитор не ждёт
-                                from services import tg_notify
-                                tg_notify.enqueue(a, bids, asks, face, hit)
-                    except Exception as e:
-                        logger.warning(f"alert monitor {isin} error: {e}")
-            await asyncio.sleep(ALERT_POLL_INTERVAL)
-        except Exception as e:
-            logger.warning(f"alerts_monitor loop error: {e}")
-            await asyncio.sleep(30)
-
-
 SIGNALS_INTERVAL = float(os.getenv("SIGNALS_INTERVAL", "3"))
 
 
@@ -766,7 +682,7 @@ async def depth_poller():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.portfolio_db import init_db
-    init_db()  # схема alerts/spread_daily/bar_hourly/trade_tick (идемпотентно)
+    init_db()  # схема spread_daily/bar_hourly/trade_tick (идемпотентно)
 
     async def _seed_tick_watermarks():
         """Знак дрейна для архива, накопленного до инкрементального режима.
@@ -784,7 +700,6 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(ws_market_data_broadcaster())
     poller = asyncio.create_task(universe_price_poller())
     prewarm = asyncio.create_task(daily_prewarm())
-    alert_mon = asyncio.create_task(alerts_monitor())
     from services.alor_ws import alor_orderbook_ws
     alor_ws = asyncio.create_task(alor_orderbook_ws())
     spread_snap = asyncio.create_task(spread_snapshotter())
@@ -804,16 +719,14 @@ async def lifespan(app: FastAPI):
     tape_task = asyncio.create_task(trades_stream_pool())
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
-    from services.tg_notify import tg_notify_worker, tg_signal_worker
+    from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
-    tg_task = asyncio.create_task(tg_notify_worker())
     tg_sig_task = asyncio.create_task(tg_signal_worker())
     # команды бота: на этом VPS Telegram до нас не достучится (вебхук молчит),
     # поэтому апдейты забираем сами — см. services/tg_poll.py
     tg_poll_task = asyncio.create_task(tg_poll_worker())
     signals_task = asyncio.create_task(signals_worker())
     yield
-    tg_task.cancel()
     tg_sig_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
@@ -827,7 +740,6 @@ async def lifespan(app: FastAPI):
     task.cancel()
     poller.cancel()
     prewarm.cancel()
-    alert_mon.cancel()
     alor_ws.cancel()
     spread_snap.cancel()
     bars_worker.cancel()
@@ -877,7 +789,6 @@ app.include_router(orderbook.router, prefix="/api/orderbook", dependencies=_gate
 app.include_router(instruments.router, prefix="/api/instruments", dependencies=_gate)
 app.include_router(fixed.router, prefix="/api/fixed", dependencies=_gate)
 app.include_router(status.router, prefix="/api/status", dependencies=_gate)
-app.include_router(alerts.router, prefix="/api/alerts", dependencies=_gate)
 app.include_router(signals_route.router, prefix="/api/signals", dependencies=_gate)
 app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)

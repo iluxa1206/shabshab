@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { baseLabel, couponsPerYear, fmt, dmColor } from "../format.js";
+import { baseLabel, couponsPerYear, fmt, dmColor, yearsTo } from "../format.js";
 import CouponFormula from "./CouponFormula.jsx";
 import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetchRepricePast, UnauthorizedError, issueUrl, APP_BASENAME } from "../api.js";
 import CashflowChart from "./CashflowChart.jsx";
@@ -592,11 +592,22 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                     раньше эти цифры терялись рядом с ISIN. */}
                 {data?.reference?.maturity_date && (
                   <span className="dh-dates">
-                    <span className="dh-mat" title="Дата погашения">M {fmt.date(data.reference.maturity_date)}</span>
+                    {/* срок в скобках — у каждой даты СВОЙ: до погашения и до
+                        оферты это разные горизонты, и именно они решают, к чему
+                        бумага прайсится */}
+                    <span className="dh-mat" title="Дата погашения">
+                      M {fmt.date(data.reference.maturity_date)}
+                      {yearsTo(data.reference.maturity_date) && (
+                        <span className="dh-yrs"> ({yearsTo(data.reference.maturity_date)} г)</span>
+                      )}
+                    </span>
                     {data?.reference?.offer_date && (
                       <span className={"dh-offer" + (data.reference.offer_kind === "call" ? " dh-offer-call" : "")}
                         title={(data.reference.offer_kind === "call" ? "Call-оферта (опцион эмитента)" : "Пут-оферта")}>
                         {data.reference.offer_kind === "call" ? "C " : "P "}{fmt.date(data.reference.offer_date)}
+                        {yearsTo(data.reference.offer_date) && (
+                          <span className="dh-yrs"> ({yearsTo(data.reference.offer_date)} г)</span>
+                        )}
                       </span>
                     )}
                   </span>

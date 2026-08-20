@@ -1,28 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
-import { fetchOrderbook, fetchAlerts, connectOrderbookWs } from "../api.js";
-import OrderbookAlerts from "./OrderbookAlerts.jsx";
-import { IconBell, IconAlert } from "./icons.jsx";
-
-// значение метрики алерта на уровне стакана
-const levelMetric = (lvl, m) =>
-  m === "price" ? lvl.price_pct : m === "dm" ? lvl.dm_bps
-    : m === "yidx" ? lvl.y_idx_bps
-    : m === "ytm" ? lvl.yield_pct : m === "gspread" ? lvl.g_spread_bps : null;
-
-// алерт (active|fired), покрывающий уровень (сторона + метрика op порог).
-// fired приоритетнее → красная подсветка сработавшего уровня.
-function alertForLevel(lvl, side, alerts) {
-  const match = (a) => {
-    if ((a.side === "buy" ? "ask" : "bid") !== side) return false;
-    const v = levelMetric(lvl, a.metric);
-    if (v == null) return false;
-    return a.op === "<=" ? v <= a.threshold : v >= a.threshold;
-  };
-  return alerts.find((a) => a.status === "fired" && match(a))
-    || alerts.find((a) => a.status === "active" && match(a));
-}
+import { fetchOrderbook, connectOrderbookWs } from "../api.js";
 
 const DEPTHS = [10, 20, 30, 50];
 
@@ -48,31 +27,20 @@ function fillLevels(levels, side, vol, face, accrued) {
 // Строка уровня стакана. Колонки-метрики зависят от типа: флоатер → Y-IDX
 // (первичная) + YTM, фикс → YTM+G-спред. side красит цену. face — объём в ₽ (title).
 // quantity==null → синтетический уровень лестницы (нет заявки): приглушаем.
-function Level({ lvl, side, face, isFixed, onCtrlClick, alert, fill }) {
+function Level({ lvl, side, face, isFixed, fill }) {
   const hasQty = lvl.quantity != null;
   const rub = hasQty && face != null && lvl.price_pct != null
     ? lvl.quantity * face * (lvl.price_pct / 100)
     : null;
-  const onClick = (e) => {
-    if ((e.ctrlKey || e.metaKey) && lvl.price_pct != null) {
-      e.preventDefault();
-      onCtrlClick(side === "ask" ? "buy" : "sell", lvl.price_pct);
-    }
-  };
-  const armTitle = alert
-    ? `Алерт: ${alert.side === "buy" ? "buy" : "sell"} ${alert.metric} ${alert.op} ${alert.threshold}`
-    : undefined;
   return (
     <tr className={"ob-row ob-" + side + (hasQty ? "" : " ob-empty")
-        + (alert ? (alert.status === "fired" ? " ob-armed-fired" : " ob-armed") : "")
         + (fill ? (fill.partial ? " ob-sig-part" : " ob-sig") : "")
         + (fill?.vol ? " ob-vol" : "")}
-      onClick={onClick}
       title={fill
         ? `${fill.vol ? "В наборе фильтра по объёму" : "В наборе сигнала"}: `
           + `${fmt.mln(fill.money)} млн ₽${fill.partial ? " (уровень взят частично)" : ""}`
-        : armTitle}>
-      <td className="ob-price">{alert && <span className="ob-bell">{alert.status === "fired" ? <IconAlert size={11} /> : <IconBell size={11} />}</span>}{fmt.pct(lvl.price_pct) ?? "—"}</td>
+        : undefined}>
+      <td className="ob-price">{fmt.pct(lvl.price_pct) ?? "—"}</td>
       <td className="ob-qty" title={rub != null ? fmt.mln(rub) + " млн ₽" : undefined}>
         {hasQty ? fmt.num(lvl.quantity, 0) : "·"}
       </td>
@@ -100,7 +68,6 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(20);
   const [full, setFull] = useState(false);
-  const [armPrefill, setArmPrefill] = useState(null); // {side, price} из Ctrl-клика
 
   // WS-стакан (реал-тайм) — приоритет над HTTP-поллингом. Только в режиме
   // «только заявки» (в full режиме лестницу строит бэк по HTTP). Поллинг остаётся
@@ -125,11 +92,6 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
     refetchInterval: () => (!full && Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),
     refetchIntervalInBackground: false,
   });
-
-  // алерты по бумаге (active+fired) — подсветка покрытых уровней (общий кэш с формой)
-  const alertsQ = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 8000 });
-  const bondAlerts = (alertsQ.data || []).filter(
-    (a) => a.isin === isin && (a.status === "active" || a.status === "fired"));
 
   const d = q.data;
   const wsLive = !full && wsData?.orderbook && Date.now() - wsTsRef.current < 6000;
@@ -240,21 +202,19 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
               </tr>
             </thead>
             <tbody>
-              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} alert={alertForLevel(l, "ask", bondAlerts)} fill={fillFor("ask", l.price_pct)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} fill={fillFor("ask", l.price_pct)} />)}
               <tr className="ob-spread">
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>
               </tr>
-              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} alert={alertForLevel(l, "bid", bondAlerts)} fill={fillFor("bid", l.price_pct)} onCtrlClick={(s, p) => setArmPrefill({ side: s, price: p })} />)}
+              {bids.map((l, i) => <Level key={"b" + i} lvl={l} side="bid" face={face} isFixed={isFixed} fill={fillFor("bid", l.price_pct)} />)}
             </tbody>
           </table>
         )}
       </div>
 
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
-      <OrderbookAlerts isin={isin} kind={isFixed ? "fixed" : "floater"}
-        prefill={armPrefill} onConsumed={() => setArmPrefill(null)} />
       <div className="ob-note">{isFixed ? "YTM/G-спред" : "R-spread/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
     </div>
   );

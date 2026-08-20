@@ -530,6 +530,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .dh-offer { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
   white-space: nowrap; color: var(--accent); }
 .dh-offer-call { color: var(--mut); }
+/* срок в скобках — спутник даты, не отдельный факт: тот же цвет, вес обычный */
+.dh-yrs { font-weight: 400; color: var(--mut); }
 /* формула купона тем же весом — второй ключевой параметр выпуска */
 .dh-formula { font-size: 13px; font-weight: 700; color: var(--fg); }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
@@ -784,105 +786,16 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-qty { color: var(--mut); }
 .ob-ytm { color: var(--fg); }
 .ob-row:hover { background: var(--line); }
-.ob-row.ob-armed { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
-.ob-row.ob-armed:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
-.ob-row.ob-armed-fired { background: color-mix(in srgb, var(--down) 16%, transparent); box-shadow: inset 3px 0 0 var(--down); }
-.ob-row.ob-armed-fired:hover { background: color-mix(in srgb, var(--down) 24%, transparent); }
-.ob-bell { font-size: 9px; margin-right: 4px; vertical-align: 1px; }
 .ob-spread td { text-align: center; font-size: 10px; letter-spacing: 0.08em; color: var(--mut); text-transform: uppercase; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
 .ob-note { padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
 
-/* --- Алерты в стакане --- */
-.ob-alerts { border-top: 1px solid var(--line); padding: 12px 20px; }
-.al-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
-.al-title .al-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--mut-2); margin-left: 8px; font-size: 10px; }
-.al-form { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.al-seg { display: inline-flex; border: 1px solid var(--line-2); }
-.al-seg button { font: 10px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 8px; background: transparent; color: var(--mut); border: 0; cursor: pointer; }
-.al-seg button + button { border-left: 1px solid var(--line-2); }
-.al-seg button.on { background: var(--fg); color: var(--bg); }
-.al-form select { font: 11px var(--mono); color: var(--fg); background: var(--bg); border: 1px solid var(--line-2); border-radius: 0; padding: 3px 4px; }
-.al-op { font: 700 12px var(--mono); color: var(--mut); }
-.al-in { width: 62px; font: 11px var(--mono); color: var(--fg); background: var(--bg); border: 1px solid var(--line-2); border-radius: 0; padding: 3px 6px; }
-.al-add { padding: 3px 10px; font-size: 14px; line-height: 1; }
-.al-msg { margin-top: 6px; font-size: 11px; }
-.al-msg.ok { color: var(--up); } .al-msg.err { color: var(--down); }
-.al-list { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; }
-.al-empty { font-size: 11px; color: var(--mut-2); }
-.al-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 3px 0; border-bottom: 1px solid var(--line); }
-.al-row.al-fired { color: var(--up); } .al-row.al-cancelled { opacity: 0.45; }
-.al-side { font-weight: 700; text-transform: uppercase; font-size: 9px; letter-spacing: 0.04em; }
-.al-side.al-buy { color: var(--up); } .al-side.al-sell { color: var(--down); }
-.al-cond { flex: 1; font-variant-numeric: tabular-nums; }
-.al-state { color: var(--mut); font-size: 10px; }
-.al-del { background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px;
-  padding: 10px 12px; margin: -10px -10px; }
-.al-del:hover { color: var(--down); }
-.al-edit { background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; }
-.al-edit:hover { color: var(--accent); }
-.al-row.al-editing { box-shadow: inset 2px 0 0 var(--accent); }
-.al-cancel { background: transparent; border: 1px solid var(--line-2); color: var(--mut); cursor: pointer; padding: 3px 8px; font-size: 12px; }
-.al-editing-hint { margin-top: 6px; font-size: 11px; color: var(--accent); }
-
-/* --- Тосты алертов (глобально) --- */
-.al-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: 300px; }
-.al-toast { position: relative; background: var(--bg); border: 1px solid var(--up); border-left: 3px solid var(--up); padding: 10px 28px 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
-.al-toast-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
-.al-toast-b { font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; }
-.al-toast-x { position: absolute; top: 0; right: 0; background: transparent; border: 0; color: var(--mut); cursor: pointer; font-size: 12px; padding: 10px 12px; }
-
-/* --- Плашка алертов в StatusBar + попап --- */
-.al-chip { position: relative; cursor: default; }
-.al-chip-lbl { display: inline-flex; align-items: center; }
-/* мигает только сам ярлык-счётчик; попап — отдельный слой, не мигает */
-.al-chip-lbl.fired { color: var(--down); font-weight: 700; animation: al-blink 1.1s steps(2, start) infinite; }
-/* при наведении (open) мигание глушим — читаемо */
-.al-chip.open .al-chip-lbl.fired { animation: none; }
-.al-chip-fired { color: var(--down); }
-@keyframes al-blink { 50% { opacity: 0.45; } }
-/* невидимый мост от ярлыка до попапа — курсор не теряет ховер, нет мигания */
-.al-pop { position: absolute; bottom: 100%; left: 0; z-index: 210;
-  min-width: 460px; max-height: 340px; overflow-y: auto; background: var(--bg);
+/* Панель-попап нижней строки (выплаты): всплывает вверх от ячейки. */
+.pay-pop { position: absolute; bottom: 100%; right: 0; z-index: 210;
+  min-width: 420px; max-height: 340px; overflow-y: auto; background: var(--bg);
   border: 1px solid var(--fg); box-shadow: 0 -4px 16px rgba(0,0,0,.2); padding: 6px 0; }
-.al-pop::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 8px; }
-.al-pop-name { font: 11px var(--mono); font-weight: 700; min-width: 92px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
-
-/* ── выплаты вчера/сегодня/завтра: попап на датах нижней строки ── */
-.pay-chip { position: relative; }
-/* сама дата остаётся датой: кнопка без рамки и фона, но с курсором и ховером */
-.pay-btn { display: flex; align-items: center; gap: 8px; background: none; border: none;
-  padding: 0; font: inherit; color: inherit; letter-spacing: inherit; cursor: pointer; }
-.pay-btn:hover .meta-v { color: var(--accent); }
-.pay-chip.open .meta-v { color: var(--accent); }
-.pay-pop { right: 0; left: auto; min-width: 420px; }
-.pay-day + .pay-day { border-top: 1px solid var(--fg); }
-.pay-day-h { display: flex; justify-content: space-between; gap: 10px; padding: 5px 12px;
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mut); }
-/* сегодняшний день выделен, как и его дата в ленте сделок */
-.pay-today .pay-day-h { color: var(--fg); font-weight: 700; }
-.pay-day-sum { font-variant-numeric: tabular-nums; letter-spacing: normal; }
-.pay-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 12px; font-size: 11px; }
-.pay-row:hover { background: var(--line); }
-.pay-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 11px var(--mono); }
-.pay-t { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); }
-.pay-t-redemption { color: var(--accent); }
-.pay-v { font-variant-numeric: tabular-nums; text-align: right; min-width: 72px; }
-.pay-tot { min-width: 56px; color: var(--mut); }
-.pay-proj { color: var(--mut-2); }
-.pay-empty { padding: 4px 12px 6px; font-size: 11px; color: var(--mut-2); }
-.al-pop-m { font: 10px var(--mono); font-variant-numeric: tabular-nums; text-align: right;
-  min-width: 42px; color: var(--fg); }
-.al-pop-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); padding: 4px 12px 6px; }
-.al-pop-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 4px 12px; cursor: pointer; border-top: 1px solid var(--line); }
-.al-pop-row:hover { background: var(--line); }
-.al-pop-row.fired { background: color-mix(in srgb, var(--down) 12%, transparent); }
-.al-pop-isin { font: 11px var(--mono); font-weight: 700; }
-.al-pop-cond { flex: 1; color: var(--mut); font-variant-numeric: tabular-nums; }
-.al-pop-st { font-size: 10px; }
-.al-pop-row.fired .al-pop-st { color: var(--down); font-weight: 700; }
+.pay-pop-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--mut); padding: 4px 12px 6px; }
 
 /* --- Динамика спредов --- */
 .sh-box { margin-bottom: 20px; }
@@ -900,15 +813,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .sh-est { stroke: var(--mut-2); stroke-width: 1.2; stroke-dasharray: 4 3; }
 .sh-dot { fill: var(--accent); }
 .sh-note { font-size: 10px; color: var(--mut-2); margin-top: 2px; }
-
-/* --- Красная строка бумаги со сработавшим алертом --- */
-.grid tbody tr.row-alert-fired td, .fx-grid tbody tr.row-alert-fired td {
-  background: color-mix(in srgb, var(--down) 14%, transparent);
-  box-shadow: inset 3px 0 0 var(--down);
-}
-.grid tbody tr.row-alert-fired:hover td, .fx-grid tbody tr.row-alert-fired:hover td {
-  background: color-mix(in srgb, var(--down) 22%, transparent);
-}
 
 .val-cards { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); margin-bottom: 28px; }
 .vc { padding: 16px 18px; border-right: 1px solid var(--line); }

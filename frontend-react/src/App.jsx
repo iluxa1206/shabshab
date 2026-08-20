@@ -21,7 +21,6 @@ import CurvesModule from "./components/CurvesModule.jsx";
 import FixedModule from "./components/FixedModule.jsx";
 import CalcModule from "./components/CalcModule.jsx";
 import StatusPage from "./components/StatusPage.jsx";
-import AlertsWatcher from "./components/AlertsWatcher.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
 import SignalsModule from "./components/SignalsModule.jsx";
 import BondAudit from "./components/BondAudit.jsx";
@@ -821,11 +820,10 @@ function Dashboard() {
         // уровни, набирающие ровно этот тикет по своей стороне
         volBid={volBid} volAsk={volAsk}
         onClose={closeDrawer} />
-      <StatusBar count={bonds.length} bonds={bonds} kpiBonds={tableRows} live={live} sources={meta.source_status}
+      <StatusBar count={bonds.length} kpiBonds={tableRows} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} meta={meta}
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
-      <AlertsWatcher />
       <SignalsWatcher />
     </div>
     </PageStatusProvider>

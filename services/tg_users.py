@@ -80,8 +80,7 @@ def pending_count() -> int:
 
 
 def approve(tg_user_id: int, email: str, by: str) -> Optional[dict]:
-    """Привязка чата к веб-аккаунту. Заодно переносит алерты легаси-идентичности
-    'tg:<id>' на email владельца — иначе они молча осиротеют."""
+    """Привязка чата к веб-аккаунту."""
     email = (email or "").strip().lower()
     if not email:
         raise ValueError("не указан email аккаунта")
@@ -92,11 +91,6 @@ def approve(tg_user_id: int, email: str, by: str) -> Optional[dict]:
             (email, _now(), by, tg_user_id))
         if not cur.rowcount:
             return None
-        moved = c.execute("UPDATE alerts SET user_email=? WHERE user_email=?",
-                          (email, legacy_email(tg_user_id))).rowcount
-    if moved:
-        logger.info("tg approve %s → %s: перенесено алертов %d",
-                    tg_user_id, email, moved)
     return get(tg_user_id)
 
 

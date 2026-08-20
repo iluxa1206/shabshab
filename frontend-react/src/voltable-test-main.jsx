@@ -11,7 +11,7 @@ import "./styles.css";
 
 // алертов в харнессе нет — глушим запрос таблицы, чтобы не сыпал 401
 window.fetch = async (url) =>
-  new Response(JSON.stringify(String(url).includes("/alerts") ? [] : {}),
+  new Response(JSON.stringify({}),
                { headers: { "Content-Type": "application/json" } });
 
 const row = (isin, name, mat, bid, ask, yBid, yAsk) => ({

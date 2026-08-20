@@ -1,10 +1,10 @@
 """Телеграм-бот: вебхук + управление привязкой чатов (только админ).
 
-Настройки у бота своей нет — алерты и сигналы заводятся на сайте и дублируются
-в привязанный чат (services/tg_notify.py). Вебхук вне require_user: защита —
+Настройки у бота своей нет — сигналы заводятся на сайте и дублируются в
+привязанный чат (services/tg_notify.py). Вебхук вне require_user: защита —
 секрет-заголовок X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) плюс
 статус привязки в tg_users. Команды бота — только чтение и пауза доставки:
-  /start — заявка на доступ, /alerts — список, /signals — последние события,
+  /start — заявка на доступ, /signals — последние события,
   /mute, /unmute, /status, /help
 """
 import logging
@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel
 
 from api.routes.auth import require_admin
-from services import alerts, auth_users, signals, telegram, tg_users
+from services import auth_users, signals, telegram, tg_users
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,22 +23,11 @@ _SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/")
 
 _HELP = (
     "<b>Что умеет бот</b>\n"
-    "Алерты по стакану и сигналы рынка настраиваются на сайте — сюда приходят "
-    "их копии.\n\n"
-    "/alerts — мои алерты\n"
+    "Сигналы рынка настраиваются на сайте — сюда приходят их копии.\n\n"
     "/signals — последние сигналы\n"
     "/mute, /unmute — пауза доставки\n"
     "/status — состояние привязки\n"
     f'<a href="{_SITE_URL}">Открыть дашборд</a>')
-
-
-def _fmt_alert(a: dict) -> str:
-    unit = {"rub": "₽", "bonds": "шт"}.get(a.get("volume_unit"), "")
-    vol = (", vol ≥ " + f"{a['min_volume']:,.0f}".replace(",", " ") + f" {unit}"
-           if a.get("min_volume") else "")
-    status = {"active": "🟢", "fired": "⚡", "cancelled": "✖"}.get(a["status"], a["status"])
-    return (f"{status} #{a['id']} {a['isin']} {a['side']} "
-            f"{a['metric']} {a['op']} {a['threshold']:g}{vol}")
 
 
 def _fmt_event(e: dict) -> str:
@@ -60,17 +49,11 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
     text = text.strip()
 
     if text.startswith("/start"):
-        return ("Флоатер-деск на связи. Алерты и сигналы, заведённые на сайте, "
+        return ("Флоатер-деск на связи. Сигналы, заведённые на сайте, "
                 "будут дублироваться сюда.\n\n" + _HELP)
 
     if text.startswith("/help"):
         return _HELP
-
-    if text.startswith("/alerts"):
-        rows = alerts.list_for_user(email)
-        if not rows:
-            return "Алертов нет. Заводятся на сайте, в стакане выпуска."
-        return "\n".join(_fmt_alert(a) for a in rows[:30])
 
     if text.startswith("/signals"):
         rows = signals.events_for_user(email, limit=15)
@@ -87,14 +70,11 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
         return "🔔 Доставка включена."
 
     if text.startswith("/status"):
-        rows = alerts.list_for_user(email)
-        active = sum(1 for a in rows if a["status"] == "active")
-        fired = sum(1 for a in rows if a["status"] == "fired")
         u = tg_users.get(uid) or {}
-        nfilters = len(signals.list_for_user(email))
+        fs = signals.list_for_user(email)
+        on = sum(1 for f in fs if f.get("enabled"))
         return (f"Аккаунт: {email}\n"
-                f"Алертов: {active} активных, {fired} сработавших.\n"
-                f"Фильтров сигналов: {nfilters}.\n"
+                f"Фильтров сигналов: {len(fs)} ({on} включённых).\n"
                 f"Доставка: {'🔇 mute' if u.get('muted') else '🔔 on'}")
 
     return "Не понял. /help"
