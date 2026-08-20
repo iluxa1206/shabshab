@@ -88,3 +88,64 @@ def test_stats_respect_same_filter_as_rows(ta):
     s = ta.tape_stats(frm=_iso(0), min_value=1_000_000)
     assert len(rows) == s["n"] == 1
     assert s["value"] == pytest.approx(5_000_000)
+
+
+# --- лестница окон и подсказка индекса (производительность, см. services/tape) ---
+
+def test_window_escalation_matches_full_scan(ta):
+    """Страница, собранная эскалацией окон, совпадает с прямым запросом на всё
+    окно. Иначе оптимизация тихо теряла бы старые сделки, когда свежих мало."""
+    from services import tape as tape_svc
+    # сделки редкие и старые: узкие окна (7/30/120 дней) пустые, страницу
+    # набирает только полное окно
+    for i, days in enumerate([200, 250, 300, 330]):
+        _add(ta, "RU000A0000A1", 900 + i, days, 5e6)
+
+    frm = _iso(400)
+    with_steps = tape_svc.read_tape(frm=frm, limit=10)
+    saved = tape_svc._WINDOW_STEPS
+    tape_svc._WINDOW_STEPS = ()
+    try:
+        direct = tape_svc.read_tape(frm=frm, limit=10)
+    finally:
+        tape_svc._WINDOW_STEPS = saved
+
+    assert [r["trade_id"] for r in with_steps] == [r["trade_id"] for r in direct]
+    assert len(with_steps) == 4
+
+
+def test_window_escalation_stops_on_full_page(ta):
+    """Свежих сделок хватает на страницу — старое окно не открывается вовсе
+    (порядок по времени вниз, старые в страницу всё равно не попадут)."""
+    from services import tape as tape_svc
+    for i in range(5):
+        _add(ta, "RU000A0000A1", 800 + i, 1, 3e6, hour=10 + i)
+    _add(ta, "RU000A0000A1", 700, 300, 9e6)      # старая, в страницу не должна влезть
+
+    rows = tape_svc.read_tape(frm=_iso(400), limit=5)
+    assert len(rows) == 5
+    assert 700 not in [r["trade_id"] for r in rows]
+
+
+def test_value_index_hint_used_only_for_wide_sets(ta):
+    """Подсказка INDEXED BY ставится для широкой выборки с порогом и НЕ ставится
+    для одной бумаги: там правильный план как раз по (isin, ts)."""
+    from services import tape as tape_svc
+    wide, _ = tape_svc._union("2026-01-01", None, 1e7, None, None, None, None, False)
+    assert "INDEXED BY ix_block_value_ts" in wide
+
+    narrow, _ = tape_svc._union("2026-01-01", None, 1e7, None, None, ["RU000A0000A1"],
+                                None, False)
+    assert "INDEXED BY" not in narrow
+
+    no_thr, _ = tape_svc._union("2026-01-01", None, 0, None, None, None, None, False)
+    assert "INDEXED BY" not in no_thr
+
+
+def test_isin_tape_still_works_with_threshold(ta):
+    """Лента одной бумаги с порогом — та же, что без подсказки индекса."""
+    from services import tape as tape_svc
+    _add(ta, "RU000A0000A1", 601, 2, 2e7)
+    _add(ta, "RU000A0000A1", 602, 2, 5e5)
+    rows = tape_svc.read_isin_trades("RU000A0000A1", frm=_iso(10), min_value=1e6)
+    assert [r["trade_id"] for r in rows] == [601]

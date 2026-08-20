@@ -177,6 +177,11 @@ CREATE TABLE IF NOT EXISTS block_trade(
 CREATE INDEX IF NOT EXISTS ix_block_ts ON block_trade(ts);
 CREATE INDEX IF NOT EXISTS ix_block_isin_ts ON block_trade(isin, ts);
 CREATE INDEX IF NOT EXISTS ix_block_value ON block_trade(value);
+-- Крупные сделки за период: value первым, ts вторым. Лента с порогом («весь
+-- рынок от 10 млн за год») по (isin, ts) читала ~1,3 млн строк и фильтровала
+-- сумму построчно — 5с на запрос; здесь порог сразу отсекает всё лишнее
+-- (сделок ≥10 млн во всём архиве 2695), а ts внутри уже упорядочен.
+CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts);
 
 -- Отмеченные сделки («красный флажок» в ленте), per-user. Со СНИМКОМ строки:
 -- trade_tick подчищается ретеншеном (мелочь старше TICK_RAW_DAYS удаляется), и
@@ -369,6 +374,7 @@ _MIGRATIONS = [
     "ALTER TABLE signal_state ADD COLUMN last_reason TEXT",
     "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
+    "CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts)",
 ]
 
 

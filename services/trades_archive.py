@@ -552,6 +552,23 @@ def prune(raw_days: Optional[int] = None, big_value: Optional[float] = None,
             "floor": floor, "big_value": thr, "dry_run": dry_run}
 
 
+def analyze() -> dict:
+    """ANALYZE: обновляет sqlite_stat1, по которому планировщик выбирает индексы.
+
+    Без статистики SQLite ходит по эвристикам и на широких выборках ленты берёт
+    (isin, ts) вместо value-индекса. Часть запросов мы страхуем подсказкой
+    INDEXED BY (см. services/tape), но остальным планам статистика нужна —
+    таблицы растут каждый день, и снимок годичной давности врёт.
+
+    Дёшево относительно VACUUM (замер на 3,5 ГБ: ~74с против минут), зовём в том
+    же ночном окне."""
+    import time as _time
+    t0 = _time.monotonic()
+    with _lock, _connect() as c:
+        c.execute("ANALYZE")
+    return {"secs": round(_time.monotonic() - t0, 1)}
+
+
 def vacuum() -> dict:
     """VACUUM базы: SQLite не отдаёт освободившиеся страницы ОС сам (auto_vacuum=0).
 

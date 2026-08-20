@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date as _date, timedelta as _timedelta
 from typing import Optional
 
 from services.block_trades import _bind_isins, _TMP
@@ -72,14 +73,23 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp,
     Порядок веток важен только для читаемости — дедуп делает NOT EXISTS по
     первичному ключу block_trade, то есть индексным поиском на каждую строку
     тика, а не вложенным сканом.
+
+    INDEXED BY в ветке блоков — не украшательство: при пороге суммы и широком
+    наборе бумаг планировщик выбирал ix_block_isin_ts и на окне «год» читал
+    ~1,3 млн строк, отсеивая сумму построчно (замер: 5,1с против 0,16с с
+    value-индексом). Подсказку даём только там, где она заведомо верна: порог
+    задан и бумаг много. Для одной бумаги (карточка) правильный план как раз
+    по isin, и подсказку не ставим.
     """
+    by_value = (min_value or 0) > 0 and (tmp or not isins or len(isins) > 50)
+    blk_from = "block_trade INDEXED BY ix_block_value_ts" if by_value else "block_trade"
     b_cond, b_args = _cond(frm, till, min_value, boards, isins, side, tmp,
                            max_value=max_value)
     t_cond, t_args = _cond(frm, till, min_value, boards, isins, side, tmp, alias="t",
                            max_value=max_value)
 
     blocks = ("SELECT trade_id, isin, ts, price, qty, value, side, board, market, "
-              "yld, cur, secid, y_idx_bps, dm_bps FROM block_trade WHERE 1=1" + b_cond)
+              f"yld, cur, secid, y_idx_bps, dm_bps FROM {blk_from} WHERE 1=1" + b_cond)
     # тики знают только безадресные борды: при выборе адресного режима их вклад
     # заведомо пуст, и лишний скан 8+ млн строк не нужен
     if market == "ndm":
@@ -113,6 +123,35 @@ def _spread_clause(y_min: Optional[float], y_max: Optional[float]) -> tuple[str,
     return q, args
 
 
+# Лестница окон запроса ленты, дни назад от правого края. Смысл: страница
+# отсортирована по времени вниз, поэтому при заданном лимите её почти всегда
+# набирают свежие сделки — а планировщик на окне «400 дней» вынужден собрать
+# ВСЕ подходящие строки за год и отсортировать их во временном B-дереве
+# (замер на проде: /api/trades days=400 min_value=10 млн — 4,9с).
+# Идём от узкого окна к широкому и останавливаемся, как только страница полна.
+_WINDOW_STEPS = (7, 30, 120)
+
+
+def _windows(frm: Optional[str], till: Optional[str],
+             before_ts: Optional[str]) -> list[Optional[str]]:
+    """Границы `frm` для попыток — от самой узкой к запрошенной."""
+    if not frm:
+        return [None]
+    anchor_iso = (before_ts or till or _date.today().isoformat())[:10]
+    try:
+        anchor = _date.fromisoformat(anchor_iso)
+        low = _date.fromisoformat(frm[:10])
+    except (TypeError, ValueError):
+        return [frm]
+    out = []
+    for step in _WINDOW_STEPS:
+        edge = anchor - _timedelta(days=step)
+        if edge > low:
+            out.append(edge.isoformat())
+    out.append(frm)
+    return out
+
+
 def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
               min_value: float = 0, market: Optional[str] = None,
               boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
@@ -138,12 +177,22 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
             cur_args = [before_ts]
     with _connect() as c:
         tmp = _bind_isins(c, isins)
-        sub, args = _union(frm, till, min_value, market, boards, isins, side, tmp,
-                           max_value=max_value)
         yq, yargs = _spread_clause(y_min, y_max)
-        rows = c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
-                         f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
-                         [*args, *yargs, *cur_args, limit]).fetchall()
+
+        def _page(lo: Optional[str]) -> list:
+            sub, args = _union(lo, till, min_value, market, boards, isins, side, tmp,
+                               max_value=max_value)
+            return c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
+                             f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
+                             [*args, *yargs, *cur_args, limit]).fetchall()
+
+        rows = []
+        for lo in _windows(frm, till, before_ts):
+            rows = _page(lo)
+            # окно набрало полную страницу — более старые сделки в неё всё равно
+            # не попадут (сортировка по времени вниз), расширять незачем
+            if len(rows) >= limit:
+                break
     out = []
     for r in rows:
         d = dict(r)

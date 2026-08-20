@@ -662,6 +662,10 @@ async def archive_maintenance():
             if res.get("deleted", 0) >= ARCHIVE_VACUUM_MIN_ROWS:
                 vac = await run_bg(ta.vacuum)
                 logger.info("tick archive vacuum: %s", vac)
+            # статистика планировщика: таблицы растут каждый день, и по стухшей
+            # он выбирает индекс, из-за которого лента читает лишние сотни тысяч
+            # строк (см. services/tape)
+            logger.info("archive analyze: %s", await run_bg(ta.analyze))
             logger.info("tick archive: %s", await run_bg(ta.db_stats))
         except asyncio.CancelledError:
             raise
