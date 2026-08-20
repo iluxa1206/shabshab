@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { fetchTrades } from "../api.js";
@@ -11,10 +11,6 @@ import { fetchTrades } from "../api.js";
 // фикса, посчитанный по цене самой сделки (as-of для прошлых сессий).
 
 const WINDOWS = [1, 7, 30];
-// Порог объёма в МИЛЛИОНАХ ₽ — та же единица денег, что во всём интерфейсе.
-// Отсекает розничную мелочь (лента бумаги на 90% состоит из сделок по 1-5 тыс ₽),
-// оставляя принты, по которым видно реальный уровень.
-const VOLS = [0, 0.5, 1, 5, 10];
 const LIMIT = 300;
 
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
@@ -23,7 +19,18 @@ const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
   const [days, setDays] = useState(7);
+  // Порог объёма — поле ввода в МИЛЛИОНАХ ₽ (единая денежная единица интерфейса,
+  // как в фильтрах вкладки СДЕЛКИ). Пусто = все сделки. Значение уходит в запрос
+  // с задержкой: иначе каждый набранный символ дёргал бы дрейн тиков.
+  const [volInput, setVolInput] = useState("");
   const [volMln, setVolMln] = useState(0);
+  useEffect(() => {
+    const raw = volInput.trim().replace(",", ".");
+    const v = raw === "" ? 0 : parseFloat(raw);
+    if (!Number.isFinite(v) || v < 0) return;
+    const t = setTimeout(() => setVolMln(v), 350);
+    return () => clearTimeout(t);
+  }, [volInput]);
 
   const q = useQuery({
     queryKey: ["bond-trades", isin, kind, days, volMln],
@@ -58,15 +65,16 @@ export default function BondTrades({ isin, kind, onClose }) {
         ))}
       </div>
 
-      <div className="ob-ctl bt-ctl">
-        <span className="bt-ctl-lbl" title="Показывать сделки не меньше порога, млн ₽">от, млн</span>
-        {VOLS.map((v) => (
-          <button key={v} className={"chip-btn" + (volMln === v ? " on" : "")}
-            onClick={() => setVolMln(v)}
-            title={v === 0 ? "все сделки" : `сделки от ${fmt.num(v, v < 1 ? 1 : 0)} млн ₽`}>
-            {v === 0 ? "все" : fmt.num(v, v < 1 ? 1 : 0)}
-          </button>
-        ))}
+      <div className="ob-ctl bt-ctl"
+        title="Нижний порог суммы сделки, млн ₽. Пусто — все сделки.">
+        <span className="bt-ctl-lbl">объём от, млн</span>
+        <input className="num-input bt-vol" type="number" min="0" step="0.5" placeholder="все"
+          aria-label="Объём сделки от, млн ₽"
+          value={volInput} onChange={(e) => setVolInput(e.target.value)} />
+        {volInput !== "" && (
+          <button className="chip-btn" title="Убрать порог"
+            onClick={() => setVolInput("")}>×</button>
+        )}
       </div>
 
       <div className="ob-status">
