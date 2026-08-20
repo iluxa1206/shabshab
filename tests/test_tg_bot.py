@@ -113,17 +113,39 @@ def test_signal_text_caps_matches():
     txt = _signal_text({"name": "мой фильтр", "side": "bid", "kind": "book",
                         "matches": ms})
     assert "мой фильтр" in txt and "бид" in txt and "…ещё 4" in txt
-    assert txt.count("🆕") == 8          # маркер причины на каждой показанной бумаге
+    assert txt.count("🟢") == 8          # маркер стороны на каждой показанной бумаге
 
 
-def test_signal_text_block_kind():
-    txt = _signal_text({"name": "Крупная сделка", "side": "buy", "kind": "block",
-                        "matches": [{"isin": "RU000A10AU99", "name": "Тест",
-                                     "money_rub": 320e6, "price": 100.1,
-                                     "side": "buy", "reason": "block"}]})
-    # числа по-русски: запятая, а не точка — как во всём интерфейсе
-    assert "Крупные сделки" in txt and "320,0 млн ₽" in txt
-    assert "покупка" in txt and "🟩" in txt
+def test_book_line_layout():
+    """Первая строка: сторона · спред · деньги · срок · ИМЯ В КОНЦЕ (имена разной
+    длины, впереди они ломали бы колонку чисел). Вторая — цена, глубина, причина."""
+    txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
+                        "matches": [{"isin": "RU000A109B33", "name": "Газпн3P13R",
+                                     "val_bps": 171.0, "price": 99.9, "money_rub": 1e6,
+                                     "levels": 1, "years": 1.5, "reason": "money",
+                                     "money_ok_rub": 1.06e6, "prev_money_ok_rub": 1e6}]})
+    first, second = txt.split("\n")[0], txt.split("\n")[1]
+    assert first.startswith("🔴")                      # оффер красный
+    assert "171 бп" in first and "1м ₽" in first and "1,5 г" in first
+    assert first.index("171 бп") < first.index("Газпн3P13R")
+    assert "99,90%" in second and "1 ур" in second and "объём +6 %" in second
+    # подпись фильтра — сноской в конце, а не заголовком
+    assert txt.strip().endswith("📡 <b>Тест 2</b> · оффер")
+
+
+def test_trade_icons_by_side_and_ndm():
+    """У сделки маркер — направление агрессора, у адресной агрессора нет вовсе."""
+    def one(**kw):
+        m = {"isin": "RU000A10AU99", "name": "Т", "money_rub": 320e6,
+             "price": 100.1, "val_bps": 173.0}
+        m.update(kw)
+        return _signal_text({"name": "следим", "side": None, "kind": "block",
+                             "matches": [m]})
+
+    assert one(side="buy", negotiated=False).startswith("⬆️")
+    assert one(side="sell", negotiated=False).startswith("⬇️")
+    assert one(side="buy", negotiated=True).startswith("🤝")
+    assert "320м ₽" in one(side="buy", negotiated=False)   # деньги коротко
 
 
 def test_signal_text_links_to_card():
@@ -134,15 +156,10 @@ def test_signal_text_links_to_card():
     assert 'href="' in txt and "isin=RU000A10AU99" in txt and "ob=1" in txt
 
 
-def test_signal_text_spread_direction_icon():
-    """Спред вверх и вниз — разные новости, и маркер у них разный."""
-    up = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                       "matches": [{"isin": "RU000A10AU99", "name": "Т",
-                                    "val_bps": 300.0, "prev_val_bps": 240.0,
-                                    "reason": "spread"}]})
-    down = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
-                                      "val_bps": 240.0, "prev_val_bps": 300.0,
-                                      "reason": "spread"}]})
-    assert "📈" in up and "спред +60 бп" in up
-    assert "📉" in down and "спред −60 бп" in down
+def test_reason_delta_shows_direction():
+    """Причина повтора — величиной со знаком: «спред −18 бп», а не словом."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [{"isin": "RU000A10AU99", "name": "Т",
+                                     "val_bps": 240.0, "prev_val_bps": 300.0,
+                                     "reason": "spread"}]})
+    assert "спред −60 бп" in txt
