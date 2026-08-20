@@ -113,12 +113,36 @@ def test_signal_text_caps_matches():
     txt = _signal_text({"name": "мой фильтр", "side": "bid", "kind": "book",
                         "matches": ms})
     assert "мой фильтр" in txt and "бид" in txt and "…ещё 4" in txt
-    assert txt.count("•") == 8
+    assert txt.count("🆕") == 8          # маркер причины на каждой показанной бумаге
 
 
 def test_signal_text_block_kind():
-    txt = _signal_text({"name": "Крупная сделка", "side": None, "kind": "block",
+    txt = _signal_text({"name": "Крупная сделка", "side": "buy", "kind": "block",
                         "matches": [{"isin": "RU000A10AU99", "name": "Тест",
                                      "money_rub": 320e6, "price": 100.1,
-                                     "reason": "block"}]})
-    assert "Крупная сделка" in txt and "320.0 млн ₽" in txt
+                                     "side": "buy", "reason": "block"}]})
+    # числа по-русски: запятая, а не точка — как во всём интерфейсе
+    assert "Крупные сделки" in txt and "320,0 млн ₽" in txt
+    assert "покупка" in txt and "🟩" in txt
+
+
+def test_signal_text_links_to_card():
+    """Имя выпуска — ссылка на его карточку: из чата один тап до стакана."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [{"isin": "RU000A10AU99", "name": "Тест",
+                                     "val_bps": 250.0, "reason": "new"}]})
+    assert 'href="' in txt and "isin=RU000A10AU99" in txt and "ob=1" in txt
+
+
+def test_signal_text_spread_direction_icon():
+    """Спред вверх и вниз — разные новости, и маркер у них разный."""
+    up = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                       "matches": [{"isin": "RU000A10AU99", "name": "Т",
+                                    "val_bps": 300.0, "prev_val_bps": 240.0,
+                                    "reason": "spread"}]})
+    down = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
+                                      "val_bps": 240.0, "prev_val_bps": 300.0,
+                                      "reason": "spread"}]})
+    assert "📈" in up and "спред +60 бп" in up
+    assert "📉" in down and "спред −60 бп" in down

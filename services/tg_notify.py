@@ -22,6 +22,8 @@ SIGNAL_FLUSH_SEC = float(os.getenv("TG_SIGNAL_FLUSH_SEC", "30"))
 MAX_MATCHES = 8              # в одном сообщении; остальное сворачиваем в «ещё N»
 
 _MSK = timezone(timedelta(hours=3))
+# Ссылка на дашборд: имя выпуска в сообщении ведёт прямо в его карточку.
+_SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/app/")
 _REASON = {"new": "заявка", "price": "цена", "spread": "спред", "money": "объём",
            "block": "крупная сделка"}
 
@@ -77,63 +79,121 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
         logger.warning("tg_notify enqueue_signal error: %s", e)
 
 
+def _num(v: Optional[float], digits: int = 2) -> str:
+    """Число по-русски: запятая как разделитель, пробел между тысячами."""
+    if v is None:
+        return "—"
+    return f"{v:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
 def _fmt_money(v: Optional[float]) -> str:
     if not v:
         return ""
-    return f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽"
+    return (f"{_num(v / 1e6, 1)} млн ₽" if v >= 1e6
+            else f"{_num(v / 1e3, 0)} тыс ₽")
 
 
 def _fmt_years(y: Optional[float]) -> str:
     """Срок до погашения: меньше года — в месяцах, иначе годы с десятой."""
     if y is None:
         return ""
-    return f"{y * 12:.0f} мес" if y < 1 else f"{y:.1f} г"
+    return f"{y * 12:.0f} мес" if y < 1 else f"{_num(y, 1)} г"
+
+
+# Маркер строки: причина срабатывания у фильтра стакана, агрессор у сделки.
+# Эмодзи здесь не украшение — в ленте чата глаз цепляется за него раньше, чем
+# читает текст, и «новая заявка» отличается от «спред поехал» без чтения.
+_REASON_ICON = {"new": "🆕", "spread": "📈", "money": "📦", "price": "💵"}
+_SIDE_ICON = {"buy": "🟩", "sell": "🟥"}
+_SIDE_WORD = {"buy": "покупка", "sell": "продажа"}
+
+
+def _icon(m: dict, kind: str) -> str:
+    if kind == "block":
+        return _SIDE_ICON.get(m.get("side") or "", "⬜")
+    r = m.get("reason") or ""
+    if r == "spread":
+        # спред разъехался в разные стороны — это разные новости
+        prev, cur = m.get("prev_val_bps"), m.get("val_bps")
+        if prev is not None and cur is not None and cur < prev:
+            return "📉"
+    return _REASON_ICON.get(r, "•")
+
+
+def _issue_link(m: dict) -> str:
+    """Имя выпуска ссылкой на его карточку: из чата один тап до стакана."""
+    name = m.get("name") or m.get("isin") or "—"
+    isin = m.get("isin")
+    if not isin:
+        return f"<b>{name}</b>"
+    return f'<a href="{_SITE_URL}?isin={isin}&amp;ob=1"><b>{name}</b></a>'
 
 
 def _fmt_match(m: dict, kind: str) -> str:
-    """Строка одной бумаги/сделки. Подписываем всё, что иначе читается двояко:
-    базу спреда (Y-IDX), сторону, режим торгов и срок до погашения — те же
-    слова, что в ленте на сайте (frontend-react/src/signalFormat.js)."""
-    name = m.get("name") or m.get("isin")
-    bits = []
+    """Две строки на бумагу: заголовок с главным числом и подстрочник с деталями.
+
+    Одной строкой (как было) читалось как поток из восьми «·» — глазу не за что
+    зацепиться. Здесь первая строка отвечает «что и насколько», вторая —
+    «по какой цене, на сколько денег, какой это срок»."""
+    head_bits = []
+    sub_bits = []
+
     if kind == "block":
-        # сторона сделки — агрессор; у адресной его нет вовсе
-        bits.append({"buy": "покупка", "sell": "продажа"}.get(
-            m.get("side") or "", "без агрессора"))
-    if m.get("val_bps") is not None:
-        bits.append(f"Y-IDX {m['val_bps']:.0f} бп")
-    if m.get("price") is not None:
-        bits.append(f"{m['price']:.2f}")
-    money = _fmt_money(m.get("money_rub"))
-    if money:
-        bits.append(money)
-    if kind == "block":
+        money = _fmt_money(m.get("money_rub"))
+        head_bits.append(f"<code>{money}</code>" if money else "")
+        head_bits.append(_SIDE_WORD.get(m.get("side") or "", "без агрессора"))
+        if m.get("val_bps") is not None:
+            sub_bits.append(f"{m['val_bps']:.0f} бп")
+        if m.get("price") is not None:
+            sub_bits.append(f"{_num(m['price'])}%")
         if m.get("negotiated") is not None:
-            bits.append("адресная (РПС)" if m["negotiated"] else "по стакану")
-    elif m.get("single_px") is not None:
-        bits.append(f"одна заявка {m['single_px']:.2f}")
-    elif m.get("levels"):
-        bits.append(f"набор {m['levels']} ур")
+            sub_bits.append("адресная" if m["negotiated"] else "по стакану")
+    else:
+        if m.get("val_bps") is not None:
+            head_bits.append(f"<code>{m['val_bps']:.0f} бп</code>")
+        # причина ДЕЛЬТОЙ («спред +15 бп»): слово без величины не говорит,
+        # стоит ли отрываться от текущего дела
+        head_bits.append(_reason_delta(m) or _REASON.get(m.get("reason") or "", ""))
+        if m.get("price") is not None:
+            sub_bits.append(f"{_num(m['price'])}%")
+        money = _fmt_money(m.get("money_rub"))
+        if money:
+            sub_bits.append(money)
+        if m.get("single_px") is not None:
+            sub_bits.append(f"одна заявка {_num(m['single_px'])}")
+        elif m.get("levels"):
+            sub_bits.append(f"набор {m['levels']} ур")
+
     years = _fmt_years(m.get("years"))
     if years:
-        bits.append(years)
-    if kind != "block":
-        # причина ДЕЛЬТОЙ («спред +15 бп»), как в браузере: слово без числа не
-        # говорит, стоит ли смотреть. Фолбэк — просто слово.
-        bits.append(_reason_delta(m) or _REASON.get(m.get("reason") or "", ""))
-    return f"• <b>{name}</b> — " + " · ".join(bits)
+        sub_bits.append(years)
+    if m.get("rating"):
+        sub_bits.append(str(m["rating"]))
+    ts = (m.get("ts") or "")[11:16]
+    if kind == "block" and ts:
+        sub_bits.append(ts)
+
+    head = f"{_icon(m, kind)} {_issue_link(m)} · " + " · ".join(b for b in head_bits if b)
+    sub = " · ".join(b for b in sub_bits if b)
+    return head + (f"\n<i>{sub}</i>" if sub else "")
 
 
 def _signal_text(buf: dict) -> str:
-    side = {"ask": "оффер", "bid": "бид"}.get(buf.get("side") or "", "")
-    kind = buf.get("kind") or "book"
-    head = "💥 <b>Крупная сделка</b>" if kind == "block" else "📡 <b>Сигнал</b>"
-    lines = [f"{head} — {buf['name']}" + (f" ({side})" if side else "")]
+    kind = "block" if buf.get("kind") == "block" else "book"
     ms = buf["matches"]
-    lines += [_fmt_match(m, kind) for m in ms[:MAX_MATCHES]]
-    if len(ms) > MAX_MATCHES:
-        lines.append(f"…ещё {len(ms) - MAX_MATCHES}")
-    return "\n".join(lines)
+    n = len(ms)
+    if kind == "block":
+        word = "сделка" if n == 1 else ("сделки" if 2 <= n <= 4 else "сделок")
+        head = f"💥 <b>Крупные сделки</b> · {n} {word}"
+    else:
+        side = {"ask": "оффер", "bid": "бид"}.get(buf.get("side") or "", "")
+        word = "бумага" if n == 1 else ("бумаги" if 2 <= n <= 4 else "бумаг")
+        head = f"📡 <b>{buf['name']}</b>" + (f" · {side}" if side else "") + f" · {n} {word}"
+    body = "\n\n".join(_fmt_match(m, kind) for m in ms[:MAX_MATCHES])
+    out = f"{head}\n\n{body}"
+    if n > MAX_MATCHES:
+        out += f"\n\n<i>…ещё {n - MAX_MATCHES}</i>"
+    return out
 
 
 async def _flush_signals() -> None:
