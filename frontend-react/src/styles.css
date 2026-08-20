@@ -560,6 +560,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .bt-vol { width: 56px; }
 .bt-table td { font-variant-numeric: tabular-nums; }
 .bt-d { color: var(--mut); font-size: 11px; }
+/* дата сегодняшней сессии — основным цветом текста (на тёмной теме белым):
+   живой день отделяется от истории без чтения самих чисел */
+.bt-d.bt-today { color: var(--fg); font-weight: 700; }
 /* агрессор красит цену строки — тот же код цвета, что в общей ленте СДЕЛКИ */
 .bt-row.bt-buy td:nth-child(3) { color: var(--up); }
 .bt-row.bt-sell td:nth-child(3) { color: var(--down); }

@@ -15,6 +15,8 @@ const LIMIT = 300;
 const DEFAULT_VOL_MLN = 1;
 
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
+// МСК-дата (UTC+3, без DST): иначе 00:00–03:00 МСК считали бы «сегодня» вчерашним
+const todayMsk = () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 
 export default function BondTrades({ isin, kind, onClose }) {
@@ -54,6 +56,9 @@ export default function BondTrades({ isin, kind, onClose }) {
   // лента читается сверху вниз от свежего: бэк отдаёт по возрастанию времени
   const shown = [...rows].reverse();
   const spreadOf = (r) => (isFixed ? r.g_spread_bps : r.y_idx_bps);
+  // сделки СЕГОДНЯШНЕЙ сессии — основным цветом текста, прошлые дни приглушены:
+  // в окне 7/30 дней глаз должен сразу отделять живой день от истории
+  const today = todayMsk();
 
   return (
     <div className="ob-panel-inner">
@@ -111,7 +116,8 @@ export default function BondTrades({ isin, kind, onClose }) {
                     className={"bt-row" + (r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
                     title={`${r.ts} · ${fmt.num(r.qty, 0)} шт`
                       + (r.side ? ` · агрессор ${r.side}` : "")}>
-                    <td className="left bt-d">{dpart(r.ts)}</td>
+                    <td className={"left bt-d" + (String(r.ts || "").slice(0, 10) === today ? " bt-today" : "")}>
+                      {dpart(r.ts)}</td>
                     <td className="left bt-d">{tpart(r.ts)}</td>
                     <td>{fmt.pct(r.price) ?? "—"}</td>
                     <td>{fmt.mln(r.value) ?? "—"}</td>
