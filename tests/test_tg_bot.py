@@ -142,8 +142,8 @@ def test_trade_icons_by_side_and_ndm():
         return _signal_text({"name": "следим", "side": None, "kind": "block",
                              "matches": [m]})
 
-    assert one(side="buy", negotiated=False).startswith("🔼")
-    assert one(side="sell", negotiated=False).startswith("🔽")
+    assert one(side="buy", negotiated=False).startswith("👍")
+    assert one(side="sell", negotiated=False).startswith("👎")
     assert one(side="buy", negotiated=True).startswith("🤝")
     assert "320м ₽" in one(side="buy", negotiated=False)   # деньги коротко
 
