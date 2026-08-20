@@ -87,6 +87,21 @@ class SplicedAsofCurve(DiscountCurve):
             return super().df(d)
         return (1.0 / self._fact_total) * self._anchor.df(d)
 
+    def rate_bounds(self) -> list:
+        """Ступень гибрида ДНЕВНАЯ до splice (факт индекса ЦБ), дальше — ступень
+        anchor. Узлов у гибрида всего два (eff, splice), поэтому дефолтная
+        реализация DiscountCurve.rate_bounds отдала бы одну границу на весь
+        факт-сегмент, и потребитель (путь роллирования RUONIA) заморозил бы
+        уровень первого дня до самого splice."""
+        lo = bisect_right(self._dates, self.calc_date)
+        hi = bisect_right(self._dates, self._splice)
+        out = [d for d in self._dates[lo:hi] if d < self._splice]
+        out.append(self._splice)
+        ab = getattr(self._anchor, "rate_bounds", None)
+        if callable(ab):
+            out.extend(d for d in ab() if d > self._splice)
+        return out
+
     def daily_forward(self, d: date) -> float:
         if d >= self._splice:
             return self._anchor.daily_forward(d)
@@ -868,7 +883,14 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #     ОФЗ-ПК — до погашения, 29010: 16.59% до 2034), и весь хвост прайсился
 #     замороженной ставкой вместо форварда. Замер на выборке: Y-IDX −5…−212 bps,
 #     SM −5…−176 bps — история старого движка несопоставима с новой.
-HONEST_ENGINE_VERSION = 7
+# 8 — 2026-08-20: путь роллирования RUONIA (база Y-IDX) шёл по узлам кривой, а
+#     у гибрида as-of узлов два (eff, splice) — уровень ПЕРВОГО ДНЯ замерзал на
+#     весь факт-сегмент. База на прошлую дату = спот-индекс, скомпаундированный
+#     до погашения, тем сильнее завышенный, чем дальше дата и чем круче с неё
+#     ушла ставка. МБЭС 2P-02 @2025-08-20: база 18.01% вместо 16.10%, Y-IDX 48
+#     вместо 239 bps при марже выпуска 250. Затронуты ВСЕ realized-даты (до
+#     начала архива своп-котировок 2026-07-30); market-даты не менялись.
+HONEST_ENGINE_VERSION = 8
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:

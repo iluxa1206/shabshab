@@ -381,7 +381,11 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #          coupon_calib.strip_undetermined_values, HONEST_ENGINE_VERSION=7).
 #          Спред баров считался с замороженной ставкой на всём хвосте купонов —
 #          сдвиг до 200 bps, старые бары несопоставимы с новыми.
-BARS_METRICS_VERSION = 7
+#   8    — 2026-08-20: база Y-IDX (роллирование RUONIA) на прошлую дату замирала
+#          на уровне первого дня факт-сегмента гибрида as-of — см.
+#          HONEST_ENGINE_VERSION=8. Спред баров тем сильнее занижен, чем дальше
+#          дата: МБЭС 2P-02 год назад 48 bps вместо 239.
+BARS_METRICS_VERSION = 8
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",

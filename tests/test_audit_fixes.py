@@ -472,3 +472,55 @@ def test_ruonia_base_leg_uses_actual_year_length():
     # тот же день в високосном — ставка/366
     p2 = _RuoniaCompoundPath(_Flat(), date(2028, 1, 3))      # пн
     assert p2.growth_to(date(2028, 1, 4)) - 1 == pytest.approx(0.10 / 366, abs=1e-12)
+
+
+# ── база Y-IDX на прошлую дату: ступень гибрида дневная ───────────────────
+
+def test_spliced_asof_rolling_follows_daily_fact():
+    """Путь роллирования RUONIA обязан идти по ДНЕВНОЙ ступени гибрида as-of,
+    а не замирать на уровне первого дня до splice.
+
+    Регресс: _RuoniaCompoundPath читал границы ступеней из curve.nodes, а у
+    SplicedAsofCurve узлов два (eff, splice) — уровень первого дня замораживался
+    на весь факт-сегмент. База Y-IDX на прошлую дату вырождалась в спот-индекс,
+    скомпаундированный до погашения, и вся историческая серия Y-IDX была занижена
+    (МБЭС 2P-02 на 2025-08-20: база 18.01% вместо 16.10%, Y-IDX 48 вместо 239 bps
+    при марже выпуска 250).
+    """
+    from core.forwards import DiscountCurve
+    from core.valuation import ruonia_rolling_yield_pct
+    from services.backdate import SplicedAsofCurve
+
+    eff = date(2025, 8, 21)
+    splice = date(2026, 7, 30)
+    mat = date(2026, 12, 14)
+
+    # факт индекса: 18% на старте, ступенями вниз до 14%
+    dates, rates, d, r = [], [], eff - timedelta(days=30), 18.0
+    while d <= splice:
+        dates.append(d)
+        rates.append(r)
+        r = max(14.0, r - 0.02)
+        d += timedelta(days=7)
+
+    anchor = DiscountCurve(splice, [(mat, 0.95)])
+    curve = SplicedAsofCurve("RUONIA", eff, splice, anchor, dates, rates)
+
+    # границы ступеней = дневной факт, а не два узла
+    assert len(curve.rate_bounds()) > 10
+    assert max(curve.nodes[i][0] for i in range(len(curve.nodes))) == splice
+
+    y = ruonia_rolling_yield_pct(curve, eff - timedelta(days=1), mat)
+
+    # эталон: сплошной дневной компаундинг по тому же daily_forward
+    g, x = 1.0, eff
+    while x < mat:
+        g *= 1.0 + curve.daily_forward(x) / (366.0 if x.year % 4 == 0 else 365.0)
+        x += timedelta(days=1)
+    naive = (g ** (365.0 / (mat - eff).days) - 1.0) * 100.0
+
+    assert y == pytest.approx(naive, abs=0.05), "путь разошёлся с дневным фактом"
+    # и заметно ниже «замороженного спота» — суть регресса
+    frozen = ((1.0 + 0.18 / 365.0) ** 365 - 1.0) * 100.0
+    assert y < frozen - 1.0
+

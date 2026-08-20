@@ -1295,7 +1295,15 @@ class _RuoniaCompoundPath:
     def __init__(self, curve: DiscountCurve, start: date):
         self.curve = curve
         self.start = start
-        self._bounds = [nd for nd, _ in getattr(curve, "nodes", []) or []]
+        # границы ступеней СПРАШИВАЕМ У КРИВОЙ: у гибрида as-of (SplicedAsofCurve)
+        # ступень дневная — факт индекса ЦБ, — а узлов всего два. Читая границы из
+        # nodes, путь замораживал уровень первого дня на весь горизонт: база Y-IDX
+        # на прошлую дату вырождалась в спот-RUONIA, скомпаундированный до
+        # погашения (2025-08-20: 18.01% вместо 16.10% → Y-IDX занижен на ~190 bps
+        # по всей исторической серии realized-дат).
+        rb = getattr(curve, "rate_bounds", None)
+        self._bounds = (rb() if callable(rb)
+                        else [nd for nd, _ in getattr(curve, "nodes", []) or []])
         self._r = self._hi = None
         self.days = [0]
         self.cum = [1.0]
@@ -1305,7 +1313,9 @@ class _RuoniaCompoundPath:
         if self._hi is not None and d < self._hi:
             return self._r
         self._r = self.curve.daily_forward(d)
-        self._hi = next((nd for nd in self._bounds if nd > d), None)
+        # bisect, не линейный проход: у гибрида as-of границ тысячи (дневной факт)
+        i = bisect_right(self._bounds, d)
+        self._hi = self._bounds[i] if i < len(self._bounds) else None
         return self._r
 
     def _extend_to(self, n: int) -> None:
