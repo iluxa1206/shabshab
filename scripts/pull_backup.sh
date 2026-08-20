@@ -33,7 +33,8 @@ ssh $SSH_OPTS "$SERVER" "ls -lh $REMOTE"
 
 echo ">>> тянем свежие копии в $DEST"
 # shellcheck disable=SC2086
-rsync -avh --progress -e "ssh $SSH_OPTS" \
+# без --progress: 500 МБ построчного прогресса топят полезный вывод
+rsync -ah --stats -e "ssh $SSH_OPTS" \
   "$SERVER:$REMOTE/" "$DEST/"
 
 echo ">>> проверка распаковкой (последняя копия portfolio)"

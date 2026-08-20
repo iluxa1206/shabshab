@@ -29,3 +29,5 @@ benchmarks_cache.json
 cbr_cache.json
 RC_F*.xlsx
 datasets/
+# локальные копии прод-базы (scripts/pull_backup.sh) — сотни МБ
+backups/

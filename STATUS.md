@@ -54,6 +54,34 @@ docker compose -f docker-compose.prod.yml exec floaters python scripts/useradd.p
 
 Файлы деплоя (в репо): `Dockerfile`, `.dockerignore`, `docker-compose.prod.yml`, `scripts/deploy.sh`.
 
+## Резервные копии (2026-08-20)
+
+Тиковый архив и история спредов живут ТОЛЬКО в `data/portfolio.db` (2,5 ГБ).
+У Alor глубина сделок 30 дней — всё, что глубже, восстановить неоткуда.
+
+**Как снимается:** `scripts/backup_db.py` — `sqlite3.backup()` порциями
+(консистентно на живой базе, не запирает писателей), проверка копии чтением
+контрольных таблиц, gzip, ротация «2 свежих + 2 воскресных». Копируются
+`portfolio.db`, `instruments.db` и `users.json`. Замер на проде: 2,5 ГБ → 537 МБ
+за 91 с. Лежит в `data/backups/` (том переживает редеплой), лог —
+`data/logs/backup.log`.
+
+**Расписание:** `/etc/cron.d/floaters-backup`, 04:30 МСК (после ночного
+прун/VACUUM/ANALYZE в 03:30). Крон-файл ставится КАЖДЫМ деплоем — правится в
+`scripts/deploy.sh`, не руками на сервере.
+
+**Копия к себе:** `./scripts/pull_backup.sh [каталог]` (по умолчанию `./backups`,
+gitignored). Раз в неделю — обязательно: копия на сервере спасает от кривой
+миграции, но не от смерти VPS.
+
+**Восстановление** (проверено 2026-08-20 на полной копии — `quick_check: ok`,
+5,9 млн тиков, 3,9 млн баров):
+```bash
+gunzip -c backups/portfolio-YYYYMMDD-HHMM.db.gz > portfolio.db
+sqlite3 portfolio.db "PRAGMA quick_check(3)"      # ~48с на 2,4 ГБ
+# на прод: остановить контейнер, положить файл в data/, поднять
+```
+
 ## Архитектура
 ```
 api/           FastAPI: main.py, schemas.py, routes/{health,meta,bonds,curves,orderbook,ws}
