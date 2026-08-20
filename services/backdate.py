@@ -50,8 +50,11 @@ class SplicedAsofCurve(DiscountCurve):
     относительно market-дат (ТрансмхПБ8 28→29.07: −50bp «скачок»)."""
 
     def __init__(self, base: str, eff: date, splice: date, anchor: DiscountCurve,
-                 dates: list, rates: list):
+                 dates: list, rates: list, index_levels: dict = None):
         self.base_type = base
+        # накопленный индекс ЦБ на факт-сегменте — эталон роста o/n-роллирования
+        # (см. realized_growth); None — эталона нет, потребитель реконструирует
+        self._index = index_levels or None
         self.rate_convention = anchor.rate_convention
         self._anchor = anchor
         self._splice = splice
@@ -86,6 +89,26 @@ class SplicedAsofCurve(DiscountCurve):
             # дата внутри факт-сегмента, но вне сетки (не бывает: сетка дневная)
             return super().df(d)
         return (1.0 / self._fact_total) * self._anchor.df(d)
+
+    def realized_until(self) -> date:
+        """Факт кончается на стыке с anchor: до splice — реализованный индекс."""
+        return self._splice
+
+    def realized_growth(self, t1: date, t2: date):
+        """Рост o/n-роллирования по официальному накопленному индексу ЦБ.
+
+        Отношение уровней — ровно то, что ЦБ уже посчитал своей же механикой
+        (капитализация в рабочие дни, простое начисление на нерабочих, ACT/ACT).
+        None — индекс не передан, отрезок вне факта или дат нет в истории; тогда
+        потребитель честно откатывается на реконструкцию по ставкам."""
+        if not self._index or t2 <= t1:
+            return None
+        if t1 < self.calc_date or t2 > self._splice:
+            return None
+        a, b = self._index.get(t1), self._index.get(t2)
+        if not a or not b or a <= 0.0:
+            return None
+        return b / a
 
     def rate_bounds(self) -> list:
         """Ступень гибрида ДНЕВНАЯ до splice (факт индекса ЦБ), дальше — ступень
@@ -134,6 +157,31 @@ class SplicedAsofCurve(DiscountCurve):
         return 365.0 * (math.exp(ln / n) - 1.0)
 
 
+_ru_index_memo: dict = {}     # день → {дата: уровень}; история прошлого не меняется
+
+
+def _ruonia_index_levels() -> Optional[dict]:
+    """Официальный накопленный индекс RUONIA как {дата: уровень}, дневной кэш.
+
+    Только для RUONIA: у КС такого индекса нет (это ставка ЦБ, не индекс), а база
+    Y-IDX для всех флоатеров и так RUONIA. Сбой источника — None, гибрид просто
+    остаётся на реконструкции по ставкам."""
+    today = date.today()
+    hit = _ru_index_memo.get(today)
+    if hit is not None:
+        return hit or None
+    try:
+        from services import cbr
+        rows = cbr.ruonia_index_history()
+        levels = {d: ix for d, ix, _ in rows if ix}
+    except Exception as e:
+        logger.warning(f"RUONIA index недоступен ({e}) — рост роллирования реконструируем")
+        levels = {}
+    _ru_index_memo.clear()
+    _ru_index_memo[today] = levels
+    return levels or None
+
+
 def build_hybrid_curve(base: str, calc_date: date, hist_pairs: list,
                        today_curve: DiscountCurve) -> DiscountCurve:
     """Гибридная кривая на прошлую дату D: факт индекса от D+1 до старта
@@ -149,7 +197,8 @@ def build_hybrid_curve(base: str, calc_date: date, hist_pairs: list,
         raise CalculationException(
             f"история {base} не покрывает {eff.isoformat()} — гибридная кривая невозможна")
 
-    return SplicedAsofCurve(base, eff, splice, today_curve, dates, rates)
+    return SplicedAsofCurve(base, eff, splice, today_curve, dates, rates,
+                            index_levels=_ruonia_index_levels() if base == "RUONIA" else None)
 
 
 _anchor_memo: dict = {}    # (base, first_archive_date) → кривая; архив прошлого не меняется

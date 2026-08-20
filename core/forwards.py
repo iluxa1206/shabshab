@@ -1,7 +1,7 @@
 import math
 import calendar
 from datetime import date, timedelta
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,24 @@ class DiscountCurve:
         весь горизонт.
         """
         return [d for d, _ in self.nodes[1:]]
+
+    def realized_until(self) -> Optional[date]:
+        """Конец ФАКТИЧЕСКОГО (уже реализованного) отрезка кривой, если он есть.
+
+        None — кривая целиком про будущее (живой прайсинг). Гибрид as-of знает
+        факт от своей даты до сегодня и переопределяет метод."""
+        return None
+
+    def realized_growth(self, t1: date, t2: date) -> Optional[float]:
+        """Рост капитала o/n-роллирования на [t1, t2] по ВНЕШНЕМУ ЭТАЛОНУ факта
+        (официальный накопленный индекс ЦБ), либо None — эталона нет и рост надо
+        реконструировать по ставкам.
+
+        Смысл контракта: прошедший отрезок не пересчитывать, а брать посчитанным.
+        Реконструкция роста из дневных ставок — три независимых источника ошибки
+        (ступень ставки, календарь рабочих дней, база года), и ошибка в первом же
+        из них стоила Y-IDX всей исторической серии (см. rate_bounds)."""
+        return None
 
     def df(self, d: date) -> float:
         """Интерполяция дисконт-фактора."""

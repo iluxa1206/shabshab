@@ -524,3 +524,48 @@ def test_spliced_asof_rolling_follows_daily_fact():
     frozen = ((1.0 + 0.18 / 365.0) ** 365 - 1.0) * 100.0
     assert y < frozen - 1.0
 
+
+def test_realized_growth_uses_official_index():
+    """Прошедший отрезок базы Y-IDX берётся отношением уровней официального
+    индекса ЦБ, хвост за splice — реконструкцией по кривой. Без индекса —
+    честный откат на реконструкцию (цифры обязаны сойтись)."""
+    from core.forwards import DiscountCurve
+    from core.valuation import ruonia_rolling_yield_pct
+    from services.backdate import SplicedAsofCurve
+
+    eff = date(2025, 8, 21)
+    splice = date(2026, 7, 30)
+
+    dates, rates, d, r = [], [], eff - timedelta(days=30), 18.0
+    while d <= splice:
+        dates.append(d)
+        rates.append(r)
+        r = max(14.0, r - 0.02)
+        d += timedelta(days=7)
+
+    anchor = DiscountCurve(splice, [(date(2031, 7, 30), 0.45)])
+    plain = SplicedAsofCurve("RUONIA", eff, splice, anchor, dates, rates)
+
+    # эталон строим ИЗ САМОЙ кривой (её же дневная ступень), но по чужой
+    # механике: так тест ловит подмену источника, а не совпадение конвенций
+    levels, lv, x = {}, 1.0, eff
+    while x <= splice:
+        levels[x] = lv
+        lv *= 1.0 + plain.daily_forward(x) / (366.0 if x.year % 4 == 0 else 365.0)
+        x += timedelta(days=1)
+    withix = SplicedAsofCurve("RUONIA", eff, splice, anchor, dates, rates,
+                              index_levels=levels)
+
+    assert plain.realized_growth(eff, splice) is None, "без индекса эталона нет"
+    assert withix.realized_growth(eff, splice) == pytest.approx(
+        levels[splice] / levels[eff])
+    # отрезок за пределами факта эталоном не покрывается
+    assert withix.realized_growth(eff, splice + timedelta(days=10)) is None
+
+    calc = eff - timedelta(days=1)
+    for mat in (date(2026, 5, 1),                 # целиком внутри факта
+                splice,                            # ровно до стыка
+                date(2028, 1, 15)):                # факт + хвост форварда
+        y_ix = ruonia_rolling_yield_pct(withix, calc, mat)
+        y_rc = ruonia_rolling_yield_pct(plain, calc, mat)
+        assert y_ix == pytest.approx(y_rc, abs=0.05), f"разошлись на {mat}"

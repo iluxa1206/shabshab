@@ -1384,7 +1384,26 @@ def ruonia_rolling_yield_pct(
     D = (maturity - start).days
     if D <= 0:
         return None
-    growth = _ruonia_path(curve, start).growth_to(maturity)
+
+    # ПРОШЕДШИЙ ОТРЕЗОК — ЭТАЛОНОМ, НЕ РЕКОНСТРУКЦИЕЙ. На прошлую дату часть пути
+    # уже случилась, и ЦБ опубликовал её накопленным индексом: рост = отношение
+    # уровней, одно деление вместо шага по дням со своей ступенью ставки, своим
+    # календарём рабочих дней и своей базой года. Совпадение реконструкции с
+    # эталоном ≤0.5 bps (сверено на горизонтах до года), так что переход — не про
+    # точность, а про то, что ошибиться в делении негде: ровно в реконструкции
+    # сидел баг замороженной ставки, стоивший исторической серии Y-IDX сотен bps.
+    # Хвост за концом факта (форвард) реконструируется как раньше.
+    growth = 1.0
+    tail_start = start
+    fact_end = curve.realized_until()
+    if fact_end is not None and fact_end > start:
+        edge = min(fact_end, maturity)
+        g0 = curve.realized_growth(start, edge)
+        if g0 is not None and g0 > 0.0:
+            growth, tail_start = g0, edge
+
+    if maturity > tail_start:
+        growth *= _ruonia_path(curve, tail_start).growth_to(maturity)
     if growth <= 0.0:
         return None
     return (math.pow(growth, 365.0 / D) - 1.0) * 100.0
