@@ -357,6 +357,14 @@ async def warmup_caches():
                     market_cache["universe_metrics"] = m
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
+        # календарь выплат — тем же прогревом (плашка выплат в нижней строке
+        # иначе платит его полным пересчётом при первом открытии)
+        progress.advance("warmup", detail="календарь выплат", force=True)
+        try:
+            from services.payments_calendar import build_payments_calendar
+            await build_payments_calendar()
+        except Exception as e:
+            logger.warning("warmup календаря выплат: %s", e)
         progress.finish("warmup", detail="кэши готовы")
     except Exception as e:
         logger.warning(f"warmup error: {e}")
@@ -385,6 +393,15 @@ async def daily_prewarm():
                 if m:
                     market_cache["universe_metrics"] = m
             await _warm_fixed(market_cache)
+            # Календарь выплат: полный поток по универсу считается раз в день и
+            # держится в памяти. Без прогрева его первым платил случайный
+            # пользователь — 5 секунд ожидания на открытии плашки выплат.
+            try:
+                from services.payments_calendar import build_payments_calendar
+                cal = await build_payments_calendar()
+                logger.info("prewarm календаря выплат: событий %d", len(cal["events"]))
+            except Exception as e:
+                logger.warning("prewarm календаря выплат: %s", e)
             logger.info("daily 09:00 prewarm: готово (расписаний %d)",
                         len(MarketDataService._full_mem))
         except Exception as e:

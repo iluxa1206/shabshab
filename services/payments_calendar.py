@@ -186,33 +186,44 @@ async def build_payments_calendar() -> dict:
             except Exception:
                 index_fns[b] = None
 
-        events: List[dict] = []
-        for u in uni:
-            isin = u["isin"]
-            try:
-                ref = build_universe_ref(u, isin, cache, secs)
-                # Номинал — той же коррекцией, что в витрине (services.universe.
-                # enrich_bond): isins_cache у амортизируемых бумаг стейлится, и
-                # завышенный остаток порождал ФАНТОМНОЕ погашение — билдер видел
-                # residual = face − Σ будущих траншей > 0 и дорисовывал лишний
-                # платёж на дату последней амортизации (БалтЛизП10: кэш 900 при
-                # остатке 800 → две строки по 100 ₽ на 08.04.27).
-                full_i = full_by.get(isin) or {}
-                reconcile_face(ref, full_i.get("coupons") or [], calc_date)
-                rem = amort_remaining_face(full_i.get("amorts"), calc_date)
-                if rem is not None and abs(rem - (ref.face_value or 0)) > 0.5:
-                    ref.face_value = rem
-                name = shortnames.get(isin) or u.get("name") or isin
-                curve = ruonia_curve if ref.base == "RUONIA" else keyrate_curve
-                evs = _bond_events(
-                    ref, u, name, curve, calc_date, full_i, index_fns.get(ref.base))
-                # объём выплаты держателям всего по выпуску: ₽/бумага × штук
-                size = sizes.get(isin)
-                for e in evs:
-                    e["total_rub"] = round(e["amount_rub"] * size, 2) if size else None
-                events.extend(evs)
-            except Exception as e:
-                logger.warning(f"calendar skip {isin}: {e}")
+        # Цикл по 500+ бумагам — ЧИСТЫЙ CPU (проекция купонов форвардом на каждую).
+        # Раньше он крутился прямо в корутине и на первом за день открытии
+        # календаря клал event loop: замер на проде — «медленный запрос 5,06с:
+        # GET /api/bonds/calendar» и рядом «event loop лаг 4,89с». Уносим в
+        # heavy-пул: там он никого не держит, а очередь тяжёлого счёта и так
+        # однопоточная.
+        def _build_events() -> List[dict]:
+            events: List[dict] = []
+            for u in uni:
+                isin = u["isin"]
+                try:
+                    ref = build_universe_ref(u, isin, cache, secs)
+                    # Номинал — той же коррекцией, что в витрине (services.universe.
+                    # enrich_bond): isins_cache у амортизируемых бумаг стейлится, и
+                    # завышенный остаток порождал ФАНТОМНОЕ погашение — билдер видел
+                    # residual = face − Σ будущих траншей > 0 и дорисовывал лишний
+                    # платёж на дату последней амортизации (БалтЛизП10: кэш 900 при
+                    # остатке 800 → две строки по 100 ₽ на 08.04.27).
+                    full_i = full_by.get(isin) or {}
+                    reconcile_face(ref, full_i.get("coupons") or [], calc_date)
+                    rem = amort_remaining_face(full_i.get("amorts"), calc_date)
+                    if rem is not None and abs(rem - (ref.face_value or 0)) > 0.5:
+                        ref.face_value = rem
+                    name = shortnames.get(isin) or u.get("name") or isin
+                    curve = ruonia_curve if ref.base == "RUONIA" else keyrate_curve
+                    evs = _bond_events(
+                        ref, u, name, curve, calc_date, full_i, index_fns.get(ref.base))
+                    # объём выплаты держателям всего по выпуску: ₽/бумага × штук
+                    size = sizes.get(isin)
+                    for e in evs:
+                        e["total_rub"] = round(e["amount_rub"] * size, 2) if size else None
+                    events.extend(evs)
+                except Exception as e:
+                    logger.warning(f"calendar skip {isin}: {e}")
+            return events
+
+        from services.heavy import run_heavy
+        events = await run_heavy(_build_events)
         events.sort(key=lambda e: (e["date"], e["emitter"], e["isin"]))
 
         _cache.update(key=key, events=events, calc_date=calc_date)
