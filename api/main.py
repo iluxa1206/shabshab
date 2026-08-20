@@ -33,6 +33,12 @@ try:
     logging.getLogger().addHandler(_fh)
 except Exception as e:                    # том не смонтирован / нет прав — не падаем
     logger.warning("file log disabled: %s", e)
+
+# Шум сетевых клиентов — в WARNING: httpx пишет INFO-строку на КАЖДЫЙ запрос к
+# MOEX (три доски раз в 5 секунд), и в файле ротация съедала бы диагностику
+# ротацией того же httpx. Ошибки соединений при этом остаются видны.
+for _noisy in ("httpx", "httpcore", "urllib3", "websockets", "aiosqlite"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
