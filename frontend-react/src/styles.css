@@ -790,13 +790,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
 .ob-note { padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
 
-/* Панель-попап нижней строки (выплаты): всплывает вверх от ячейки. */
-.pay-pop { position: absolute; bottom: 100%; right: 0; z-index: 210;
-  min-width: 420px; max-height: 340px; overflow-y: auto; background: var(--bg);
-  border: 1px solid var(--fg); box-shadow: 0 -4px 16px rgba(0,0,0,.2); padding: 6px 0; }
-.pay-pop-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--mut); padding: 4px 12px 6px; }
-
 /* --- Динамика спредов --- */
 .sh-box { margin-bottom: 20px; }
 .sh-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
