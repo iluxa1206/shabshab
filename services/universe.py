@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
+    yidx_at_price,
 )
 from services.valuation import calculate_valuation_metrics, alt_horizon as _alt_horizon
 from core.valuation import next_offer_info
@@ -277,6 +278,9 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             lvol = lv.get("val_today")
             out[isin]["val_today"] = max(vol or 0, lvol or 0) or None
             out[isin]["wap"] = lv.get("vwap_pct") or snap.get("waprice")
+            # спред по средневзвесу дня: аналитика считает по нему, а не по
+            # last price (одна сделка, в неликвиде — случайный тонкий принт)
+            out[isin]["yoi_wap"] = yidx_at_price(out[isin], out[isin]["wap"])
 
         # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
         # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках

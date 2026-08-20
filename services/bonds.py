@@ -153,6 +153,21 @@ def reconcile_face(ref: BondRefData, coupons_full, calc_date: date,
     return None
 
 
+def yidx_at_price(row: dict, price: Optional[float]) -> Optional[float]:
+    """Y-IDX по ПРОИЗВОЛЬНОЙ цене выпуска — наклоном от уже посчитанного спреда
+    цены сделки (yoi при last). Тот же приём, что даёт спред верха стакана
+    (yoi_bid/yoi_ask) и уровней в стакане: на масштабе одного дня Y-IDX(цена)
+    практически прямая, а полный reprice стоил бы сборки модели на бумагу.
+
+    Нужен спреду по СРЕДНЕВЗВЕСУ дня: last price — это одна, возможно случайная
+    сделка (в неликвиде — тонкий принт на закрытии), а средневзвес взвешен
+    объёмом и куда устойчивее как «цена дня»."""
+    slope, yoi, last = row.get("yoi_slope"), row.get("yoi"), row.get("last")
+    if price is None or slope is None or yoi is None or last is None or price <= 0:
+        return None
+    return int(round(yoi + (price - last) * slope))
+
+
 def amort_remaining_face(amorts, calc_date: date) -> Optional[float]:
     """Остаток номинала на calc_date из графика амортизаций MOEX = Σ будущих
     траншей (вкл. финальное погашение). Авторитетнее кэша securities: isins_cache

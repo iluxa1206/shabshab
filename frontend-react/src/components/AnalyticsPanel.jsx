@@ -23,9 +23,24 @@ const BCOLOR = {
 // таблице, в стакане и в истории снапшотов. Бэнд отсекает мусор от стейл/тонких
 // цен неликвида (тот же, что на бэкенде для spread_daily).
 const YBAND = [-1500, 3000];
+const inBand = (v) => (v != null && v > YBAND[0] && v < YBAND[1] ? v : null);
+
+// Спред бумаги для ДИАГРАММ — по СРЕДНЕВЗВЕСУ дня, а не по last price: цена
+// последней сделки в неликвиде это один случайный принт (часто тонкий, часто на
+// закрытии), и облако точек от него дрожало сильнее, чем реально двигался рынок.
+// Средневзвес взвешен объёмом — устойчивая «цена дня».
+// Приоритет: готовое число бэка (y_idx_wap_bps, считается тем же наклоном, что
+// спред верха стакана) → линеаризация на фронте, если бэк ещё не прислал →
+// спред по last price как последний фолбэк (бумага сегодня не торговалась).
 const yval = (b) => {
-  const v = b.yield_over_index_bps;
-  return v != null && v > YBAND[0] && v < YBAND[1] ? v : null;
+  const direct = inBand(b.y_idx_wap_bps);
+  if (direct != null) return direct;
+  const wap = b.wap_price_pct, k = b.y_idx_slope_bps_per_pct;
+  if (wap != null && k != null && b.last_price_pct != null
+      && b.yield_over_index_bps != null) {
+    return inBand(Math.round(b.yield_over_index_bps + (wap - b.last_price_pct) * k));
+  }
+  return inBand(b.yield_over_index_bps);
 };
 
 // ключ эмитента (имя первично, id — фолбэк) и группировка строк по эмитенту
@@ -291,6 +306,43 @@ const dmm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 const YH_PAD = { l: 46, r: 14, t: 12, b: 30 };
 const MARKET = "РЫНОК";
 
+// МСК-дата: снапшот спредов пишется вечером, поэтому днём история заканчивается
+// вчера — сегодняшний день дорисовываем сами (см. withToday)
+const mskToday = () =>
+  new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+
+/**
+ * Достраивает историю СЕГОДНЯШНЕЙ точкой из живых строк — медианой того же
+ * спреда по средневзвесу, что показывают две другие диаграммы.
+ *
+ * История приезжает из вечерних снапшотов (spread_daily), поэтому в течение дня
+ * линия обрывалась на вчера, и «динамика» не показывала того, что видно рядом на
+ * scatter. Точка считается по тем же группам (рейтинг-бакет / эмитент) и только
+ * для серий, которые в истории уже есть, — новых линий не появляется.
+ */
+function withToday(data, rows, byIss) {
+  const dates = data.dates || [], series = data.series || [];
+  const today = mskToday();
+  if (!dates.length || !series.length || dates[dates.length - 1] >= today) {
+    return data;
+  }
+  const groups = new Map();
+  for (const b of rows) {
+    const key = byIss ? emKey(b) : norm(b.rating);
+    const z = yval(b);
+    if (!key || z == null) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(z);
+  }
+  const all = [...groups.values()].flat();
+  const nextSeries = series.map((s) => {
+    const vals = s.key === MARKET ? all : groups.get(s.key);
+    if (!vals || !vals.length) return s;
+    return { ...s, points: [...s.points, { date: today, med: median(vals), n: vals.length }] };
+  });
+  return { dates: [...dates, today], series: nextSeries };
+}
+
 function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
   const byIss = groupBy === "issuer";
   const [data, setData] = useState(null);
@@ -311,7 +363,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
 
   if (err) return <div className="an-empty">не загрузилось: {err}</div>;
   if (!data) return <div className="an-empty">загрузка…</div>;
-  const { dates, series } = data;
+  const { dates, series } = withToday(data, rows, byIss);
   if (!dates.length || !series.length) return <div className="an-empty">нет истории снапшотов за период</div>;
 
   const colorOf = (s, i) => (byIss
@@ -524,8 +576,8 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   return (
     <section className={"analytics" + (full ? " has-full" : "")}>
       <AnCard title="R-spread vs SPREAD DURATION" ctl={aggCtl} {...fullBtn("scatter")}
-        hint={byIss ? "точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
-                    : "точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
+        hint={byIss ? "спред по средневзвесу дня · точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
+                    : "спред по средневзвесу дня · точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
         {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} />
                : <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} />}
         {focus?.type === "issuer" && <IssuerDetail rows={rows} issuer={focus.key} onClear={() => set(null)} />}
@@ -533,7 +585,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
       </AnCard>
 
       <AnCard title={byIss ? "R-spread по ЭМИТЕНТАМ" : "R-spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
-        hint="линия p25–p75 · точка = медиана · (n) · клик = фильтр">
+        hint="спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n) · клик = фильтр">
         {byIss
           ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH} />
           : <RatingDist rows={rows} focus={focus} onPick={pickRating} rowH={distRowH} />}
@@ -541,8 +593,8 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
       </AnCard>
 
       <AnCard title="R-spread ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
-        hint={byIss ? "медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
-                    : "медиана по рейтинг-бакетам · клик по линии = фильтр"}>
+        hint={byIss ? "медиана по топ-эмитентам · сегодня — по средневзвесу · пунктир = рынок · клик по линии = фильтр"
+                    : "медиана по рейтинг-бакетам · сегодня — по средневзвесу · клик по линии = фильтр"}>
         <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}
           focus={focus} onPick={byIss ? pickIssuer : pickRating} />
       </AnCard>

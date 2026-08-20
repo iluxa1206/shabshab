@@ -101,6 +101,8 @@ _METRIC_FIELDS = {
     # с ценами сторон (ниже): фронт двигает спред стороны наклоном на каждом
     # тике, а здесь приходит точное значение и перекрывает линеаризацию.
     "yoi_bid": "y_idx_bid_bps", "yoi_ask": "y_idx_ask_bps",
+    # спред по средневзвесу дня (аналитика считает по нему, не по last price)
+    "yoi_wap": "y_idx_wap_bps",
     # горизонт прайсинга: он цено-зависим (правило цены vs цена выкупа), поэтому
     # едет в патче вместе с метриками — иначе маркер оферты в таблице остался бы
     # от прошлой цены и врал, к чему посчитан спред строки
@@ -410,6 +412,11 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
         if vol is not None:
             row["val_today"] = vol
         row["wap"] = lv.get("vwap_pct") or snap.get("waprice") or row.get("wap")
+        # спред по средневзвесу дня — метрика аналитики: last price это одна
+        # сделка (в неликвиде — случайный тонкий принт), средневзвес взвешен
+        # объёмом. Считается тем же наклоном, что спред верха стакана.
+        from services.bonds import yidx_at_price
+        row["yoi_wap"] = yidx_at_price(row, row.get("wap"))
         out[isin] = row
     return out
 

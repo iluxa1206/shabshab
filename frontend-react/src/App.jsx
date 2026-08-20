@@ -381,7 +381,7 @@ function Dashboard() {
     // флаш буфера: все накопленные патчи одним setBonds
     const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
       "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
-      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps"];
+      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps"];
     const flushId = setInterval(() => {
       const buf = patchBufRef.current;
       const isins = Object.keys(buf);
@@ -493,6 +493,7 @@ function Dashboard() {
           && (q.bid == null || q.bid === b.bid_price_pct)
           && (q.ask == null || q.ask === b.ask_price_pct)
           && (q.wap == null || q.wap === b.wap_price_pct)
+          && (q.yoi_wap == null || q.yoi_wap === b.y_idx_wap_bps)
           && (q.vol == null || q.vol === b.val_today)
           && (q.yoi == null || q.yoi === b.yield_over_index_bps);
         if (same) return b;              // без изменений — не трогаем ссылку
@@ -511,6 +512,7 @@ function Dashboard() {
         applySideQuote(b, n, "bid", q.bid);
         applySideQuote(b, n, "ask", q.ask);
         if (q.wap != null) n.wap_price_pct = q.wap;
+        if (q.yoi_wap != null) n.y_idx_wap_bps = q.yoi_wap;
         if (q.vol != null) n.val_today = q.vol;
         // Y-IDX от событийного движка: спред торгуемой бумаги обновляется по
         // факту сделки, а не раз в 10 минут поллером

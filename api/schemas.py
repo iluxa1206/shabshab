@@ -295,6 +295,7 @@ class BondListItem(BaseModel):
     # Alor (тот же, что рисует слой «Средневзвес» на графике), приходит живым
     # push'ем; у остальных — биржевой WAPRICE из board-снапшота MOEX.
     wap_price_pct: Optional[float] = None
+    y_idx_wap_bps: Optional[int] = None   # спред по средневзвесу дня (аналитика)
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
     # средний ДНЕВНОЙ оборот за 30 дней, ₽ — из архива часовых баров (см.
     # services.bars.adv_map): Σ денег окна / число торговых дней рынка

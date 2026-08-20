@@ -100,7 +100,8 @@ def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
         face_value_rub=mx.get("face_px"), accrued_rub=mx.get("accrued_settle"),
         y_idx_slope_bps_per_pct=mx.get("yoi_slope"),
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
-        wap_price_pct=mx.get("wap"), val_today=mx.get("val_today"), adv_1m_rub=adv,
+        wap_price_pct=mx.get("wap"), y_idx_wap_bps=mx.get("yoi_wap"),
+        val_today=mx.get("val_today"), adv_1m_rub=adv,
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), y_idx_avg7_bps=avg7,
@@ -356,6 +357,13 @@ async def get_quotes():
         m = um.get(isin)
         if m and m.get("yoi") is not None:
             it["yoi"] = m["yoi"]
+        # спред по средневзвесу дня считаем ЗДЕСЬ, на свежем wap котировки:
+        # у движка он от его такта, а wap тикает с каждой сделкой
+        if m:
+            from services.bonds import yidx_at_price
+            yw = yidx_at_price(m, it.get("wap"))
+            if yw is not None:
+                it["yoi_wap"] = yw
         items.append(it)
     return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 
