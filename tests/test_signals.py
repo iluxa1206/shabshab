@@ -273,12 +273,12 @@ def test_events_new_then_silence_then_change():
     # ничего не изменилось — событий нет
     assert signals.detect_events(f["id"], USER, "ask", 10, ms, None) == []
 
-    # цена уехала на 0.05% — ниже порога, молчим
+    # цена уехала на 0.05 п.п. — ниже порога полфигуры, молчим
     metrics["RU000A0000A1"]["ask"] = 100.25
     ms2 = core.evaluate(p, uni, metrics, depth)
     assert signals.detect_events(f["id"], USER, "ask", 10, ms2, None) == []
 
-    # спред уехал на 20% — событие
+    # спред уехал на 60 бп — выше порога SPREAD_REPEAT_BPS, событие
     metrics["RU000A0000A1"]["yoi_ask"] = 340.0
     ms3 = core.evaluate(p, uni, metrics, depth)
     ev3 = signals.detect_events(f["id"], USER, "ask", 10, ms3, None)
@@ -301,11 +301,64 @@ def test_events_money_change_and_leaving_set():
                                core.evaluate(p, uni, metrics, depth), None)
     assert [e["reason"] for e in ev] == ["money"]
 
-    # бумага вышла из набора → состояние забыто; вернулась → снова "new"
+    # Короткий выход из набора и возврат — НЕ «заявка»: стакан дрожит у границы
+    # фильтра, и каждое возвращение звонило бы заново (см. RETURN_GRACE_MIN).
     signals.detect_events(f["id"], USER, "ask", 10, [], None)
     ev2 = signals.detect_events(f["id"], USER, "ask", 10,
                                 core.evaluate(p, uni, metrics, depth), None)
-    assert [e["reason"] for e in ev2] == ["new"]
+    assert ev2 == []
+
+    signals.delete(USER, f["id"])
+
+
+def test_return_after_grace_is_new_again(monkeypatch):
+    """Бумага, которой не было в наборе дольше срока памяти, возвращается как
+    «заявка» — иначе реально новую заявку после долгой паузы не отличить."""
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "возврат", {"spread_min": 100, "isins": ["RU000A0000A1"]},
+                       change_pct=10)
+    p = f["params"]
+    ms = core.evaluate(p, uni, metrics, depth)
+    assert [e["reason"] for e in signals.detect_events(f["id"], USER, "ask", 10, ms, None)] \
+        == ["new"]
+
+    monkeypatch.setattr(signals, "RETURN_GRACE_MIN", 0.0)
+    signals.detect_events(f["id"], USER, "ask", 10, [], None)   # ушла и забыта
+    ev = signals.detect_events(f["id"], USER, "ask", 10, ms, None)
+    assert [e["reason"] for e in ev] == ["new"]
+
+    signals.delete(USER, f["id"])
+
+
+def test_cooldown_mutes_same_reason_only(monkeypatch):
+    """Повтор ТОЙ ЖЕ причины в пределах кулдауна молчит, другая причина проходит."""
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "кулдаун", {"spread_min": 100, "isins": ["RU000A0000A1"]},
+                       change_pct=10)
+    p = f["params"]
+    signals.detect_events(f["id"], USER, "ask", 10, core.evaluate(p, uni, metrics, depth), None)
+
+    metrics["RU000A0000A1"]["yoi_ask"] = 340.0
+    ev = signals.detect_events(f["id"], USER, "ask", 10,
+                               core.evaluate(p, uni, metrics, depth), None)
+    assert [e["reason"] for e in ev] == ["spread"]
+
+    # ещё 60 бп сразу следом — та же причина, кулдаун молчит
+    metrics["RU000A0000A1"]["yoi_ask"] = 400.0
+    assert signals.detect_events(f["id"], USER, "ask", 10,
+                                 core.evaluate(p, uni, metrics, depth), None) == []
+
+    # объём вырос — другая причина, проходит без ожидания
+    depth["RU000A0000A1"]["a"] = [[100.2, 6000], [100.4, 5000]]
+    ev2 = signals.detect_events(f["id"], USER, "ask", 10,
+                                core.evaluate(p, uni, metrics, depth), None)
+    assert [e["reason"] for e in ev2] == ["money"]
+
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    metrics["RU000A0000A1"]["yoi_ask"] = 460.0
+    ev3 = signals.detect_events(f["id"], USER, "ask", 10,
+                                core.evaluate(p, uni, metrics, depth), None)
+    assert [e["reason"] for e in ev3] == ["spread"]
 
     signals.delete(USER, f["id"])
 

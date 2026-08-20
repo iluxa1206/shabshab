@@ -103,6 +103,7 @@ export default function BondTrades({ isin, kind, onClose }) {
                 <th className="left">Дата</th>
                 <th className="left">Время</th>
                 <th>Цена</th>
+                <th title="агрессор сделки: buy — забрали оффер, sell — отдали в бид">Стор.</th>
                 <th title="объём сделки, млн ₽">Объём</th>
                 <th title={isFixed ? "G-спред по цене сделки" : "R-spread по цене сделки"}>
                   {isFixed ? "G-спред" : "R-spread"}</th>
@@ -120,6 +121,8 @@ export default function BondTrades({ isin, kind, onClose }) {
                       {dpart(r.ts)}</td>
                     <td className="left bt-d">{tpart(r.ts)}</td>
                     <td>{fmt.pct(r.price) ?? "—"}</td>
+                    <td className="bt-side">{r.side === "buy" ? "buy"
+                      : r.side === "sell" ? "sell" : "—"}</td>
                     <td>{fmt.mln(r.value) ?? "—"}</td>
                     <td style={sp == null ? undefined : dmColor(sp)}>{fmt.bps(sp) ?? "—"}</td>
                   </tr>

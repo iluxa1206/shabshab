@@ -569,9 +569,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* дата сегодняшней сессии — основным цветом текста (на тёмной теме белым):
    живой день отделяется от истории без чтения самих чисел */
 .bt-d.bt-today { color: var(--fg); font-weight: 700; }
-/* агрессор красит цену строки — тот же код цвета, что в общей ленте СДЕЛКИ */
-.bt-row.bt-buy td:nth-child(3) { color: var(--up); }
-.bt-row.bt-sell td:nth-child(3) { color: var(--down); }
+/* агрессор красит цену и подпись стороны — тот же код цвета, что в ленте СДЕЛКИ */
+.bt-row.bt-buy td:nth-child(3), .bt-row.bt-buy .bt-side { color: var(--up); }
+.bt-row.bt-sell td:nth-child(3), .bt-row.bt-sell .bt-side { color: var(--down); }
+.bt-side { font-size: 10px; letter-spacing: 0.04em; }
 .dh-formula .cf-cpy { color: var(--mut); }
 .ob-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px; }
 .ob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }

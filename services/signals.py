@@ -14,6 +14,7 @@
 живут в services/screener_core.py."""
 import json
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import List, Optional
 
@@ -22,7 +23,7 @@ from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: 
                                     block_matches, evaluate,
                                     evaluate_candidates, market_snapshot,
                                     normalize_block_params, normalize_params,
-                                    static_candidates)
+                                    static_candidates, years_left)
 
 logger = logging.getLogger(__name__)
 
@@ -281,12 +282,49 @@ def _trim_events(user_email: str) -> None:
 
 # --- детект событий ---
 
-def _changed(prev: Optional[float], cur: Optional[float], pct: float) -> bool:
-    """Метрика «шевельнулась» на pct% в любую сторону относительно прошлого
-    значения. Появление значения там, где его не было, — тоже событие."""
-    if cur is None:
+# Пороги повторного сигнала. Смысл каждого — своя единица, а не общий процент:
+#   спред   — АБСОЛЮТНЫЕ базисные пункты: 5 бп при уровне 160–380 значимы,
+#             а 5% от уровня это 8–19 бп, то есть порог плавал бы вместе с бумагой;
+#   цена    — АБСОЛЮТНЫЕ пункты цены (полфигуры): 5% от цены — это 5 п.п.,
+#             такого движения на флоатере не бывает, и метрика была мертва;
+#   объём   — процент (change_pct фильтра) от денег В ГРАНИЦАХ СПРЕДА фильтра
+#             (screener_core.money_in_spread), а не от набора VWAP: набор всегда
+#             равен запрошенному лимиту и не менялся никогда.
+SPREAD_REPEAT_BPS = float(os.getenv("SIGNAL_REPEAT_SPREAD_BPS", "5"))
+PRICE_REPEAT_PP = float(os.getenv("SIGNAL_REPEAT_PRICE_PP", "0.5"))
+# Бумага, вышедшая из набора и вернувшаяся раньше этого срока, — не «заявка»:
+# стакан дрожит вокруг границы фильтра, и каждое возвращение звонило заново.
+RETURN_GRACE_MIN = float(os.getenv("SIGNAL_RETURN_GRACE_MIN", "30"))
+# Чаще этого по одной бумаге в рамках фильтра не звоним вообще.
+COOLDOWN_MIN = float(os.getenv("SIGNAL_COOLDOWN_MIN", "5"))
+
+
+def _age_min(iso: Optional[str], now: datetime) -> Optional[float]:
+    """Сколько минут прошло с отметки. Нет отметки/мусор → None (= «давно»)."""
+    if not iso:
+        return None
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (now - t).total_seconds() / 60.0
+
+
+def _moved_abs(prev: Optional[float], cur: Optional[float], delta: float) -> bool:
+    """Метрика ушла на delta в СВОИХ единицах (бп для спреда, п.п. для цены)."""
+    if cur is None or prev is None:
         return False
-    if prev is None:
+    return abs(cur - prev) >= delta
+
+
+def _moved_pct(prev: Optional[float], cur: Optional[float], pct: float) -> bool:
+    """Метрика изменилась на pct% относительно прошлого значения. Появление
+    значения там, где его не было (и наоборот) — тоже изменение."""
+    if cur is None and prev is None:
+        return False
+    if cur is None or prev is None:
         return True
     base = abs(prev)
     if base < 1e-9:
@@ -296,62 +334,104 @@ def _changed(prev: Optional[float], cur: Optional[float], pct: float) -> bool:
 
 def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                   matches: List[dict], want_money: Optional[float]) -> List[dict]:
-    """Сравнивает набор с прошлым состоянием → только события. Состояние
-    обновляется по ВСЕМ текущим бумагам (в том числе не давшим события), а
-    выпавшие из набора забываются: вернутся — снова «новая»."""
-    now = _now()
+    """Сравнивает набор с прошлым состоянием → только события.
+
+    Три причины повтора, у каждой своя единица (см. пороги выше): спред ушёл на
+    SPREAD_REPEAT_BPS бп, цена — на PRICE_REPEAT_PP п.п., объём по нашим
+    условиям — на change_pct %. «Заявка» (бумага пришла в набор) — только если
+    её не видели дольше RETURN_GRACE_MIN; иначе это то же самое, что уже
+    звонило, и проверяются обычные пороги. Поверх всего кулдаун COOLDOWN_MIN на
+    бумагу: событие копится, но звонок не чаще.
+
+    Состояние-базис двигается ТОЛЬКО вместе с отправленным событием — иначе
+    медленный дрейф по чуть-чуть никогда не набрал бы порог. Отметка
+    last_seen_at, наоборот, обновляется каждый тик присутствия."""
+    now_iso = _now()
+    now_dt = datetime.now(timezone.utc)
     events = []
-    present = {m["isin"] for m in matches}
     with _lock, _connect() as c:
         known = {r["isin"]: r for r in c.execute(
-            "SELECT isin, val_bps, price, money_rub FROM signal_state WHERE filter_id=?",
+            "SELECT isin, val_bps, price, money_rub, money_ok_rub, last_seen_at, "
+            "last_event_at, last_reason FROM signal_state WHERE filter_id=?",
             (fid,)).fetchall()}
 
         for m in matches:
             prev = known.get(m["isin"])
-            if prev is None:
+            gone_min = _age_min(prev["last_seen_at"], now_dt) if prev else None
+            # None в last_seen_at — строка от старой версии схемы: считаем, что
+            # бумага в наборе была, и «заявкой» её заново не объявляем
+            returned = prev is not None and gone_min is not None and gone_min > RETURN_GRACE_MIN
+
+            if prev is None or returned:
                 reason = "new"
-            elif _changed(prev["price"], m.get("price"), change_pct):
-                reason = "price"
-            elif _changed(prev["val_bps"], m.get("val_bps"), change_pct):
-                reason = "spread"
-            elif _changed(prev["money_rub"], m.get("money_rub"), change_pct):
-                reason = "money"
             else:
-                reason = None
+                # все сработавшие причины в порядке важности; кулдаун гасит
+                # ПОВТОР ТОЙ ЖЕ причины (спред, дрожащий у порога, звонит не
+                # чаще раза в COOLDOWN_MIN), но не заслоняет другую — «спред
+                # ушёл, а следом сняли весь объём» это две разные новости
+                why = []
+                if _moved_abs(prev["val_bps"], m.get("val_bps"), SPREAD_REPEAT_BPS):
+                    why.append("spread")
+                if _moved_pct(prev["money_ok_rub"], m.get("money_ok_rub"), change_pct):
+                    why.append("money")
+                if _moved_abs(prev["price"], m.get("price"), PRICE_REPEAT_PP):
+                    why.append("price")
+                since = _age_min(prev["last_event_at"], now_dt)
+                if since is not None and since < COOLDOWN_MIN and prev["last_reason"] in why:
+                    why.remove(prev["last_reason"])
+                reason = why[0] if why else None
 
             if reason:
                 c.execute(
                     "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
-                    "val_bps,price,money_rub,want_money_rub,levels,single_px,reason,"
-                    "prev_val_bps,prev_price,prev_money_rub,fired_at,seen) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+                    "val_bps,price,money_rub,money_ok_rub,want_money_rub,levels,"
+                    "single_px,reason,prev_val_bps,prev_price,prev_money_rub,"
+                    "prev_money_ok_rub,fired_at,seen) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
                     (fid, user_email, m["isin"], m.get("name"), side,
                      m.get("val_bps"), m.get("price"), m.get("money_rub"),
-                     want_money, m.get("levels"), m.get("single_px"), reason,
+                     m.get("money_ok_rub"), want_money, m.get("levels"),
+                     m.get("single_px"), reason,
                      prev["val_bps"] if prev else None,
                      prev["price"] if prev else None,
-                     prev["money_rub"] if prev else None, now))
+                     prev["money_rub"] if prev else None,
+                     prev["money_ok_rub"] if prev else None, now_iso))
                 events.append(dict(
-                    m, reason=reason, fired_at=now, want_money_rub=want_money,
+                    m, reason=reason, fired_at=now_iso, want_money_rub=want_money,
                     prev_price=prev["price"] if prev else None,
                     prev_val_bps=prev["val_bps"] if prev else None,
-                    prev_money_rub=prev["money_rub"] if prev else None))
+                    prev_money_rub=prev["money_rub"] if prev else None,
+                    prev_money_ok_rub=prev["money_ok_rub"] if prev else None))
 
-            # состояние двигаем только когда событие зафиксировано, иначе
-            # медленный дрейф по чуть-чуть никогда не наберёт порог
             if reason or prev is None:
                 c.execute(
                     "INSERT INTO signal_state(filter_id,isin,val_bps,price,money_rub,"
-                    "updated_at) VALUES(?,?,?,?,?,?) "
+                    "money_ok_rub,last_seen_at,last_event_at,last_reason,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(filter_id,isin) DO UPDATE SET val_bps=excluded.val_bps, "
                     "price=excluded.price, money_rub=excluded.money_rub, "
+                    "money_ok_rub=excluded.money_ok_rub, last_seen_at=excluded.last_seen_at, "
+                    "last_event_at=excluded.last_event_at, last_reason=excluded.last_reason, "
                     "updated_at=excluded.updated_at",
                     (fid, m["isin"], m.get("val_bps"), m.get("price"),
-                     m.get("money_rub"), now))
+                     m.get("money_rub"), m.get("money_ok_rub"), now_iso,
+                     now_iso if reason else None, reason, now_iso))
+            else:
+                # присутствие отмечаем всегда: иначе бумага, спокойно стоящая в
+                # наборе, через полчаса «протухла» бы и позвонила как новая
+                c.execute("UPDATE signal_state SET last_seen_at=?, updated_at=? "
+                          "WHERE filter_id=? AND isin=?", (now_iso, now_iso, fid, m["isin"]))
 
-        for isin in [i for i in known if i not in present]:
-            c.execute("DELETE FROM signal_state WHERE filter_id=? AND isin=?", (fid, isin))
+        # Забываем только то, что давно вне набора: короткий выход — дребезг
+        # границы фильтра, а не уход бумаги.
+        present = {m["isin"] for m in matches}
+        for isin, r in known.items():
+            if isin in present:      # эту строку только что обновили этим же тиком
+                continue
+            gone = _age_min(r["last_seen_at"], now_dt)
+            if gone is not None and gone > RETURN_GRACE_MIN:
+                c.execute("DELETE FROM signal_state WHERE filter_id=? AND isin=?",
+                          (fid, isin))
     return events
 
 
@@ -378,8 +458,13 @@ def preview_block(params: dict, limit: int = 20) -> dict:
     hits = [r for r in rows
             if block_matches(r, labels.get(r["isin"]) or {}, p, today)]
     return {"ready": True, "total": len(hits), "capped": len(rows) >= 500,
+            # срок до погашения — как в превью book-фильтра: «блок на 600 млн»
+            # читается по-разному для годовой бумаги и для десятилетней
             "matches": [{"isin": h["isin"],
                          "name": (labels.get(h["isin"]) or {}).get("name") or h["isin"],
+                         "maturity": (labels.get(h["isin"]) or {}).get("maturity"),
+                         "years": years_left((labels.get(h["isin"]) or {}).get("maturity"),
+                                             today),
                          "money_rub": h["value"], "ts": h["ts"]}
                         for h in hits[:limit]]}
 

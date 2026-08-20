@@ -28,7 +28,7 @@ _MSK = timezone(timedelta(hours=3))
 _METRIC_LABEL = {"price": "цена", "ytm": "YTM", "dm": "DM",
                  "yidx": "R-spread", "gspread": "G-спред"}
 _METRIC_UNIT = {"price": "", "ytm": "%", "dm": " бп", "yidx": " бп", "gspread": " бп"}
-_REASON = {"new": "новая", "price": "цена", "spread": "спред", "money": "объём",
+_REASON = {"new": "заявка", "price": "цена", "spread": "спред", "money": "объём",
            "block": "крупная сделка"}
 
 

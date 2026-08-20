@@ -40,7 +40,7 @@ function desktopNotify(title, body) {
   });
 }
 
-const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
+const REASON = { new: "заявка", price: "цена", spread: "спред", money: "объём",
                  block: "блок" };
 
 // единая единица проекта — млн ₽ (см. fmt.mln)
@@ -173,7 +173,8 @@ function SignalToast({ p, onOpen, onDismiss }) {
       <button className="sig-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
       <div className="sig-toast-h">
         <span>Сигнал · {p.filter_name}</span>
-        <span className={p.side === "ask" ? "pos" : "neg"}>{side}</span>
+        {/* оффер красный, бид зелёный — как в ленте событий (signalFormat.sideInfo) */}
+        <span className={p.side === "ask" ? "neg" : "pos"}>{side}</span>
         <span className="sig-toast-n">
           {p.matches.length} {p.matches.length === 1 ? "бумага" : "бумаг"}</span>
       </div>

@@ -279,15 +279,20 @@ CREATE TABLE IF NOT EXISTS signal_filters(
 CREATE INDEX IF NOT EXISTS ix_signal_filters_user ON signal_filters(user_email);
 
 -- Текущее состояние набора: последние метрики бумаги, попадающей под фильтр.
--- Эфемерное — вышла из набора, строка удаляется (вернётся = снова событие
--- «новая», а не мнимое изменение от несвежего состояния). Ровно с ним
--- сравнивается каждый тик, чтобы поймать шевеление на N%.
+-- Ровно с ним сравнивается каждый тик, чтобы поймать шевеление метрики.
+-- Строка ПЕРЕЖИВАЕТ выход бумаги из набора (см. last_seen_at): стакан
+-- подрагивает вокруг границы фильтра, и мгновенное забывание превращало
+-- каждое возвращение в новое событие «заявка».
 CREATE TABLE IF NOT EXISTS signal_state(
   filter_id INTEGER NOT NULL,
   isin TEXT NOT NULL,
   val_bps REAL,
   price REAL,
   money_rub REAL,
+  money_ok_rub REAL,      -- деньги стороны В ГРАНИЦАХ спреда фильтра
+  last_seen_at TEXT,      -- когда бумага последний раз была В НАБОРЕ
+  last_event_at TEXT,     -- когда по ней последний раз звонило (кулдаун)
+  last_reason TEXT,       -- по какой причине звонило: кулдаун гасит ПОВТОР ТОЙ ЖЕ
   updated_at TEXT NOT NULL,
   PRIMARY KEY(filter_id, isin)
 );
@@ -374,6 +379,14 @@ _MIGRATIONS = [
     # адресный/биржевой читается как принт по стакану, а это разные новости
     "ALTER TABLE signal_events ADD COLUMN board TEXT",
     "ALTER TABLE signal_events ADD COLUMN negotiated INTEGER",
+    # антидребезг сигналов стакана: состояние переживает выход из набора,
+    # объём меряется деньгами в границах спреда фильтра (см. services/signals)
+    "ALTER TABLE signal_state ADD COLUMN money_ok_rub REAL",
+    "ALTER TABLE signal_state ADD COLUMN last_seen_at TEXT",
+    "ALTER TABLE signal_state ADD COLUMN last_event_at TEXT",
+    "ALTER TABLE signal_state ADD COLUMN last_reason TEXT",
+    "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
+    "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
 ]
 
 

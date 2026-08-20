@@ -14,7 +14,7 @@ const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];
 // block — не срабатывание фильтра, а рыночное событие (filter_id=0), поэтому
 // filter_name у него пустой: подпись собираем сами, см. sig-hit-meta ниже.
-const REASON = { new: "новая", price: "цена", spread: "спред", money: "объём",
+const REASON = { new: "заявка", price: "цена", spread: "спред", money: "объём",
                  block: "блок" };
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
@@ -614,7 +614,8 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
         </div>
         <div className="sig-rc-sub">{d.scope}</div>
         <div className="sig-rc-cond num">
-          <span className={f.params.side === "ask" ? "pos" : "neg"}>
+          {/* оффер красный, бид зелёный — как в ленте событий */}
+          <span className={f.params.side === "ask" ? "neg" : "pos"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
           {d.range ? ` · R-spread ${d.range}` : ""}
           {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
@@ -638,7 +639,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
 const REPEAT = {
   price: ["цена", "price", (v) => fmt.num(v, 2) + "%"],
   spread: ["спред", "val_bps", (v) => fmt.num(v, 0) + " бп"],
-  money: ["объём", "money_rub", (v) => money(v) + " ₽"],
+  money: ["объём по условиям", "money_ok_rub", (v) => money(v) + " млн ₽"],
 };
 
 /** Почему прилетело: «нашлась» либо «цена 100,10 → 99,80». Строкой, а не

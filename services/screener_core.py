@@ -376,6 +376,51 @@ def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
     return (not v["partial"]) or v["money"] >= want_rub * VOL_TOL
 
 
+def money_in_spread(levels, row: dict, side: str, lo: Optional[float],
+                    hi: Optional[float], face: float,
+                    accrued: float = 0.0) -> Optional[float]:
+    """Σ руб на стороне ПО НАШИМ УСЛОВИЯМ: только уровни, чей Y-IDX попадает в
+    диапазон спреда фильтра.
+
+    Это метрика повторного сигнала «объём изменился»: сумма всей стороны шумит
+    дальними уровнями, по которым никто торговать не станет, а набор VWAP на
+    тикет всегда равен запрошенному лимиту (и потому не меняется вовсе).
+    Здесь же видно ровно то, что трейдер и называет объёмом: сколько денег
+    стоит по цене, которая нас устраивает. Границы не заданы (фильтр «крупные
+    заявки») — считаем всю сторону."""
+    if not levels:
+        return None
+    if lo is None and hi is None:
+        total = sum(level_money(_px(l), _qty(l), face, accrued) for l in levels)
+        return total or None
+    total = 0.0
+    for lvl in levels:
+        px = _px(lvl)
+        val = y_idx_at(row, px, side)
+        if val is None:
+            continue
+        if lo is not None and val < lo:
+            continue
+        if hi is not None and val > hi:
+            continue
+        total += level_money(px, _qty(lvl), face, accrued)
+    return total or None
+
+
+def _px(lvl) -> Optional[float]:
+    try:
+        return float(lvl[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _qty(lvl) -> Optional[float]:
+    try:
+        return float(lvl[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:
     """Y-IDX по произвольной цене: линейно от известного якоря через наклон
     dY/dP. На масштабе стакана Y-IDX(цена) практически прямая (см. vwap.js)."""
@@ -491,7 +536,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                 continue
             if hi is not None and val > hi:
                 continue
+        # объём «по нашим условиям» — метрика повторного сигнала, не отбора:
+        # на попадание бумаги в набор она не влияет (это делают spread/money выше)
+        money_ok = money_in_spread(ladder, row, side, lo, hi, face, accrued)
         out.append({"isin": isin, "name": u.get("name") or isin,
+                    "money_ok_rub": money_ok,
                     # спред может быть неизвестен, если его границы не заданы
                     # (фильтр «крупные заявки») и наклон Y-IDX не посчитался
                     "val_bps": round(val, 1) if val is not None else None,
