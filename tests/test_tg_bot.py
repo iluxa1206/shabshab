@@ -128,7 +128,9 @@ def test_book_line_layout():
                                      "money_ok_rub": 1.06e6, "prev_money_ok_rub": 1e6}]})
     first, second = txt.split("\n")[0], txt.split("\n")[1]
     assert first.startswith("🔴")                      # оффер красный
-    assert "171 бп" in first and "1м ₽" in first and "1,5 г" in first
+    # число без подписи: в строке это единственное значение в бп
+    assert "171 бп" in first and "R-spread" not in first
+    assert "1м ₽" in first and "1,5 г" in first
     assert first.index("171 бп") < first.index("Газпн3P13R")
     assert "99,90%" in second and "1 ур" in second and "объём +6 %" in second
     # подпись фильтра — сноской в конце, а не заголовком
@@ -164,7 +166,7 @@ def test_reason_delta_shows_direction():
                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
                                      "val_bps": 240.0, "prev_val_bps": 300.0,
                                      "reason": "spread"}]})
-    assert "спред −60 бп" in txt
+    assert "R-spread −60 бп" in txt
 
 
 # --- снимок стакана в уведомлении о заявке ---

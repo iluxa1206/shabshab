@@ -25,7 +25,7 @@ MAX_MATCHES = 8              # в одном сообщении; остальн�
 _MSK = timezone(timedelta(hours=3))
 # Ссылка на дашборд: имя выпуска в сообщении ведёт прямо в его карточку.
 _SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/app/")
-_REASON = {"new": "заявка", "price": "цена", "spread": "спред", "money": "объём",
+_REASON = {"new": "заявка", "price": "цена", "spread": "R-spread", "money": "объём",
            "block": "крупная сделка"}
 
 
@@ -44,8 +44,11 @@ def _reason_delta(m: dict) -> str:
     if r == "spread":
         prev, cur = m.get("prev_val_bps"), m.get("val_bps")
         if prev is None or cur is None:
-            return "спред"
-        return f"спред {cur - prev:+.0f} бп".replace("-", "−")
+            return "R-spread"
+        # минус — только в самом числе: replace по всей строке съедал дефис
+        # в «R-spread» и превращал его в «R−spread»
+        num = f"{cur - prev:+.0f}".replace("-", "−")
+        return f"R-spread {num} бп"
     if r == "price":
         prev, cur = m.get("prev_price"), m.get("price")
         if prev is None or cur is None:
@@ -184,7 +187,7 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     head, sub = [], []
 
     if m.get("val_bps") is not None:
-        head.append(f"R-spread <b>{m['val_bps']:.0f} бп</b>")
+        head.append(f"<b>{m['val_bps']:.0f} бп</b>")
     money = _short_money(m.get("money_rub"))
     if money:
         head.append(money)
