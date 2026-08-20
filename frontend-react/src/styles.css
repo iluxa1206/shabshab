@@ -553,13 +553,13 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* Лента сделок выпуска — ТРЕТЬЯ панель, слева от стакана (680 карточка + 400
    стакан). Стакан закрыт → лента занимает его место. */
 .bt-panel {
-  position: fixed; top: 0; right: 1080px; height: 100vh; width: 360px; max-width: 30vw; z-index: 58;
+  position: fixed; top: 0; right: 1080px; height: 100vh; width: 440px; max-width: 36vw; z-index: 58;
   background: var(--bg); border-left: 1px solid var(--fg); display: flex; flex-direction: column;
 }
 .bt-panel.bt-noob { right: 680px; }
-/* три панели рядом требуют 1440px — на более узком окне лента ложится ПОВЕРХ
+/* три панели рядом требуют 1520px — на более узком окне лента ложится ПОВЕРХ
    стакана (как стакан ложится поверх графиков), а не уезжает за левый край */
-@media (max-width: 1500px) { .bt-panel { right: 680px; z-index: 61; } }
+@media (max-width: 1580px) { .bt-panel { right: 680px; z-index: 61; } }
 /* два ряда чипов (окно + порог объёма) — жмём вертикальные отступы, панель узкая */
 .bt-ctl { gap: 6px; flex-wrap: wrap; padding-bottom: 6px; }
 .bt-ctl-lbl { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--mut); }
@@ -569,10 +569,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* дата сегодняшней сессии — основным цветом текста (на тёмной теме белым):
    живой день отделяется от истории без чтения самих чисел */
 .bt-d.bt-today { color: var(--fg); font-weight: 700; }
-/* агрессор красит цену и подпись стороны — тот же код цвета, что в ленте СДЕЛКИ */
-.bt-row.bt-buy td:nth-child(3), .bt-row.bt-buy .bt-side { color: var(--up); }
-.bt-row.bt-sell td:nth-child(3), .bt-row.bt-sell .bt-side { color: var(--down); }
+/* Агрессор красит ТОЛЬКО подпись стороны. Цена остаётся основным цветом: она
+   тут не «хорошо/плохо», а сама величина, и цветная колонка цен читалась как
+   оценка уровня. */
+.bt-row.bt-buy .bt-side { color: var(--up); }
+.bt-row.bt-sell .bt-side { color: var(--down); }
 .bt-side { font-size: 10px; letter-spacing: 0.04em; }
+/* колонки не жмутся: дата/время узкие, цена и объём — по содержимому */
+.bt-table thead th, .bt-table td { padding-left: 6px; padding-right: 6px; white-space: nowrap; }
 .dh-formula .cf-cpy { color: var(--mut); }
 .ob-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px; }
 .ob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
