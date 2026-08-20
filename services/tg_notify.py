@@ -259,7 +259,11 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
     lines += [row(l) for l in asks]
     lines.append("─" * 19)          # выше разделителя оффера, ниже биды
     lines += [row(l) for l in bids]
-    return "<pre>" + "\n".join(lines) + "</pre>"
+    # Сворачиваемая цитата: в ленте чата стакан не занимает экран, но
+    # разворачивается одним тапом. Моноширинность держим построчным <code> —
+    # блочный <pre> внутри цитаты Telegram не разрешает.
+    body = "\n".join(f"<code>{ln}</code>" for ln in lines)
+    return f"<blockquote expandable>{body}</blockquote>"
 
 
 def _signal_text(buf: dict) -> str:

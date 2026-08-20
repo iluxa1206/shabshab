@@ -188,8 +188,8 @@ def test_book_snapshot_rendered_under_text():
     помечен: в лестнице из восьми строк цена сигнала иначе теряется."""
     txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                         "matches": [_book_match()]})
-    assert "<pre>" in txt and "</pre>" in txt
-    body = txt[txt.index("<pre>"):txt.index("</pre>")]
+    assert "<blockquote expandable>" in txt and "</blockquote>" in txt
+    body = txt[txt.index("<blockquote"):txt.index("</blockquote>")]
     assert "100,20" in body and "99,75" in body        # обе стороны
     assert "168" in body and "174" in body             # спред уровня
     assert "100,05" in body and "←" in body            # уровень сигнала помечен
@@ -201,7 +201,7 @@ def test_book_snapshot_absent_is_ok():
     """Стакана в событии нет (снимок не доехал) — сообщение всё равно уходит."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_book_match(book=None)]})
-    assert "<pre>" not in txt and "Газпн3P13R" in txt
+    assert "<blockquote" not in txt and "Газпн3P13R" in txt
 
 
 def test_book_events_split_by_issue():
