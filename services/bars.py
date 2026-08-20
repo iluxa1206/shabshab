@@ -928,7 +928,8 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
                            progress_every: int = 50, full: bool = True,
                            refetch_ticks: bool = False,
                            progress_key: str = "bars_refresh",
-                           progress_label: Optional[str] = None) -> dict:
+                           progress_label: Optional[str] = None,
+                           offset: int = 0) -> dict:
     """Наливает бары (и тики) по всему юниверсу. Используется и часовым демоном
     (days=2..3, дозалив хвоста), и бэкфилл-скриптом (days=365, разовый прогон).
 
@@ -938,12 +939,22 @@ async def refresh_universe(days: int = 3, limit: Optional[int] = None,
 
     refetch_ticks=True снимает водяной знак инкрементального дрейна и качает окно
     сделок заново. Обычному проходу это не нужно (знак и так отдаёт всё новое) —
-    флаг для ремонта: если в архиве подозревается дыра."""
+    флаг для ремонта: если в архиве подозревается дыра.
+
+    offset — СКОЛЬКО БУМАГ ПРОПУСТИТЬ с начала списка, окно [offset, offset+limit).
+    Нужен разовым бэкфиллам на глубоком окне: контексты as-of копятся по бумагам
+    внутри процесса (~5 МБ на бумагу) и не отдаются, поэтому проход по всему
+    юниверсу на days=365 упирается в mem_limit и ловит OOM. Дробить одним limit
+    нельзя — он режет ХВОСТ, а не окно: каждая следующая пачка тянет за собой все
+    предыдущие бумаги и падает ровно там же. С offset пачка живёт своим процессом
+    и своей памятью."""
     targets = await universe_targets(kinds)
     if not full:
         act = active_isins()
         if act:
             targets = [(i, k) for i, k in targets if i in act]
+    if offset:
+        targets = targets[offset:]
     if limit:
         targets = targets[:limit]
     sem = asyncio.Semaphore(concurrency)

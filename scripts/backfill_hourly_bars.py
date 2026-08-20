@@ -39,7 +39,7 @@ async def main(a) -> None:
         return
     kinds = tuple(k.strip() for k in a.kinds.split(",") if k.strip())
     stat = await bars_svc.refresh_universe(
-        days=a.days, limit=a.limit, with_ticks=not a.no_ticks,
+        days=a.days, limit=a.limit, offset=a.offset, with_ticks=not a.no_ticks,
         concurrency=a.concurrency, kinds=kinds, refetch_ticks=a.refetch_ticks)
     log.info("готово: %s", stat)
 
@@ -48,6 +48,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Бэкфилл часовых баров в bar_hourly")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--limit", type=int, default=None, help="первые N бумаг (отладка)")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="пропустить N бумаг с начала: окно [offset, offset+limit). "
+                         "Глубокое окно (--days 365) по всему юниверсу не влезает в "
+                         "память одним процессом — гнать пачками по offset")
     ap.add_argument("--no-ticks", action="store_true", help="только свечи, без Alor")
     ap.add_argument("--refetch-ticks", action="store_true",
                     help="игнорировать водяной знак дрейна и перекачать окно сделок "
