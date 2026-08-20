@@ -16,6 +16,7 @@ import os
 from datetime import date, timedelta
 from typing import List, Optional
 
+from services.bonds import amort_remaining_face, reconcile_face
 from services.market_data import MarketDataService
 from services.universe import build_universe_ref, _aempty
 from services import instruments_registry
@@ -190,11 +191,21 @@ async def build_payments_calendar() -> dict:
             isin = u["isin"]
             try:
                 ref = build_universe_ref(u, isin, cache, secs)
+                # Номинал — той же коррекцией, что в витрине (services.universe.
+                # enrich_bond): isins_cache у амортизируемых бумаг стейлится, и
+                # завышенный остаток порождал ФАНТОМНОЕ погашение — билдер видел
+                # residual = face − Σ будущих траншей > 0 и дорисовывал лишний
+                # платёж на дату последней амортизации (БалтЛизП10: кэш 900 при
+                # остатке 800 → две строки по 100 ₽ на 08.04.27).
+                full_i = full_by.get(isin) or {}
+                reconcile_face(ref, full_i.get("coupons") or [], calc_date)
+                rem = amort_remaining_face(full_i.get("amorts"), calc_date)
+                if rem is not None and abs(rem - (ref.face_value or 0)) > 0.5:
+                    ref.face_value = rem
                 name = shortnames.get(isin) or u.get("name") or isin
                 curve = ruonia_curve if ref.base == "RUONIA" else keyrate_curve
                 evs = _bond_events(
-                    ref, u, name, curve, calc_date,
-                    full_by.get(isin) or {}, index_fns.get(ref.base))
+                    ref, u, name, curve, calc_date, full_i, index_fns.get(ref.base))
                 # объём выплаты держателям всего по выпуску: ₽/бумага × штук
                 size = sizes.get(isin)
                 for e in evs:

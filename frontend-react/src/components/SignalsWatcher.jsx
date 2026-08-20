@@ -4,6 +4,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectSignalsWs } from "../api.js";
 import { fmt, dmColor } from "../format.js";
+import { reasonDelta, reasonTitle } from "../signalFormat.js";
 
 // Двухтональный сигнал через WebAudio (без ассета). Отличается от бипа алертов
 // стакана, чтобы на слух было понятно, что именно сработало.
@@ -85,7 +86,8 @@ export default function SignalsWatcher() {
           ? `${head.name} — ${money(head.money_rub)}` +
             (head.val_bps != null ? ` · ${fmt.num(head.val_bps, 0)} бп` : "") +
             (head.negotiated ? " (адресная)" : "")
-          : `${head.name} — ${fmt.num(head.val_bps, 0)} бп (${REASON[head.reason] || head.reason})`;
+          : `${head.name} — ${fmt.num(head.val_bps, 0)} бп`
+            + ` (${reasonDelta(head) || REASON[head.reason] || head.reason})`;
         desktopNotify(
           payload.type === "block"
             ? `Крупная сделка${matches.length > 1 ? `: ${matches.length}` : ""}`
@@ -184,7 +186,13 @@ function SignalToast({ p, onOpen, onDismiss }) {
             onClick={() => onOpen(m, p.side)} title="Открыть карточку и стакан">
             <span className="sig-toast-nm">
               <span className="nm">{m.name}</span>
-              <span className={"sb-tag sb-" + m.reason}>{REASON[m.reason] || m.reason}</span>
+              <span className={"sb-tag sb-" + m.reason} title={reasonTitle(m)}>
+                {REASON[m.reason] || m.reason}</span>
+              {/* насколько ушло — рядом с ярлыком: «спред» без числа не говорит,
+                  стоит ли отрываться от текущего дела */}
+              {m.reason !== "new" && reasonDelta(m) && (
+                <span className="sig-why" title={reasonTitle(m)}>{reasonDelta(m)}</span>
+              )}
             </span>
             <span className="sig-toast-val" style={dmColor(m.val_bps)}>
               {fmt.num(m.val_bps, 0)} бп

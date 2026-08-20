@@ -52,3 +52,54 @@ export function maturityTxt(e) {
     : `${fmt.num(e.years, 1)} г`;
   return d ? `погашение ${d} · ${y}` : `до погашения ${y}`;
 }
+
+/**
+ * Причина повтора ДЕЛЬТОЙ: «спред +15 бп», «объём +30 %», «цена −0,6 п.п.».
+ *
+ * Само слово-ярлык («спред») не отвечает на главный вопрос — насколько ушло.
+ * Пара «было → стало» отвечает, но её надо вычитать в уме; в ленте из двадцати
+ * строк это не работает. Поэтому первым идёт знаковое приращение, а «было →
+ * стало» остаётся в подсказке (см. reasonTitle).
+ *
+ * Единицы у каждой причины свои и совпадают с порогами бэка (services/signals):
+ * спред — базисные пункты, цена — пункты цены, объём — проценты.
+ */
+const REASON_UNIT = {
+  spread: { field: "val_bps", txt: "спред", fmt: (d) => `${fmt.devBps(d)} бп` },
+  price: { field: "price", txt: "цена",
+           fmt: (d) => `${d > 0 ? "+" : "−"}${fmt.num(Math.abs(d), 2)} п.п.` },
+};
+
+export function reasonDelta(e) {
+  if (!e || e.reason === "block") return null;
+  if (e.reason === "new") return "попала под условия";
+  if (e.reason === "money") {
+    // объём меряется деньгами В ГРАНИЦАХ спреда фильтра — процент от них
+    const prev = e.prev_money_ok_rub, cur = e.money_ok_rub;
+    if (prev == null || cur == null) return "объём появился";
+    if (Math.abs(prev) < 1) return "объём появился";
+    const pct = (cur - prev) / Math.abs(prev) * 100;
+    return `объём ${pct > 0 ? "+" : "−"}${fmt.num(Math.abs(pct), 0)} %`;
+  }
+  const u = REASON_UNIT[e.reason];
+  if (!u) return null;
+  const prev = e["prev_" + u.field], cur = e[u.field];
+  if (prev == null || cur == null || cur === prev) return u.txt;
+  return `${u.txt} ${u.fmt(cur - prev)}`;
+}
+
+/** «было → стало» в подсказке: дельта отвечает «насколько», это — «от чего». */
+export function reasonTitle(e) {
+  if (!e || e.reason === "block" || e.reason === "new") return undefined;
+  if (e.reason === "money") {
+    return `объём по условиям фильтра: ${e.prev_money_ok_rub != null
+      ? fmt.mln(e.prev_money_ok_rub) + " → " : ""}`
+      + (e.money_ok_rub != null ? fmt.mln(e.money_ok_rub) + " млн ₽" : "—");
+  }
+  const u = REASON_UNIT[e.reason];
+  if (!u) return undefined;
+  const prev = e["prev_" + u.field], cur = e[u.field];
+  const d = e.reason === "spread" ? 0 : 2;
+  return `${u.txt}: ${prev != null ? fmt.num(prev, d) + " → " : ""}`
+    + (cur != null ? fmt.num(cur, d) : "—");
+}

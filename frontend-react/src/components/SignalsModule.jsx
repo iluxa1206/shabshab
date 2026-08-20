@@ -6,7 +6,7 @@ import {
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
-import { bookMode, maturityTxt, sideInfo, tradeMode } from "../signalFormat.js";
+import { bookMode, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
 
 const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 // Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
@@ -636,23 +636,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
 
 // Повторное срабатывание по УЖЕ найденной бумаге: показываем, что именно
 // шевельнулось и на сколько — иначе в ленте десяток одинаковых строк подряд.
-const REPEAT = {
-  price: ["цена", "price", (v) => fmt.num(v, 2) + "%"],
-  spread: ["спред", "val_bps", (v) => fmt.num(v, 0) + " бп"],
-  money: ["объём по условиям", "money_ok_rub", (v) => money(v) + " млн ₽"],
-};
-
-/** Почему прилетело: «нашлась» либо «цена 100,10 → 99,80». Строкой, а не
- *  отдельным блоком — иначе на событие уходит пять строк ленты. */
-function whyTxt(h) {
-  const r = REPEAT[h.reason];
-  if (!r) return h.reason === "new" ? "нашлась под условия" : null;
-  const [what, field, fmtv] = r;
-  const prev = h["prev_" + field];
-  const cur = h[field];
-  return `${what} ${prev != null ? fmtv(prev) + " → " : ""}`
-    + (cur != null ? fmtv(cur) : "—");
-}
+const REPEAT = { price: 1, spread: 1, money: 1 };   // причины-повторы (для стиля строки)
 
 /** Колонка одного вида сигналов: список фильтров + своя форма под ним.
  *  Виды не переключаются табом — они стоят рядом, потому что настраивают их
@@ -818,8 +802,12 @@ export default function SignalsModule() {
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
                 </div>
                 <div className="sig-hit-mode">
-                  {[tradeMode(h), bookMode(h), maturityTxt(h), whyTxt(h)]
-                    .filter(Boolean).join(" · ")}
+                  {[tradeMode(h), bookMode(h), maturityTxt(h)].filter(Boolean).join(" · ")}
+                  {reasonDelta(h) && (
+                    <span className="sig-why" title={reasonTitle(h)}>
+                      {[tradeMode(h), bookMode(h), maturityTxt(h)].filter(Boolean).length ? " · " : ""}
+                      {reasonDelta(h)}</span>
+                  )}
                 </div>
                 <div className="sig-hit-meta">
                   {/* у блока filter_name пустой, когда звонило умолчание

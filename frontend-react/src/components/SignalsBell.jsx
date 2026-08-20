@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clearSignalEvents, fetchSignalEvents, markSignalEventsSeen } from "../api.js";
 import { fmt } from "../format.js";
-import { bookMode, maturityTxt, sideInfo, tradeMode } from "../signalFormat.js";
+import { bookMode, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
 import { IconBell, IconAlert } from "./icons.jsx";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
@@ -184,6 +184,10 @@ export default function SignalsBell() {
                     <span className="sb-row-mode">
                       {[tradeMode(e), bookMode(e), maturityTxt(e)]
                         .filter(Boolean).join(" · ")}
+                      {reasonDelta(e) && e.reason !== "new" && (
+                        <>{" · "}<span className="sb-why" title={reasonTitle(e)}>
+                          {reasonDelta(e)}</span></>
+                      )}
                     </span>
                     <span className="sb-row-3">
                       {/* у блока filter_name пустой, когда звонило умолчание

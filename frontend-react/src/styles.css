@@ -1856,6 +1856,11 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sig-hit-mode, .sb-row-mode { display: block; font-size: 10.5px; color: var(--mut);
                               margin-top: 3px; }
 .sig-hit-mode:empty, .sb-row-mode:empty { display: none; }
+/* причина повтора дельтой («спред +15 бп») — заметнее прочих подписей режима:
+   это и есть ответ на вопрос «что случилось», ради которого строку читают */
+.sig-why, .sb-why { color: var(--fg); font-weight: 700; }
+/* в тосте дельта стоит рядом с ярлыком причины, а не в строке режима */
+.sig-toast .sig-why { font-size: 10px; margin-left: 4px; }
 .sig-hit-body .dim, .sb-row-2 .dim { color: var(--mut); }
 .sig-hit-why { font-size: 10.5px; color: var(--mut); margin-top: 3px; }
 .sig-hit-why .num { font-family: var(--mono); }

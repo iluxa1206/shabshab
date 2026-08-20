@@ -32,6 +32,33 @@ _REASON = {"new": "заявка", "price": "цена", "spread": "спред", "
            "block": "крупная сделка"}
 
 
+def _reason_delta(m: dict) -> str:
+    """«спред +15 бп» / «объём +30 %» / «цена −0,6 п.п.» — насколько ушло с
+    прошлого срабатывания. Единицы те же, что у порогов (services/signals)."""
+    r = m.get("reason")
+    if r == "new":
+        return "заявка"
+    if r == "money":
+        prev, cur = m.get("prev_money_ok_rub"), m.get("money_ok_rub")
+        if prev is None or cur is None or abs(prev) < 1:
+            return "объём"
+        pct = (cur - prev) / abs(prev) * 100.0
+        return f"объём {pct:+.0f} %".replace("-", "−")
+    if r == "spread":
+        prev, cur = m.get("prev_val_bps"), m.get("val_bps")
+        if prev is None or cur is None:
+            return "спред"
+        return f"спред {cur - prev:+.0f} бп".replace("-", "−")
+    if r == "price":
+        prev, cur = m.get("prev_price"), m.get("price")
+        if prev is None or cur is None:
+            return "цена"
+        # запятая — только в самом числе: replace по всей строке съедал «п.п.»
+        num = f"{cur - prev:+.2f}".replace(".", ",").replace("-", "−")
+        return f"цена {num} п.п."
+    return ""
+
+
 # --- алерты по стакану ---
 
 def enqueue(alert: dict, bids: List[dict], asks: List[dict],
@@ -169,9 +196,10 @@ def _fmt_match(m: dict, kind: str) -> str:
     years = _fmt_years(m.get("years"))
     if years:
         bits.append(years)
-    reason = _REASON.get(m.get("reason") or "", "")
-    if reason and kind != "block":
-        bits.append(reason)
+    if kind != "block":
+        # причина ДЕЛЬТОЙ («спред +15 бп»), как в браузере: слово без числа не
+        # говорит, стоит ли смотреть. Фолбэк — просто слово.
+        bits.append(_reason_delta(m) or _REASON.get(m.get("reason") or "", ""))
     return f"• <b>{name}</b> — " + " · ".join(bits)
 
 
