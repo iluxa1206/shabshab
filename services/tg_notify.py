@@ -122,6 +122,20 @@ def _short_money(v: Optional[float]) -> str:
     return f"{txt}{unit} ₽"
 
 
+def _hhmm(m: dict) -> str:
+    """Время сделки, МСК. В живом пуше приходит ts самой сделки; в строке из
+    ленты его нет (в таблице событий хранится только fired_at), поэтому берём
+    момент срабатывания и переводим из UTC."""
+    ts = (m.get("ts") or "")[11:16]
+    if ts:
+        return ts
+    from services.signals import event_moment
+    fired = m.get("fired_at")
+    if not fired:
+        return ""
+    return event_moment(fired).astimezone(_MSK).strftime("%H:%M")
+
+
 def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
     if kind == "block":
         if m.get("negotiated"):
@@ -162,7 +176,7 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     if m.get("price") is not None:
         sub.append(f"{_num(m['price'])}%")
     if kind == "block":
-        ts = (m.get("ts") or "")[11:16]
+        ts = _hhmm(m)
         if ts:
             sub.append(ts)
         if m.get("rating"):
