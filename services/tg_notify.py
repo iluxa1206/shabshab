@@ -184,7 +184,7 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     head, sub = [], []
 
     if m.get("val_bps") is not None:
-        head.append(f"<b>{m['val_bps']:.0f} бп</b>")
+        head.append(f"R-spread <b>{m['val_bps']:.0f} бп</b>")
     money = _short_money(m.get("money_rub"))
     if money:
         head.append(money)
@@ -248,16 +248,16 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
 
     def row(lvl: dict) -> str:
         y = lvl.get("y_idx")
-        y_txt = f"{y:.0f}".rjust(4) if y is not None else "   —"
+        y_txt = f"{y:.0f}".rjust(5) if y is not None else "    —"
         # своя цена — стрелкой; эмодзи внутри моноширинного блока нельзя,
         # они двойной ширины и рвут колонки
         hit = " ←" if (px is not None and lvl.get("price") is not None
                        and abs(lvl["price"] - px) < 0.005) else ""
         return f"{_num(lvl['price']).rjust(7)} {_book_money(lvl.get('money'))} {y_txt}{hit}"
 
-    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'СПРД':>4}"]
+    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'R-SPR':>5}"]
     lines += [row(l) for l in asks]
-    lines.append("─" * 19)          # выше разделителя оффера, ниже биды
+    lines.append("─" * 20)          # выше разделителя оффера, ниже биды
     lines += [row(l) for l in bids]
     # Сворачиваемая цитата: в ленте чата стакан не занимает экран, но
     # разворачивается одним тапом. Моноширинность держим построчным <code> —

@@ -34,7 +34,7 @@ def _fmt_event(e: dict) -> str:
     name = e.get("name") or e.get("isin")
     bits = []
     if e.get("val_bps") is not None:
-        bits.append(f"{e['val_bps']:.0f} бп")
+        bits.append(f"R-spread {e['val_bps']:.0f} бп")
     if e.get("price") is not None:
         bits.append(f"{e['price']:.2f}")
     if e.get("money_rub"):
