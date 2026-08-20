@@ -39,6 +39,8 @@ import httpx
 
 from services.portfolio_db import _connect, _lock
 
+from services.pools import run_bg
+
 logger = logging.getLogger(__name__)
 
 _ISS = "https://iss.moex.com/iss"
@@ -231,17 +233,17 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
                                r.status_code if r is not None else "timeout")
                 break
             # разбор 5000 строк JSON держит event loop десятки мс — в поток
-            rows = await asyncio.to_thread(lambda: _iss_rows(r.json(), "trades"))
+            rows = await run_bg(lambda: _iss_rows(r.json(), "trades"))
             if not rows:
                 break
             seen += len(rows)
-            n, unknown = await asyncio.to_thread(upsert_trades, rows, market, secmap)
+            n, unknown = await run_bg(upsert_trades, rows, market, secmap)
             if unknown and not refreshed:
                 # свежее размещение ещё не в суточном кэше справочника — иначе
                 # первая (и самая крупная) сделка нового выпуска потерялась бы
                 refreshed = True
                 secmap = await secid_map(client, force=True)
-                extra, _ = await asyncio.to_thread(upsert_trades, rows, market, secmap)
+                extra, _ = await run_bg(upsert_trades, rows, market, secmap)
                 n += extra
             saved += n
             last = rows[-1].get("TRADENO") or last
@@ -430,13 +432,13 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
     реестра) — иначе они забивают очередь: крупняк рынка это почти целиком
     ОФЗ-ПД, и до флоатеров расчёт просто не доходил. Солвер тратится только на
     флоатеры, `limit` — их потолок на такт."""
-    rows = await asyncio.to_thread(unpriced, batch)
+    rows = await run_bg(unpriced, batch)
     if not rows:
         return 0
     from services import instruments_registry as reg
     from services import trade_yidx
 
-    labels = await asyncio.to_thread(reg.labels_map)
+    labels = await run_bg(reg.labels_map)
     floats, others = [], []
     for r in rows:
         (floats if (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES
@@ -454,12 +456,12 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
         return out
 
     if others:
-        done += await asyncio.to_thread(
+        done += await run_bg(
             _by_table, others, lambda r: (None, None, r["trade_id"], r["isin"]))
     if floats:
         floats = floats[:limit]
         await trade_yidx.enrich(floats, labels, max_isins=limit)
-        done += await asyncio.to_thread(
+        done += await run_bg(
             _by_table, floats,
             lambda r: (r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"], r["isin"]))
     return done
@@ -511,7 +513,7 @@ async def backfill_day(d: str, client: Optional[httpx.AsyncClient] = None) -> in
             rows = _iss_rows(r.json(), "history")
             if not rows:
                 break
-            saved += await asyncio.to_thread(upsert_days, rows, secmap)
+            saved += await run_bg(upsert_days, rows, secmap)
             start += len(rows)
             if len(rows) < _HIST_PAGE:
                 break
@@ -781,27 +783,27 @@ async def notify_blocks() -> int:
     from services.auth_users import list_users
     from services import instruments_registry as reg
 
-    users = [u["email"] for u in await asyncio.to_thread(list_users) if u.get("email")]
+    users = [u["email"] for u in await run_bg(list_users) if u.get("email")]
     if not users:
         return 0
-    bfilters = await asyncio.to_thread(signals.list_enabled_blocks)
+    bfilters = await run_bg(signals.list_enabled_blocks)
     by_user: dict[str, list] = {}
     for f in bfilters:
         by_user.setdefault(f["user_email"], []).append(f)
     # Умолчание — только для тех, кто блок-фильтров не заводил вовсе: иначе
     # выключенный фильтр воскрешал бы дефолтный звонок.
-    owners = await asyncio.to_thread(signals.block_filter_owners)
+    owners = await run_bg(signals.block_filter_owners)
     legacy_users = [u for u in users if u not in owners]
 
     # Порог выборки — минимальный из тех, что кому-то нужен: тянуть из базы
     # мельче бессмысленно, крупнее — значит молча потерять чужой сигнал.
     floor = min([f["params"]["min_value_rub"] for f in bfilters]
                 + ([BLOCK_ALERT_MIN_RUB] if legacy_users else []) or [BLOCK_ALERT_MIN_RUB])
-    rows = await asyncio.to_thread(pending_alerts, 50, floor)
+    rows = await run_bg(pending_alerts, 50, floor)
     if not rows:
         return 0
 
-    labels = await asyncio.to_thread(reg.labels_map)
+    labels = await run_bg(reg.labels_map)
     names = {v["isin"]: v.get("name") for v in _secmap["map"].values() if v.get("isin")}
     now = datetime.now(_MSK).strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now(_MSK).date()
@@ -893,7 +895,7 @@ async def notify_blocks() -> int:
                   m["money_rub"], m["val_bps"], m["board"],
                   1 if m["negotiated"] else 0, now)
                  for (u, fid, _n, _s, _d), ms in payloads.items() for m in ms])
-    await asyncio.to_thread(_persist)
+    await run_bg(_persist)
 
     from services import tg_notify
     for (u, fid, fname, snd, desk), ms in payloads.items():

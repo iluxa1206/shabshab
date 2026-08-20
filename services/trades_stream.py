@@ -34,6 +34,8 @@ import aiohttp
 
 from auth import alor_token, REFRESH_TOKEN, BASE_API
 
+from services.pools import run_bg
+
 logger = logging.getLogger(__name__)
 
 _WS_URL = BASE_API.replace("https://", "wss://") + "/ws"
@@ -117,7 +119,7 @@ async def _flusher(stop: asyncio.Event) -> None:
             continue
         try:
             faces = await _faces_map()
-            saved = await asyncio.to_thread(_flush_sync, chunks, faces)
+            saved = await run_bg(_flush_sync, chunks, faces)
         except asyncio.CancelledError:
             raise
         except Exception as e:

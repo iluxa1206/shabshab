@@ -52,6 +52,7 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 from services.market_data import MarketDataService
 from services import instruments_registry
+from services.pools import run_bg
 
 WS_PUSH_INTERVAL = 5        # такт пуша цен в торговые часы, сек
 WS_IDLE_INTERVAL = 60       # вне торговых часов — только перепроверка календаря
@@ -336,9 +337,9 @@ async def warmup_caches():
         from services import cbr
         from services.market_data import MarketDataService, market_cache
         from services.universe import compute_universe_metrics
-        await asyncio.to_thread(cbr.ks_history)      # триггерит _refresh (сеть)
+        await run_bg(cbr.ks_history)                 # триггерит _refresh (сеть)
         progress.advance("warmup", detail="история RUONIA", force=True)
-        await asyncio.to_thread(cbr.ruonia_history)
+        await run_bg(cbr.ruonia_history)
         progress.advance("warmup", detail="кривые RUONIA/KEYRATE", force=True)
         await MarketDataService.get_curves()          # bootstrap RUONIA/KEYRATE
         progress.advance("warmup", detail="z-спред контекст (g-curve)", force=True)
@@ -507,7 +508,7 @@ async def spread_snapshotter():
         await asyncio.sleep(30)
         if market_cache.get("universe_metrics") or market_cache.get("fixed_metrics"):
             try:
-                await asyncio.to_thread(write_snapshot)
+                await run_bg(write_snapshot)
             except Exception as e:
                 logger.warning(f"spread snapshot (startup) error: {e}")
             break
@@ -518,7 +519,7 @@ async def spread_snapshotter():
             target += timedelta(days=1)
         await asyncio.sleep(max(1.0, (target - now).total_seconds()))
         try:
-            await asyncio.to_thread(write_snapshot)
+            await run_bg(write_snapshot)
         except Exception as e:
             logger.warning(f"spread snapshot error: {e}")
 
@@ -607,7 +608,7 @@ async def block_trades_worker():
                     # знак уведомлений ставим ПОСЛЕ первого прохода: иначе
                     # холодный старт вывалил бы в колокольчик всю сессию разом
                     seeded = True
-                    await asyncio.to_thread(bt.seed_alert_mark)
+                    await run_bg(bt.seed_alert_mark)
                 else:
                     sent = await bt.notify_blocks()
                     if sent:
@@ -627,14 +628,14 @@ async def block_trades_worker():
                     # и тем же заходом ужимаем прошедшие дни до архивного порога:
                     # полный поток рынка нужен только внутри дня
                     logger.info("block trades prune: %s",
-                                await asyncio.to_thread(bt.prune))
+                                await run_bg(bt.prune))
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(f"block trades worker error: {e}")
         # вне торгов такт редкий, но пока есть неоценённый хвост — держим
         # рабочий темп, иначе вечерний наплыв досчитывался бы часами
-        idle = 60 if await asyncio.to_thread(bt.unpriced_count) else 600
+        idle = 60 if await run_bg(bt.unpriced_count) else 600
         await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else idle)
 
 
@@ -656,12 +657,12 @@ async def archive_maintenance():
             target += timedelta(days=1)
         await asyncio.sleep(max(1.0, (target - now).total_seconds()))
         try:
-            res = await asyncio.to_thread(ta.prune)
+            res = await run_bg(ta.prune)
             logger.info("tick archive prune: %s", res)
             if res.get("deleted", 0) >= ARCHIVE_VACUUM_MIN_ROWS:
-                vac = await asyncio.to_thread(ta.vacuum)
+                vac = await run_bg(ta.vacuum)
                 logger.info("tick archive vacuum: %s", vac)
-            logger.info("tick archive: %s", await asyncio.to_thread(ta.db_stats))
+            logger.info("tick archive: %s", await run_bg(ta.db_stats))
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -698,8 +699,22 @@ async def depth_poller():
         await asyncio.sleep(DEPTH_POLL_INTERVAL)
 
 
+# Дефолтный пул (asyncio.to_thread) обслуживает ТОЛЬКО запросы API — чтения
+# SQLite под ручки. Питоновский дефолт — min(32, cpu+4), на двухъядерном VPS это
+# 6 воркеров на всё приложение; фоновый I/O демонов уведён в свой пул
+# (services/pools.run_bg), а этот подняли: работа тут ждёт диск, а не считает,
+# и GIL SQLite отпускает.
+API_POOL_WORKERS = int(os.getenv("API_POOL_WORKERS", "12"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from concurrent.futures import ThreadPoolExecutor
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=API_POOL_WORKERS, thread_name_prefix="api"))
+    from services.pools import BG_WORKERS
+    logger.info("пулы потоков: api=%d, bg=%d, heavy=1", API_POOL_WORKERS, BG_WORKERS)
+
     from services.portfolio_db import init_db
     init_db()  # схема spread_daily/bar_hourly/trade_tick (идемпотентно)
 
@@ -708,7 +723,7 @@ async def lifespan(app: FastAPI):
         В фоне: GROUP BY по миллионам тиков не должен держать старт сервера."""
         try:
             from services import trades_archive as ta
-            n = await asyncio.to_thread(ta.seed_watermarks)
+            n = await run_bg(ta.seed_watermarks)
             if n:
                 logger.info("tick drain watermarks seeded: %d", n)
         except Exception as e:
