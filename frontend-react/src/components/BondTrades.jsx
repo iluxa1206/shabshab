@@ -12,6 +12,7 @@ import { fetchTrades } from "../api.js";
 
 const WINDOWS = [1, 7, 30];
 const LIMIT = 300;
+const DEFAULT_VOL_MLN = 1;
 
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
@@ -20,10 +21,13 @@ export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
   const [days, setDays] = useState(7);
   // Порог объёма — поле ввода в МИЛЛИОНАХ ₽ (единая денежная единица интерфейса,
-  // как в фильтрах вкладки СДЕЛКИ). Пусто = все сделки. Значение уходит в запрос
-  // с задержкой: иначе каждый набранный символ дёргал бы дрейн тиков.
-  const [volInput, setVolInput] = useState("");
-  const [volMln, setVolMln] = useState(0);
+  // как в фильтрах вкладки СДЕЛКИ). По умолчанию 1 млн: лента бумаги почти
+  // целиком из розничных сделок на пару тысяч, и грузить их каждый раз незачем —
+  // очистить поле (×) можно, когда мелочь действительно нужна. Пусто = все сделки.
+  // Значение уходит в запрос с задержкой: иначе каждый набранный символ дёргал бы
+  // дрейн тиков.
+  const [volInput, setVolInput] = useState(String(DEFAULT_VOL_MLN));
+  const [volMln, setVolMln] = useState(DEFAULT_VOL_MLN);
   useEffect(() => {
     const raw = volInput.trim().replace(",", ".");
     const v = raw === "" ? 0 : parseFloat(raw);
@@ -72,7 +76,7 @@ export default function BondTrades({ isin, kind, onClose }) {
           aria-label="Объём сделки от, млн ₽"
           value={volInput} onChange={(e) => setVolInput(e.target.value)} />
         {volInput !== "" && (
-          <button className="chip-btn" title="Убрать порог"
+          <button className="chip-btn" title="Убрать порог — показать все сделки, включая розничные"
             onClick={() => setVolInput("")}>×</button>
         )}
       </div>
