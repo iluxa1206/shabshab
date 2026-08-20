@@ -32,7 +32,7 @@ from typing import Optional
 
 import aiohttp
 
-from auth import get_access_token, REFRESH_TOKEN, BASE_API
+from auth import alor_token, REFRESH_TOKEN, BASE_API
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
     пачкой на каждую бумагу, а её и так закрывает drain/ISS."""
     backoff = 1
     while not stop.is_set():
-        token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+        token = await alor_token()
         if not token:
             await asyncio.sleep(10)
             continue

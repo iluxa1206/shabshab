@@ -21,7 +21,7 @@ _LIVE_PRICE_FRESH = 15.0
 
 from core.rates import get_rates_curves, Quote
 from core.forwards import CurveBootstrapper, DiscountCurve, SheetForwardCurve
-from auth import get_access_token, REFRESH_TOKEN
+from auth import alor_token, REFRESH_TOKEN
 from core.last_prices import get_last_prices_dict
 from core.cashflow import load_cache, get_local_excel_db
 import logging
@@ -361,7 +361,7 @@ class MarketDataService:
         if not missing:
             return cls.cached_prices()
 
-        access_token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+        access_token = await alor_token()
         if not access_token:
             return cls.cached_prices()
 

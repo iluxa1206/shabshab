@@ -20,6 +20,19 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Второй приёмник логов — ФАЙЛ на томе data/. `docker logs` обнуляется при
+# каждом редеплое (контейнер пересоздаётся), поэтому разбор жалобы «вчера сайт
+# висел» упирался в отсутствие улик. Ротация: 5 файлов по 20 МБ.
+try:
+    from logging.handlers import RotatingFileHandler
+    from services.paths import log_path
+    _fh = RotatingFileHandler(log_path("app.log"), maxBytes=20 * 1024 * 1024,
+                              backupCount=5, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+except Exception as e:                    # том не смонтирован / нет прав — не падаем
+    logger.warning("file log disabled: %s", e)
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -756,6 +769,32 @@ app = FastAPI(
     description="API for fetching floater bond analytics, cashflows, and market data.",
     lifespan=lifespan
 )
+
+# Медленные запросы — в лог. Порог низкий намеренно: интерактивная ручка,
+# отвечающая секунду, уже «подвисает» на глаз, а разбирать эпизод постфактум
+# можно только по следу. Рядом в том же файле лежат записи сторожа лага
+# (loop_lag_watchdog) — вместе они отделяют «ручка сама медленная» от
+# «ядро/пул были заняты чем-то другим».
+SLOW_REQUEST_SEC = float(os.getenv("SLOW_REQUEST_SEC", "1.0"))
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    t0 = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.warning("запрос %s %s упал за %.2fс", request.method,
+                       request.url.path, time.monotonic() - t0)
+        raise
+    dt = time.monotonic() - t0
+    if dt >= SLOW_REQUEST_SEC:
+        logger.warning("медленный запрос %.2fс: %s %s%s → %s", dt, request.method,
+                       request.url.path,
+                       f"?{request.url.query}" if request.url.query else "",
+                       response.status_code)
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,

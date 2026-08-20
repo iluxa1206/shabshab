@@ -11,6 +11,14 @@ import os
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.environ.get("CACHE_DIR") or os.path.join(_ROOT, "data", "cache")
+# Логи — тоже в data/: docker logs обнуляется при каждом редеплое (контейнер
+# пересоздаётся), и разбирать вчерашнее «сайт висел» было не по чему.
+LOG_DIR = os.environ.get("LOG_DIR") or os.path.join(_ROOT, "data", "logs")
+
+
+def log_path(name: str) -> str:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    return os.path.join(LOG_DIR, name)
 
 
 def atomic_write_json(path: str, obj) -> None:

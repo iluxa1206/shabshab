@@ -30,7 +30,7 @@ from typing import Dict, Optional
 
 import aiohttp
 
-from auth import get_access_token, REFRESH_TOKEN, BASE_API
+from auth import alor_token, REFRESH_TOKEN, BASE_API
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
     """Один сокет пула: подписка на свой шард, чтение до сигнала stop."""
     backoff = 1
     while not stop.is_set():
-        token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+        token = await alor_token()
         if not token:
             await asyncio.sleep(10)
             continue
@@ -226,7 +226,7 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
     from services.market_data import market_cache
     backoff = 1
     while not stop.is_set():
-        token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+        token = await alor_token()
         if not token:
             await asyncio.sleep(10)
             continue

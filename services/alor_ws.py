@@ -21,7 +21,7 @@ import time
 
 import aiohttp
 
-from auth import get_access_token, REFRESH_TOKEN, BASE_API
+from auth import alor_token, REFRESH_TOKEN, BASE_API
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ async def alor_orderbook_ws():
     manager = wsmod.manager
     backoff = 1
     while True:
-        token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+        token = await alor_token()
         if not token:
             await asyncio.sleep(10)
             continue

@@ -87,13 +87,13 @@ async def _headers(force: bool = False) -> Optional[dict]:
         now = _time.monotonic()
         if not force and _token_cache["headers"] and now - _token_cache["at"] < _TOKEN_TTL:
             return _token_cache["headers"]
-        from auth import get_access_token, REFRESH_TOKEN
+        from auth import alor_token, REFRESH_TOKEN
         if not REFRESH_TOKEN:
             return None
         token = None
         for attempt in range(3):
             try:
-                token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+                token = await alor_token()
             except Exception as e:      # таймаут/SSL к oauth — ждём и пробуем ещё
                 logger.warning("alor token attempt %d: %s", attempt + 1, e)
                 token = None

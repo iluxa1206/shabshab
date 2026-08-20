@@ -39,10 +39,10 @@ async def refresh_depth(isins: List[str], chunk: int = 150) -> int:
     Бумаги, по которым Alor смолчал, сохраняют прошлый снимок — дырка в ответе не
     должна выключать фильтр по объёму на пол-рынка. Возвращает число обновлённых."""
     import asyncio
-    from auth import get_access_token, REFRESH_TOKEN
+    from auth import alor_token
     from core.orderbooks import get_orderbooks_dict
 
-    token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+    token = await alor_token()
     if not token:
         return 0
     fresh: Dict[str, dict] = {}

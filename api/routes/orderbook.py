@@ -9,7 +9,7 @@ from api.schemas import OrderbookResponse, OrderbookSnapshot, OrderbookLevel
 from services.market_data import MarketDataService
 from services.exceptions import NotFoundException
 from services.paths import cache_path as _cache_path
-from auth import get_access_token, REFRESH_TOKEN, BASE_API
+from auth import alor_token, REFRESH_TOKEN, BASE_API
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ router = APIRouter()
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]:
-    access_token = await asyncio.to_thread(get_access_token, REFRESH_TOKEN)
+    access_token = await alor_token()
     if not access_token:
         return None
         

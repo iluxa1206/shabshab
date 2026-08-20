@@ -145,7 +145,7 @@ async def memory():
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
     from services import trades_stream as tstream
-    from auth import get_access_token, REFRESH_TOKEN
+    from auth import alor_token
 
     # универсы
     fl_uni = await reg.fetch_floater_universe()
@@ -159,7 +159,7 @@ async def get_status():
 
     # подключения — пинги конкурентно + Alor-токен в потоке
     alor_tok, moex, cbonds, cbr_site = await asyncio.gather(
-        asyncio.to_thread(get_access_token, REFRESH_TOKEN),
+        alor_token(),
         _ping("https://iss.moex.com/iss/index.json"),
         _ping("https://corpbonds.ru/"),
         _ping("https://www.cbr.ru/"),
