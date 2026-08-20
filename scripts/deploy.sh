@@ -57,6 +57,18 @@ echo ">>> docker compose up --build"
 ssh $SSH_OPTS "$SERVER" \
   "cd $REMOTE && docker compose -f docker-compose.prod.yml --env-file .env up -d --build"
 
+# Крон резервных копий: ставим/обновляем при каждом деплое — расписание должно
+# ехать вместе с кодом, а не жить только в голове того, кто его однажды завёл.
+# 04:30 МСК (сервер в UTC → 01:30): после ночного прун/VACUUM/ANALYZE в 03:30.
+echo ">>> cron бэкапов"
+# shellcheck disable=SC2086
+ssh $SSH_OPTS "$SERVER" "cat > /etc/cron.d/floaters-backup <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 1 * * * root cd $REMOTE && docker compose -f docker-compose.prod.yml exec -T floaters python scripts/backup_db.py >> $REMOTE/data/logs/backup.log 2>&1
+CRON
+chmod 0644 /etc/cron.d/floaters-backup"
+
 echo ">>> healthcheck"
 # ${CURL_OPTS[@]} на пустом массиве под set -u — «unbound variable» в bash 3.2
 # (штатный /bin/bash macOS): деплой падал НА ПОСЛЕДНЕЙ строке, когда
