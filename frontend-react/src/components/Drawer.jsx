@@ -591,8 +591,8 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                     у флоатера. Крупно и основным цветом, не серым служебным:
                     раньше эти цифры терялись рядом с ISIN. */}
                 {data?.reference?.maturity_date && (
-                  <span className="dh-dates mono">
-                    <span title="Дата погашения">M {fmt.date(data.reference.maturity_date)}</span>
+                  <span className="dh-dates">
+                    <span className="dh-mat" title="Дата погашения">M {fmt.date(data.reference.maturity_date)}</span>
                     {data?.reference?.offer_date && (
                       <span className={"dh-offer" + (data.reference.offer_kind === "call" ? " dh-offer-call" : "")}
                         title={(data.reference.offer_kind === "call" ? "Call-оферта (опцион эмитента)" : "Пут-оферта")}>

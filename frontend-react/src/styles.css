@@ -521,10 +521,16 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* Срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл). Основной цвет и
    жирное начертание: это параметры выпуска, а не служебная подпись, — их читают
    вместе с именем, и серым мелким они терялись рядом с ISIN. */
-.dh-dates { display: inline-flex; gap: 10px; font-size: 13px; font-weight: 700; color: var(--fg); }
-.dh-offer { color: var(--accent); }
-.dh-offer-call { color: var(--fg); }
-/* формула купона там же и тем же весом — третий ключевой параметр выпуска */
+.dh-dates { display: inline-flex; align-items: baseline; gap: 10px; }
+/* погашение — тем же кеглем и шрифтом, что формула купона: это первый параметр,
+   который читают в шапке, и мелкий моноширинный он терялся рядом с ISIN */
+.dh-mat { font-size: 13px; font-weight: 700; color: var(--fg); }
+/* оферта остаётся служебной подписью: мелкая моноширинная, цвет несёт вид
+   (акцент — пут, серый — call эмитента) */
+.dh-offer { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  white-space: nowrap; color: var(--accent); }
+.dh-offer-call { color: var(--mut); }
+/* формула купона тем же весом — второй ключевой параметр выпуска */
 .dh-formula { font-size: 13px; font-weight: 700; color: var(--fg); }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
@@ -2118,6 +2124,9 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   color: #cfd8ff;
 }
 .theme-win .dh-offer { color: #9fe0ff; }
+/* погашение и формула в шапке — светлые по тёмному титлбару темы win,
+   иначе var(--fg) даёт тёмный текст на тёмном */
+.theme-win .dh-mat, .theme-win .dh-formula { color: #cfd8ff; }
 /* ряд кнопок карточки уезжает из тайтлбара на серебряную полосу под ним */
 .theme-win .dh-actions {
   background: var(--face); margin: 3px -3px -3px -6px; padding: 4px 6px;
