@@ -12,7 +12,8 @@ projected=False, спроецированные — True.
 """
 import asyncio
 import logging
-from datetime import date
+import os
+from datetime import date, timedelta
 from typing import List, Optional
 
 from services.market_data import MarketDataService
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _cache = {"key": None, "events": [], "calc_date": None}
 _lock = asyncio.Lock()
+
+# Сколько дней НАЗАД календарь помнит уже выплаченное. Канонический билдер
+# строит поток только вперёд от даты поставки, а «что платили вчера» — такой же
+# рабочий вопрос, как «что заплатят завтра» (плашка выплат в нижней строке).
+# Прошлое берётся ФАКТОМ MOEX (value не null), без проекции.
+PAST_WINDOW_DAYS = int(os.getenv("CALENDAR_PAST_DAYS", "7"))
 
 
 def _d(s) -> Optional[date]:
@@ -48,6 +55,31 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
     base = {"isin": isin, "name": name, "emitter": u.get("emitter_name") or "—",
             "base": ref.base}
     out: List[dict] = []
+
+    # Ближний хвост потока ФАКТОМ MOEX — то, чего канонический билдер не даёт:
+    # он строит поток строго ПОСЛЕ даты поставки (купон, платящийся в settle,
+    # для оценки принадлежит продавцу через НКД). Для календаря такие выплаты
+    # нужны, как и уже прошедшие за последние дни.
+    # paid ставится по СЕГОДНЯ, а не по settle: завтрашний купон — ещё не выплата.
+    past_lo = calc_date - timedelta(days=PAST_WINDOW_DAYS)
+    for c in coupons:
+        end = _d(c.get("end"))
+        if not end or not (past_lo <= end <= settle) or c.get("value") is None:
+            continue
+        vp = c.get("valueprc")
+        out.append({
+            **base, "date": end, "type": "COUPON",
+            "amount_rub": round(float(c["value"]), 2),
+            "rate_pct": round(float(vp), 4) if vp is not None else None,
+            "projected": False, "paid": end <= calc_date,
+        })
+    for a in amorts:
+        d = _d(a.get("date"))
+        if not d or a.get("value") is None or not (past_lo <= d <= settle):
+            continue
+        out.append({**base, "date": d, "type": "REDEMPTION",
+                    "amount_rub": round(float(a["value"]), 2),
+                    "rate_pct": None, "projected": False, "paid": d <= calc_date})
 
     cfs = None
     if curve is not None and ref.base in ("KEYRATE", "RUONIA"):

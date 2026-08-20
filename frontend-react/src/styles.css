@@ -844,6 +844,31 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .al-pop::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 8px; }
 .al-pop-name { font: 11px var(--mono); font-weight: 700; min-width: 92px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
+
+/* ── выплаты вчера/сегодня/завтра: попап на датах нижней строки ── */
+.pay-chip { position: relative; }
+/* сама дата остаётся датой: кнопка без рамки и фона, но с курсором и ховером */
+.pay-btn { display: flex; align-items: center; gap: 8px; background: none; border: none;
+  padding: 0; font: inherit; color: inherit; letter-spacing: inherit; cursor: pointer; }
+.pay-btn:hover .meta-v { color: var(--accent); }
+.pay-chip.open .meta-v { color: var(--accent); }
+.pay-pop { right: 0; left: auto; min-width: 420px; }
+.pay-day + .pay-day { border-top: 1px solid var(--fg); }
+.pay-day-h { display: flex; justify-content: space-between; gap: 10px; padding: 5px 12px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mut); }
+/* сегодняшний день выделен, как и его дата в ленте сделок */
+.pay-today .pay-day-h { color: var(--fg); font-weight: 700; }
+.pay-day-sum { font-variant-numeric: tabular-nums; letter-spacing: normal; }
+.pay-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 12px; font-size: 11px; }
+.pay-row:hover { background: var(--line); }
+.pay-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 11px var(--mono); }
+.pay-t { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); }
+.pay-t-redemption { color: var(--accent); }
+.pay-v { font-variant-numeric: tabular-nums; text-align: right; min-width: 72px; }
+.pay-tot { min-width: 56px; color: var(--mut); }
+.pay-proj { color: var(--mut-2); }
+.pay-empty { padding: 4px 12px 6px; font-size: 11px; color: var(--mut-2); }
 .al-pop-m { font: 10px var(--mono); font-variant-numeric: tabular-nums; text-align: right;
   min-width: 42px; color: var(--fg); }
 .al-pop-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mut); padding: 4px 12px 6px; }

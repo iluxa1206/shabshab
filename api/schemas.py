@@ -242,6 +242,8 @@ class PaymentEvent(BaseModel):
     total_rub: Optional[float] = None   # всего по выпуску (× ISSUESIZE); None если объём неизвестен
     rate_pct: Optional[float] = None
     projected: bool = False        # купон не зафиксирован — проекция форвардом
+    paid: bool = False             # платёж уже прошёл (факт MOEX за прошлые дни)
+    degraded: bool = False         # событие построено мимо канонического билдера
 
 class PaymentsCalendarResponse(BaseModel):
     calc_date: date
