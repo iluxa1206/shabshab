@@ -108,12 +108,14 @@ def test_fmt_event():
 
 
 def test_signal_text_caps_matches():
+    """Сделки идут пачкой и режутся по MAX_MATCHES (у заявок своё правило —
+    отдельное сообщение на бумагу, см. test_book_events_split_by_issue)."""
     ms = [{"isin": f"RU000A00000{i}", "name": f"Б{i}", "val_bps": 300 - i,
-           "price": 100.0, "money_rub": 2e6, "reason": "new"} for i in range(12)]
-    txt = _signal_text({"name": "мой фильтр", "side": "bid", "kind": "book",
+           "price": 100.0, "money_rub": 2e6, "side": "buy"} for i in range(12)]
+    txt = _signal_text({"name": "следим", "side": None, "kind": "block",
                         "matches": ms})
-    assert "мой фильтр" in txt and "бид" in txt and "…ещё 4" in txt
-    assert txt.count("🟢") == 8          # маркер стороны на каждой показанной бумаге
+    assert "следим" in txt and "…ещё 4" in txt
+    assert txt.count("👍") == 8          # маркер стороны на каждой показанной сделке
 
 
 def test_book_line_layout():
@@ -163,3 +165,68 @@ def test_reason_delta_shows_direction():
                                      "val_bps": 240.0, "prev_val_bps": 300.0,
                                      "reason": "spread"}]})
     assert "спред −60 бп" in txt
+
+
+# --- снимок стакана в уведомлении о заявке ---
+
+_BOOK = {"asks": [{"price": 100.20, "money": 913050.0, "y_idx": 153.0},
+                  {"price": 100.05, "money": 1215600.0, "y_idx": 168.0}],
+         "bids": [{"price": 99.80, "money": 3031500.0, "y_idx": 174.0},
+                  {"price": 99.75, "money": 505000.0, "y_idx": 179.0}]}
+
+
+def _book_match(**kw):
+    m = {"isin": "RU000A109B33", "name": "Газпн3P13R", "val_bps": 168.0,
+         "price": 100.05, "money_rub": 1.2e6, "levels": 1, "years": 1.5,
+         "reason": "new", "book": _BOOK}
+    m.update(kw)
+    return m
+
+
+def test_book_snapshot_rendered_under_text():
+    """Стакан того же такта — моноширинным блоком под текстом, свой уровень
+    помечен: в лестнице из восьми строк цена сигнала иначе теряется."""
+    txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
+                        "matches": [_book_match()]})
+    assert "<pre>" in txt and "</pre>" in txt
+    body = txt[txt.index("<pre>"):txt.index("</pre>")]
+    assert "100,20" in body and "99,75" in body        # обе стороны
+    assert "168" in body and "174" in body             # спред уровня
+    assert "100,05" in body and "←" in body            # уровень сигнала помечен
+    # эмодзи внутри pre недопустимы — они двойной ширины и рвут колонки
+    assert "🔴" not in body and "🟢" not in body
+
+
+def test_book_snapshot_absent_is_ok():
+    """Стакана в событии нет (снимок не доехал) — сообщение всё равно уходит."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_book_match(book=None)]})
+    assert "<pre>" not in txt and "Газпн3P13R" in txt
+
+
+def test_book_events_split_by_issue():
+    """Заявки бьются по бумагам: одно сообщение = один выпуск (к каждому свой
+    стакан). Сделки остаются пачкой."""
+    from services.tg_notify import _group
+    a, b = _book_match(), _book_match(isin="RU000A1083W0", name="МТС 2P-05")
+    groups = _group([a, b, a], "book")
+    assert len(groups) == 2
+    assert {g[0] for g in groups} == {"RU000A109B33", "RU000A1083W0"}
+    assert len(_group([a, b], "block")) == 1
+
+
+def test_book_message_keeps_last_state_and_counts():
+    """Внутри такта по одной бумаге показываем последнее состояние, но говорим,
+    сколько раз сработало."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_book_match(val_bps=150.0),
+                                    _book_match(val_bps=168.0)]})
+    assert "168 бп" in txt and "150 бп" not in txt
+    assert "срабатываний за такт: 2" in txt
+
+
+def test_issue_name_is_escaped():
+    """Имена приходят из справочников MOEX: «&» в названии не должен рушить
+    разбор HTML — иначе Telegram отбивает всё сообщение."""
+    from services.tg_notify import _issue_link
+    assert "&amp;" in _issue_link({"isin": "RU000A1", "name": "Рога & Копыта"})

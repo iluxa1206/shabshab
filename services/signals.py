@@ -555,10 +555,19 @@ async def run_cycle() -> int:
                 "sound": f["sound"], "desktop": f["desktop"],
                 "matches": events,
             })
-            # копия в привязанный телеграм-чат (буфер, отправка пачкой)
+            # Копия в привязанный телеграм-чат. Событиям добавляем СНИМОК
+            # СТАКАНА того же такта: пока уведомление доедет до телефона, книга
+            # поменяется, а «что там стояло» — первый вопрос после сигнала.
             from services import tg_notify
+            from services.screener_core import book_snapshot
+            tg_events = []
+            for e in events:
+                row = metrics.get(e["isin"]) or {}
+                tg_events.append(dict(e, book=book_snapshot(
+                    depth_map.get(e["isin"]), row,
+                    row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0)))
             tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
-                                     f["params"]["side"], events)
+                                     f["params"]["side"], tg_events)
             fired += 1
         except Exception as e:
             logger.warning("signal filter %s error: %s", f.get("id"), e)

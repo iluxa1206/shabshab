@@ -7,6 +7,7 @@
 чат в ленту. Ошибки доставки логируются и глотаются: веб-механика (лента
 событий) уже отработала."""
 import asyncio
+import html
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -57,6 +58,22 @@ def _reason_delta(m: dict) -> str:
 
 # --- события вкладки СИГНАЛЫ ---
 
+def _group(matches: List[dict], kind: str):
+    """Как бить события по сообщениям.
+
+    ЗАЯВКИ — по одному сообщению на выпуск: к каждой прикладывается снимок
+    стакана, и склеенные в пачку они превращались бы в простыню из лестниц.
+    Заодно повторы по одной бумаге внутри такта схлопываются в последнее
+    состояние. СДЕЛКИ остаются пачкой: их читают потоком, стакан к ним не
+    прикладывается."""
+    if kind != "book":
+        return [(None, matches)]
+    by_isin: dict = {}
+    for m in matches:
+        by_isin.setdefault(m.get("isin"), []).append(m)
+    return list(by_isin.items())
+
+
 def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
                    side: Optional[str], matches: List[dict],
                    kind: str = "book") -> None:
@@ -69,12 +86,13 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
         if not chats:
             return
         for u in chats:
-            buf = _pending.setdefault(
-                (u["chat_id"], filter_id),
-                {"name": filter_name, "side": side, "kind": kind, "matches": []})
-            buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
-            # хвост длинной серии интереснее её начала: держим последние
-            buf["matches"] = (buf["matches"] + list(matches))[-40:]
+            for group, ms in _group(matches, kind):
+                buf = _pending.setdefault(
+                    (u["chat_id"], filter_id, group),
+                    {"name": filter_name, "side": side, "kind": kind, "matches": []})
+                buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
+                # хвост длинной серии интереснее её начала: держим последние
+                buf["matches"] = (buf["matches"] + list(ms))[-40:]
     except Exception as e:
         logger.warning("tg_notify enqueue_signal error: %s", e)
 
@@ -146,7 +164,9 @@ def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
 
 def _issue_link(m: dict) -> str:
     """Имя выпуска ссылкой на его карточку: из чата один тап до стакана."""
-    name = m.get("name") or m.get("isin") or "—"
+    # имена приходят из справочников MOEX — экранируем, иначе один «&» в
+    # названии рушит разбор HTML, и Telegram отбивает всё сообщение
+    name = html.escape(str(m.get("name") or m.get("isin") or "—"))
     isin = m.get("isin")
     if not isin:
         return f"<b>{name}</b>"
@@ -196,14 +216,71 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     return line + (f"\n{' · '.join(sub)}" if sub else "")
 
 
+# Сколько уровней стакана прикладывать к заявке. Четыре — компромисс: экран
+# телефона, а глубже верха книги сигнал всё равно не про что.
+BOOK_LEVELS = int(os.getenv("TG_BOOK_LEVELS", "4"))
+
+
+def _book_money(v: Optional[float]) -> str:
+    """Деньги уровня — в колонку фиксированной ширины (моноширинный блок)."""
+    if not v:
+        return "".rjust(6)
+    unit, scaled = ("м", v / 1e6) if abs(v) >= 1e6 else ("к", v / 1e3)
+    txt = _num(scaled, 1)
+    if txt.endswith(",0"):
+        txt = txt[:-2]
+    return f"{txt}{unit}".rjust(6)
+
+
+def _book_pre(m: dict, side: Optional[str]) -> str:
+    """Стакан на момент события — моноширинным блоком под текстом.
+
+    Пока уведомление доедет до телефона, книга успеет поменяться, поэтому
+    прикладываем ровно тот снимок, на котором фильтр сработал (см.
+    screener_core.book_snapshot). Уровень, по которому считался сигнал,
+    помечаем стрелкой: в лестнице из восьми строк своя цена иначе теряется.
+    """
+    book = m.get("book") or {}
+    asks, bids = book.get("asks") or [], book.get("bids") or []
+    if not asks and not bids:
+        return ""
+    px = m.get("single_px") if m.get("single_px") is not None else m.get("price")
+
+    def row(lvl: dict) -> str:
+        y = lvl.get("y_idx")
+        y_txt = f"{y:.0f}".rjust(4) if y is not None else "   —"
+        # своя цена — стрелкой; эмодзи внутри моноширинного блока нельзя,
+        # они двойной ширины и рвут колонки
+        hit = " ←" if (px is not None and lvl.get("price") is not None
+                       and abs(lvl["price"] - px) < 0.005) else ""
+        return f"{_num(lvl['price']).rjust(7)} {_book_money(lvl.get('money'))} {y_txt}{hit}"
+
+    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'СПРД':>4}"]
+    lines += [row(l) for l in asks]
+    lines.append("─" * 19)          # выше разделителя оффера, ниже биды
+    lines += [row(l) for l in bids]
+    return "<pre>" + "\n".join(lines) + "</pre>"
+
+
 def _signal_text(buf: dict) -> str:
     kind = "block" if buf.get("kind") == "block" else "book"
     ms = buf["matches"]
     n = len(ms)
     side_key = buf.get("side")
-    body = "\n\n".join(_fmt_match(m, kind, side_key) for m in ms[:MAX_MATCHES])
-    if n > MAX_MATCHES:
-        body += f"\n\n…ещё {n - MAX_MATCHES}"
+    if kind == "book":
+        # одно сообщение = одна бумага (см. _group): показываем последнее
+        # состояние и прикладываем к нему стакан того же такта
+        m = ms[-1]
+        body = _fmt_match(m, kind, side_key)
+        book = _book_pre(m, side_key)
+        if book:
+            body += "\n" + book
+        if n > 1:
+            body += f"\n<i>срабатываний за такт: {n}</i>"
+    else:
+        body = "\n\n".join(_fmt_match(m, kind, side_key) for m in ms[:MAX_MATCHES])
+        if n > MAX_MATCHES:
+            body += f"\n\n…ещё {n - MAX_MATCHES}"
     # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал»
     # это сноска, которую читают, только если событие зацепило.
     if kind == "block":
@@ -219,7 +296,7 @@ async def _flush_signals() -> None:
         return
     batch = list(_pending.items())
     _pending.clear()
-    for (chat_id, _fid), buf in batch:
+    for (chat_id, _fid, _group_key), buf in batch:
         try:
             await telegram.send_message(chat_id, _signal_text(buf))
         except Exception as e:

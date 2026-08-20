@@ -376,6 +376,31 @@ def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
     return (not v["partial"]) or v["money"] >= want_rub * VOL_TOL
 
 
+def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
+                  accrued: float = 0.0, levels: int = 4) -> dict:
+    """Лестница стакана НА МОМЕНТ СОБЫТИЯ: по levels уровней с каждой стороны,
+    у каждого — цена, деньги и Y-IDX.
+
+    Снимок делается там же, где сработал фильтр, из того же depth_map: пока
+    уведомление доедет до телефона, книга уже поменяется, а вопрос «что там
+    вообще стояло» — первый после самого сигнала. Y-IDX уровня считается тем же
+    наклоном, что спред верха стакана (y_idx_at), рубли — как везде, грязные."""
+    d = depth_side or {}
+
+    def side_rows(key: str, best_first: bool) -> list:
+        out = []
+        for lvl in (d.get(key) or [])[:levels]:
+            px, qty = _px(lvl), _qty(lvl)
+            if px is None or qty is None:
+                continue
+            out.append({"price": px,
+                        "money": level_money(px, qty, face, accrued),
+                        "y_idx": y_idx_at(row, px, "ask" if key == "a" else "bid")})
+        return out if best_first else list(reversed(out))
+
+    return {"asks": side_rows("a", False), "bids": side_rows("b", True)}
+
+
 def money_in_spread(levels, row: dict, side: str, lo: Optional[float],
                     hi: Optional[float], face: float,
                     accrued: float = 0.0) -> Optional[float]:
