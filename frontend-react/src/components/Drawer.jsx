@@ -8,6 +8,7 @@ import { fetchBondDetails, fetchFixedDetails, repriceBond, priceFromSpread, fetc
 import CashflowChart from "./CashflowChart.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
+import BondTrades from "./BondTrades.jsx";
 
 function RefCell({ k, children }) {
   return (
@@ -470,6 +471,11 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
   // кнопкой СТАКАН или крестиком панели. Опт-аут — ?ob=0 в адресе (autoOrderbook).
   const [showOb, setShowOb] = useState(true);
   useEffect(() => { setShowOb(!!autoOrderbook); }, [isin, autoOrderbook]);
+  // Лента сделок выпуска — ТРЕТЬЯ панель, слева от стакана. Открыта по умолчанию
+  // вместе с ним: стакан показывает намерения, лента — состоявшиеся сделки, и
+  // читают их вместе. Если стакан закрыт — лента занимает его место.
+  const [showTrades, setShowTrades] = useState(true);
+  useEffect(() => { setShowTrades(true); }, [isin]);
   // Горизонт прайсинга живёт ЗДЕСЬ, а не в Content: его уважают и плитки
   // карточки, и уровни стакана (соседняя панель) — иначе они считали бы разное.
   const [hzSel, setHzSel] = useState("auto");
@@ -533,12 +539,18 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                   title="Стакан выпуска"
                 >СТАКАН</button>
                 <button
-                  className="btn ob-toggle"
-                  // лента СДЕЛКИ, сразу сужённая на этот выпуск: ISIN уезжает
-                  // в ?q= — там он не текстовый фильтр, а сужение запроса
-                  onClick={() => navigate(`/trades?q=${isin}`)}
-                  title="Лента сделок по этому выпуску"
+                  className={"btn ob-toggle" + (showTrades ? " on" : "")}
+                  onClick={() => setShowTrades((v) => !v)}
+                  aria-pressed={showTrades}
+                  title="Сжатая лента сделок этого выпуска (панель слева)"
                 >СДЕЛКИ</button>
+                <button
+                  className="btn ob-toggle"
+                  // полная лента СДЕЛКИ, сразу сужённая на этот выпуск: ISIN
+                  // уезжает в ?q= — там он не текстовый фильтр, а сужение запроса
+                  onClick={() => navigate(`/trades?q=${isin}`)}
+                  title="Полная лента сделок по этому выпуску (вкладка СДЕЛКИ)"
+                >ЛЕНТА ⤢</button>
                 {!isFixed && (
                   // второй вход в те же графики, минуя панель карточки: полный
                   // экран в новой вкладке с гибким периодом и zoom/pan
@@ -573,8 +585,11 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                       target="_blank" rel="noopener noreferrer">↗</a>
                   )}
                 </span>
-                {/* срок бумаги прямо в шапке: погашение всегда, оферта — если она
-                    есть (её дата и есть горизонт, к которому бумага прайсится) */}
+                {/* Срок и формула — ключевые параметры выпуска, читаются в шапке
+                    ПЕРВЫМИ: погашение всегда, оферта — если она есть (её дата и
+                    есть горизонт, к которому бумага прайсится), формула купона —
+                    у флоатера. Крупно и основным цветом, не серым служебным:
+                    раньше эти цифры терялись рядом с ISIN. */}
                 {data?.reference?.maturity_date && (
                   <span className="dh-dates mono">
                     <span title="Дата погашения">M {fmt.date(data.reference.maturity_date)}</span>
@@ -584,6 +599,15 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                         {data.reference.offer_kind === "call" ? "C " : "P "}{fmt.date(data.reference.offer_date)}
                       </span>
                     )}
+                  </span>
+                )}
+                {!isFixed && data?.reference && (
+                  <span className="dh-formula" title="Формула купона выпуска">
+                    <CouponFormula base={data.reference.base_rate_type}
+                      spreadBps={data.reference.spread_bps}
+                      formula={data.reference.formula}
+                      couponsPerYear={couponsPerYear(data.reference.coupon_period_days,
+                                                     data.reference.coupons_per_year)} />
                   </span>
                 )}
               </div>
@@ -608,6 +632,18 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                 sigVol={sigVol} sigSide={sigSide} sigPx={sigPx} horizon={hzSel}
                 volBid={volBid} volAsk={volAsk}
                 onClose={() => setShowOb(false)} />
+            </motion.aside>
+          )}
+          {showTrades && (
+            <motion.aside
+              className={"bt-panel" + (showOb ? "" : " bt-noob")}
+              key="bt-panel"
+              initial={{ x: reduce ? 0 : 24, opacity: reduce ? 1 : 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: reduce ? 0 : 24, opacity: 0 }}
+              transition={{ duration: dur, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              <BondTrades isin={isin} kind={kind} onClose={() => setShowTrades(false)} />
             </motion.aside>
           )}
         </>

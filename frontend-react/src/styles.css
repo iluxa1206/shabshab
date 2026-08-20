@@ -518,10 +518,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .dh-close { margin-left: auto; }
 /* имя занимает всю ширину строки и переносится целиком — эллипсис не нужен */
 .dh-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
-/* срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл) */
-.dh-dates { display: inline-flex; gap: 10px; font-size: 12px; color: var(--mut); }
+/* Срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл). Основной цвет и
+   жирное начертание: это параметры выпуска, а не служебная подпись, — их читают
+   вместе с именем, и серым мелким они терялись рядом с ISIN. */
+.dh-dates { display: inline-flex; gap: 10px; font-size: 13px; font-weight: 700; color: var(--fg); }
 .dh-offer { color: var(--accent); }
-.dh-offer-call { color: var(--mut); }
+.dh-offer-call { color: var(--fg); }
+/* формула купона там же и тем же весом — третий ключевой параметр выпуска */
+.dh-formula { font-size: 13px; font-weight: 700; color: var(--fg); }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
 .drawer-head .btn { flex-shrink: 0; white-space: nowrap; }
@@ -539,6 +543,24 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* не влезает и стакан, и графики — стакан поверх панели графиков */
 @media (max-width: 1660px) { .ob-panel.ob-shifted { right: 680px; z-index: 59; } }
 .ob-panel-inner { display: flex; flex-direction: column; height: 100%; }
+
+/* Лента сделок выпуска — ТРЕТЬЯ панель, слева от стакана (680 карточка + 400
+   стакан). Стакан закрыт → лента занимает его место. */
+.bt-panel {
+  position: fixed; top: 0; right: 1080px; height: 100vh; width: 360px; max-width: 30vw; z-index: 58;
+  background: var(--bg); border-left: 1px solid var(--fg); display: flex; flex-direction: column;
+}
+.bt-panel.bt-noob { right: 680px; }
+/* три панели рядом требуют 1440px — на более узком окне лента ложится ПОВЕРХ
+   стакана (как стакан ложится поверх графиков), а не уезжает за левый край */
+@media (max-width: 1500px) { .bt-panel { right: 680px; z-index: 61; } }
+.bt-ctl { gap: 6px; }
+.bt-table td { font-variant-numeric: tabular-nums; }
+.bt-d { color: var(--mut); font-size: 11px; }
+/* агрессор красит цену строки — тот же код цвета, что в общей ленте СДЕЛКИ */
+.bt-row.bt-buy td:nth-child(3) { color: var(--up); }
+.bt-row.bt-sell td:nth-child(3) { color: var(--down); }
+.dh-formula .cf-cpy { color: var(--mut); }
 .ob-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px; }
 .ob-title { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
 .ob-close { font-size: 12px; padding: 2px 8px; }
@@ -1044,6 +1066,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   .drawer { width: 100%; max-width: 100%; border-left: none; }
   /* стакан на узких экранах — поверх карточки на всю ширину (z выше drawer) */
   .ob-panel { right: 0; width: 100%; max-width: 100%; z-index: 61; border-left: none; }
+  /* лента сделок — тем же порядком, но выше стакана: последняя открытая панель сверху */
+  .bt-panel, .bt-panel.bt-noob { right: 0; width: 100%; max-width: 100%; z-index: 62; border-left: none; }
   .grid thead th:last-child, .grid tbody td:last-child { padding-right: 16px; }
   .grid thead th, .grid tbody td { padding-left: 12px; padding-right: 12px; }
   .grid.packed thead th:nth-last-child(2), .grid.packed tbody td:nth-last-child(2) { padding-right: 16px; }

@@ -222,14 +222,16 @@ function IsinCell({ isin }) {
 /** Кнопки строки: график во весь экран и стакан бумаги. Подписаны словами, а
  *  не значками — в плотной ленте иконку приходится расшифровывать наведением.
  *  Обе — обычная навигация, поэтому «назад» возвращает в ленту с её фильтрами. */
-function RowLinks({ isin, onOpen }) {
+function RowLinks({ isin, onOpen, kind, hasChart = true }) {
   const stop = (e) => e.stopPropagation();
   return (
     <span className="tape-links">
-      <button type="button" className="tape-link" title="График выпуска на весь экран"
-        onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>график</button>
+      {hasChart && (
+        <button type="button" className="tape-link" title="График выпуска на весь экран"
+          onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>график</button>
+      )}
       <button type="button" className="tape-link" title="Карточка бумаги со стаканом"
-        onClick={(e) => { stop(e); onOpen(isin, "card"); }}>стакан</button>
+        onClick={(e) => { stop(e); onOpen(isin, "card", kind); }}>стакан</button>
     </span>
   );
 }
@@ -674,12 +676,15 @@ export default function TradesTape() {
   // глобально и слушает ?isin= в адресе, поэтому уходить на СПИСОК незачем —
   // лента остаётся под карточкой, а её закрытие ничего не пересобирает.
   // График — отдельная страница, но возврат с неё идёт назад по истории.
-  const openBond = (isin, where) => {
+  const openBond = (isin, where, kind) => {
     if (where === "chart") { nav(`/chart/${isin}`); return; }
     setSp((prev) => {
       const n = new URLSearchParams(prev);
       n.set("isin", isin);
       n.set("ob", "1");
+      // фикс тянет свою карточку (/api/fixed/{isin}) — без метки Drawer пошёл бы
+      // за флоатерной оценкой и получил 404
+      if (kind === "fixed") n.set("k", "fixed"); else n.delete("k");
       return n;
     });
   };
@@ -903,9 +908,13 @@ export default function TradesTape() {
               </thead>
               <tbody>
                 {sorted.map((r) => {
-                  // график выпуска построен вокруг флоатера — для фиксов/ОФЗ и
-                  // бумаг вне юниверса он пустой, такие строки никуда не ведут
-                  const clickable = r.base === "KEYRATE" || r.base === "RUONIA";
+                  // Клик по строке открывает КАРТОЧКУ бумаги (поверх ленты) —
+                  // с ней приезжают стакан и сжатая лента сделок выпуска.
+                  // График остаётся кнопкой строки: он только у флоатеров.
+                  const isFloater = r.base === "KEYRATE" || r.base === "RUONIA";
+                  const bondKind = r.base === "FIXED" ? "fixed" : "floater";
+                  // бумаги вне юниверса (базы нет) карточки не имеют
+                  const clickable = isFloater || r.base === "FIXED";
                   const cell = {
                     date: <span className="tape-ts">{dpart(r.ts)}</span>,
                     time: <span className="tape-ts">{tpart(r.ts)}</span>,
@@ -941,7 +950,10 @@ export default function TradesTape() {
                       </span>
                     ),
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
-                    act: <RowLinks isin={r.isin} onOpen={openBond} />,
+                    // у бумаг вне юниверса карточки нет — кнопки строки не рисуем
+                    act: clickable
+                      ? <RowLinks isin={r.isin} onOpen={openBond} kind={bondKind} hasChart={isFloater} />
+                      : null,
                   };
                   const head = dayHeads[r.trade_id];
                   return (
@@ -954,7 +966,7 @@ export default function TradesTape() {
                     <tr
                       className={(clickable ? "" : "tape-row-static ")
                                  + (r.negotiated ? "blk-ndm" : "")}
-                      onClick={clickable ? () => openBond(r.isin, "chart") : undefined}
+                      onClick={clickable ? () => openBond(r.isin, "card", bondKind) : undefined}
                       title={`${r.isin} · ${r.ts} · ${r.board_title || r.board}`}>
                       <td className="tape-flag-td">
                         <button type="button"
