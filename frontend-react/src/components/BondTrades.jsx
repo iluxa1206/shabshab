@@ -11,6 +11,10 @@ import { fetchTrades } from "../api.js";
 // фикса, посчитанный по цене самой сделки (as-of для прошлых сессий).
 
 const WINDOWS = [1, 7, 30];
+// Порог объёма в МИЛЛИОНАХ ₽ — та же единица денег, что во всём интерфейсе.
+// Отсекает розничную мелочь (лента бумаги на 90% состоит из сделок по 1-5 тыс ₽),
+// оставляя принты, по которым видно реальный уровень.
+const VOLS = [0, 0.5, 1, 5, 10];
 const LIMIT = 300;
 
 const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
@@ -19,12 +23,15 @@ const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
   const [days, setDays] = useState(7);
+  const [volMln, setVolMln] = useState(0);
 
   const q = useQuery({
-    queryKey: ["bond-trades", isin, kind, days],
+    queryKey: ["bond-trades", isin, kind, days, volMln],
     // refresh=true дёргает дрейн тиков по бумаге — он и так нужен соседним
-    // слоям карточки; лимит режет мелочь по времени, а не по размеру принта
-    queryFn: () => fetchTrades(isin, { days, limit: LIMIT, kind: isFixed ? "fixed" : "floater" }),
+    // слоям карточки. Порог объёма фильтрует НА БЭКЕ (min_value в ₽): под
+    // лимитом строк тогда остаются крупные принты, а не последние по времени.
+    queryFn: () => fetchTrades(isin, { days, minValue: Math.round(volMln * 1e6),
+                                       limit: LIMIT, kind: isFixed ? "fixed" : "floater" }),
     enabled: !!isin,
     // сделки не тикают так же часто, как стакан: 30с хватает, а дрейн дорогой
     refetchInterval: 30_000,
@@ -51,12 +58,24 @@ export default function BondTrades({ isin, kind, onClose }) {
         ))}
       </div>
 
+      <div className="ob-ctl bt-ctl">
+        <span className="bt-ctl-lbl" title="Показывать сделки не меньше порога, млн ₽">от, млн</span>
+        {VOLS.map((v) => (
+          <button key={v} className={"chip-btn" + (volMln === v ? " on" : "")}
+            onClick={() => setVolMln(v)}
+            title={v === 0 ? "все сделки" : `сделки от ${fmt.num(v, v < 1 ? 1 : 0)} млн ₽`}>
+            {v === 0 ? "все" : fmt.num(v, v < 1 ? 1 : 0)}
+          </button>
+        ))}
+      </div>
+
       <div className="ob-status">
         {q.isLoading ? "загрузка…"
           : q.isError ? "нет данных"
-          : rows.length === 0 ? "сделок за окно нет"
+          : rows.length === 0
+            ? (volMln > 0 ? "нет сделок крупнее порога" : "сделок за окно нет")
           : `${d.n} сд · оборот ${fmt.mln(d.value) ?? "—"} млн ₽`
-            + (d.truncated ? ` · показаны последние ${LIMIT}` : "")}
+            + (d.truncated ? ` · последние ${LIMIT} из ${d.total}` : "")}
       </div>
 
       <div className="ob-scroll">

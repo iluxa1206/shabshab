@@ -554,7 +554,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* три панели рядом требуют 1440px — на более узком окне лента ложится ПОВЕРХ
    стакана (как стакан ложится поверх графиков), а не уезжает за левый край */
 @media (max-width: 1500px) { .bt-panel { right: 680px; z-index: 61; } }
-.bt-ctl { gap: 6px; }
+/* два ряда чипов (окно + порог объёма) — жмём вертикальные отступы, панель узкая */
+.bt-ctl { gap: 6px; flex-wrap: wrap; padding-bottom: 6px; }
+.bt-ctl-lbl { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--mut); }
 .bt-table td { font-variant-numeric: tabular-nums; }
 .bt-d { color: var(--mut); font-size: 11px; }
 /* агрессор красит цену строки — тот же код цвета, что в общей ленте СДЕЛКИ */
