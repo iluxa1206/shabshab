@@ -737,13 +737,57 @@ def test_rewarm_picks_cold_before_stale(monkeypatch):
     core.drop_exact_cache()
 
 
-def test_memo_dies_with_its_context():
+def test_memo_dies_with_its_context(monkeypatch):
     """Пересборка контекста обнуляет и запомненные числа: иначе протухшее
     значение пережило бы собственный контекст."""
     import time as _t
+    # синк кривых проверяется отдельно (test_curve_swap_invalidates_memo) и
+    # здесь только мешает: он сам чистит memo, если в кэше лежит другая кривая
+    monkeypatch.setattr(core, "_sync_ctx_curves", lambda ctx, memo: None)
     core.drop_exact_cache()
     core._exact_ctx["X"] = (_t.monotonic(), {"stub": True}, {100.0: 999.0})
     assert core.exact_y_idx("X", 100.0) == 999.0          # взято из memo
     core._exact_ctx["X"] = (_t.monotonic(), {"stub": True}, {})
     assert core.exact_y_idx("X", 100.0) != 999.0          # memo уехал с контекстом
+    core.drop_exact_cache()
+
+
+def test_curve_swap_invalidates_memo(monkeypatch):
+    """Кривая — живой объект рынка: пересобралась (стейл-котировки Cbonds
+    перепроверяются раз в 15 минут) — запомненные числа больше не годятся.
+
+    Регресс РусГид2Р01 21.08.2026: контекст держал ссылку на утреннюю кривую,
+    индекс 13,98% против текущих 14,76% → 181 bps вместо 103."""
+    import time as _t
+    from services.market_data import market_cache
+
+    class _Curve:
+        def __init__(self, tag):
+            self.tag = tag
+
+    class _Ref:
+        base = "KEYRATE"
+
+    old_curve, new_curve = _Curve("утро"), _Curve("день")
+    monkeypatch.setitem(market_cache, "keyrate_curve", old_curve)
+    monkeypatch.setitem(market_cache, "ruonia_curve", None)
+
+    ctx = {"ref_obj": _Ref(), "curve": old_curve}
+    memo = {100.23: 181.0}
+    core._exact_ctx["Y"] = (_t.monotonic(), ctx, memo)
+
+    monkeypatch.setattr(core, "_ctx_fresh", lambda rec: True)
+    assert core.exact_y_idx("Y", 100.23) == 181.0      # кривая та же — memo жив
+
+    market_cache["keyrate_curve"] = new_curve
+    seen = {}
+
+    def fake_reprice(c, px):
+        seen["curve"] = c["curve"]
+        return {"yield_over_index_bps": 103.0}
+    monkeypatch.setattr("services.bond_details.reprice_at_price", fake_reprice)
+    monkeypatch.setattr("services.valuation.pick_horizon", lambda m, h: m)
+
+    assert core.exact_y_idx("Y", 100.23) == 103.0, "memo сброшен, счёт заново"
+    assert seen["curve"] is new_curve, "считали на новой кривой"
     core.drop_exact_cache()

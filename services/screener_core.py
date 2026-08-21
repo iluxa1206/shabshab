@@ -537,6 +537,35 @@ async def warm_exact_ctx(isins) -> int:
     return done
 
 
+def _sync_ctx_curves(ctx: dict, memo: dict) -> None:
+    """Кривая в контексте — ЖИВОЙ объект рынка, а не свойство бумаги.
+
+    load_reprice_ctx кладёт в ctx ссылку на кривую из market_cache, и раньше
+    эта ссылка замерзала вместе с контекстом. Пока котировки свежие, кривая
+    пинится на день и это незаметно; но когда Cbonds отдаёт вчерашнее
+    (rates_date < сегодня — прод 21.08.2026), market_data пересобирает её
+    каждые ~15 минут, и контекст держал СВОЮ версию: РусГид2Р01 звонил 181 bps
+    там, где текущая кривая давала 103 (доходность 15,79% одна и та же —
+    расходился индекс: 13,98% против 14,76%).
+
+    Поэтому перед каждым расчётом берём кривые из кэша заново. Сменились —
+    запомненные числа обнуляем: они считались на прошлой кривой."""
+    from services.market_data import market_cache
+    ru = market_cache.get("ruonia_curve")
+    ks = market_cache.get("keyrate_curve")
+    base = getattr(ctx.get("ref_obj"), "base", None)
+    live = ru if base == "RUONIA" else ks
+    changed = False
+    if live is not None and live is not ctx.get("curve"):
+        ctx["curve"] = live
+        changed = True
+    if ru is not None and ru is not ctx.get("ruonia_curve"):
+        ctx["ruonia_curve"] = ru
+        changed = True
+    if changed:
+        memo.clear()
+
+
 def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     """Y-IDX по цене ТОЧНО: reprice_at_price на горизонте по правилу цены —
     один в один с уровнем стакана. None — контекст не прогрет/протух/расчёт
@@ -547,6 +576,7 @@ def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     if not _ctx_fresh(rec) or rec[1] is None:
         return None
     ctx, memo = rec[1], rec[2]
+    _sync_ctx_curves(ctx, memo)
     key = round(float(px), _EXACT_PX_DIGITS)
     if key in memo:
         return memo[key]
