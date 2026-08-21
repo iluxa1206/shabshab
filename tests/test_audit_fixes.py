@@ -569,3 +569,45 @@ def test_realized_growth_uses_official_index():
         y_ix = ruonia_rolling_yield_pct(withix, calc, mat)
         y_rc = ruonia_rolling_yield_pct(plain, calc, mat)
         assert y_ix == pytest.approx(y_rc, abs=0.05), f"разошлись на {mat}"
+
+
+def test_base_leg_matches_flow_end_not_declared_maturity(keyrate_curve, ruonia_curve,
+                                                         calc_date, flat_index_15,
+                                                         monkeypatch):
+    """База Y-IDX считается до КОНЦА ПОТОКА, а не до заявленного погашения.
+
+    Поток флоатера режется офертой, когда ставка после неё неизвестна
+    (ref_data.cut_at_offer). Тогда числитель Y-IDX относится к оферте, и
+    знаменатель обязан относиться туда же. Регресс: база бралась до
+    maturity_date — доходность к оферте через год делилась на роллирование до
+    погашения через восемь, спред занижался почти вдвое (Россети1Р8: 56 bps
+    против верных 152, Славнеф2Р5 89 против 180; 19 бумаг из 161 с офертами).
+    """
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None:
+                        (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    import services.valuation as sv
+    from services import ref_data
+
+    calls = []
+    real = sv.ruonia_rolling_yield_pct
+
+    def spy(curve, cd, upto):
+        calls.append(upto)
+        return real(curve, cd, upto)
+    monkeypatch.setattr(sv, "ruonia_rolling_yield_pct", spy)
+    monkeypatch.setattr(ref_data, "cut_at_offer", lambda isin: True)
+
+    bond = make_bond(margin_bps=150, maturity=date(2034, 5, 24))
+    offer = date(2027, 6, 7)
+    periods = quarterly_periods(settle_date(calc_date), bond.maturity_date)
+    m = sv.calculate_valuation_metrics(
+        bond, 100.0, keyrate_curve, calc_date, accrued_override=0.0,
+        periods=periods, offers=[{"date": offer.isoformat(), "price": 100.0}],
+        ruonia_curve=ruonia_curve)
+
+    assert calls, "база вообще не считалась"
+    assert max(calls) <= offer, (
+        f"база ушла за конец потока: считали до {max(calls)}, поток режется {offer}")
+    hz = (m.get("horizons") or {}).get("maturity") or {}
+    assert hz.get("date") == offer, "метка обещает погашение, а поток кончается офертой"

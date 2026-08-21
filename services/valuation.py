@@ -217,8 +217,19 @@ def calculate_valuation_metrics(
         warnings.append("RUONIA-кривая не передана — R-spread не посчитан "
                         "(база сравнения для всех флоатеров — роллирование RUONIA)")
     else:
+        # База считается до ФАКТИЧЕСКОГО конца потока, а не до заявленного
+        # погашения. Поток флоатера режется офертой, когда ставка после неё
+        # неизвестна (ref_data.cut_at_offer: эмитент пересматривает купон), —
+        # тогда числитель Y-IDX относится к оферте, и база обязана относиться
+        # туда же. Раньше знаменатель брался до maturity_date: доходность к
+        # оферте через год делилась на роллирование до погашения через восемь.
+        # На проде так считались 19 бумаг из 161 с офертами, спред занижался
+        # почти вдвое (Россети1Р8: 56 bps против верных 152, Славнеф2Р5 89/180).
+        # У необрезанных бумаг конец потока и есть погашение — для них ничего
+        # не меняется.
+        _flow_end = max((cf.pay_date for cf in cfs), default=None) or bond.maturity_date
         try:
-            index_yield = ruonia_rolling_yield_pct(_ru_curve, calc_date, bond.maturity_date)
+            index_yield = ruonia_rolling_yield_pct(_ru_curve, calc_date, _flow_end)
         except Exception as e:
             logger.warning(f"RUONIA rolling-yield error for {bond.isin}: {e}")
 
@@ -378,8 +389,11 @@ def calculate_valuation_metrics(
                                      if (y_h is not None and idx_y_h is not None) else None),
         }
 
+    _mat_end = max((cf.pay_date for cf in cfs), default=None) or bond.maturity_date
     horizons: Dict[str, Any] = {"maturity": {
-        "date": bond.maturity_date, "price_pct": 100.0,
+        # дата ФАКТИЧЕСКОГО конца потока: у бумаги с обрезкой по оферте метка
+        # «до погашения» обещала 2038 год, а число относилось к 2028-му
+        "date": _mat_end, "price_pct": 100.0,
         "y_idx_by_price": y_idx_by_price,
         "sm_bps": sm_bps, "disc_margin_bps": disc_margin_bps,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
