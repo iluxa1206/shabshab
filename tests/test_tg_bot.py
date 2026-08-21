@@ -1,5 +1,7 @@
 """Телеграм-бот: привязка чата к веб-аккаунту, вебхук, форматирование доставки.
 Своей настройки у бота нет — сигналы заводятся на сайте."""
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -358,3 +360,68 @@ def test_isin_not_duplicated_when_name_missing():
                         "matches": [{"isin": "RU000A10D1M3", "name": "RU000A10D1M3",
                                      "money_rub": 1_925_200_000, "price": 100.0}]})
     assert txt.count("RU000A10D1M3") == 1
+
+
+# ── /custom: свои маркеры строк ────────────────────────────────────────────
+
+def _cmd(text, uid=UID):
+    from api.routes.tg import _handle_command
+    return asyncio.run(_handle_command(text, uid, uid, "tester"))
+
+
+@pytest.fixture()
+def linked(db):
+    """Одобренный чат: команды работают только для привязанных."""
+    tg_users.request_access(UID, UID, "tester")
+    tg_users.approve(UID, "u@x.ru", "admin@x.ru")
+    return UID
+
+
+def test_custom_shows_defaults(linked):
+    out = _cmd("/custom")
+    assert "🔴" in out and "🟢" in out and "🤝" in out
+    assert "/custom ask" in out
+
+
+def test_custom_sets_and_applies_icon(linked):
+    out = _cmd("/custom ask 🟠")
+    assert "🟠" in out
+    icons = tg_users.icons(tg_users.get(UID))
+    assert icons["ask"] == "🟠" and icons["bid"] == "🟢", "меняется только свой слот"
+
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "icons": icons,
+                        "matches": [{"isin": "RU000A1", "name": "Т",
+                                     "val_bps": 100.0, "reason": "new"}]})
+    assert txt.startswith("🟠"), "маркер чата доезжает до сообщения"
+
+
+def test_custom_accepts_russian_slot(linked):
+    _cmd("/custom бид 💚")
+    assert tg_users.icons(tg_users.get(UID))["bid"] == "💚"
+
+
+def test_custom_rejects_text_marker(linked):
+    """Маркер стоит первым символом строки: буквы ломают вёрстку, «<» — HTML."""
+    before = tg_users.icons(tg_users.get(UID))
+    for bad in ("/custom ask ask", "/custom ask <b>", "/custom ask 1"):
+        assert "эмодзи" in _cmd(bad)
+    assert tg_users.icons(tg_users.get(UID)) == before
+
+
+def test_custom_unknown_slot(linked):
+    assert "нет" in _cmd("/custom спред 🟠").lower()
+
+
+def test_custom_reset_and_single_revert(linked):
+    _cmd("/custom ask 🟠")
+    _cmd("/custom sell 🔻")
+    assert tg_users.icons(tg_users.get(UID))["ask"] == "🟠"
+
+    _cmd("/custom ask -")
+    icons = tg_users.icons(tg_users.get(UID))
+    assert icons["ask"] == "🔴" and icons["sell"] == "🔻", "снят только один слот"
+
+    _cmd("/custom reset")
+    assert tg_users.icons(tg_users.get(UID)) == {
+        k: v[1] for k, v in tg_users.ICON_SLOTS.items()}

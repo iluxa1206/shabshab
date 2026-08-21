@@ -250,7 +250,8 @@ CREATE TABLE IF NOT EXISTS tg_users(
   email       TEXT,                              -- веб-аккаунт (NULL до одобрения)
   status      TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
   approved_at TEXT,
-  approved_by TEXT
+  approved_by TEXT,
+  emoji       TEXT                               -- свои маркеры строк, JSON (см. tg_users.icons)
 );
 -- индекс по email — в _MIGRATIONS: на старой базе колонки ещё нет, а
 -- CREATE TABLE IF NOT EXISTS её не добавит (упало бы прямо здесь)
@@ -366,6 +367,8 @@ _MIGRATIONS = [
     "ALTER TABLE tg_users ADD COLUMN approved_at TEXT",
     "ALTER TABLE tg_users ADD COLUMN approved_by TEXT",
     "CREATE INDEX IF NOT EXISTS ix_tg_users_email ON tg_users(email)",
+    # свои эмодзи-маркеры чата (команда бота /custom): JSON {слот: эмодзи}
+    "ALTER TABLE tg_users ADD COLUMN emoji TEXT",
     # свой скринер бота удалён: фильтры живут на сайте (вкладка СИГНАЛЫ),
     # бот получает их события копией
     "DROP TABLE IF EXISTS tg_filters",

@@ -5,8 +5,9 @@
 секрет-заголовок X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) плюс
 статус привязки в tg_users. Команды бота — только чтение и пауза доставки:
   /start — заявка на доступ, /signals — последние события,
-  /mute, /unmute, /status, /help
+  /mute, /unmute, /status, /custom, /help
 """
+import html
 import logging
 import os
 
@@ -25,6 +26,7 @@ _HELP = (
     "<b>Что умеет бот</b>\n"
     "Сигналы рынка настраиваются на сайте — сюда приходят их копии.\n\n"
     "/signals — последние сигналы\n"
+    "/custom — свои эмодзи для маркеров\n"
     "/mute, /unmute — пауза доставки\n"
     "/status — состояние привязки\n"
     f'<a href="{_SITE_URL}">Открыть дашборд</a>')
@@ -42,6 +44,34 @@ def _fmt_event(e: dict) -> str:
         bits.append(f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽")
     ts = (e.get("fired_at") or "")[11:16]
     return f"• {ts} <b>{name}</b> — " + ", ".join(bits)
+
+
+def _icons_text(icons: dict) -> str:
+    """Текущий набор маркеров + как его менять."""
+    rows = "\n".join(
+        f"{icons.get(slot, dflt)}  {title} — <code>{slot}</code>"
+        for slot, (title, dflt) in tg_users.ICON_SLOTS.items())
+    return ("<b>Маркеры строк</b>\n" + rows +
+            "\n\nСменить: <code>/custom ask 🟠</code> "
+            "(слот можно и по-русски: <code>/custom оффер 🟠</code>)\n"
+            "Вернуть один: <code>/custom ask -</code>\n"
+            "Вернуть все: <code>/custom reset</code>")
+
+
+# Маркер — это ЭМОДЗИ, а не подпись: он стоит первым символом строки, и текст
+# там ломает вёрстку (и разбор HTML, если в нём окажется «<»). Пропускаем
+# короткие строки без букв, цифр и служебных символов — символьные значки
+# (▲, ●) тоже годятся, они ничего не ломают.
+_ICON_MAX_LEN = 8
+_ICON_BAD = set("<>&\"'/\\")
+
+
+def _valid_icon(v: str) -> bool:
+    if not v or len(v) > _ICON_MAX_LEN:
+        return False
+    if any(ch in _ICON_BAD for ch in v):
+        return False
+    return not any(ch.isalnum() or ch.isspace() for ch in v)
 
 
 async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> str:
@@ -68,6 +98,30 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
     if text.startswith("/unmute"):
         tg_users.set_muted(uid, False)
         return "🔔 Доставка включена."
+
+    if text.startswith("/custom"):
+        parts = text.split()[1:]
+        row = tg_users.get(uid)
+        if not parts:
+            return _icons_text(tg_users.icons(row))
+        if parts[0].lower() in ("reset", "сброс"):
+            return "Маркеры вернулись к стандартным.\n\n" + _icons_text(
+                tg_users.reset_icons(uid))
+        if len(parts) < 2:
+            return ("Нужно два слова: слот и эмодзи.\n\n"
+                    + _icons_text(tg_users.icons(row)))
+        slot = tg_users.slot_key(parts[0])
+        if not slot:
+            names = ", ".join(f"<code>{k}</code>" for k in tg_users.ICON_SLOTS)
+            return f"Слота «{html.escape(parts[0])}» нет. Есть: {names}."
+        value = parts[1]
+        if value in ("-", "—"):
+            return "Вернул стандартный.\n\n" + _icons_text(
+                tg_users.set_icon(uid, slot, None))
+        if not _valid_icon(value):
+            return ("Маркером может быть только эмодзи или значок — "
+                    "без букв, цифр и пробелов.")
+        return "Готово.\n\n" + _icons_text(tg_users.set_icon(uid, slot, value))
 
     if text.startswith("/status"):
         u = tg_users.get(uid) or {}

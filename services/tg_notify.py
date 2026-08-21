@@ -107,6 +107,7 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
                     {"name": filter_name, "side": side, "kind": kind,
                      "matches": [], "first_ts": time.monotonic()})
                 buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
+                buf["icons"] = tg_users.icons(u)
                 # хвост длинной серии интереснее её начала: держим последние
                 buf["matches"] = (buf["matches"] + list(ms))[-40:]
     except Exception as e:
@@ -178,12 +179,19 @@ def _hhmmss(m: dict) -> str:
     return event_moment(fired).astimezone(_MSK).strftime("%H:%M:%S")
 
 
-def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
+def _icon(m: dict, kind: str, side: Optional[str] = None,
+          icons: Optional[dict] = None) -> str:
+    """Маркер строки. icons — набор чата (см. tg_users.icons, команда /custom);
+    None — дефолты."""
+    ic = icons or {}
+    ndm = ic.get("ndm", _NDM_ICON)
     if kind == "block":
         if m.get("negotiated"):
-            return _NDM_ICON
-        return _TRADE_ICON.get(m.get("side") or "", _NDM_ICON)
-    return _BOOK_ICON.get(side or "", "⚪")
+            return ndm
+        s = m.get("side") or ""
+        return ic.get(s, _TRADE_ICON.get(s, ndm)) if s else ndm
+    s = side or ""
+    return ic.get(s, _BOOK_ICON.get(s, "⚪")) if s else "⚪"
 
 
 def _issue_link(m: dict) -> str:
@@ -234,7 +242,8 @@ def _fmt_threshold(v: Optional[float]) -> str:
     return f">{_compact(v)}" if v else ""
 
 
-def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
+def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
+               icons: Optional[dict] = None) -> str:
     """Две строки на бумагу.
 
     Первая — то, ради чего сообщение открывают: сторона значком, спред, деньги,
@@ -281,7 +290,7 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
         if want:
             sub.append(want)
 
-    line = f"{_icon(m, kind, side)}  " + " · ".join(b for b in head if b)
+    line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
     if sub:
         line += f"\n{' · '.join(sub)}"
     isin = _isin_line(m)
@@ -339,18 +348,22 @@ def _signal_text(buf: dict) -> str:
     ms = buf["matches"]
     n = len(ms)
     side_key = buf.get("side")
+    # маркеры чата кладёт enqueue_signal: набор известен там, где известен
+    # адресат, и доставка не ходит за ним в базу на каждое сообщение
+    icons = buf.get("icons")
     if kind == "book":
         # одно сообщение = одна бумага (см. _group): показываем последнее
         # состояние и прикладываем к нему стакан того же такта
         m = ms[-1]
-        body = _fmt_match(m, kind, side_key)
+        body = _fmt_match(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
         if book:
             body += "\n" + book
         if n > 1:
             body += f"\n<i>срабатываний за такт: {n}</i>"
     else:
-        body = "\n\n".join(_fmt_match(m, kind, side_key) for m in ms[:MAX_MATCHES])
+        body = "\n\n".join(_fmt_match(m, kind, side_key, icons)
+                            for m in ms[:MAX_MATCHES])
         if n > MAX_MATCHES:
             body += f"\n\n…ещё {n - MAX_MATCHES}"
     # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал»

@@ -7,6 +7,7 @@
 
 Хранилище — portfolio.db (таблица tg_users). Один email → сколько угодно чатов.
 """
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -138,3 +139,79 @@ def set_muted(tg_user_id: int, muted: bool) -> None:
     with _lock, _connect() as c:
         c.execute("UPDATE tg_users SET muted=? WHERE tg_user_id=?",
                   (1 if muted else 0, tg_user_id))
+
+
+# ── свои маркеры строк (команда бота /custom) ──────────────────────────────
+#
+# Маркер — первый символ строки сигнала, и читают сообщение именно по нему.
+# Дефолты подобраны под торговую конвенцию (оффер красный, бид зелёный), но
+# «красный = плохо» у каждого своё, поэтому набор переопределяется на чат:
+# один и тот же аккаунт может смотреть алерты с телефона и с рабочей машины.
+ICON_SLOTS = {
+    "ask": ("оффер", "🔴"),
+    "bid": ("бид", "🟢"),
+    "buy": ("сделка · покупка", "👍"),
+    "sell": ("сделка · продажа", "👎"),
+    "ndm": ("адресная сделка", "🤝"),
+}
+# Русские имена слотов — команда должна понимать то, что видит пользователь.
+SLOT_ALIASES = {
+    "оффер": "ask", "аск": "ask", "офер": "ask",
+    "бид": "bid", "покупка": "buy", "покупки": "buy", "buy": "buy",
+    "продажа": "sell", "продажи": "sell", "sell": "sell",
+    "адресная": "ndm", "рпс": "ndm", "ndm": "ndm",
+}
+
+
+def slot_key(name: str) -> Optional[str]:
+    """'оффер' / 'ASK' → 'ask'. None — слота с таким именем нет."""
+    k = (name or "").strip().lower()
+    if k in ICON_SLOTS:
+        return k
+    return SLOT_ALIASES.get(k)
+
+
+def icons(row: Optional[dict]) -> dict:
+    """Полный набор маркеров чата: свои поверх дефолтных.
+
+    На вход — строка tg_users (её уже держат chats_for_email/get), чтобы
+    доставка не ходила в базу второй раз на каждое сообщение."""
+    out = {k: v[1] for k, v in ICON_SLOTS.items()}
+    raw = (row or {}).get("emoji")
+    if not raw:
+        return out
+    try:
+        custom = json.loads(raw)
+    except (TypeError, ValueError):
+        return out
+    if isinstance(custom, dict):
+        for k, v in custom.items():
+            if k in out and isinstance(v, str) and v:
+                out[k] = v
+    return out
+
+
+def set_icon(tg_user_id: int, slot: str, emoji: Optional[str]) -> dict:
+    """Ставит (или снимает при emoji=None) один маркер. → новый набор чата."""
+    row = get(tg_user_id) or {}
+    try:
+        cur = json.loads(row.get("emoji") or "{}")
+    except (TypeError, ValueError):
+        cur = {}
+    if not isinstance(cur, dict):
+        cur = {}
+    if emoji:
+        cur[slot] = emoji
+    else:
+        cur.pop(slot, None)
+    payload = json.dumps(cur, ensure_ascii=False) if cur else None
+    with _lock, _connect() as c:
+        c.execute("UPDATE tg_users SET emoji=? WHERE tg_user_id=?",
+                  (payload, tg_user_id))
+    return icons({"emoji": payload})
+
+
+def reset_icons(tg_user_id: int) -> dict:
+    with _lock, _connect() as c:
+        c.execute("UPDATE tg_users SET emoji=NULL WHERE tg_user_id=?", (tg_user_id,))
+    return icons(None)
