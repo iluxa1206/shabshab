@@ -173,13 +173,14 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         "warnings": ["No market price available, using Par (100.00) for dirty calc where needed"]
     }
 
+    _acc_dt = _acc_date(snapshot.get(isin, {}).get("accrued_date"))
     if last_price is not None and curve:
         try:
             val_dict = calculate_valuation_metrics(
                 ref_obj, last_price, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
                 amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
-                ruonia_curve=ruonia_curve,
+                ruonia_curve=ruonia_curve, accrued_date=_acc_dt,
             )
         except Exception as e:
             val_dict["pricing_status"] = "CALCULATION_ERROR"
@@ -191,7 +192,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                 ref_obj, prev_close_pct, curve, calc_date,
                 accrued_override=accrued_live, periods=periods,
                 amorts=sched_full.get("amorts"), offers=sched_full.get("offers"),
-                ruonia_curve=ruonia_curve,
+                ruonia_curve=ruonia_curve, accrued_date=_acc_dt,
             )
             market_data["prev_close_dm_bps"] = prev_metrics.get("dm_bps")
         except Exception:
@@ -264,6 +265,17 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     }
 
 
+def _acc_date(v):
+    """'YYYY-MM-DD' из ISS → date. Мусор/пусто → None (тогда работает прежняя
+    эвристика accrued_basis)."""
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
 async def load_reprice_ctx(isin: str, cache: dict) -> dict:
     """Тёплый контекст для пересчёта под произвольную цену: ref_obj, кривая,
     calc_date, НКД, amorts/offers/periods/coupons и z-spread ctx. Один сетевой
@@ -311,6 +323,10 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
     accrued_live = snapshot.get(isin, {}).get("accrued")
     if accrued_live is not None:
         ref_obj.accrued_rub = accrued_live
+    # дата, на которую биржа посчитала этот НКД: с нашей поставкой она
+    # расходится (пятница/праздники), и без неё срок и НКД считаются на разные
+    # дни — см. services/valuation.calculate_valuation_metrics
+    accrued_date = _acc_date(snapshot.get(isin, {}).get("accrued_date"))
 
     curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
     if curve is None:
@@ -323,6 +339,7 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
         "ruonia_curve": ruonia_curve,   # база Y-IDX и для КС-бумаг
         "calc_date": calc_date,
         "accrued_live": accrued_live,
+        "accrued_date": accrued_date,
         "periods": schedules.get(isin),
         "coupons": sched_full.get("coupons", []),
         "amorts": sched_full.get("amorts"),
@@ -342,6 +359,7 @@ def reprice_at_price(ctx: dict, price: float) -> dict:
         accrued_override=ctx["accrued_live"], periods=ctx["periods"],
         amorts=ctx["amorts"], offers=ctx["offers"],
         ruonia_curve=ctx.get("ruonia_curve"),
+        accrued_date=ctx.get("accrued_date"),
     )
 
 

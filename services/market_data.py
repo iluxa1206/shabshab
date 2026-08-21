@@ -829,8 +829,12 @@ class MarketDataService:
 
     @classmethod
     async def fetch_moex_snapshot(cls, isins: List[str]) -> Dict[str, dict]:
-        """{isin: {'prev','accrued','prev_date','bid','ask'}} по MOEX ISS.
-        Память-кэш TTL 120с — при повторном тогле/открытии карточки не бомбим ISS."""
+        """{isin: {'prev','accrued','accrued_date','prev_date','bid','ask'}} по MOEX ISS.
+        Память-кэш TTL 120с — при повторном тогле/открытии карточки не бомбим ISS.
+
+        accrued_date — SETTLEDATE борда: дата, НА КОТОРУЮ биржа посчитала
+        ACCRUEDINT. Без неё НКД нельзя привести к нашей дате поставки, а они
+        расходятся (пятница, праздники) — см. services/valuation."""
         out: Dict[str, dict] = {}
         if not isins:
             return out
@@ -869,7 +873,7 @@ class MarketDataService:
                         s_cols, s_rows = sec.get("columns", []), sec.get("data", [])
                 if not s_rows and not j:
                     return
-                prev = accrued = prev_date = None
+                prev = accrued = prev_date = accrued_date = None
                 if s_rows:
                     row = s_rows[0]
                     sg = lambda n: row[s_cols.index(n)] if n in s_cols else None
@@ -877,6 +881,7 @@ class MarketDataService:
                     prev = sg("PREVPRICE")
                     accrued = sg("ACCRUEDINT")
                     prev_date = sg("PREVDATE")   # дата prev-цены → возраст цены (стейл?)
+                    accrued_date = sg("SETTLEDATE")   # на неё посчитан ACCRUEDINT
                 # marketdata: фолбэк prev + верх стакана (BID / OFFER=ask, чистые %)
                 md = j.get("marketdata", {})
                 md_cols, md_rows = md.get("columns", []), md.get("data", [])
@@ -891,6 +896,7 @@ class MarketDataService:
                 out[isin] = {
                     "prev": float(prev) if prev is not None else None,
                     "accrued": float(accrued) if accrued is not None else None,
+                    "accrued_date": accrued_date,
                     "prev_date": prev_date,
                     "bid": bid, "ask": ask,
                 }
@@ -982,7 +988,7 @@ class MarketDataService:
                         client,
                         f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/securities.json",
                         params={"iss.only": "securities,marketdata",
-                                "securities.columns": "SECID,ISIN,PREVPRICE,PREVWAPRICE,PREVLEGALCLOSEPRICE,ACCRUEDINT,PREVDATE",
+                                "securities.columns": "SECID,ISIN,PREVPRICE,PREVWAPRICE,PREVLEGALCLOSEPRICE,ACCRUEDINT,PREVDATE,SETTLEDATE",
                                 "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY,BID,OFFER"},
                         timeout=15)
                     if resp is None or resp.status_code != 200:
@@ -1041,6 +1047,10 @@ class MarketDataService:
                         out[isin] = {
                             "prev": float(prev) if prev is not None else None,
                             "accrued": float(acc) if acc is not None else None,
+                            # дата, на которую биржа посчитала ACCRUEDINT: наша
+                            # T+1 с ней расходится (пятница/праздники), и НКД
+                            # надо приводить к нашей — см. services/valuation
+                            "accrued_date": g(row, "SETTLEDATE"),
                             "prev_date": g(row, "PREVDATE"),
                             "last": last_by_secid.get(g(row, "SECID")),
                             "waprice": wap_by_secid.get(g(row, "SECID")),

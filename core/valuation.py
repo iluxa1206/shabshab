@@ -318,8 +318,14 @@ def accrued_at(periods, d: date) -> Optional[float]:
 
 
 def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
-                     periods) -> tuple[Optional[float], Optional[str]]:
+                     periods, to_date: Optional[date] = None
+                     ) -> tuple[Optional[float], Optional[str]]:
     """НКД на ДАТУ ПОСТАВКИ из НКД на calc_date. Возвращает (нкд, пояснение|None).
+
+    to_date — куда доначислять; по умолчанию settle_date(calc_date). Явная дата
+    нужна, когда НКД пришёл с биржи на СВОЮ дату расчётов (ISS SETTLEDATE), а
+    она не совпадает с нашей: тогда calc_date — биржевая дата НКД, to_date —
+    наша поставка.
 
     Зачем: деньги за бумагу уходят на settle (T+1 раб), и вся модель уже
     дисконтирует оттуда — XIRR, simple margin, discount margin якорятся на
@@ -335,7 +341,7 @@ def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
     """
     if accrued_calc is None:
         return None, None
-    settle = settle_date(calc_date)
+    settle = to_date or settle_date(calc_date)
     gap = (settle - calc_date).days
     if gap <= 0 or not periods:
         return accrued_calc, None

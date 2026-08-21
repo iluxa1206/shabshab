@@ -255,3 +255,44 @@ def test_accrue_to_settle_on_coupon_payment_date():
     daily = 34.11 / (_d(2026, 8, 7) - _d(2026, 5, 8)).days
     assert acc == pytest.approx(daily * 3, abs=1e-3), "3 дня нового периода"
     assert note
+
+
+def test_exchange_accrued_date_is_reconciled(keyrate_curve, calc_date, flat_index_15,
+                                             monkeypatch):
+    """Биржа дала НКД на СВОЮ дату расчётов, а она не совпадает с нашей.
+
+    Регресс РусГид2Р01 21.08.2026 (пятница): ISS отдал ACCRUEDINT на 21.08, а
+    наша поставка — 24.08 (T+1 через выходные). Срок считался до 24-го, НКД —
+    на 21-е: Y-IDX 181 bps вместо 103. Теперь НКД приводится к нашей дате."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    settle = settle_date(calc_date)
+    acc_early = accrued_at(periods, calc_date)        # НКД биржи на дату торгов
+
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=acc_early, periods=periods,
+                                    accrued_date=calc_date)
+
+    assert m["accrued_settle_rub"] == pytest.approx(accrued_at(periods, settle), abs=1e-4), \
+        "НКД должен быть доначислен с биржевой даты до нашей поставки"
+    assert m["accrued_settle_rub"] > acc_early
+    assert any("доначислен" in w for w in m["warnings"]), "расхождение дат — в warnings"
+
+
+def test_exchange_accrued_date_matching_settle_is_untouched(keyrate_curve, calc_date,
+                                                            flat_index_15, monkeypatch):
+    """Даты сошлись — НКД не трогаем (обычный будний день)."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    settle = settle_date(calc_date)
+    acc_settle = accrued_at(periods, settle)
+
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=acc_settle, periods=periods,
+                                    accrued_date=settle)
+
+    assert m["accrued_settle_rub"] == pytest.approx(acc_settle, abs=1e-4)

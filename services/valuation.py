@@ -61,10 +61,15 @@ def calculate_valuation_metrics(
     ruonia_curve: DiscountCurve = None,
     alt_prices=None,
     accrued_basis: str = "settle",
+    accrued_date=None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
     accrued_override — НКД из MOEX (приоритет над стейл-кэшем).
+    accrued_date — ДАТА БИРЖИ, на которую посчитан НКД (ISS SETTLEDATE блока
+              securities). Задан — верим ей и приводим НКД к НАШЕЙ дате
+              поставки; это точнее accrued_basis, который лишь угадывает
+              конвенцию источника.
     accrued_basis — НА КАКУЮ ДАТУ дан НКД (свой и в accrued_override, и в
               bond.accrued_rub): "settle" — уже на дату поставки T+1 (блок
               securities: ACCRUEDINT live-снапшота и isins_cache — так отдаёт
@@ -141,7 +146,19 @@ def calculate_valuation_metrics(
     from core.valuation import (settle_date as _sd_ex, accrue_to_settle as _ats,
                                 accrued_at as _acc_at)
     settle_dt = _sd_ex(calc_date)
-    if accrued is not None and accrued_basis == "calc":
+    # Биржа публикует НКД ВМЕСТЕ со своей датой расчётов (SETTLEDATE). Наша
+    # settle считается сама (T+1 раб) и с биржевой расходится — в пятницу и
+    # перед праздниками на 3 дня. Пока даты не сверялись, НКД мог быть на одну
+    # дату, а срок до погашения на другую: РусГид2Р01 21.08.2026 — НКД на 21.08
+    # (6,58) против поставки 24.08, и Y-IDX выходил 181 bps вместо 103. У
+    # короткой бумаги день рассогласования стоит десятков bps.
+    if (accrued is not None and accrued_date is not None
+            and accrued_date != settle_dt):
+        accrued, _acc_note = _ats(accrued, accrued_date, periods, to_date=settle_dt)
+        if _acc_note:
+            warnings.append(_acc_note)
+        accrued_calc_date = _acc_at(periods, calc_date) if periods else None
+    elif accrued is not None and accrued_basis == "calc":
         accrued_calc_date = accrued
         accrued, _acc_note = _ats(accrued, calc_date, periods)
         if _acc_note:

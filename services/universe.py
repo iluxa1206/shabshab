@@ -40,11 +40,22 @@ def build_universe_ref(u: dict, isin: str, cache: dict, secs: dict):
                               spread_bps=u.get("spread_issue_bps") or 0)
 
 
+def _acc_dt(v):
+    """SETTLEDATE ISS → date; мусор/пусто → None (работает прежняя эвристика)."""
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
 def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 prev: Optional[float], accrued: Optional[float],
                 ruonia_curve, keyrate_curve, exp_ks, exp_ru, g_curve,
                 calc_date: date, prev_date: Optional[str] = None,
-                bid: Optional[float] = None, ask: Optional[float] = None) -> dict:
+                bid: Optional[float] = None, ask: Optional[float] = None,
+                accrued_date: Optional[str] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
     вызывающий (фон — board snapshot + кэш поллера; watch — live-цена +
@@ -114,6 +125,10 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
         try:
             m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
                                             accrued_override=accrued,
+                                            # НКД биржи — на ЕЁ дату расчётов;
+                                            # приводим к нашей поставке, иначе
+                                            # срок и НКД считаются на разные дни
+                                            accrued_date=_acc_dt(accrued_date),
                                             periods=periods or None,
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
@@ -266,6 +281,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
                 u, ref, full_by.get(isin) or {},
                 last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
                 accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
+                accrued_date=snap.get("accrued_date"),
                 bid=snap.get("bid"), ask=snap.get("ask"),
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
@@ -343,7 +359,7 @@ async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
         out[isin] = enrich_bond(
             u, ref, full_by.get(isin) or {},
             last=prices.get(isin), prev=prev, accrued=snap.get("accrued"),
-            prev_date=snap.get("prev_date"),
+            prev_date=snap.get("prev_date"), accrued_date=snap.get("accrued_date"),
             bid=snap.get("bid"), ask=snap.get("ask"),
             ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)

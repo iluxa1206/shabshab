@@ -379,6 +379,7 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
                     u, ref, ctx["full_by"].get(isin) or {},
                     last=px, prev=snap.get("prev"), accrued=snap.get("accrued"),
                     prev_date=snap.get("prev_date"),
+                    accrued_date=snap.get("accrued_date"),
                     bid=q.get("bid"), ask=q.get("ask"),
                     ruonia_curve=ctx["ruonia_curve"], keyrate_curve=ctx["keyrate_curve"],
                     exp_ks=ctx["exp_ks"], exp_ru=ctx["exp_ru"], g_curve=ctx["g_curve"],
