@@ -479,7 +479,7 @@ async def warm_exact_ctx(isins) -> int:
     if not need:
         return 0
     cache = MarketDataService.get_local_bond_cache(cache_path("isins_cache.json"))
-    done = 0
+    done = failed = 0
     for isin in need:
         try:
             _exact_ctx[isin] = (today, await load_reprice_ctx(isin, cache))
@@ -489,6 +489,13 @@ async def warm_exact_ctx(isins) -> int:
             # отсеет её по None, а не пропустит с кривой оценкой
             logger.debug("warm_exact_ctx %s: %s", isin, e)
             _exact_ctx[isin] = (today, None)
+            failed += 1
+    # массовый промах = фильтры молчат, и молчат ТИХО: без этой строки сигналы
+    # выглядели бы как «рынок спокоен», хотя на деле отвалился источник
+    if failed and failed >= max(3, len(need) // 2):
+        logger.warning("warm_exact_ctx: контекст не собрался у %d из %d бумаг — "
+                       "точный спред недоступен, события по ним не придут",
+                       failed, len(need))
     return done
 
 
@@ -585,9 +592,13 @@ def _price_y_idx(isin: str, row: dict, px: Optional[float], side: str,
     откатом на наклон, если контекст бумаги не прогрет: без отката бумага молча
     исчезала бы из фильтра на первом тике после рестарта."""
     if exact:
+        # ТОЛЬКО точное число. Откат на наклон/верх стакана здесь был бы возвратом
+        # ровно к тому, что врало: top_val — это yoi_ask из снимка метрик, тот же
+        # протухающий якорь (РСетиМР1P7 21.08: 166 bps в ленте против верных 28 —
+        # набор уложился в один уровень и подставился top_val). Нет контекста —
+        # нет числа: бумага молчит, а не сообщает выдумку.
         v = exact_y_idx(isin, px)
-        if v is not None:
-            return float(v)
+        return None if v is None else float(v)
     return y_idx_at(row, px, side)
 
 
@@ -626,7 +637,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                 continue
             price = single_px = best["price"]
             val = _price_y_idx(isin, row, price, side, exact)
-            if val is None and price == row.get(side):
+            if val is None and not exact and price == row.get(side):
                 val = top_val          # заявка стоит первой — спред верха точен
             money = best["money"]
             levels, partial = 1, False
@@ -636,7 +647,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                 continue
             price = round(v["px"], 4)
             val = _price_y_idx(isin, row, v["px"], side, exact)
-            if val is None and v["levels"] == 1:
+            if val is None and not exact and v["levels"] == 1:
                 # набор уложился в один уровень — VWAP-цена и есть верх стакана,
                 # его спред точен (а не приближение), наклон тут не нужен
                 val = top_val
@@ -649,8 +660,6 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             # bid/ask), но при exact сверяем тем же путём — на случай, если
             # котировка ушла вперёд снимка метрик
             val = _price_y_idx(isin, row, price, side, exact) if exact else top_val
-            if val is None:
-                val = top_val
             money = side_money_rub(depth_map.get(isin), side, face, accrued)
             levels, partial = None, False
 

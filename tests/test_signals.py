@@ -100,6 +100,13 @@ def test_run_cycle_pushes_to_owner(monkeypatch):
     async def fake_snapshot():
         return uni, metrics, depth
     monkeypatch.setattr(signals, "market_snapshot", fake_snapshot)
+    # цикл считает спред верифицированным путём (reprice) — в юните подменяем
+    # его на наклон по фиктивным метрикам, иначе контекста бумаги просто нет
+    async def fake_warm(isins):
+        return 0
+    monkeypatch.setattr(signals, "warm_exact_ctx", fake_warm)
+    monkeypatch.setattr(core, "exact_y_idx",
+                        lambda i, px: core.y_idx_at(metrics.get(i) or {}, px, "ask"))
 
     sent = []
     from api.routes import ws as wsmod
@@ -650,14 +657,37 @@ def test_exact_y_idx_beats_stale_slope_anchor(monkeypatch):
     core.drop_exact_cache()
 
 
-def test_exact_falls_back_to_slope_when_ctx_cold(monkeypatch):
-    """Контекст не прогрет (рестарт, новая бумага) — бумага не исчезает из
-    фильтра, число берётся наклоном, как раньше."""
+def test_exact_never_falls_back_to_stale_anchor():
+    """Нет контекста — нет числа: молчим, а не отдаём приближение.
+
+    Регресс: при наборе в ОДИН уровень код подставлял top_val (yoi_ask из снимка
+    метрик) — тот же протухающий якорь. РСетиМР1P7 21.08.2026: 166 bps в ленте
+    против верных 28. Откат на наклон/верх стакана в точном режиме запрещён."""
     from datetime import date
     uni, metrics, depth = _market()
     core.drop_exact_cache()          # ни одного тёплого контекста
     p = core.normalize_params({"spread_min": 100, "min_money_rub": 1e6})
     cands = core.static_candidates(p, uni, date(2026, 8, 21))
     got = core.evaluate_candidates(p, cands, metrics, depth, exact=True)
-    assert [m["isin"] for m in got] == ["RU000A0000A1"]
-    assert got[0]["val_bps"] is not None
+    assert got == [], "без точного числа бумага не проходит фильтр по спреду"
+
+    # тот же прогон БЕЗ exact — приближение работает как раньше (превью до прогрева)
+    loose = core.evaluate_candidates(p, cands, metrics, depth)
+    assert [m["isin"] for m in loose] == ["RU000A0000A1"]
+
+
+def test_exact_single_level_uses_reprice_not_top_val(monkeypatch):
+    """Набор в один уровень: число из reprice, а не из top_val снимка метрик."""
+    from datetime import date
+    uni, metrics, depth = _market()
+    isin = "RU000A0000B2"                      # лестница из одного уровня 99.0
+    metrics[isin] = dict(metrics[isin], yoi_ask=166.0)
+    p = core.normalize_params({"spread_min": 0, "min_money_rub": 40_000,
+                               "isins": [isin]})
+    cands = core.static_candidates(p, uni, date(2026, 8, 21))
+    core.drop_exact_cache()
+    core._exact_ctx[isin] = (date.today().isoformat(), {"stub": True})
+    monkeypatch.setattr(core, "exact_y_idx", lambda i, px: 28.0)
+    got = core.evaluate_candidates(p, cands, metrics, depth, exact=True)
+    assert got and got[0]["val_bps"] == pytest.approx(28.0)
+    core.drop_exact_cache()
