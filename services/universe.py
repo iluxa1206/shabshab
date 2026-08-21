@@ -13,7 +13,8 @@ from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
     yidx_at_price,
 )
-from services.valuation import calculate_valuation_metrics, alt_horizon as _alt_horizon
+from services.valuation import (calculate_valuation_metrics, horizon_pair,
+                                alt_horizon as _alt_horizon)
 from core.valuation import next_offer_info
 from services.zspread import compute_z_bps
 from services import metrics
@@ -122,15 +123,14 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             # call-выкупа → к коллу, иначе к погашению. Колонки таблицы (Y-IDX/YTM/
             # SM/DM и Y-IDX стакана) берутся из ВЫБРАННОГО горизонта — иначе скринер
             # сравнивал бы бумагу с офертой через год по потоку на десять лет.
-            hz = m.get("preferred_horizon", "maturity")
-            _hzm = (m.get("horizons") or {}).get(hz) or {}
+            hz_sel, _altm, hz_alt = horizon_pair(m)
+            hz = hz_sel.get("horizon") or "maturity"
+            _hzm = hz_sel
             # ВТОРОЙ ГОРИЗОНТ рядом с основным (к погашению ↔ к ближайшей оферте):
             # горизонт бумаги меняется во времени (появилась дата колла, цена
             # перешла порог выкупа), и дневной снимок спреда без него склеивает
             # несопоставимые числа в одну линию истории — обрыв на 200+ б.п. без
             # движения цены. Держим оба, чтобы график мог взять сопоставимое.
-            hz_alt = _alt_horizon(hz, m.get("horizons") or {})
-            _altm = (m.get("horizons") or {}).get(hz_alt) or {} if hz_alt else {}
             yoi_alt = _altm.get("yield_over_index_bps")
             dirty = m.get("dirty_price_rub")
             dm = _hzm.get("sm_bps", m.get("dm_bps"))

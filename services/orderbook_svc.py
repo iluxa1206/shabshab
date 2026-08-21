@@ -44,12 +44,9 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
         # горизонт уровня — по правилу цены (как в /orderbook и в карточке),
         # рядом кладём второй горизонт: свитчер «погашение ↔ оферта» на графике
         # переключается по готовым числам, без пересчёта
-        from services.valuation import pick_horizon
-        from services.backdate import _alt_horizon
+        from services.valuation import horizon_pair
         m = reprice_at_price(ctx, price)
-        h = pick_horizon(m, "auto")
-        alt_key = _alt_horizon(h.get("horizon") or "maturity", m.get("horizons") or {})
-        alt = pick_horizon(m, alt_key) if alt_key else {}
+        h, alt, alt_key = horizon_pair(m)
         return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
                 "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
                 "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),

@@ -118,6 +118,8 @@ async def get_orderbook(
             from services.valuation import pick_horizon
             m = reprice_at_price(ctx, price)
             h = pick_horizon(m, horizon)
+            # поля берём из выбранного горизонта, откат на верхнеуровневые (они
+            # всегда к погашению) — только если горизонта в ответе нет
             return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
                     "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
                     "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
