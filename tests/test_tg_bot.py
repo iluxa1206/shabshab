@@ -349,3 +349,12 @@ def test_order_without_threshold_says_nothing():
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_order_match(want_money_rub=None)]})
     assert ">0" not in txt and ">1м" not in txt
+
+
+def test_isin_not_duplicated_when_name_missing():
+    """Бумага вне справочника имён (сделки идут по всему рынку): в шапке уже
+    стоит ISIN — второй раз строкой его не печатаем."""
+    txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
+                        "matches": [{"isin": "RU000A10D1M3", "name": "RU000A10D1M3",
+                                     "money_rub": 1_925_200_000, "price": 100.0}]})
+    assert txt.count("RU000A10D1M3") == 1

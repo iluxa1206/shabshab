@@ -201,9 +201,15 @@ def _issue_link(m: dict) -> str:
 
 def _isin_line(m: dict) -> str:
     """ISIN ОТДЕЛЬНОЙ строкой, последней в записи: его копируют целиком, а в
-    хвосте строки с цифрами тап попадал бы то в него, то в соседнее число."""
+    хвосте строки с цифрами тап попадал бы то в него, то в соседнее число.
+
+    Пусто, если имени выпуска нет: в шапке тогда стоит сам ISIN (сделки идут
+    по всему рынку, а справочник имён — только по юниверсу), и второй раз
+    печатать его незачем."""
     isin = m.get("isin")
-    return f"<code>{html.escape(str(isin))}</code>" if isin else ""
+    if not isin or not m.get("name") or str(m["name"]) == str(isin):
+        return ""
+    return f"<code>{html.escape(str(isin))}</code>"
 
 
 def _money_of(m: dict, kind: str) -> Optional[float]:
