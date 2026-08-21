@@ -2201,6 +2201,97 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .theme-win .chart-page { background: var(--face); }
 .theme-win .status-page, .theme-win .issuer-agg { background: var(--face); }
 
+/* ── Детализация эпохи ───────────────────────────────────────────────────────
+   Крупная форма темы уже была: бевелы, серебро, тайтлбары с градиентом. Ниже —
+   мелочи, по которым Win95 узнают с одного взгляда: элементы, которые браузер
+   рисует средствами текущей ОС, и служебная фурнитура окна.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Чекбокс и радио. Браузерные ломают эпоху сильнее всего: единственные цветные
+   скруглённые пятна на сером. Собираем вручную — вдавленное белое поле,
+   чёрная галочка, у радио точка. */
+.theme-win input[type="checkbox"], .theme-win input[type="radio"] {
+  appearance: none; -webkit-appearance: none;
+  width: 13px; height: 13px; flex: 0 0 13px; margin: 0 4px 0 0; padding: 0;
+  background: var(--bg); position: relative; cursor: pointer;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+}
+.theme-win input[type="radio"] { border-radius: 50% !important; }
+/* галочка из двух палочек: векторная «птица» эпохе чужда */
+.theme-win input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 3px; top: 0;
+  width: 4px; height: 7px; border: solid var(--fg); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.theme-win input[type="radio"]:checked::after {
+  content: ""; position: absolute; inset: 3px; background: var(--fg); border-radius: 50%;
+}
+.theme-win input[type="checkbox"]:disabled, .theme-win input[type="radio"]:disabled {
+  background: var(--face); cursor: default;
+}
+.theme-win input[type="checkbox"]:disabled:checked::after { border-color: var(--bev-sh); }
+.theme-win input[type="checkbox"]:focus-visible, .theme-win input[type="radio"]:focus-visible {
+  outline: 1px dotted var(--fg); outline-offset: 1px;
+}
+
+/* Стрелки на кнопках скроллбара: кнопки были, но пустые — серый квадрат без
+   треугольника читается как обрубок полосы. */
+.theme-win ::-webkit-scrollbar-button:single-button:vertical:decrement {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='7' height='4'><path d='M3.5 0 0 4h7z' fill='black'/></svg>");
+  background-repeat: no-repeat; background-position: center;
+}
+.theme-win ::-webkit-scrollbar-button:single-button:vertical:increment {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='7' height='4'><path d='M0 0h7L3.5 4z' fill='black'/></svg>");
+  background-repeat: no-repeat; background-position: center;
+}
+.theme-win ::-webkit-scrollbar-button:single-button:horizontal:decrement {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='4' height='7'><path d='M0 3.5 4 0v7z' fill='black'/></svg>");
+  background-repeat: no-repeat; background-position: center;
+}
+.theme-win ::-webkit-scrollbar-button:single-button:horizontal:increment {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='4' height='7'><path d='M0 0 4 3.5 0 7z' fill='black'/></svg>");
+  background-repeat: no-repeat; background-position: center;
+}
+.theme-win ::-webkit-scrollbar-button:single-button:active {
+  border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+}
+.theme-win ::-webkit-scrollbar-button:double-button { display: none; }
+
+/* Грип в правом нижнем углу статусбара — ручка размера окна, три насечки. */
+.theme-win .statusbar { position: relative; padding-right: 20px; }
+.theme-win .statusbar::after {
+  content: ""; position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px;
+  background:
+    linear-gradient(135deg, transparent 44%, var(--bev-hi) 44% 58%, var(--bev-sh) 58% 70%, transparent 70%),
+    linear-gradient(135deg, transparent 61%, var(--bev-hi) 61% 75%, var(--bev-sh) 75% 87%, transparent 87%),
+    linear-gradient(135deg, transparent 78%, var(--bev-hi) 78% 92%, var(--bev-sh) 92% 100%);
+  pointer-events: none;
+}
+
+/* Group box: рамка вокруг блока фильтров вместо одинокой линии слева —
+   стандартная вдавленная рамка группы в диалогах эпохи. */
+.theme-win .fgroup {
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+  padding: 5px 8px 4px; margin-left: 2px;
+}
+.theme-win .fg-lbl { font-family: var(--ui); font-size: 10px; }
+
+/* Курсор ввода — чёрный, в тон остальному */
+.theme-win input, .theme-win textarea, .theme-win select { caret-color: var(--fg); }
+
+/* Выбранная строка — сплошная инверсия navy, а не подкрашенный фон. Цвета
+   значений внутри гасим: зелёное на синем нечитаемо. */
+.theme-win .cmp-tbl tbody tr.on td,
+.theme-win .grid tbody tr[aria-selected="true"] td {
+  background: var(--inv-bg) !important; color: var(--inv-fg) !important;
+}
+.theme-win .cmp-tbl tbody tr.on td *,
+.theme-win .grid tbody tr[aria-selected="true"] td * { color: var(--inv-fg) !important; }
+
+
 /* ── вкладка СРАВНЕНИЕ ── */
 /* Карточка графика во всю ширину (в отличие от сетки .analytics, где карточки
    ужаты до 460px: там их три в ряд, здесь график один и ему нужна ось). */
