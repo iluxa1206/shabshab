@@ -2307,6 +2307,18 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .theme-win .loading, .theme-win [aria-busy="true"] { cursor: wait; }
 .theme-win .btn:disabled, .theme-win .chip-btn:disabled { cursor: default; }
 
+/* Подсказка эпохи: бледно-жёлтая плашка с чёрной рамкой в 1px. Рисуется своим
+   слоем (см. src/retroTips.js) — нативный tooltip браузера не стилизуется. */
+.win-tip {
+  position: fixed; z-index: 9999; pointer-events: none;
+  max-width: 320px; padding: 2px 5px 3px;
+  background: #ffffe1; color: #000;
+  border: 1px solid #000; border-radius: 0;
+  font: 11px/1.35 Tahoma, Verdana, Geneva, sans-serif;
+  letter-spacing: normal; text-transform: none; white-space: pre-line;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.28);
+}
+
 /* ── вкладка СРАВНЕНИЕ ── */
 /* Карточка графика во всю ширину (в отличие от сетки .analytics, где карточки
    ужаты до 460px: там их три в ряд, здесь график один и ему нужна ось). */

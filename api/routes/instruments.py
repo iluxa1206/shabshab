@@ -107,11 +107,13 @@ def _offers_no_spec() -> list:
 @router.get("/unreviewed", tags=["Instruments"])
 async def unreviewed(_admin: dict = Depends(require_admin)):
     """Новые на ревью + непрайсуемые (нет base/margin/maturity) + suspect (маржа
-    расходится с фактом КС/RUONIA) + экзотика (с формулой — ловить ложные) +
-    оферты без спеки поведения + счётчики."""
+    расходится с фактом КС/RUONIA) + offer_reset (ставка менялась на прошлой
+    оферте, впереди ещё одна, поток к ней не режется) + экзотика (с формулой —
+    ловить ложные) + оферты без спеки поведения + счётчики."""
     return {"items": reg.list_unreviewed(),
             "incomplete": reg.list_incomplete(),
             "suspect": reg.list_suspect(),
+            "offer_reset": reg.list_offer_reset(),
             "exotic": reg.list_exotic(),
             "offers_no_spec": _offers_no_spec(),
             "count": reg.count()}

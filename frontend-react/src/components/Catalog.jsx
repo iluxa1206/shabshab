@@ -152,6 +152,12 @@ export default function Catalog({ user }) {
           {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
           {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
           {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
+          {cnt?.offer_reset > 0 && (
+            <span className="admin-badge admin-warn"
+              title="Ставка уже менялась на прошлой оферте, впереди ещё одна, а поток к ней не режется — проверь cut_at_offer">
+              {cnt.offer_reset} пересмотр на оферте
+            </span>
+          )}
           {specBadCount > 0 && (
             <span className="admin-badge admin-warn"
               title="Пересчёт прошлых купонов расходится с фактом выплат — проверь лаг/окно/режим">

@@ -139,6 +139,7 @@ export default function StatusPage() {
                 {[
                   ["Без параметров (incomplete)", d.registry_queues.incomplete],
                   ["Маржа расходится (suspect)", d.registry_queues.suspect],
+                  ["Пересмотр на оферте (offer_reset)", d.registry_queues.offer_reset],
                   ["Экзотика (exotic)", d.registry_queues.exotic],
                   ["Ждут ревью (unreviewed)", d.registry_queues.unreviewed],
                 ].map(([label, q]) => (

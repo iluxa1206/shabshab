@@ -453,3 +453,72 @@ def test_ofz_pk_not_reclassified_as_fixed(reg):
                 "margin_bps": 100}, "moex")
     reg.reclassify_fixed("RU1")
     assert reg.get("RU1")["base"] == "FIXED"
+
+
+# ── пересмотр ставки на оферте (флаг ревью, не расчёт) ─────────────────────
+
+def test_offer_reset_queue_only_with_future_offer(reg, monkeypatch):
+    """В ревью попадает только то, где вопрос ещё актуален: ставка уже менялась
+    НА ПРОШЛОЙ оферте и впереди есть ЕЩЁ ОДНА. Прошедшая целиком — мимо."""
+    from datetime import date, timedelta
+    soon = (date.today() + timedelta(days=40)).isoformat()
+    for isin in ("RU1", "RU2", "RU3"):
+        reg.upsert({"isin": isin, "base": "KEYRATE", "margin_bps": 200,
+                    "maturity_date": "2030-01-01"}, "cbonds")
+    reg.set_offer_reset("RU1", -131, "2026-04-15", soon)   # пересмотр + оферта впереди
+    reg.set_offer_reset("RU2", -131, "2026-04-15", None)   # оферт больше нет
+    reg.set_offer_reset("RU3", 4, "2026-04-15", soon)      # сдвиг в пределах шума
+
+    import services.ref_data as rd
+    monkeypatch.setattr(rd, "cut_at_offer", lambda isin: False)
+    assert {r["isin"] for r in reg.list_offer_reset()} == {"RU1"}
+    assert reg.count()["offer_reset"] == 1
+
+
+def test_offer_reset_hidden_when_already_cut(reg, monkeypatch):
+    """Решение «резать к оферте» уже принято — вопрос закрыт, из ревью убираем."""
+    from datetime import date, timedelta
+    soon = (date.today() + timedelta(days=40)).isoformat()
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 200,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    reg.set_offer_reset("RU1", -131, "2026-04-15", soon)
+
+    import services.ref_data as rd
+    monkeypatch.setattr(rd, "cut_at_offer", lambda isin: True)
+    assert reg.list_offer_reset() == []
+
+
+def test_offer_reset_detects_margin_shift(monkeypatch):
+    """Детект считает маржу по обе стороны оферты и ловит сдвиг."""
+    from datetime import date
+    from services import instruments_validate as v
+
+    today = date(2026, 8, 21)
+    hist = [(date(2020, 1, 1), 14.0)]          # индекс плоский: 14% годовых
+    offers = [{"date": "2026-04-27"}]
+    # до оферты купон по КС+7 (21%), после — по КС+3 (17%)
+    coupons = [
+        {"start": "2026-01-24", "end": "2026-02-23", "value": 17.26, "valueprc": 21.0},
+        {"start": "2026-02-23", "end": "2026-03-25", "value": 17.26, "valueprc": 21.0},
+        {"start": "2026-05-24", "end": "2026-06-23", "value": 13.97, "valueprc": 17.0},
+        {"start": "2026-06-23", "end": "2026-07-23", "value": 13.97, "valueprc": 17.0},
+    ]
+    seen = {}
+    monkeypatch.setattr("services.instruments_registry.set_offer_reset",
+                        lambda i, d, od, nxt: seen.update(delta=d, offer=od, nxt=nxt))
+    assert v._offer_reset("RU1", coupons, offers, 1000, hist, today) is True
+    assert round(seen["delta"]) == -400, "маржа упала с 700 до 300 bps"
+    assert seen["offer"] == "2026-04-27" and seen["nxt"] is None
+
+
+def test_offer_reset_quiet_without_both_sides(monkeypatch):
+    """Купонов по одну сторону нет — молчим, а не выдумываем сдвиг."""
+    from datetime import date
+    from services import instruments_validate as v
+    seen = {}
+    monkeypatch.setattr("services.instruments_registry.set_offer_reset",
+                        lambda i, d, od, nxt: seen.update(delta=d))
+    coupons = [{"start": "2026-05-24", "end": "2026-06-23", "valueprc": 17.0}]
+    assert v._offer_reset("RU1", coupons, [{"date": "2026-04-27"}], 1000,
+                          [(date(2020, 1, 1), 14.0)], date(2026, 8, 21)) is False
+    assert seen["delta"] is None

@@ -221,6 +221,18 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("spreadFrom", spreadFrom); }, [spreadFrom]);
   useEffect(() => { localStorage.setItem("spreadTo", spreadTo); }, [spreadTo]);
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
+  // жёлтые подсказки эпохи — только в теме win; за собой всё снимают
+  useEffect(() => {
+    if (theme !== "win") return undefined;
+    // модуль грузится асинхронно, а тему могут переключить раньше — без флага
+    // слушатели повисли бы навсегда (cleanup отработал бы до init)
+    let stop = null, cancelled = false;
+    import("./retroTips").then((m) => {
+      if (cancelled) return;
+      stop = m.initRetroTips();
+    });
+    return () => { cancelled = true; if (stop) stop(); };
+  }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
   // снимок известных на этой сборке колонок — база для авто-показа новых (см. выше)

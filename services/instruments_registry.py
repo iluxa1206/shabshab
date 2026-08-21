@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS instruments(
   manual_locked     INTEGER NOT NULL DEFAULT 0,
   reviewed          INTEGER NOT NULL DEFAULT 0,   -- новая бумага, ждёт ревью параметров
   margin_check_pp   REAL,                         -- бэк-аут маржи vs факт КС/RUONIA (pp); |>1.5| = подозрение
+  -- Пересмотр ставки НА ОФЕРТЕ, пойманный по факту: сдвиг фактической маржи
+  -- между купонами до и после прошедшей оферты. Значит эмитент этот выпуск
+  -- пересматривает, и к СЛЕДУЮЩЕЙ оферте поток резать нужно (cut_at_offer),
+  -- даже если var_type из Cbonds пуст — а он пуст у 115 из 134 бумаг с офертой.
+  -- ФЛАГ НИЧЕГО НЕ МЕНЯЕТ В РАСЧЁТЕ: только поднимает бумагу в ревью.
+  offer_reset_bps   REAL,
+  offer_reset_date  TEXT,                         -- дата той оферты
+  next_offer_date   TEXT                          -- ближайшая будущая (для отбора в ревью)
   cap_pct           REAL,                         -- потолок ставки купона, % годовых (MIN/«не более»)
   floor_pct         REAL,                         -- пол ставки купона, % годовых (MAX/«не менее»)
   coupon_text       TEXT                          -- текст формулы купона (парсится → база/маржа/режим/кэп/флор)
@@ -77,6 +85,9 @@ CREATE TABLE IF NOT EXISTS enrich_seen(
 # ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
 _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN margin_check_pp REAL",
+    "ALTER TABLE instruments ADD COLUMN offer_reset_bps REAL",
+    "ALTER TABLE instruments ADD COLUMN offer_reset_date TEXT",
+    "ALTER TABLE instruments ADD COLUMN next_offer_date TEXT",
     "ALTER TABLE instruments ADD COLUMN emitter_id INTEGER",   # MOEX EMITTER_ID (группировка)
     "ALTER TABLE instruments ADD COLUMN emitter_name TEXT",    # имя эмитента (display)
     "ALTER TABLE instruments ADD COLUMN cap_pct REAL",         # потолок ставки купона, %
@@ -784,6 +795,48 @@ def set_margin_check(isin: str, diff_pp: Optional[float]) -> None:
 _SUSPECT_PP = 1.5
 
 
+# Сдвиг маржи, с которого считаем, что эмитент ПЕРЕСМАТРИВАЕТ ставку на оферте.
+# Ниже — обычный шум бэк-аута (лаг фиксинга, округление купона в рублях).
+OFFER_RESET_BPS = 25.0
+
+
+def set_offer_reset(isin: str, diff_bps, offer_date, next_offer) -> None:
+    """Запомнить пересмотр на прошедшей оферте и дату ближайшей будущей."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET offer_reset_bps=?, offer_reset_date=?, "
+                  "next_offer_date=? WHERE isin=?",
+                  (round(diff_bps) if diff_bps is not None else None,
+                   offer_date, next_offer, isin))
+
+
+def list_offer_reset() -> list[dict]:
+    """Выпуски, где ставка уже менялась на оферте, а ВПЕРЕДИ есть ещё одна, и
+    поток к ней не режется. Ровно те, где горизонт оценки под вопросом:
+    считаем к погашению по марже, которая на оферте изменится.
+
+    Решение резать принимает человек (Справочник → cut_at_offer): бывает, что
+    эмитент менял ставку разово, а формула до погашения известна."""
+    _ensure()
+    today = date.today().isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, offer_reset_bps, "
+            "offer_reset_date, next_offer_date, var_type "
+            "FROM instruments WHERE active=1 AND offer_reset_bps IS NOT NULL "
+            "AND ABS(offer_reset_bps) >= ? AND next_offer_date IS NOT NULL "
+            "AND next_offer_date > ? ORDER BY next_offer_date",
+            (OFFER_RESET_BPS, today)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        from services.ref_data import cut_at_offer
+        if cut_at_offer(d["isin"]):     # уже решено резать — вопрос закрыт
+            continue
+        out.append(d)
+    return out
+
+
 def list_suspect() -> list[dict]:
     """Прайсуемые флоатеры, где бэк-аут маржи расходится с фактом КС/RUONIA >1.5pp
     (вероятно неверная маржа/база из Cbonds) — на ручную проверку."""
@@ -1347,6 +1400,9 @@ def queue_stats() -> dict:
         "incomplete": {"n": len(incomplete), "oldest_days": _oldest(incomplete),
                        "never_tried": sum(1 for r in incomplete if r["isin"] not in enrich_seen)},
         "suspect": {"n": len(suspect), "oldest_days": _oldest(suspect)},
+        # ставка менялась на прошлой оферте, впереди ещё одна — горизонт оценки
+        # под вопросом (см. list_offer_reset)
+        "offer_reset": {"n": len(list_offer_reset()), "oldest_days": None},
         "exotic": {"n": len(exotic), "oldest_days": _oldest(exotic)},
         "unreviewed": {"n": len(unreviewed), "oldest_days": _oldest(unreviewed)},
         "manual_locked": sum(1 for r in rows if r["manual_locked"]),
@@ -1368,4 +1424,5 @@ def count() -> dict:
             "SELECT COUNT(*) FROM instruments WHERE active=1 AND margin_check_pp IS NOT NULL "
             "AND ABS(margin_check_pp) > ?", (_SUSPECT_PP,)).fetchone()[0]
     return {"total": total, "floaters": floaters, "unreviewed": unrev,
-            "priceable": priceable, "incomplete": floaters - priceable, "suspect": suspect}
+            "priceable": priceable, "incomplete": floaters - priceable,
+            "suspect": suspect, "offer_reset": len(list_offer_reset())}

@@ -5,7 +5,12 @@
     (Cbonds иногда так метит) → reclassify base='FIXED', уходит из универса;
   • бэк-аут маржи из последнего зафикс. купона (ставка − маржа) сверяется с
     фактическим КС/RUONIA на дату фиксинга; |Δ|>1.5pp → suspect (вероятно неверная
-    маржа/база из Cbonds) → записываем margin_check_pp, бумага всплывает в ревью.
+    маржа/база из Cbonds) → записываем margin_check_pp, бумага всплывает в ревью;
+  • ПЕРЕСМОТР НА ОФЕРТЕ: маржа по купонам до и после прошедшей оферты. Сдвиг
+    ≥25bps значит, что эмитент этот выпуск пересматривает, и к следующей оферте
+    поток надо резать — а решает это var_type из Cbonds, которого нет у 115 из
+    134 бумаг с офертой. Флаг НИЧЕГО НЕ МЕНЯЕТ В РАСЧЁТЕ: бумага попадает в
+    ревью, резать или нет — решение человека в Справочнике.
 
 Расписание берётся из дневного кэша (fetch_bond_schedule_full), так что после
 прогрева поллера сеть почти не задействуется. Инвариант «расчёт верен» —
@@ -51,6 +56,52 @@ def _index_at(hist, d):
     return val
 
 
+def _margin_bps(c, face, hist) -> "float | None":
+    """Фактическая маржа зафиксированного купона: ставка − индекс на старте, bps."""
+    s, e, v, vp = _d(c.get("start")), _d(c.get("end")), c.get("value"), c.get("valueprc")
+    if not s or not e or (v is None and vp is None):
+        return None
+    days = (e - s).days or 1
+    rate = float(vp) if vp else float(v) * 365.0 / (days * (face or 1000)) * 100.0
+    idx = _index_at(hist, s)
+    return None if idx is None else (rate - idx) * 100.0
+
+
+def _offer_reset(isin, coupons, offers, face, hist, calc_date) -> bool:
+    """Сравнивает маржу до и после ПОСЛЕДНЕЙ прошедшей оферты. Пишет находку в
+    реестр (флаг ревью, не расчёт). True — сдвиг больше порога.
+
+    Берём по 3 купона с каждой стороны и усредняем: один купон может отличаться
+    из-за округления рублёвой суммы и короткого периода."""
+    from services import instruments_registry as reg
+    past, future = [], []
+    for o in offers or []:
+        d = _d((o.get("date") or "")[:10])
+        if not d:
+            continue
+        (past if d < calc_date else future).append(d)
+    next_offer = min(future).isoformat() if future else None
+    if not past:
+        reg.set_offer_reset(isin, None, None, next_offer)
+        return False
+    odate = max(past)
+
+    def side(pred):
+        vals = [_margin_bps(c, face, hist) for c in coupons if pred(c)]
+        vals = [v for v in vals if v is not None]
+        return vals
+
+    before = side(lambda c: (_d(c.get("end")) or calc_date) <= odate)[-3:]
+    after = side(lambda c: (_d(c.get("start")) or calc_date) >= odate
+                 and (_d(c.get("end")) or calc_date) <= calc_date)[:3]
+    if not before or not after:
+        reg.set_offer_reset(isin, None, None, next_offer)
+        return False
+    delta = sum(after) / len(after) - sum(before) / len(before)
+    reg.set_offer_reset(isin, delta, odate.isoformat(), next_offer)
+    return abs(delta) >= reg.OFFER_RESET_BPS
+
+
 async def validate_priceable() -> dict:
     """Прогон самопроверки по всем прайсуемым флоатерам. Возвращает статистику."""
     from services import instruments_registry as reg, cbr
@@ -61,11 +112,11 @@ async def validate_priceable() -> dict:
     ruo_hist = cbr.ruonia_history()
     rows = [reg.get(r["isin"]) for r in reg.universe_rows(only_priceable=True)]
 
-    reclassified = suspect = checked = 0
+    reclassified = suspect = checked = resets = 0
     sem = asyncio.Semaphore(6)
 
     async def one(row):
-        nonlocal reclassified, suspect, checked
+        nonlocal reclassified, suspect, checked, resets
         isin = row["isin"]
         base = row.get("base")
         margin = row.get("margin_bps")
@@ -109,7 +160,16 @@ async def validate_priceable() -> dict:
         if abs(diff) > _SUSPECT_PP:
             suspect += 1
 
+        # пересмотр на оферте — по тому же расписанию, без второго запроса
+        try:
+            if _offer_reset(isin, coupons, (full or {}).get("offers"),
+                            row.get("face_value") or 1000, hist, calc_date):
+                resets += 1
+        except Exception as e:
+            logger.debug("offer reset %s: %s", isin, e)
+
     await asyncio.gather(*(one(r) for r in rows if r))
-    stats = {"checked": checked, "reclassified_fixed": reclassified, "suspect": suspect}
+    stats = {"checked": checked, "reclassified_fixed": reclassified,
+             "suspect": suspect, "offer_resets": resets}
     logger.info("registry validation: %s", stats)
     return stats
