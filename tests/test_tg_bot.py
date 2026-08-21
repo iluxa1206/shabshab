@@ -299,3 +299,43 @@ def test_block_time_falls_back_to_fire_moment():
                                      "price": 100.05, "money_rub": 26_100_000,
                                      "fired_at": "2026-08-21T07:42:07+00:00"}]})
     assert "10:42:07" in txt          # UTC → МСК
+
+
+def _order_match(**kw):
+    m = {"isin": "RU000A109B33", "name": "Газпн3P13R", "val_bps": 168.0,
+         "price": 100.05, "money_rub": 1_000_000, "money_ok_rub": 8_200_000,
+         "want_money_rub": 1_000_000, "levels": 4, "reason": "spread",
+         "prev_val_bps": 153.0, "fired_at": "2026-08-21T09:47:02+00:00"}
+    m.update(kw)
+    return m
+
+
+def test_order_shows_market_volume_not_threshold():
+    """У заявки в шапке — деньги уровней в диапазоне спреда, а не набранный
+    объём: тот в режиме порога равен самому порогу и повторял бы настройку."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match()]})
+    assert "8,2м ₽" in txt and "1м ₽" not in txt
+
+
+def test_order_volume_falls_back_when_no_spread_bounds():
+    """Фильтр без границ спреда: money_ok не считается — показываем money_rub."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(money_ok_rub=None,
+                                                 money_rub=4_000_000)]})
+    assert "4м ₽" in txt
+
+
+def test_order_shows_time_then_threshold():
+    """После причины — время срабатывания с секундами, за ним порог фильтра."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match()]})
+    sub = [ln for ln in txt.split("\n") if "12:47:02" in ln][0]
+    assert sub.index("RS") < sub.index("12:47:02") < sub.index(">1м")
+
+
+def test_order_without_threshold_says_nothing():
+    """Фильтр без порога объёма: лишнего «>0» в строке не появляется."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(want_money_rub=None)]})
+    assert ">0" not in txt and ">1м" not in txt

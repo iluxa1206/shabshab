@@ -199,6 +199,28 @@ def _issue_link(m: dict) -> str:
     return f'<a href="{_SITE_URL}?isin={isin}&amp;ob=1"><b>{name}</b></a>'
 
 
+def _money_of(m: dict, kind: str) -> Optional[float]:
+    """Объём в шапке строки.
+
+    У ЗАЯВКИ это деньги уровней, попавших в диапазон спреда фильтра
+    (money_ok_rub), а не набранный объём: в режиме порога money_rub равен
+    примерно самому порогу («>1 млн» → «1м ₽»), то есть сообщение повторяло
+    настройку вместо того, чтобы показывать рынок. Фолбэк на money_rub —
+    фильтры без границ спреда, где money_ok не считается.
+    У СДЕЛКИ объём один и без вариантов."""
+    if kind == "block":
+        return m.get("money_rub")
+    ok = m.get("money_ok_rub")
+    return ok if ok else m.get("money_rub")
+
+
+def _fmt_threshold(v: Optional[float]) -> str:
+    """Порог объёма из настроек фильтра: «>1м». Он в строке нужен, чтобы
+    сравнивать фактический объём с тем, на что подписан — без него «8,2м» не
+    говорит, насколько сильно рынок перекрыл условие."""
+    return f">{_compact(v)}" if v else ""
+
+
 def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     """Две строки на бумагу.
 
@@ -211,7 +233,7 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
 
     if m.get("val_bps") is not None:
         head.append(f"<b>{m['val_bps']:.0f} бп</b>")
-    money = _short_money(m.get("money_rub"))
+    money = _short_money(_money_of(m, kind))
     if money:
         head.append(money)
     years = _fmt_years(m.get("years"))
@@ -239,6 +261,12 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
         why = _reason_delta(m) or _REASON.get(m.get("reason") or "", "")
         if why:
             sub.append(why)
+        ts = _hhmmss(m)
+        if ts:
+            sub.append(ts)
+        want = _fmt_threshold(m.get("want_money_rub"))
+        if want:
+            sub.append(want)
 
     line = f"{_icon(m, kind, side)}  " + " · ".join(b for b in head if b)
     return line + (f"\n{' · '.join(sub)}" if sub else "")
