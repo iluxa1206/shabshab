@@ -56,6 +56,8 @@ class SignalCreate(BaseModel):
     change_pct: float = 10.0
     sound: bool = True
     desktop: bool = True
+    # куда слать в телеграм: id канала из /api/signals/targets (null — в личку)
+    tg_target_id: Optional[int] = None
 
 
 class SignalPatch(BaseModel):
@@ -65,6 +67,9 @@ class SignalPatch(BaseModel):
     change_pct: Optional[float] = None
     sound: Optional[bool] = None
     desktop: Optional[bool] = None
+    # -1 «не трогать» отличает «поле не прислали» от «убрать канал» (null):
+    # у Pydantic обе ситуации иначе выглядят одинаково
+    tg_target_id: Optional[int] = -1
 
 
 @router.get("", tags=["Signals"])
@@ -78,7 +83,8 @@ async def create_filter(body: SignalCreate, user: dict = Depends(require_user)):
     try:
         return signals.create(user["email"], body.name, body.params,
                               change_pct=body.change_pct, sound=body.sound,
-                              desktop=body.desktop, kind=body.kind)
+                              desktop=body.desktop, kind=body.kind,
+                              tg_target_id=body.tg_target_id)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -112,6 +118,15 @@ async def preview_block_filter(params: BlockParams, user: dict = Depends(require
         return await asyncio.to_thread(signals.preview_block, params.model_dump())
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/targets", tags=["Signals"])
+async def list_targets(user: dict = Depends(require_user)):
+    """Каналы доставки аккаунта — для селектора «куда слать» в форме фильтра.
+    Регистрируются в боте: переслать пост из канала (см. api/routes/tg)."""
+    from services import tg_targets, tg_users
+    return {"targets": tg_targets.list_for_user(user["email"]),
+            "has_private": tg_users.has_chats(user["email"])}
 
 
 @router.get("/events", tags=["Signals"])
@@ -159,7 +174,8 @@ async def patch_filter(body: SignalPatch, fid: int = Path(...),
     try:
         f = signals.update(user["email"], fid, name=body.name, enabled=body.enabled,
                            params=body.params, change_pct=body.change_pct,
-                           sound=body.sound, desktop=body.desktop)
+                           sound=body.sound, desktop=body.desktop,
+                           tg_target_id=body.tg_target_id)
     except signals.FilterError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if f is None:

@@ -19,9 +19,12 @@ def db():
     from services import portfolio_db
     from services.portfolio_db import _connect, _lock
     portfolio_db.init_db()
+    with _lock, _connect() as c:
+        c.execute("DELETE FROM tg_targets WHERE user_email='u@x.ru'")
     yield
     with _lock, _connect() as c:
         c.execute("DELETE FROM tg_users WHERE tg_user_id IN (?, 555)", (UID,))
+        c.execute("DELETE FROM tg_targets WHERE user_email='u@x.ru'")
 
 
 @pytest.fixture()
@@ -468,3 +471,58 @@ def test_poller_recovers_from_webhook_conflict(monkeypatch):
     asyncio.run(run())
     assert calls.count("deleteWebhook") >= 2, (
         f"поллер не снял вебхук при конфликте: {calls[:6]}")
+
+
+# ── каналы доставки: привязка пересылкой ───────────────────────────────────
+
+def _forward_update(chat_id=-1001234, title="Р5", uid=UID):
+    """Пользователь переслал боту пост из своего канала."""
+    return {"message": {"text": "", "from": {"id": uid, "username": "tester"},
+                        "chat": {"id": uid, "type": "private"},
+                        "forward_from_chat": {"id": chat_id, "title": title,
+                                              "type": "channel"}}}
+
+
+def test_forwarded_post_binds_channel(linked, monkeypatch):
+    from api.routes import tg as tg_route
+    from services import tg_targets
+
+    sent = []
+
+    async def fake_send(chat_id, text, **kw):
+        sent.append((chat_id, text))
+        return {"message_id": 1}
+    monkeypatch.setattr(tg_route.telegram, "send_message", fake_send)
+
+    asyncio.run(tg_route.process_update(_forward_update()))
+    rows = tg_targets.list_for_user("u@x.ru")
+    assert [t["chat_id"] for t in rows] == [-1001234]
+    assert rows[0]["title"] == "Р5"
+    # в сам канал ушла проверка права писать — узнать об этом надо здесь,
+    # а не на первом пропавшем сигнале
+    assert sent[0][0] == -1001234
+    tg_targets.remove("u@x.ru", rows[0]["id"])
+
+
+def test_forward_without_rights_is_not_bound(linked, monkeypatch):
+    """Бот не админ канала — Bot API отказал: адресата не заводим."""
+    from api.routes import tg as tg_route
+    from services import tg_targets
+
+    async def fail_send(chat_id, text, **kw):
+        if chat_id < 0:
+            tg_route.telegram.last_error["description"] = "Forbidden: bot is not a member"
+            return None
+        return {"message_id": 1}
+    monkeypatch.setattr(tg_route.telegram, "send_message", fail_send)
+
+    asyncio.run(tg_route.process_update(_forward_update(chat_id=-1009)))
+    assert tg_targets.list_for_user("u@x.ru") == []
+
+
+def test_chats_command_lists_and_removes(linked, monkeypatch):
+    from services import tg_targets
+    t = tg_targets.add("u@x.ru", -1005, "Ф5", "channel")
+    assert "Ф5" in _cmd("/chats")
+    assert "снят" in _cmd(f"/chats del {t['id']}")
+    assert tg_targets.list_for_user("u@x.ru") == []

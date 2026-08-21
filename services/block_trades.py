@@ -860,6 +860,9 @@ async def _notify_blocks() -> int:
     by_user: dict[str, list] = {}
     for f in bfilters:
         by_user.setdefault(f["user_email"], []).append(f)
+    # адресат телеграма у каждого фильтра свой (канал «Р5» ↔ фильтр «Р5»);
+    # 0 — умолчание из env, у него канала нет по определению
+    targets = {f["id"]: f.get("tg_target_id") for f in bfilters}
     # Умолчание — только для тех, кто блок-фильтров не заводил вовсе: иначе
     # выключенный фильтр воскрешал бы дефолтный звонок.
     owners = await run_bg(signals.block_filter_owners)
@@ -979,7 +982,8 @@ async def _notify_blocks() -> int:
             "side": None, "sound": bool(snd), "desktop": bool(desk), "matches": ms,
         })
         # копия в привязанный телеграм-чат (буфер, отправка пачкой)
-        tg_notify.enqueue_signal(u, fid, fname, None, ms, kind="block")
+        tg_notify.enqueue_signal(u, fid, fname, None, ms, kind="block",
+                                 target_id=targets.get(fid))
     await run_bg(mark_alerted, seen_ids)
     return len(hot)
 

@@ -274,6 +274,22 @@ CREATE TABLE IF NOT EXISTS signal_filters(
 );
 CREATE INDEX IF NOT EXISTS ix_signal_filters_user ON signal_filters(user_email);
 
+-- Куда доставлять сигналы КРОМЕ личных чатов: группы и каналы, куда добавлен
+-- бот. Отдельная таблица от tg_users: там идентичность человека (заявка,
+-- одобрение админом, mute), здесь — просто адрес доставки, принадлежащий
+-- аккаунту. Фильтр ссылается сюда через signal_filters.tg_target_id: «Р5» шлём
+-- в канал «Р5», «Ф5» — в другой, а без ссылки всё идёт в личку, как раньше.
+CREATE TABLE IF NOT EXISTS tg_targets(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_email TEXT NOT NULL,
+  chat_id INTEGER NOT NULL,      -- у групп и каналов отрицательный
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,            -- channel | group | private
+  created_at TEXT NOT NULL,
+  UNIQUE(user_email, chat_id)
+);
+CREATE INDEX IF NOT EXISTS ix_tg_targets_user ON tg_targets(user_email);
+
 -- Текущее состояние набора: последние метрики бумаги, попадающей под фильтр.
 -- Ровно с ним сравнивается каждый тик, чтобы поймать шевеление метрики.
 -- Строка ПЕРЕЖИВАЕТ выход бумаги из набора (см. last_seen_at): стакан
@@ -369,6 +385,8 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_tg_users_email ON tg_users(email)",
     # свои эмодзи-маркеры чата (команда бота /custom): JSON {слот: эмодзи}
     "ALTER TABLE tg_users ADD COLUMN emoji TEXT",
+    # адресат доставки фильтра: канал/группа из tg_targets (NULL — личные чаты)
+    "ALTER TABLE signal_filters ADD COLUMN tg_target_id INTEGER",
     # свой скринер бота удалён: фильтры живут на сайте (вкладка СИГНАЛЫ),
     # бот получает их события копией
     "DROP TABLE IF EXISTS tg_filters",

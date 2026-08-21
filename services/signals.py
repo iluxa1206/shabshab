@@ -42,6 +42,7 @@ def _row(r) -> dict:
     d["kind"] = d.get("kind") or "book"
     for k in ("enabled", "sound", "desktop"):
         d[k] = bool(d[k])
+    d["tg_target_id"] = d.get("tg_target_id")
     return d
 
 
@@ -58,8 +59,21 @@ def _check_kind(kind: Optional[str]) -> str:
 
 # --- CRUD (per user_email) ---
 
+def _tg_target(user_email: str, target_id: Optional[int]) -> Optional[int]:
+    """Проверяет, что адресат существует и принадлежит этому аккаунту: иначе
+    фильтр слал бы в чужой канал по подобранному id."""
+    if target_id in (None, "", 0):
+        return None
+    from services import tg_targets
+    t = tg_targets.get(int(target_id))
+    if not t or t["user_email"] != (user_email or "").strip().lower():
+        raise FilterError("Адресат Telegram не найден")
+    return int(target_id)
+
+
 def create(user_email: str, name: str, params: dict, *, change_pct: float = 10.0,
-           sound: bool = True, desktop: bool = True, kind: str = "book") -> dict:
+           sound: bool = True, desktop: bool = True, kind: str = "book",
+           tg_target_id: Optional[int] = None) -> dict:
     name = (name or "").strip()
     if not name or len(name) > 60:
         raise FilterError("Название: 1–60 символов")
@@ -75,9 +89,10 @@ def create(user_email: str, name: str, params: dict, *, change_pct: float = 10.0
             raise FilterError(f"Больше {_MAX_FILTERS_PER_USER} фильтров не поддерживается")
         cur = c.execute(
             "INSERT INTO signal_filters(user_email,name,params_json,change_pct,"
-            "sound,desktop,kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            "sound,desktop,kind,tg_target_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (user_email, name, json.dumps(p, ensure_ascii=False), change_pct,
-             int(bool(sound)), int(bool(desktop)), kind, _now()))
+             int(bool(sound)), int(bool(desktop)), kind,
+             _tg_target(user_email, tg_target_id), _now()))
         fid = cur.lastrowid
     return get(fid)
 
@@ -126,11 +141,17 @@ def block_filter_owners() -> set:
 def update(user_email: str, fid: int, *, name: Optional[str] = None,
            enabled: Optional[bool] = None, params: Optional[dict] = None,
            change_pct: Optional[float] = None, sound: Optional[bool] = None,
-           desktop: Optional[bool] = None) -> Optional[dict]:
+           desktop: Optional[bool] = None,
+           tg_target_id: Optional[int] = -1) -> Optional[dict]:
+    """tg_target_id: -1 — не трогать, None — вернуть доставку в личку,
+    число — слать в этот канал (см. services/tg_targets)."""
     f = get(fid)
     if not f or f["user_email"] != user_email:
         return None
     sets, args = [], []
+    if tg_target_id != -1:
+        sets.append("tg_target_id=?")
+        args.append(_tg_target(user_email, tg_target_id))
     if name is not None:
         name = name.strip()
         if not name or len(name) > 60:
@@ -578,7 +599,8 @@ async def run_cycle() -> int:
                     row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0,
                     isin=e["isin"])))
             tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
-                                     f["params"]["side"], tg_events)
+                                     f["params"]["side"], tg_events,
+                                     target_id=f.get("tg_target_id"))
             fired += 1
         except Exception as e:
             logger.warning("signal filter %s error: %s", f.get("id"), e)

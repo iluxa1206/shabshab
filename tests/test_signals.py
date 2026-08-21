@@ -791,3 +791,45 @@ def test_curve_swap_invalidates_memo(monkeypatch):
     assert core.exact_y_idx("Y", 100.23) == 103.0, "memo сброшен, счёт заново"
     assert seen["curve"] is new_curve, "считали на новой кривой"
     core.drop_exact_cache()
+
+
+# ── адресаты доставки: канал на фильтр ─────────────────────────────────────
+
+@pytest.fixture()
+def targets(clean_db):
+    from services import tg_targets
+    t1 = tg_targets.add(USER, -1001, "Р5", "channel")
+    t2 = tg_targets.add("other@x.ru", -1002, "Чужой", "channel")
+    yield t1, t2
+    for t in (t1, t2):
+        tg_targets.remove(t["user_email"], t["id"])
+
+
+def test_filter_keeps_its_channel(targets):
+    """Фильтр «Р5» шлёт в канал «Р5»; без адресата — в личку, как раньше."""
+    t1, _ = targets
+    f = signals.create(USER, "Р5", {"spread_min": 100}, tg_target_id=t1["id"])
+    assert f["tg_target_id"] == t1["id"]
+    assert signals.create(USER, "Ф5", {"spread_min": 100})["tg_target_id"] is None
+
+    upd = signals.update(USER, f["id"], tg_target_id=None)
+    assert upd["tg_target_id"] is None, "null убирает канал"
+    upd = signals.update(USER, f["id"], name="Р5 новый")
+    assert upd["name"] == "Р5 новый", "поле без tg_target_id не трогает адресата"
+
+
+def test_foreign_channel_is_rejected(targets):
+    """Чужой канал по подобранному id не привязать."""
+    _, foreign = targets
+    with pytest.raises(signals.FilterError):
+        signals.create(USER, "Р5", {"spread_min": 100},
+                       tg_target_id=foreign["id"])
+
+
+def test_removed_channel_falls_back_to_private(targets):
+    """Канал отвязали — фильтр не молчит, а возвращается к доставке в личку."""
+    from services import tg_targets
+    t1, _ = targets
+    f = signals.create(USER, "Р5", {"spread_min": 100}, tg_target_id=t1["id"])
+    tg_targets.remove(USER, t1["id"])
+    assert tg_targets.chat_id_for(f["tg_target_id"], USER) is None

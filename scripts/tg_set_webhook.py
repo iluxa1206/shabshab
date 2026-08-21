@@ -48,6 +48,7 @@ async def main() -> None:
     print("setMyCommands:", await telegram.call("setMyCommands", {"commands": [
         {"command": "signals", "description": "последние сигналы"},
         {"command": "custom", "description": "свои эмодзи для маркеров"},
+        {"command": "chats", "description": "каналы для доставки"},
         {"command": "mute", "description": "пауза доставки"},
         {"command": "unmute", "description": "включить доставку"},
         {"command": "status", "description": "состояние привязки"},

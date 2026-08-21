@@ -547,6 +547,8 @@ export const previewSignalFilter = (json) =>
 // у блок-фильтра «набора сейчас» нет — превью считает сегодняшние сделки
 export const previewBlockFilter = (json) =>
   request("/api/signals/preview-block", { method: "POST", json });
+// каналы доставки аккаунта (заводятся в боте) — селектор «куда слать»
+export const fetchSignalTargets = () => request("/api/signals/targets");
 export const fetchSignalEvents = (limit = 100) => request(`/api/signals/events?limit=${limit}`);
 export const markSignalEventsSeen = () => request("/api/signals/events/seen", { method: "POST" });
 export const clearSignalEvents = () => request("/api/signals/events", { method: "DELETE" });

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   clearSignalEvents, createSignalFilter, deleteAllSignalFilters, deleteSignalFilter,
-  fetchSignalEmitters, fetchSignalEvents, fetchSignalFilters, markSignalEventsSeen,
+  fetchSignalEmitters, fetchSignalEvents, fetchSignalFilters, fetchSignalTargets,
+  markSignalEventsSeen,
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
@@ -57,7 +58,7 @@ function Seg({ pairs, value, onChange, tone }) {
 }
 
 /** Способ оповещения — общий хвост обеих форм. */
-function Notify({ sound, setSound, desktop, setDesktop }) {
+function Notify({ sound, setSound, desktop, setDesktop, target, setTarget, targets }) {
   return (
     <div className="sig-field">
       <label className="sig-label">Как оповещать</label>
@@ -67,8 +68,49 @@ function Notify({ sound, setSound, desktop, setDesktop }) {
         <label><input type="checkbox" checked={desktop}
           onChange={(e) => setDesktop(e.target.checked)} /> окно системы</label>
       </div>
+      {/* Канал доставки — на фильтр: «Р5» уходит в свой канал, «Ф5» в свой.
+          Селектор показываем, только если каналы вообще заведены: пустой
+          выпадающий список объяснял бы функцию, которой у пользователя нет. */}
+      {targets && targets.length > 0 && (
+        <div className="sig-row tight" style={{ marginTop: 6 }}>
+          <label className="sig-label" style={{ margin: 0 }}>Telegram</label>
+          <select className="sig-input" value={target ?? ""}
+            onChange={(e) => setTarget(e.target.value === "" ? null : Number(e.target.value))}>
+            <option value="">мои личные чаты</option>
+            {targets.map((t) => (
+              <option key={t.id} value={t.id}>{t.title}</option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   );
+}
+
+/** Куда уходит фильтр в телеграме — в карточке списка. Без канала не пишем
+ *  ничего: «в личку» это поведение по умолчанию, и строка только шумела бы. */
+function tgTargetTitle(f, targets) {
+  if (!f.tg_target_id) return "";
+  const t = (targets || []).find((x) => x.id === f.tg_target_id);
+  return ` · ✈ ${t ? t.title : "канал"}`;
+}
+
+/** Каналы доставки аккаунта. Заводятся в боте (переслать пост из канала),
+ *  здесь только выбираются — список общий для обеих форм. */
+let _targetsCache = null;      // один запрос на страницу: список правят в боте,
+                               // а карточек фильтров на экране десятки
+function useTgTargets() {
+  const [targets, setTargets] = useState(_targetsCache?.value || []);
+  useEffect(() => {
+    let alive = true;
+    if (!_targetsCache) {
+      _targetsCache = { value: [], promise: fetchSignalTargets().catch(() => ({})) };
+      _targetsCache.promise.then((r) => { _targetsCache.value = r.targets || []; });
+    }
+    _targetsCache.promise.then(() => { if (alive) setTargets(_targetsCache.value); });
+    return () => { alive = false; };
+  }, []);
+  return targets;
 }
 
 /** Пара «от / до» — все диапазоны обеих форм вводятся одинаково. */
@@ -283,6 +325,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
+  const [target, setTarget] = useState(edit?.tg_target_id ?? null);
+  const targets = useTgTargets();
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
 
@@ -320,7 +364,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       setErr("Задай диапазон R-spread или объём — иначе условий нет"); return; }
     try {
       await onSubmit({ name: name.trim(), kind: "book", params,
-                       change_pct: changePct, sound, desktop });
+                       change_pct: changePct, sound, desktop,
+                       tg_target_id: target });
       if (edit) return;      // правка закрывает форму снаружи
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
@@ -394,7 +439,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
         </div>
       )}
 
-      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop} />
+      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop}
+        target={target} setTarget={setTarget} targets={targets} />
 
       {preview && (
         <div className="sig-preview">
@@ -437,6 +483,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
+  const [target, setTarget] = useState(edit?.tg_target_id ?? null);
+  const targets = useTgTargets();
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);
 
@@ -472,7 +520,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     if (!(mlnToRub(minValue) >= 1e6)) {
       setErr("Порог объёма: от 1 млн ₽ — мельче лента не хранит"); return; }
     try {
-      await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop });
+      await onSubmit({ name: name.trim(), kind: "block", params, sound, desktop,
+                       tg_target_id: target });
       if (edit) return;
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setSmin(""); setSmax(""); setYmin(""); setYmax(""); setPreview(null);
@@ -550,7 +599,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
         </div>
       )}
 
-      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop} />
+      <Notify sound={sound} setSound={setSound} desktop={desktop} setDesktop={setDesktop}
+        target={target} setTarget={setTarget} targets={targets} />
 
       {preview && (
         <div className="sig-preview">
@@ -573,6 +623,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
 }
 
 function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
+  const targets = useTgTargets();
   if (f.kind === "block") {
     return (
       <div className={"sig-row-card" + (f.enabled ? "" : " off") + (editing ? " on-edit" : "")}>
@@ -587,6 +638,7 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           <div className="sig-rc-cond num">
             {describeBlock(f.params)}
             {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
+            {tgTargetTitle(f, targets)}
           </div>
         </div>
         <div className="sig-rc-actions">
@@ -622,6 +674,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
+          {tgTargetTitle(f, targets)}
         </div>
       </div>
       <div className="sig-rc-actions">

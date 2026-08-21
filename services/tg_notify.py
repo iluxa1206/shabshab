@@ -91,13 +91,25 @@ def _group(matches: List[dict], kind: str):
 
 def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
                    side: Optional[str], matches: List[dict],
-                   kind: str = "book") -> None:
+                   kind: str = "book", target_id: Optional[int] = None) -> None:
     """Из signals.run_cycle / block_trades.notify_blocks — рядом с WS-пушем.
-    Складывает в буфер: отправка пачкой из flush-воркера. Никогда не бросает."""
+    Складывает в буфер: отправка пачкой из flush-воркера. Никогда не бросает.
+
+    target_id — адресат фильтра (канал/группа из services/tg_targets): «Р5»
+    уходит в свой канал, «Ф5» в свой. Без него — во все личные чаты аккаунта,
+    как было. Маркеры строк канал берёт у владельца: набор /custom настраивают
+    в личке, а канал — просто адрес."""
     if not telegram.enabled() or not matches:
         return
     try:
         chats = tg_users.chats_for_email(user_email)
+        target_chat = None
+        if target_id:
+            from services import tg_targets
+            target_chat = tg_targets.chat_id_for(target_id, user_email)
+        if target_chat is not None:
+            icons = tg_users.icons(chats[0] if chats else None)
+            chats = [{"chat_id": target_chat, "emoji": None, "_icons": icons}]
         if not chats:
             return
         for u in chats:
@@ -107,7 +119,7 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
                     {"name": filter_name, "side": side, "kind": kind,
                      "matches": [], "first_ts": time.monotonic()})
                 buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
-                buf["icons"] = tg_users.icons(u)
+                buf["icons"] = u.get("_icons") or tg_users.icons(u)
                 # хвост длинной серии интереснее её начала: держим последние
                 buf["matches"] = (buf["matches"] + list(ms))[-40:]
     except Exception as e:
