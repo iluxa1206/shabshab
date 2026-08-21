@@ -2042,6 +2042,20 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   color: #cfd8ff;
 }
 .theme-win .dh-offer { color: #9fe0ff; }
+/* ВСЁ, что лежит в тайтлбаре, обязано быть светлым. Классы общего назначения
+   тянут свои цвета из палитры: .muted давал тёмно-серый (--mut) на синем, а
+   .cat-ext — navy (--accent) на navy, то есть ссылка рядом с ISIN пропадала
+   вовсе. Красим по контейнеру, а не перечисляя классы: любой новый элемент в
+   шапке получит контраст по умолчанию, а не после жалобы. */
+.theme-win .drawer-head > *:not(.dh-actions) .muted,
+.theme-win .drawer-head > *:not(.dh-actions) .cat-ext,
+.theme-win .drawer-head > *:not(.dh-actions) a,
+.theme-win .modal-head .muted, .theme-win .ob-head .muted,
+.theme-win .charts-head .muted {
+  color: #cfd8ff;
+}
+.theme-win .drawer-head > *:not(.dh-actions) .cat-ext:hover,
+.theme-win .drawer-head > *:not(.dh-actions) a:hover { color: var(--bev-hi); }
 /* погашение и формула в шапке — светлые по тёмному титлбару темы win,
    иначе var(--fg) даёт тёмный текст на тёмном */
 .theme-win .dh-mat, .theme-win .dh-formula { color: #cfd8ff; }
