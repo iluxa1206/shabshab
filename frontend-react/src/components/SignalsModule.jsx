@@ -655,6 +655,7 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
 }
 
 function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
+  const targets = useTgTargets();
   const d = describe(f.params);
   return (
     <div className={"sig-row-card" + (f.enabled ? "" : " off") + (editing ? " on-edit" : "")}>
