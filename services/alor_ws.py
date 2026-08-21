@@ -37,7 +37,7 @@ _RECONCILE_SEC = 2.0   # период сверки подписок с фрон�
 
 
 class _Sub:
-    __slots__ = ("guid", "kind", "metrics_fn", "face", "ctx_ts", "memo")
+    __slots__ = ("guid", "kind", "metrics_fn", "face", "ctx_ts", "memo", "_logged")
 
     def __init__(self, guid):
         self.guid = guid
@@ -190,12 +190,19 @@ async def alor_orderbook_ws():
                             last_reconcile = now
                             # стакан — только фронт-подписчики (открытые карточки)
                             want_ob = {i for i, socks in manager.orderbook_subscriptions.items() if socks}
+                            # ДИАГНОСТИКА ПОДПИСОК. Воркер работал молча, и когда
+                            # стакан карточки оставался на HTTP-поллинге, понять
+                            # где обрыв — фронт не подписался, Alor не шлёт, пуш не
+                            # доходит — было нечем.
                             for isin in want_ob - set(subs):
                                 guid = await _sub("OrderBookGetAndSubscribe", isin, "ob",
                                                   {"depth": _DEPTH, "frequency": _FREQ_MS})
                                 subs[isin] = _Sub(guid)
+                                logger.info("alor_ws: подписка на стакан %s (глубина %d, "
+                                            "троттл %d мс)", isin, _DEPTH, _FREQ_MS)
                             for isin in set(subs) - want_ob:
                                 await _unsub(subs.pop(isin).guid)
+                                logger.info("alor_ws: отписка от стакана %s", isin)
 
                             # избранное: поток сделок → живой VWAP. Уже подписанные
                             # держим, добор — до потолка (котировки шардирует
@@ -253,6 +260,14 @@ async def alor_orderbook_ws():
                                 "pricing_status": "SUCCESS", "warnings": [], "src": "ws",
                             }
                             await manager.broadcast_orderbook(isin, out)
+                            # первый пуш по бумаге — в лог: дальше молчим, иначе
+                            # при троттле 800 мс лог зальёт всё
+                            if not getattr(sub, "_logged", False):
+                                sub._logged = True
+                                logger.info("alor_ws: стакан %s пошёл в эфир "
+                                            "(уровней %d, лестница %s)", isin,
+                                            len(out["orderbook"]["asks"] or []),
+                                            "есть" if out.get("ladder") else "нет")
                         elif chan == "t":
                             _seed_price(isin, data.get("price"))
                             # рублёвый объём считаем и здесь: тик избранной бумаги
