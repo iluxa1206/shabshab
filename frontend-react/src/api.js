@@ -500,7 +500,7 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
 // Реал-тайм стакан по одной бумаге через WS (канал orderbook). onData(payload)
 // — payload = {orderbook:{bids,asks}, pricing_status, warnings}. Reconnect с
 // backoff. Питается фоновым Alor-WS клиентом бэка; фолбэк — HTTP-поллинг.
-export function connectOrderbookWs(isin, onData) {
+export function connectOrderbookWs(isin, onData, onStatus) {
   const WS_URL =
     (location.protocol === "https:" ? "wss://" : "ws://") + location.host + API + "/api/ws/market";
   let ws = null, closed = false, reconnectTimer = null, backoff = 1000;
@@ -512,8 +512,12 @@ export function connectOrderbookWs(isin, onData) {
   };
   const open = () => {
     try { ws = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
-    ws.onopen = () => { backoff = 1000; send({ action: "subscribe", channel: "orderbook", isin }); };
-    ws.onclose = () => scheduleReconnect();
+    ws.onopen = () => {
+      backoff = 1000;
+      send({ action: "subscribe", channel: "orderbook", isin });
+      onStatus?.(true);
+    };
+    ws.onclose = () => { onStatus?.(false); scheduleReconnect(); };
     ws.onerror = () => {};
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }

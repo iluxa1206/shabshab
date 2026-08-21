@@ -75,6 +75,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // «только заявки» (в full режиме лестницу строит бэк по HTTP). Поллинг остаётся
   // фолбэком: WS лёг / пусто → рендерим q.data. wsFresh — был ли недавний тик.
   const [wsData, setWsData] = useState(null);
+  const [wsOpen, setWsOpen] = useState(false);
   const wsTsRef = useRef(0);
   useEffect(() => {
     setWsData(null);
@@ -83,8 +84,12 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
     // что ни «только заявки», ни ручной свитчер горизонта больше не роняют
     // стакан с 800 мс пуша на 3 с поллинга.
     if (!isin) return undefined;
-    const conn = connectOrderbookWs(isin, (data) => { wsTsRef.current = Date.now(); setWsData(data); });
-    return () => conn.close();
+    const conn = connectOrderbookWs(
+      isin,
+      (data) => { wsTsRef.current = Date.now(); setWsData(data); },
+      setWsOpen,
+    );
+    return () => { conn.close(); setWsOpen(false); };
   }, [isin]);
 
   const q = useQuery({
@@ -92,7 +97,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
     queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater", horizon }, signal),
     enabled: !!isin,
     // WS живой → редкий фолбэк-поллинг (15с); иначе привычные 3с
-    refetchInterval: () => (Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),
+    refetchInterval: () => (wsOpen && Date.now() - wsTsRef.current < 60000 ? 15000 : 3000),
     refetchIntervalInBackground: false,
   });
 
@@ -100,7 +105,13 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // в режиме «все уровни» берём лестницу потока; её может не быть на первом
   // пуше (ctx ещё собирается) — тогда честно падаем на HTTP-ответ
   const wsSrc = full ? wsData?.ladder : wsData?.orderbook;
-  const wsLive = !!wsSrc && Date.now() - wsTsRef.current < 6000;
+  // Живость потока — это состояние СОЕДИНЕНИЯ, а не давность последнего пуша:
+  // Alor шлёт стакан только при ИЗМЕНЕНИИ книги, поэтому на спокойной бумаге
+  // пушей нет минутами. Прежний порог в 6 с гасил индикатор и возвращал поллинг
+  // 3 с, хотя подписка была цела, а снимок актуален.
+  // Потолок в минуту оставлен страховкой: если подписка отвалится на стороне
+  // Alor, не закрыв сокет, мы не залипнем на протухшем стакане.
+  const wsLive = !!wsSrc && wsOpen && Date.now() - wsTsRef.current < 60000;
   // Ручной горизонт: поток считает уровни в АВТО-горизонте и кладёт рядом спред
   // ко второму. Выбран авто или один из этих двух — подписка остаётся живой;
   // горизонт, которого в потоке нет, по-прежнему обслуживает HTTP.
