@@ -42,6 +42,14 @@ async def main(a) -> None:
         days=a.days, limit=a.limit, offset=a.offset, with_ticks=not a.no_ticks,
         concurrency=a.concurrency, kinds=kinds, refetch_ticks=a.refetch_ticks)
     log.info("готово: %s", stat)
+    # ДНИ ПЕРЕСОБИРАЕМ СРАЗУ. Часы, дописанные задним числом, оставляют bar_daily
+    # со старым оборотом до ночного rollup в 03:30 — и всё это время дневные
+    # графики и вкладка СРАВНЕНИЕ показывают заниженный день (14.08.2026: в дне
+    # 2 часа из 11, оборот 111 ₽ вместо 21448). Свёртка дешёвая — агрегация уже
+    # посчитанных часов, ни сети, ни солвера, — так что платим за неё здесь.
+    if not a.no_rollup:
+        roll = await bars_svc.build_daily_universe(days=a.days, kinds=kinds)
+        log.info("свёртка дней: %s", roll)
 
 
 if __name__ == "__main__":
@@ -57,6 +65,10 @@ if __name__ == "__main__":
                     help="игнорировать водяной знак дрейна и перекачать окно сделок "
                          "заново (ремонт дыры; обычный прогон и так тянет всё новое)")
     ap.add_argument("--concurrency", type=int, default=4)
+    ap.add_argument("--no-rollup", action="store_true",
+                    help="не пересобирать bar_daily после налива часов "
+                         "(по умолчанию пересобирает: иначе день остаётся со "
+                         "старым оборотом до ночного rollup)")
     ap.add_argument("--kinds", default="floater,fixed", help="floater,fixed")
     ap.add_argument("--hot", type=int, default=None,
                     help="греть только топ-N бумаг по обороту (как ночной воркер)")

@@ -108,6 +108,52 @@ def _flush_sync(chunks: list[tuple[str, list]], faces: dict) -> int:
     return upsert_ticks_bulk(chunks, faces)
 
 
+# Колокольчик по безадресным сделкам живёт на ЭТОМ потоке, а не на ISS-ленте
+# (services/block_trades): у ISS 15 минут задержки, и уведомление о принте
+# приезжало ровно тогда, когда оно уже никому не нужно. Адресные (РПС) остаются
+# на ISS — подписки на них у брокера нет.
+BLOCK_ALERTS_FROM_STREAM = os.getenv("TRADES_STREAM_ALERTS", "1") not in ("0", "false", "no")
+
+
+def _alert_rows(chunks: list[tuple[str, list]], floor: float) -> list[dict]:
+    """Тики такта крупнее порога → строки для block_trades.ingest_ticks."""
+    from services.trades_archive import _msk_ts
+    out = []
+    for isin, raw in chunks:
+        for t in raw:
+            val = t.get("val") or 0.0
+            if val < floor or t.get("id") is None:
+                continue
+            out.append({"isin": isin, "trade_id": t["id"],
+                        "ts": _msk_ts(str(t.get("time") or "")),
+                        "price": t.get("price"), "qty": t.get("qty"),
+                        "value": val, "side": t.get("side"),
+                        "board": t.get("board")})
+    return out
+
+
+async def _alert_on_ticks(chunks: list[tuple[str, list]]) -> None:
+    """Крупные сделки такта — в ленту блоков и сразу в рассылку.
+
+    Дублем ISS-копия не станет: TRADENO у Alor тот же, вставка идёт
+    INSERT OR IGNORE, а очередь звонка помечена флагом на строке."""
+    if not BLOCK_ALERTS_FROM_STREAM:
+        return
+    from services import block_trades as bt
+    if not bt.BLOCK_ALERTS:
+        return
+    floor = await bt.alert_floor()
+    rows = _alert_rows(chunks, floor)
+    if not rows:
+        return
+    saved = await run_bg(bt.ingest_ticks, rows)
+    if not saved:
+        return                  # всё это ISS уже принёс — звонить не о чем
+    sent = await bt.notify_blocks()
+    if sent:
+        logger.info("trades stream: %d уведомлений о сделках (без ISS-лага)", sent)
+
+
 async def _flusher(stop: asyncio.Event) -> None:
     while not stop.is_set():
         await asyncio.sleep(_FLUSH_SEC)
@@ -125,6 +171,12 @@ async def _flusher(stop: asyncio.Event) -> None:
         except Exception as e:
             logger.warning("trades stream flush: %s", e)
             continue
+        try:
+            await _alert_on_ticks(chunks)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("trades stream alerts: %s", e)
         _stats["flushes"] += 1
         _stats["saved"] += saved
         # сводка редкая: на такте раз в 2с построчный лог сам стал бы потоком
@@ -218,6 +270,10 @@ def _on_trade(isin: str, data: dict) -> None:
         "id": data.get("id"), "price": data.get("price"), "qty": data.get("qty"),
         "time": str(data.get("time") or ""), "side": data.get("side"),
         "board": data.get("board"),
+        # рублёвый объём уже посчитан — кладём рядом, чтобы очередь алертов
+        # (см. _alert_rows) не считала его второй раз; trade_tick лишний ключ
+        # игнорирует, у него объём пересчитывается по номиналу дня
+        "val": val,
     })
     _stats["ticks"] += 1
     _stats["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")

@@ -176,6 +176,7 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set
     бонды. Незнакомые SECID возвращаем наверх — свежее размещение может просто
     не успеть попасть в суточный кэш справочника."""
     out, unknown = [], set()
+    now = int(time.time())
     for r in rows:
         val = r.get("VALUE")
         if val is None or (BLOCK_MIN_VALUE_RUB and float(val) < BLOCK_MIN_VALUE_RUB):
@@ -190,14 +191,14 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set
         out.append((int(tid), meta.get("isin") or sec, sec, _ts(r), market,
                     r.get("BOARDID"), r.get("PRICE"), r.get("QUANTITY"),
                     float(val), r.get("YIELD"), _side(r), meta.get("face"),
-                    meta.get("cur")))
+                    meta.get("cur"), now))
     if not out:
         return 0, unknown
     with _lock, _connect() as c:
         cur = c.executemany(
             "INSERT OR IGNORE INTO block_trade"
-            "(trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", out)
+            "(trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur,"
+            "ins_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", out)
         return cur.rowcount or 0, unknown
 
 
@@ -726,42 +727,106 @@ BLOCK_ALERT_MIN_RUB = float(os.getenv("BLOCK_ALERT_MIN_RUB", "100000000"))
 BLOCK_ALERT_FLOATERS_ONLY = os.getenv("BLOCK_ALERT_FLOATERS_ONLY", "1") not in ("0", "false", "False")
 _FLOAT_BASES = ("KEYRATE", "RUONIA")
 BLOCK_ALERTS = os.getenv("BLOCK_ALERTS", "1") not in ("0", "false", "False")
-_ALERT_KEY = "alert"          # строка-водяной знак в block_cursor
+# Сколько минут строка живёт в очереди звонка. Считается от МОМЕНТА ЗАПИСИ
+# (ins_at), не от времени сделки: адресные приезжают из ISS с 15-минутным
+# лагом и по времени сделки были бы «протухшими» уже на входе. Окно нужно,
+# чтобы рестарт процесса или перечитанная сессия не вывалили в колокольчик
+# пачку старого.
+ALERT_MAX_AGE_MIN = float(os.getenv("BLOCK_ALERT_MAX_AGE_MIN", "10"))
+# Рассылка идёт из двух мест (живой поток Alor и такт ISS-ленты) — выборка и
+# пометка обязаны быть неделимыми, иначе одна сделка звонит дважды.
+_notify_lock = asyncio.Lock()
 
 
 def pending_alerts(limit: int = 50, min_value: Optional[float] = None) -> list[dict]:
     """Сделки крупнее порога уведомления, ещё не разосланные.
 
-    Водяной знак — TRADENO (сквозной и монотонный), а не время: сделка может
-    доехать в ленту позже соседней по времени, и по времени её бы пропустили.
+    Очередь — флаг alerted на строке, а не водяной знак по TRADENO: живой тик
+    Alor (см. ingest_ticks) приезжает раньше ISS-строк с меньшими номерами, и
+    сдвинутый знак похоронил бы их навсегда.
 
-    min_value — самый низкий порог среди активных получателей: выборка обязана
-    быть общей (знак один на всех), а кому что звонить, решается уже по строкам."""
-    mark = get_cursor(_ALERT_KEY) or 0
+    min_value — самый низкий порог среди активных получателей: выборка общая, а
+    кому что звонить, решается уже по строкам."""
     thr = BLOCK_ALERT_MIN_RUB if min_value is None else min_value
+    floor_ts = int(time.time() - ALERT_MAX_AGE_MIN * 60)
     with _connect() as c:
         rows = c.execute(
             "SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,cur,"
             "y_idx_bps "
-            "FROM block_trade WHERE trade_id > ? AND value >= ? "
+            "FROM block_trade WHERE alerted = 0 AND ins_at >= ? AND value >= ? "
             "AND (cur IS NULL OR cur='SUR') ORDER BY trade_id LIMIT ?",
-            (mark, thr, limit)).fetchall()
+            (floor_ts, thr, limit)).fetchall()
     return [dict(r) for r in rows]
 
 
-def mark_alerted(trade_id: int) -> None:
-    set_cursor(_ALERT_KEY, trade_id)
-
-
-def seed_alert_mark() -> None:
-    """На холодную ставим знак на текущий максимум: первый запуск не должен
-    вывалить в колокольчик весь сегодняшний бэкфилл."""
-    if get_cursor(_ALERT_KEY):
+def mark_alerted(trade_ids) -> None:
+    """Снимает строки с очереди. Помечаем ВСЕ просмотренные, а не только
+    разосланные: иначе пачка отфильтрованных сделок вставала бы перед выборкой
+    намертво (она ограничена limit) и подходящая за ней не позвонила бы."""
+    ids = [int(t) for t in (trade_ids if isinstance(trade_ids, (list, tuple, set))
+                            else [trade_ids])]
+    if not ids:
         return
-    with _connect() as c:
-        r = c.execute("SELECT MAX(trade_id) m FROM block_trade").fetchone()
-    if r and r["m"]:
-        set_cursor(_ALERT_KEY, int(r["m"]))
+    with _lock, _connect() as c:
+        c.executemany("UPDATE block_trade SET alerted = 1 WHERE trade_id = ?",
+                      [(i,) for i in ids])
+
+
+# Порог записи живых тиков в ленту блоков. Пересчитывается из активных
+# фильтров — тянуть в block_trade весь поток Alor смысла нет, а взять порог
+# выше чужого фильтра значит молча потерять его сигнал.
+_floor_cache: dict = {"at": 0.0, "val": None}
+_FLOOR_TTL = 60.0
+
+
+async def alert_floor() -> float:
+    """Минимальный порог в рублях среди активных получателей (кэш на минуту)."""
+    now = time.time()
+    if _floor_cache["val"] is not None and now - _floor_cache["at"] < _FLOOR_TTL:
+        return _floor_cache["val"]
+    from services import signals
+    try:
+        bfilters = await run_bg(signals.list_enabled_blocks)
+        vals = [f["params"]["min_value_rub"] for f in bfilters
+                if f.get("params", {}).get("min_value_rub") is not None]
+    except Exception as e:
+        logger.warning("block alert floor: %s", e)
+        vals = []
+    val = min(vals + [BLOCK_ALERT_MIN_RUB])
+    _floor_cache["at"], _floor_cache["val"] = now, val
+    return val
+
+
+def ingest_ticks(rows: list[dict]) -> int:
+    """Живые безадресные сделки Alor → block_trade (очередь звонка).
+
+    Зачем дублировать источник: колокольчик по безадресным не должен ждать
+    ISS с его 15 минутами. Alor даёт тот же TRADENO, поэтому доехавшая позже
+    ISS-копия отсекается INSERT OR IGNORE и вторым звонком не станет.
+    Адресные (РПС) сюда не попадают вовсе — подписки на них у брокера нет,
+    они по-прежнему приезжают из ISS с лагом.
+
+    rows: {isin, trade_id, ts, price, qty, value, side, board}."""
+    out = []
+    now = int(time.time())
+    smap = _secmap["map"]
+    by_isin = {v["isin"]: (sec, v.get("face")) for sec, v in smap.items()
+               if v.get("isin")}
+    for r in rows:
+        if r.get("trade_id") is None or not r.get("isin") or not r.get("value"):
+            continue
+        sec, face = by_isin.get(r["isin"], (r["isin"], None))
+        out.append((int(r["trade_id"]), r["isin"], sec, r["ts"], "bonds",
+                    r.get("board"), r.get("price"), r.get("qty"),
+                    float(r["value"]), None, r.get("side"), face, "SUR", now))
+    if not out:
+        return 0
+    with _lock, _connect() as c:
+        cur = c.executemany(
+            "INSERT OR IGNORE INTO block_trade"
+            "(trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur,"
+            "ins_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", out)
+        return cur.rowcount or 0
 
 
 async def notify_blocks() -> int:
@@ -778,6 +843,11 @@ async def notify_blocks() -> int:
     reason='block'. Возвращает число разосланных сделок."""
     if not BLOCK_ALERTS:
         return 0
+    async with _notify_lock:
+        return await _notify_blocks()
+
+
+async def _notify_blocks() -> int:
     from api.routes import ws as wsmod
     from services import signals
     from services.auth_users import list_users
@@ -823,10 +893,11 @@ async def notify_blocks() -> int:
             from services import trade_yidx
             await trade_yidx.for_rows(cold)
 
-    # Знак двигаем по ВСЕМУ просмотренному куску, а не по разосланному: иначе
-    # пачка отфильтрованных сделок подряд встала бы перед выборкой намертво и
-    # подходящая за ней никогда бы не позвонила (выборка ограничена limit).
-    seen_till = max(r["trade_id"] for r in rows)
+    # С очереди снимаем ВЕСЬ просмотренный кусок, а не только разосланное:
+    # иначе пачка отфильтрованных сделок подряд встала бы перед выборкой
+    # намертво и подходящая за ней никогда бы не позвонила (выборка ограничена
+    # limit).
+    seen_ids = [r["trade_id"] for r in rows]
 
     def _legacy_ok(r: dict) -> bool:
         if (r.get("value") or 0) < BLOCK_ALERT_MIN_RUB:
@@ -851,7 +922,7 @@ async def notify_blocks() -> int:
                                        f["desktop"]), []).append(r)
                     break
     if not routed:
-        mark_alerted(seen_till)
+        await run_bg(mark_alerted, seen_ids)
         return 0
 
     # Спред сделки: «блок на 300 млн» без уровня ничего не говорит — важно, по
@@ -909,7 +980,7 @@ async def notify_blocks() -> int:
         })
         # копия в привязанный телеграм-чат (буфер, отправка пачкой)
         tg_notify.enqueue_signal(u, fid, fname, None, ms, kind="block")
-    mark_alerted(seen_till)
+    await run_bg(mark_alerted, seen_ids)
     return len(hot)
 
 

@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 _RETRIES = 3
 
+# (loop, proxy) → httpx.AsyncClient. Клиент переиспользуется: на каждый вызов
+# заводить свой значило платить TLS-рукопожатием (через прокси-сайдкар это
+# сотни миллисекунд на сообщение, а пачку сигналов мы шлём подряд). Ключ с
+# loop — клиент держит пул, привязанный к своему циклу событий, и переносить
+# его между циклами (тесты, отдельные воркеры) нельзя.
+_clients: dict = {}
+
 
 def _token() -> Optional[str]:
     return os.getenv("TG_BOT_TOKEN") or None
@@ -33,6 +40,29 @@ def _proxy() -> Optional[str]:
     return (os.getenv("TG_PROXY") or "").strip() or None
 
 
+def _client() -> httpx.AsyncClient:
+    """Живой клиент под текущий цикл и текущее значение TG_PROXY."""
+    key = (id(asyncio.get_running_loop()), _proxy())
+    cli = _clients.get(key)
+    if cli is None or cli.is_closed:
+        # keepalive-пул маленький: адресат один, а сообщения идут пачками
+        cli = httpx.AsyncClient(
+            proxy=_proxy(),
+            limits=httpx.Limits(max_keepalive_connections=8, max_connections=16))
+        _clients[key] = cli
+    return cli
+
+
+async def aclose() -> None:
+    """Закрыть пулы (shutdown приложения)."""
+    for cli in list(_clients.values()):
+        try:
+            await cli.aclose()
+        except Exception:
+            pass
+    _clients.clear()
+
+
 async def call(method: str, payload: Optional[dict] = None,
                files: Optional[dict] = None, timeout: float = 30.0) -> Optional[dict]:
     """POST {method} → result из конверта Bot API. None при выключенном клиенте
@@ -41,38 +71,38 @@ async def call(method: str, payload: Optional[dict] = None,
     if not token:
         return None
     url = f"https://api.telegram.org/bot{token}/{method}"
-    async with httpx.AsyncClient(timeout=timeout, proxy=_proxy()) as cli:
-        for attempt in range(_RETRIES):
-            try:
-                if files:
-                    r = await cli.post(url, data=payload or {}, files=files)
-                else:
-                    r = await cli.post(url, json=payload or {})
-                if r.status_code == 429:
-                    retry_after = (r.json().get("parameters") or {}).get("retry_after", 3)
-                    await asyncio.sleep(float(retry_after) + 0.5)
-                    continue
-                if r.status_code >= 500:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                    continue
-                body = r.json()
-                if not body.get("ok"):
-                    logger.warning("tg %s error: %s", method, body.get("description"))
-                    return None
-                return body.get("result")
-            except httpx.ConnectError as e:
-                # Без прокси: на прод-VPS имя api.telegram.org резолвится
-                # провайдерским DNS только в IPv6 (маршрута нет), а часть
-                # IPv4-пула Telegram блокируется — лечится extra_hosts/TG_API_IP.
-                # С прокси сюда же приходит падение сайдкара tgproxy.
-                logger.warning("tg %s connect error (attempt %d): %s — проверь %s",
-                               method, attempt + 1, e,
-                               "сайдкар tgproxy (TG_PROXY)" if _proxy()
-                               else "TG_API_IP/extra_hosts")
+    cli = _client()
+    for attempt in range(_RETRIES):
+        try:
+            if files:
+                r = await cli.post(url, data=payload or {}, files=files, timeout=timeout)
+            else:
+                r = await cli.post(url, json=payload or {}, timeout=timeout)
+            if r.status_code == 429:
+                retry_after = (r.json().get("parameters") or {}).get("retry_after", 3)
+                await asyncio.sleep(float(retry_after) + 0.5)
+                continue
+            if r.status_code >= 500:
                 await asyncio.sleep(1.5 * (attempt + 1))
-            except httpx.HTTPError as e:
-                logger.warning("tg %s http error (attempt %d): %s", method, attempt + 1, e)
-                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            body = r.json()
+            if not body.get("ok"):
+                logger.warning("tg %s error: %s", method, body.get("description"))
+                return None
+            return body.get("result")
+        except httpx.ConnectError as e:
+            # Без прокси: на прод-VPS имя api.telegram.org резолвится
+            # провайдерским DNS только в IPv6 (маршрута нет), а часть
+            # IPv4-пула Telegram блокируется — лечится extra_hosts/TG_API_IP.
+            # С прокси сюда же приходит падение сайдкара tgproxy.
+            logger.warning("tg %s connect error (attempt %d): %s — проверь %s",
+                           method, attempt + 1, e,
+                           "сайдкар tgproxy (TG_PROXY)" if _proxy()
+                           else "TG_API_IP/extra_hosts")
+            await asyncio.sleep(1.5 * (attempt + 1))
+        except httpx.HTTPError as e:
+            logger.warning("tg %s http error (attempt %d): %s", method, attempt + 1, e)
+            await asyncio.sleep(1.5 * (attempt + 1))
     return None
 
 

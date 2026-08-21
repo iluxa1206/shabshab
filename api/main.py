@@ -606,7 +606,6 @@ async def block_trades_worker():
         raise
     except Exception as e:
         logger.warning(f"block trades backfill error: {e}")
-    seeded = False
     while True:
         try:
             now = datetime.now(_MSK)
@@ -621,15 +620,14 @@ async def block_trades_worker():
                     left = await bt.price_new_trades()
                     if left:
                         logger.info("block trades: спред досчитан по %d сделкам", left)
-                if not seeded:
-                    # знак уведомлений ставим ПОСЛЕ первого прохода: иначе
-                    # холодный старт вывалил бы в колокольчик всю сессию разом
-                    seeded = True
-                    await run_bg(bt.seed_alert_mark)
-                else:
-                    sent = await bt.notify_blocks()
-                    if sent:
-                        logger.info("block trades: %d уведомлений", sent)
+                # Звоним по тому, что этот такт реально принёс: безадресные
+                # обычно уже отзвонил живой поток Alor (services/trades_stream),
+                # здесь остаются адресные (РПС) и то, чего в потоке не было.
+                # Холодный старт архив не вываливает: очередь ограничена окном
+                # ins_at (см. block_trades.ALERT_MAX_AGE_MIN).
+                sent = await bt.notify_blocks()
+                if sent:
+                    logger.info("block trades: %d уведомлений", sent)
             else:
                 # Вне торгов новых сделок нет, но хвост без спреда добиваем:
                 # за такт считается лишь потолок флоатеров, и вечерний наплыв
@@ -804,6 +802,8 @@ async def lifespan(app: FastAPI):
     depth_task.cancel()
     archive_task.cancel()
     blocks_task.cancel()
+    from services import telegram as _tg
+    await _tg.aclose()          # keepalive-пул Bot API живёт между вызовами
 
 app = FastAPI(
     title="Shabshab Floaters API",

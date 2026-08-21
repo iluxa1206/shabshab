@@ -234,3 +234,45 @@ def test_issue_name_is_escaped():
     разбор HTML — иначе Telegram отбивает всё сообщение."""
     from services.tg_notify import _issue_link
     assert "&amp;" in _issue_link({"isin": "RU000A1", "name": "Рога & Копыта"})
+
+
+# --- окно коалесценции ---
+
+def _fresh_buffers(monkeypatch, window=10.0):
+    from services import tg_notify
+    monkeypatch.setattr(tg_notify, "SIGNAL_FLUSH_SEC", window)
+    tg_notify._pending.clear()
+    tg_notify._last_sent.clear()
+    return tg_notify
+
+
+def test_quiet_chat_fires_immediately(monkeypatch):
+    """Первое событие по молчавшему чату не ждёт окна: редкий сигнал должен
+    уходить сразу, окно нужно только против серии."""
+    tg = _fresh_buffers(monkeypatch)
+    now = 1000.0
+    tg._pending[(1, 7, None)] = {"matches": [], "first_ts": now}
+    assert tg._due(now) == [(1, 7, None)]
+
+
+def test_series_is_coalesced_within_window(monkeypatch):
+    """После отправки следующие события по чату копятся до конца окна."""
+    tg = _fresh_buffers(monkeypatch, window=10.0)
+    now = 1000.0
+    tg._last_sent[1] = now
+    tg._pending[(1, 7, None)] = {"matches": [], "first_ts": now}
+    assert tg._due(now + 3) == []            # внутри окна — молчим
+    assert tg._due(now + 11) == [(1, 7, None)]   # окно вышло — уходит пачкой
+
+
+def test_burst_is_capped_per_chat(monkeypatch):
+    """Всплеск по одному чату режется MAX_BURST; остаток ждёт следующего такта."""
+    tg = _fresh_buffers(monkeypatch)
+    monkeypatch.setattr(tg, "MAX_BURST", 2)
+    now = 1000.0
+    for i in range(5):
+        tg._pending[(1, i, None)] = {"matches": [], "first_ts": now}
+    tg._pending[(2, 0, None)] = {"matches": [], "first_ts": now}
+    due = tg._due(now)
+    assert len([k for k in due if k[0] == 1]) == 2
+    assert (2, 0, None) in due               # лимит на чат, не на такт

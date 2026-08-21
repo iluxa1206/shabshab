@@ -2,14 +2,17 @@
 сделки). Своей настройки у бота нет — адресат ищется по user_email через
 привязку чата (services/tg_users.py).
 
-События копятся в буфере и уходят пачкой раз в TG_SIGNAL_FLUSH_SEC — тик
-скринера секундный, поштучная отправка выбила бы лимиты Bot API и превратила
-чат в ленту. Ошибки доставки логируются и глотаются: веб-механика (лента
-событий) уже отработала."""
+События копятся в буфере, но окно коалесценции работает ТОЛЬКО против серии:
+первое событие по тихому чату уходит сразу (см. _due), а дальше по этому чату
+сообщения склеиваются на TG_SIGNAL_FLUSH_SEC. Тик скринера секундный, и
+поштучная отправка серии выбила бы лимиты Bot API и превратила чат в ленту.
+Ошибки доставки логируются и глотаются: веб-механика (лента событий) уже
+отработала."""
 import asyncio
 import html
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -17,9 +20,20 @@ from services import telegram, tg_users
 
 logger = logging.getLogger(__name__)
 
-# (chat_id, filter_id) → {name, side, kind, matches} — буфер коалесценции сигналов
+# (chat_id, filter_id, group) → {name, side, kind, matches, first_ts} — буфер
+# коалесценции сигналов
 _pending: dict = {}
-SIGNAL_FLUSH_SEC = float(os.getenv("TG_SIGNAL_FLUSH_SEC", "30"))
+# chat_id → монотонное время последней отправки: по нему считается «тишина»
+_last_sent: dict = {}
+SIGNAL_FLUSH_SEC = float(os.getenv("TG_SIGNAL_FLUSH_SEC", "10"))
+# Тик воркера: окно проверяется чаще, чем длится, иначе «сразу» превращается
+# в «в пределах окна» и весь смысл раннего флаша теряется.
+FLUSH_TICK_SEC = float(os.getenv("TG_SIGNAL_TICK_SEC", "1"))
+# Сколько сообщений в один чат за такт. Bot API терпит короткий всплеск, но
+# устойчиво держит ~1 msg/сек на чат — остаток ждёт следующего такта.
+MAX_BURST = int(os.getenv("TG_SIGNAL_BURST", "5"))
+# Параллельность отправки между чатами: сериальный цикл упирался в RTT прокси.
+SEND_CONCURRENCY = int(os.getenv("TG_SEND_CONCURRENCY", "8"))
 MAX_MATCHES = 8              # в одном сообщении; остальное сворачиваем в «ещё N»
 
 _MSK = timezone(timedelta(hours=3))
@@ -92,7 +106,8 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
             for group, ms in _group(matches, kind):
                 buf = _pending.setdefault(
                     (u["chat_id"], filter_id, group),
-                    {"name": filter_name, "side": side, "kind": kind, "matches": []})
+                    {"name": filter_name, "side": side, "kind": kind,
+                     "matches": [], "first_ts": time.monotonic()})
                 buf["name"], buf["side"], buf["kind"] = filter_name, side, kind
                 # хвост длинной серии интереснее её начала: держим последние
                 buf["matches"] = (buf["matches"] + list(ms))[-40:]
@@ -299,26 +314,69 @@ def _signal_text(buf: dict) -> str:
     return f"{body}\n\n{foot}"
 
 
+def _due(now: float) -> list:
+    """Какие ключи буфера пора отправлять.
+
+    Правило одно: чат, молчавший дольше окна, получает событие НЕМЕДЛЕННО —
+    редкий сигнал не должен ждать таймер, ради которого окно и заводилось.
+    Как только по чату прошла отправка, следующие события копятся до конца
+    окна: серия схлопывается, лимиты Bot API целы. Всплеск режем MAX_BURST,
+    остаток доедет следующим тактом (буфер продолжает коалесцировать)."""
+    ready: list = []
+    for key, buf in _pending.items():
+        chat_id = key[0]
+        quiet = now - _last_sent.get(chat_id, float("-inf")) >= SIGNAL_FLUSH_SEC
+        if quiet or now - buf.get("first_ts", now) >= SIGNAL_FLUSH_SEC:
+            ready.append(key)
+    if MAX_BURST > 0:
+        per_chat: dict = {}
+        capped = []
+        for key in ready:
+            n = per_chat.get(key[0], 0)
+            if n >= MAX_BURST:
+                continue
+            per_chat[key[0]] = n + 1
+            capped.append(key)
+        ready = capped
+    return ready
+
+
 async def _flush_signals() -> None:
     if not _pending:
         return
-    batch = list(_pending.items())
-    _pending.clear()
-    for (chat_id, _fid, _group_key), buf in batch:
-        try:
-            await telegram.send_message(chat_id, _signal_text(buf))
-        except Exception as e:
-            logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
+    now = time.monotonic()
+    keys = _due(now)
+    if not keys:
+        return
+    batch = [(k, _pending.pop(k)) for k in keys]
+    for key, _buf in batch:
+        _last_sent[key[0]] = now
+
+    sem = asyncio.Semaphore(max(1, SEND_CONCURRENCY))
+
+    async def send(chat_id: int, buf: dict) -> None:
+        async with sem:
+            try:
+                await telegram.send_message(chat_id, _signal_text(buf))
+            except Exception as e:
+                logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
+
+    # Чаты параллельно: сериальный цикл складывал RTT прокси на каждое
+    # сообщение, и хвост пачки приезжал заметно позже головы.
+    await asyncio.gather(*(send(key[0], buf) for key, buf in batch))
 
 
 # --- воркеры ---
 
 async def tg_signal_worker() -> None:
-    """Фон: раз в SIGNAL_FLUSH_SEC сливает буфер сигналов в чаты."""
-    logger.info("tg_signal worker started (flush=%.0fs)", SIGNAL_FLUSH_SEC)
+    """Фон: частым тиком сливает готовые ключи буфера в чаты (см. _due)."""
+    logger.info("tg_signal worker started (window=%.0fs, tick=%.0fs)",
+                SIGNAL_FLUSH_SEC, FLUSH_TICK_SEC)
     while True:
-        await asyncio.sleep(SIGNAL_FLUSH_SEC)
+        # флаш ПЕРЕД сном: иначе событие, пришедшее сразу после такта, ждало бы
+        # полный интервал даже по тихому чату
         try:
             await _flush_signals()
         except Exception as e:
             logger.warning("tg_notify flush error: %s", e)
+        await asyncio.sleep(FLUSH_TICK_SEC)

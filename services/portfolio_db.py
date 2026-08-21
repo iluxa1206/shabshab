@@ -172,7 +172,15 @@ CREATE TABLE IF NOT EXISTS block_trade(
   -- ленты нельзя — прогрев контекстов сотни выпусков занимает минуту.
   y_idx_bps REAL,
   dm_bps REAL,
-  metrics_at TEXT                 -- когда посчитали (NULL = ещё не считали)
+  metrics_at TEXT,                -- когда посчитали (NULL = ещё не считали)
+  -- Очередь колокольчика. Раньше её держал водяной знак по TRADENO, но с
+  -- приходом живых тиков Alor (market=bonds приезжает СРАЗУ, ndm — из ISS
+  -- через 15 минут) сквозной номер перестал быть монотонным по времени
+  -- записи: знак, сдвинутый живой сделкой, навсегда перепрыгивал бы через
+  -- ISS-строки с меньшим TRADENO. Поэтому флаг на строке.
+  alerted INTEGER NOT NULL DEFAULT 0,
+  ins_at INTEGER                  -- unixtime записи (НЕ время сделки): по нему
+                                  -- отсекается бэкфилл, у которого ts старый
 );
 CREATE INDEX IF NOT EXISTS ix_block_ts ON block_trade(ts);
 CREATE INDEX IF NOT EXISTS ix_block_isin_ts ON block_trade(isin, ts);
@@ -375,6 +383,13 @@ _MIGRATIONS = [
     "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
     "CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts)",
+    # очередь колокольчика флагом вместо водяного знака по TRADENO (см. схему
+    # block_trade). Старым строкам ins_at остаётся NULL — они в очередь не
+    # попадают, то есть миграция не вываливает архив в уведомления.
+    "ALTER TABLE block_trade ADD COLUMN alerted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE block_trade ADD COLUMN ins_at INTEGER",
+    "CREATE INDEX IF NOT EXISTS ix_block_alert ON block_trade(ins_at) "
+    "WHERE alerted = 0",
 ]
 
 

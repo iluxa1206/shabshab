@@ -7,6 +7,7 @@
 """
 import asyncio
 import importlib
+import time
 from datetime import date
 
 import pytest
@@ -23,15 +24,23 @@ def bt(tmp_path, monkeypatch):
     return pdb, mod
 
 
-def _seed(pdb, rows):
+def _seed(pdb, rows, ins_at=None):
     d = date.today().isoformat()
+    now = int(time.time()) if ins_at is None else ins_at
     with pdb._connect() as c:
         c.executemany(
             "INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,qty,"
-            "value,yld,side,face,cur) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "value,yld,side,face,cur,ins_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(tid, isin, isin, f"{d} 10:0{i}:00", "bonds", "TQCB", 100.0, 1000,
-              val, None, "buy", 1000, "SUR")
+              val, None, "buy", 1000, "SUR", now)
              for i, (tid, isin, val) in enumerate(rows)])
+
+
+def _queued(pdb):
+    """Что осталось в очереди звонка."""
+    with pdb._connect() as c:
+        return [r[0] for r in c.execute(
+            "SELECT trade_id FROM block_trade WHERE alerted=0 ORDER BY trade_id")]
 
 
 def _run(mod, monkeypatch, sent):
@@ -63,8 +72,8 @@ def test_fixed_does_not_ring(bt, monkeypatch):
     assert n == 1                                   # позвонил только флоатер
     isins = [m["isin"] for p in sent for m in p["matches"]]
     assert isins == ["RU000FLOAT01"]
-    # знак ушёл за обе сделки — фикс больше не попадёт в выборку
-    assert mod.get_cursor("alert") == 2
+    # с очереди сняты обе сделки — фикс больше не попадёт в выборку
+    assert _queued(pdb) == []
     assert mod.pending_alerts() == []
 
 
@@ -76,7 +85,7 @@ def test_only_fixed_still_moves_watermark(bt, monkeypatch):
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
     assert sent == []
-    assert mod.get_cursor("alert") == 2
+    assert _queued(pdb) == []
 
 
 def test_below_threshold_never_rings(bt, monkeypatch):
@@ -108,7 +117,7 @@ def test_user_filter_overrides_default(bt, sig, monkeypatch):
     # имя фильтра доезжает до колокольчика — иначе «фильтр удалён» в ленте
     assert sent[0]["filter_name"] == "мои фиксы"
     assert sent[0]["filter_id"] > 0
-    assert mod.get_cursor("alert") == 2
+    assert _queued(pdb) == []
 
 
 def test_disabled_filter_does_not_fall_back_to_default(bt, sig, monkeypatch):
@@ -119,7 +128,7 @@ def test_disabled_filter_does_not_fall_back_to_default(bt, sig, monkeypatch):
     _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB + 1)])
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
-    assert mod.get_cursor("alert") == 1
+    assert _queued(pdb) == []
 
 
 def test_spread_filter_prices_trade_before_matching(bt, sig, monkeypatch):
@@ -159,4 +168,57 @@ def test_spread_filter_skips_trade_outside_range(bt, sig, monkeypatch):
 
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
-    assert mod.get_cursor("alert") == 1        # знак всё равно сдвинут
+    assert _queued(pdb) == []                  # с очереди всё равно снята
+
+
+# ── живой поток Alor вместо ISS с 15-минутным лагом ─────────────────────────
+
+def test_stale_rows_never_ring(bt, monkeypatch):
+    """Очередь ограничена окном по МОМЕНТУ ЗАПИСИ: рестарт процесса или
+    перечитанная сессия не вываливают в колокольчик накопленное."""
+    pdb, mod = bt
+    old = int(time.time() - mod.ALERT_MAX_AGE_MIN * 60 - 60)
+    _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB + 1)], ins_at=old)
+    assert mod.pending_alerts() == []
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0
+
+
+def test_tick_ingest_rings_and_iss_copy_is_not_a_dupe(bt, monkeypatch):
+    """Тик Alor звонит сразу; доехавшая позже ISS-копия той же сделки (тот же
+    TRADENO) в очередь не возвращается."""
+    pdb, mod = bt
+    monkeypatch.setattr(mod, "_secmap", {"at": None, "map": {}})
+    tick = {"isin": "RU000FLOAT01", "trade_id": 77,
+            "ts": f"{date.today().isoformat()} 10:00:00", "price": 100.0,
+            "qty": 1000, "value": mod.BLOCK_ALERT_MIN_RUB + 1, "side": "buy",
+            "board": "TQCB"}
+    assert mod.ingest_ticks([tick]) == 1
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [m["isin"] for p in sent for m in p["matches"]] == ["RU000FLOAT01"]
+
+    # ISS приносит ту же сделку через 15 минут — INSERT OR IGNORE, звонка нет
+    from services.block_trades import upsert_trades
+    n, _unknown = upsert_trades(
+        [{"TRADENO": 77, "SECID": "RU000FLOAT01", "VALUE": tick["value"],
+          "PRICE": 100.0, "QUANTITY": 1000, "BOARDID": "TQCB", "BUYSELL": "B",
+          "TRADEDATE": date.today().isoformat(), "TRADETIME": "10:00:00"}],
+        "bonds", {"RU000FLOAT01": {"isin": "RU000FLOAT01", "face": 1000,
+                                   "cur": "SUR"}})
+    assert n == 0
+    sent2: list = []
+    assert _run(mod, monkeypatch, sent2) == 0
+
+
+def test_stream_alert_rows_respect_floor():
+    """В ленту блоков из потока уходит только то, что кому-то нужно."""
+    from services.trades_stream import _alert_rows
+    chunks = [("RU000FLOAT01", [
+        {"id": 1, "price": 100.0, "qty": 10, "time": "2026-08-21T10:00:00Z",
+         "side": "buy", "board": "TQCB", "val": 500_000},
+        {"id": 2, "price": 100.0, "qty": 10_000, "time": "2026-08-21T10:00:01Z",
+         "side": "sell", "board": "TQCB", "val": 5_000_000}])]
+    rows = _alert_rows(chunks, 1_000_000)
+    assert [r["trade_id"] for r in rows] == [2]
+    assert rows[0]["isin"] == "RU000FLOAT01" and rows[0]["value"] == 5_000_000

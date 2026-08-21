@@ -510,10 +510,18 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     if cfs and dirty is not None and y is not None:
         pv_sum = 0.0
         rows = []
+        # ЯКОРЬ ДИСКОНТА — ДАТА ПОСТАВКИ, как у самого XIRR (core.valuation.
+        # xirr_yield_pct берёт settle_date: деньги за бумагу уходят на T+1).
+        # Считая от calc_date, чек занижал Σ PV на 1–3 дня дисконта (~1.2 ₽ на
+        # 1000 ₽ при 16% годовых, в пятницу — все выходные разом) и кричал
+        # «display-cashflow разошёлся с pricing-потоками» на 514 бумагах из 601,
+        # хотя расходился только его собственный якорь.
+        from core.valuation import settle_date as _sd
+        _anchor = _sd(calc_date)
         for c in cfs:
             pd = _parse_d(c.get("payment_date"))
-            fut = pd is not None and pd > calc_date
-            t = ((pd - calc_date).days / 365.0) if fut else None
+            fut = pd is not None and pd > _anchor
+            t = ((pd - _anchor).days / 365.0) if fut else None
             df = (1.0 + y / 100.0) ** (-t) if fut else None
             pv = c["amount_rub"] * df if fut else None
             if pv is not None:
