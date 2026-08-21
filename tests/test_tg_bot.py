@@ -276,3 +276,26 @@ def test_burst_is_capped_per_chat(monkeypatch):
     due = tg._due(now)
     assert len([k for k in due if k[0] == 1]) == 2
     assert (2, 0, None) in due               # лимит на чат, не на такт
+
+
+def test_block_message_shows_seconds_after_rating():
+    """Крупная сделка: время с секундами и ПОСЛЕ рейтинга — внутри минуты по
+    крупным принтам важна очерёдность."""
+    txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
+                        "matches": [{"isin": "RU000A109B33", "name": "Газпн",
+                                     "price": 100.05, "money_rub": 26_100_000,
+                                     "val_bps": 168.0, "side": "buy",
+                                     "rating": "AAA",
+                                     "ts": "2026-08-21 10:42:07"}]})
+    sub = [ln for ln in txt.split("\n") if "AAA" in ln][0]
+    assert "10:42:07" in sub
+    assert sub.index("AAA") < sub.index("10:42:07")
+
+
+def test_block_time_falls_back_to_fire_moment():
+    """Строка из ленты: ts сделки не хранится — берём момент срабатывания."""
+    txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
+                        "matches": [{"isin": "RU000A109B33", "name": "Газпн",
+                                     "price": 100.05, "money_rub": 26_100_000,
+                                     "fired_at": "2026-08-21T07:42:07+00:00"}]})
+    assert "10:42:07" in txt          # UTC → МСК

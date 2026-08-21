@@ -163,18 +163,21 @@ def _short_money(v: Optional[float]) -> str:
     return f"{_compact(v)} ₽"      # «1,0м» читается хуже, чем «1м» — см. _compact
 
 
-def _hhmm(m: dict) -> str:
-    """Время сделки, МСК. В живом пуше приходит ts самой сделки; в строке из
-    ленты его нет (в таблице событий хранится только fired_at), поэтому берём
-    момент срабатывания и переводим из UTC."""
-    ts = (m.get("ts") or "")[11:16]
+def _hhmmss(m: dict) -> str:
+    """Время сделки, МСК, С СЕКУНДАМИ: у крупных принтов важна очерёдность
+    внутри минуты — по минуте не понять, кто кого перебил.
+
+    В живом пуше приходит ts самой сделки; в строке из ленты его нет (в таблице
+    событий хранится только fired_at), поэтому берём момент срабатывания и
+    переводим из UTC."""
+    ts = (m.get("ts") or "")[11:19]
     if ts:
         return ts
     from services.signals import event_moment
     fired = m.get("fired_at")
     if not fired:
         return ""
-    return event_moment(fired).astimezone(_MSK).strftime("%H:%M")
+    return event_moment(fired).astimezone(_MSK).strftime("%H:%M:%S")
 
 
 def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
@@ -219,11 +222,13 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
     if m.get("price") is not None:
         sub.append(f"{_num(m['price'])}%")
     if kind == "block":
-        ts = _hhmm(m)
-        if ts:
-            sub.append(ts)
+        # время — ПОСЛЕ рейтинга: слева то, чем сделку оценивают, справа
+        # отметка времени, по которой её потом ищут в ленте
         if m.get("rating"):
             sub.append(str(m["rating"]))
+        ts = _hhmmss(m)
+        if ts:
+            sub.append(ts)
     else:
         if m.get("single_px") is not None:
             sub.append(f"одна заявка {_num(m['single_px'])}")
