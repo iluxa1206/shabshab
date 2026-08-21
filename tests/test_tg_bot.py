@@ -133,8 +133,10 @@ def test_book_line_layout():
     assert "1м ₽" in first and "1,5 г" in first
     assert first.index("171 бп") < first.index("Газпн3P13R")
     assert "99,90%" in second and "1 ур" in second and "объём +6 %" in second
-    # подпись фильтра — сноской в конце, а не заголовком
-    assert txt.strip().endswith("📡 <b>Тест 2</b> · оффер")
+    # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
+    # не добавляет к имени фильтра, а строку начинает мусором
+    assert txt.strip().endswith("<b>Тест 2</b> · оффер")
+    assert "📡" not in txt
 
 
 def test_trade_icons_by_side_and_ndm():

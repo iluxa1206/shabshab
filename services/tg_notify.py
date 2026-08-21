@@ -340,10 +340,10 @@ def _signal_text(buf: dict) -> str:
     # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал»
     # это сноска, которую читают, только если событие зацепило.
     if kind == "block":
-        foot = f"💥 <b>{buf['name']}</b>" if buf.get("name") else "💥 <b>Крупные сделки</b>"
+        foot = f"<b>{buf['name']}</b>" if buf.get("name") else "<b>Крупные сделки</b>"
     else:
         side = {"ask": "оффер", "bid": "бид"}.get(side_key or "", "")
-        foot = f"📡 <b>{buf['name']}</b>" + (f" · {side}" if side else "")
+        foot = f"<b>{buf['name']}</b>" + (f" · {side}" if side else "")
     return f"{body}\n\n{foot}"
 
 
