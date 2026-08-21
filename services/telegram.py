@@ -63,6 +63,11 @@ async def aclose() -> None:
     _clients.clear()
 
 
+# Описание последней ошибки Bot API: вызывающему нужен не факт неудачи, а её
+# причина (конфликт вебхука лечится, сетевой сбой — нет).
+last_error: dict = {"method": None, "description": None}
+
+
 async def call(method: str, payload: Optional[dict] = None,
                files: Optional[dict] = None, timeout: float = 30.0) -> Optional[dict]:
     """POST {method} → result из конверта Bot API. None при выключенном клиенте
@@ -87,7 +92,11 @@ async def call(method: str, payload: Optional[dict] = None,
                 continue
             body = r.json()
             if not body.get("ok"):
-                logger.warning("tg %s error: %s", method, body.get("description"))
+                desc = body.get("description") or ""
+                logger.warning("tg %s error: %s", method, desc)
+                # Конфликт с вебхуком поллер лечит сам (см. tg_poll) — отдаём ему
+                # причину, а не голый None: иначе «бот молчит» выглядит как сеть
+                last_error["method"], last_error["description"] = method, desc
                 return None
             return body.get("result")
         except httpx.ConnectError as e:

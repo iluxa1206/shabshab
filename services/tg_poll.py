@@ -52,6 +52,19 @@ async def tg_poll_worker() -> None:
             updates = await telegram.call("getUpdates", payload,
                                           timeout=_HTTP_TIMEOUT)
             if updates is None:            # сеть/прокси легли — telegram.call уже
+                # ВЕБХУК СНОВА ПОСТАВИЛИ (руками через scripts/tg_set_webhook.py
+                # или с другой машины) — Bot API отдаёт на getUpdates 409, и бот
+                # молчит: вебхук на этом VPS не работает (входящее соединение к
+                # нам не проходит, «Connection timed out»), а поллинг заблокирован
+                # конфликтом. 21.08.2026 так простояли час и 4 команды в очереди.
+                # Снимаем вебхук и продолжаем — накопленные апдейты не теряем.
+                desc = (telegram.last_error.get("description") or "")
+                if "webhook" in desc.lower() or "conflict" in desc.lower():
+                    logger.warning("tg_poll: вебхук активен (%s) — снимаю и продолжаю "
+                                   "поллинг", desc)
+                    await telegram.call("deleteWebhook", {"drop_pending_updates": False})
+                    telegram.last_error["description"] = None
+                    continue
                 await asyncio.sleep(_ERR_BACKOFF)   # отретраил и залогировал
                 continue
             for u in updates:

@@ -425,3 +425,46 @@ def test_custom_reset_and_single_revert(linked):
     _cmd("/custom reset")
     assert tg_users.icons(tg_users.get(UID)) == {
         k: v[1] for k, v in tg_users.ICON_SLOTS.items()}
+
+
+def test_poller_recovers_from_webhook_conflict(monkeypatch):
+    """Поставленный вебхук глушит поллинг — поллер снимает его сам.
+
+    Регресс 21.08.2026: вебхук зарегистрировали руками, Bot API начал отдавать на
+    getUpdates «409 Conflict», и бот молчал час — вебхук на этом VPS тоже не
+    доходит («Connection timed out»), так что команды не шли ни одним путём;
+    в очереди зависли 4 апдейта. Поллер только логировал предупреждение.
+    """
+    import asyncio
+    from services import telegram, tg_poll
+
+    calls = []
+
+    async def fake_call(method, payload=None, files=None, timeout=30.0):
+        calls.append(method)
+        if method == "getUpdates":
+            telegram.last_error["description"] = (
+                "Conflict: can't use getUpdates method while webhook is active")
+            await asyncio.sleep(0)
+            return None
+        return True
+
+    monkeypatch.setattr(telegram, "call", fake_call)
+    monkeypatch.setattr(telegram, "enabled", lambda: True)
+    monkeypatch.setattr(tg_poll, "enabled", lambda: True)
+
+    async def run():
+        task = asyncio.create_task(tg_poll.tg_poll_worker())
+        for _ in range(200):                    # ждём реакции, не весь цикл
+            if calls.count("deleteWebhook") >= 2:   # старт + лечение конфликта
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+    assert calls.count("deleteWebhook") >= 2, (
+        f"поллер не снял вебхук при конфликте: {calls[:6]}")
