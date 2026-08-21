@@ -164,6 +164,7 @@ async def alor_orderbook_ws():
                     seq = 0
                     last_reconcile = 0.0
                     last_trade_push: dict[str, float] = {}
+                    _unknown = [0]      # счётчик данных с чужим guid (см. ниже)
 
                     async def _sub(op: str, isin: str, prefix: str, extra: dict) -> str:
                         nonlocal seq
@@ -239,8 +240,25 @@ async def alor_orderbook_ws():
                             payload = json.loads(msg.data)
                         except Exception:
                             continue
+                        # ОТВЕТ НА ПОДПИСКУ приходит без "data" — только
+                        # requestGuid + httpCode. Раньше он молча уходил в
+                        # continue вместе с ОШИБКАМИ подписки: стакан оставался
+                        # на HTTP-поллинге, а в логах не было ни строки.
+                        code = payload.get("httpCode")
+                        if code is not None and int(code) != 200:
+                            rg = payload.get("requestGuid")
+                            logger.warning("alor_ws: подписка отклонена (%s) %s: %s",
+                                           code, guid_map.get(rg, ("?", "?"))[1],
+                                           payload.get("message") or payload)
+                            continue
                         data, guid = payload.get("data"), payload.get("guid")
                         if not data or guid not in guid_map:
+                            if data and guid:
+                                _unknown[0] += 1
+                                if _unknown[0] in (1, 50):
+                                    logger.warning("alor_ws: данные с неизвестным guid %s "
+                                                   "(известно %d) — подписка разъехалась",
+                                                   guid, len(guid_map))
                             continue
                         chan, isin = guid_map[guid]
 
