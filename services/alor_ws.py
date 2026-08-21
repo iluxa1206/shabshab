@@ -88,8 +88,49 @@ def _levels(sub: _Sub, raw) -> list:
             m = sub.memo[p]
         out.append({"price_pct": p, "quantity": q, "yield_pct": m.get("yield_pct"),
                     "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
-                    "g_spread_bps": m.get("g_spread_bps")})
+                    "g_spread_bps": m.get("g_spread_bps"),
+                    # спред ко ВТОРОМУ горизонту едет рядом: свитчер карточки
+                    # («погашение ↔ оферта») переключает готовое число, и ручной
+                    # выбор больше не гасит подписку в пользу поллинга
+                    "y_idx_alt_bps": m.get("y_idx_alt_bps"),
+                    "alt_horizon": m.get("alt_horizon"),
+                    "horizon": m.get("horizon")})
     return out
+
+
+def _ladder(sub: _Sub, raw_bids, raw_asks):
+    """Полная лестница цен с метриками на пустых уровнях — то же, что HTTP-режим
+    «все уровни». Считается общей функцией; цены кэшируются в sub.memo, поэтому
+    после прогрева стоит почти ноль."""
+    from services.orderbook_svc import build_ladder
+    pairs = lambda rows: [(e["price"], e.get("volume")) for e in (rows or [])
+                          if e.get("price") is not None]
+
+    def _one(price, qty):
+        m = sub.memo.get(price)
+        if m is None:
+            try:
+                m = sub.metrics_fn(price) if sub.metrics_fn else {}
+            except Exception:
+                m = {}
+            sub.memo[price] = m or {}
+            m = sub.memo[price]
+        return {"price_pct": price, "quantity": qty, "yield_pct": m.get("yield_pct"),
+                "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
+                "g_spread_bps": m.get("g_spread_bps"),
+                "y_idx_alt_bps": m.get("y_idx_alt_bps"),
+                "alt_horizon": m.get("alt_horizon"), "horizon": m.get("horizon")}
+
+    try:
+        res = build_ladder(pairs(raw_bids), pairs(raw_asks), _one)
+    except Exception as e:
+        logger.debug("alor_ws ladder: %s", e)
+        return None
+    if not res:
+        return None
+    bids, asks = res
+    return {"bids": sorted(bids, key=lambda x: x["price_pct"], reverse=True),
+            "asks": sorted(asks, key=lambda x: x["price_pct"])}
 
 
 def _seed_price(isin: str, px) -> None:
@@ -206,6 +247,9 @@ async def alor_orderbook_ws():
                             out = {
                                 "orderbook": {"bids": _levels(sub, data.get("bids")),
                                               "asks": _levels(sub, data.get("asks"))},
+                                # лестница едет рядом: режим «все уровни» в карточке
+                                # раньше гасил подписку и падал на поллинг 3 с
+                                "ladder": _ladder(sub, data.get("bids"), data.get("asks")),
                                 "pricing_status": "SUCCESS", "warnings": [], "src": "ws",
                             }
                             await manager.broadcast_orderbook(isin, out)

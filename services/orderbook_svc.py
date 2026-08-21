@@ -54,3 +54,42 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
                 "y_idx_alt_bps": alt.get("yield_over_index_bps"),
                 "alt_horizon": alt.get("horizon") if alt else None}
     return metrics_fn, ctx["calc_date"], face
+
+# Потолок синтетических уровней лестницы: каждый новый уровень — это reprice по
+# своей цене (в WS они кэшируются по цене, в HTTP считаются заново).
+MAX_LADDER = 60
+
+
+def build_ladder(raw_bids, raw_asks, level_fn, max_levels: int = MAX_LADDER):
+    """Непрерывная лестница цен с рыночным шагом между минимальным bid и
+    максимальным ask — с метриками на КАЖДОМ уровне, даже без заявки.
+
+    Отвечает на вопрос «при какой цене спред станет X»: пустые уровни считаются
+    так же, как уровни с заявкой. level_fn(price, qty) строит элемент выдачи —
+    HTTP-роут заворачивает в pydantic-модель, WS отдаёт словарь.
+
+    Общая для обоих потребителей: раньше лестницу строил только HTTP-роут, и
+    режим «только заявки» в карточке гасил WS-подписку, роняя обновление стакана
+    с 800 мс до 3 с поллинга.
+    """
+    if not (raw_bids or raw_asks):
+        return None
+    prices = sorted({p for p, _ in list(raw_bids) + list(raw_asks)})
+    qty_at = {round(p, 4): q for p, q in list(raw_bids) + list(raw_asks)}
+    lo, hi = prices[0], prices[-1]
+    diffs = [round(b - a, 6) for a, b in zip(prices, prices[1:]) if b - a > 1e-9]
+    step = min(diffs) if diffs else 0.01
+    nsteps = int(round((hi - lo) / step)) if step > 0 else 0
+    if nsteps > max_levels:
+        step = (hi - lo) / max_levels
+        nsteps = max_levels
+    best_bid = max((p for p, _ in raw_bids), default=None)
+    best_ask = min((p for p, _ in raw_asks), default=None)
+    mid = ((best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None
+           else (best_bid if best_bid is not None else best_ask))
+    bids, asks = [], []
+    for i in range(nsteps + 1):
+        price = round(lo + i * step, 4)
+        lvl = level_fn(price, qty_at.get(price))
+        (asks if price > mid else bids).append(lvl)
+    return bids, asks

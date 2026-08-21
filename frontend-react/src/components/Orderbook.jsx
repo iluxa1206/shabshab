@@ -62,7 +62,8 @@ function Level({ lvl, side, face, isFixed, fill }) {
 }
 
 // Панель стакана выпуска. Alor snapshot + per-level SM/DM/YTM с бэка.
-// Live-обновление — поллинг 3с, пока панель открыта (Alor WS — TODO).
+// Live-обновление: подписка Alor (пуш ~0,8с) во всех режимах панели,
+// HTTP-поллинг остаётся фолбэком (15с при живом потоке, 3с без него).
 export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx,
                                     volBid = 0, volAsk = 0, horizon = "auto", onClose }) {
   const isFixed = kind === "fixed";
@@ -76,26 +77,40 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const wsTsRef = useRef(0);
   useEffect(() => {
     setWsData(null);
-    // WS-поток считает уровни ТОЛЬКО в авто-горизонте (канал общий на всех
-    // подписчиков, per-client горизонта в нём нет) — при ручном выборе уходим
-    // на HTTP-поллинг, иначе стакан и плитки карточки считали бы разное
-    if (!isin || full || horizon !== "auto") return undefined;
+    // Подписка живёт во ВСЕХ режимах карточки: поток несёт и обычные уровни, и
+    // полную лестницу (режим «все уровни»), и спред ко второму горизонту — так
+    // что ни «только заявки», ни ручной свитчер горизонта больше не роняют
+    // стакан с 800 мс пуша на 3 с поллинга.
+    if (!isin) return undefined;
     const conn = connectOrderbookWs(isin, (data) => { wsTsRef.current = Date.now(); setWsData(data); });
     return () => conn.close();
-  }, [isin, full, horizon]);
+  }, [isin]);
 
   const q = useQuery({
     queryKey: ["orderbook", isin, depth, full, kind, horizon],
     queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater", horizon }, signal),
     enabled: !!isin,
     // WS живой → редкий фолбэк-поллинг (15с); иначе привычные 3с
-    refetchInterval: () => (!full && Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),
+    refetchInterval: () => (Date.now() - wsTsRef.current < 6000 ? 15000 : 3000),
     refetchIntervalInBackground: false,
   });
 
   const d = q.data;
-  const wsLive = !full && wsData?.orderbook && Date.now() - wsTsRef.current < 6000;
-  const ob = wsLive ? wsData.orderbook : d?.orderbook;
+  // в режиме «все уровни» берём лестницу потока; её может не быть на первом
+  // пуше (ctx ещё собирается) — тогда честно падаем на HTTP-ответ
+  const wsSrc = full ? wsData?.ladder : wsData?.orderbook;
+  const wsLive = !!wsSrc && Date.now() - wsTsRef.current < 6000;
+  // Ручной горизонт: поток считает уровни в АВТО-горизонте и кладёт рядом спред
+  // ко второму. Выбран авто или один из этих двух — подписка остаётся живой;
+  // горизонт, которого в потоке нет, по-прежнему обслуживает HTTP.
+  const wsProbe = wsSrc?.bids?.[0] || wsSrc?.asks?.[0] || null;
+  const swapAlt = horizon !== "auto" && horizon === wsProbe?.alt_horizon;
+  const wsUsable = wsLive && (horizon === "auto" || horizon === wsProbe?.horizon || swapAlt);
+  const pickAlt = (rows) => (rows || []).map((l) => (
+    swapAlt ? { ...l, y_idx_bps: l.y_idx_alt_bps } : l));
+  const ob = wsUsable
+    ? { bids: pickAlt(wsSrc.bids), asks: pickAlt(wsSrc.asks) }
+    : d?.orderbook;
   // asks best-first (возрастание) → нарезаем depth, reverse для DOM (высокая сверху).
   // bids best-first (убывание) → нарезаем depth. WS отдаёт depth 50 — режем под селектор.
   const asks = ob?.asks ? ob.asks.slice(0, depth).slice().reverse() : [];
@@ -177,15 +192,15 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
       </div>
 
       <div className="ob-status">
-        {q.isLoading && !wsLive ? "загрузка…"
-          : d?.pricing_status === "NO_MARKET_DATA" && !wsLive ? "нет данных Alor"
+        {q.isLoading && !wsUsable ? "загрузка…"
+          : d?.pricing_status === "NO_MARKET_DATA" && !wsUsable ? "нет данных Alor"
           : empty ? "стакан пуст"
-          : wsLive ? "● live · WS"
+          : wsUsable ? "● live · WS 0,8с"
           : q.isFetching ? "обновление…" : "live · 3с"}
       </div>
 
       <div className="ob-scroll">
-        {q.isLoading && !wsLive && empty && (
+        {q.isLoading && !wsUsable && empty && (
           <div style={{ padding: "4px 20px" }} role="status" aria-label="Загрузка стакана">
             {Array.from({ length: 10 }, (_, i) => <div key={i} className="skel skel-line" />)}
           </div>

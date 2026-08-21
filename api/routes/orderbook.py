@@ -147,31 +147,16 @@ async def get_orderbook(
     raw_asks = [(e["price"], e.get("volume")) for e in snapshot.get("asks", [])[:depth]
                 if e.get("price") is not None]
 
-    if full and (raw_bids or raw_asks):
-        # Режим «все уровни»: непрерывная лестница цен с рыночным шагом между
-        # минимальной bid и максимальной ask, с SM/DM на КАЖДОМ уровне (даже без
-        # заявки) — для анализа «при какой цене DM = X». Шаг = мин. разрыв между
-        # соседними реальными ценами; при слишком широком диапазоне — огрубляем,
-        # чтобы влезть в _MAX_LADDER уровней.
-        prices = sorted({p for p, _ in raw_bids + raw_asks})
-        qty_at = {round(p, 4): q for p, q in raw_bids + raw_asks}
-        lo, hi = prices[0], prices[-1]
-        diffs = [round(b - a, 6) for a, b in zip(prices, prices[1:]) if b - a > 1e-9]
-        step = min(diffs) if diffs else 0.01
-        nsteps = int(round((hi - lo) / step)) if step > 0 else 0
-        if nsteps > _MAX_LADDER:
-            step = (hi - lo) / _MAX_LADDER
-            nsteps = _MAX_LADDER
-        best_bid = max((p for p, _ in raw_bids), default=None)
-        best_ask = min((p for p, _ in raw_asks), default=None)
-        mid = ((best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None
-               else (best_bid if best_bid is not None else best_ask))
-        processed_bids, processed_asks = [], []
-        for i in range(nsteps + 1):
-            price = round(lo + i * step, 4)
-            qty = qty_at.get(price)
-            lvl = _level(metrics_fn, price, qty)
-            (processed_asks if price > mid else processed_bids).append(lvl)
+    ladder = None
+    if full:
+        # «Все уровни»: лестница с метриками даже на пустых ценах — для анализа
+        # «при какой цене спред станет X». Строится общей функцией, той же, что
+        # у WS-потока (services.orderbook_svc.build_ladder).
+        from services.orderbook_svc import build_ladder
+        ladder = build_ladder(raw_bids, raw_asks,
+                              lambda p, q: _level(metrics_fn, p, q))
+    if ladder is not None:
+        processed_bids, processed_asks = ladder
     else:
         processed_bids = [_level(metrics_fn, p, q) for p, q in raw_bids]
         processed_asks = [_level(metrics_fn, p, q) for p, q in raw_asks]
