@@ -97,3 +97,44 @@ def test_skips_when_disk_is_tight(bk, monkeypatch):
     monkeypatch.setattr(mod, "_free_bytes", lambda p: 1)
     res = mod.backup_one("portfolio.db", ("trade_tick",), "20260101-0000")
     assert res["skipped"] == "мало места"
+
+
+def test_manual_backups_rotate_only_with_replacement(bk):
+    """Ручные копии data/*.bak-* ротацией не покрывались и копились незамеченными.
+
+    Один такой файл (portfolio.db.bak-echo-20260814, 1.9 ГБ) держал диск прода на
+    80%. Сносим старые — но только когда по этой базе есть свежая штатная копия:
+    страховка перед миграцией не должна исчезать раньше, чем появится замена.
+    """
+    import os
+    import time
+    mod, data = bk
+
+    old = time.time() - (mod.MANUAL_KEEP_DAYS + 5) * 86400
+    have_replacement = data / "portfolio.db.bak-echo-20260814"
+    no_replacement = data / "orphan.db.bak-20260101"
+    fresh = data / "portfolio.db.bak-yesterday"
+    for f in (have_replacement, no_replacement, fresh):
+        f.write_bytes(b"x" * 100)
+    for f in (have_replacement, no_replacement):
+        os.utime(f, (old, old))
+
+    assert mod.main() == 0          # создаёт штатную копию portfolio + ротацию
+
+    assert not have_replacement.exists(), "старая копия при наличии штатной не снесена"
+    assert no_replacement.exists(), "копия без штатной замены снесена — так нельзя"
+    assert fresh.exists(), "свежая ручная копия снесена"
+
+
+def test_orphan_tmp_files_are_cleaned(bk):
+    """Спутники SQLite от прерванных прогонов: сам .tmp удаляется в finally, а
+    .tmp-shm/.tmp-wal оставались лежать вечно."""
+    mod, data = bk
+    backups = data / "backups"
+    backups.mkdir(exist_ok=True)
+    (backups / ".portfolio-20260820-2230.tmp-shm").write_bytes(b"s")
+    (backups / ".portfolio-20260820-2230.tmp-wal").write_bytes(b"")
+
+    assert mod.main() == 0
+    assert not list(backups.glob(".*tmp-shm"))
+    assert not list(backups.glob(".*tmp-wal"))
