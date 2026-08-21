@@ -278,6 +278,14 @@ def invalidate_params_cache(isin: str = None) -> None:
         universe_stream.invalidate_params(isin)
     except Exception:
         pass
+    # Тот же пинок скринеру: он держит тёплый контекст пересчёта на бумагу
+    # (поток купонов, НКД, кривая) и мемо Y-IDX по ценам — после правки спеки
+    # оба относятся к прежним параметрам.
+    try:
+        from services import screener_core
+        screener_core.drop_exact_cache(isin)
+    except Exception:
+        pass
 
 
 def calc_params_map() -> Dict[str, dict]:

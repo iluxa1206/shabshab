@@ -608,3 +608,56 @@ def test_event_moment_reads_naive_as_msk():
     aware = event_moment("2026-08-20T11:25:45+00:00")
     naive = event_moment("2026-08-20 14:25:45")     # МСК без зоны — как писали блоки
     assert aware == naive
+
+
+# ── Y-IDX события считается верифицированным путём, не наклоном ─────────────
+
+def test_exact_y_idx_beats_stale_slope_anchor(monkeypatch):
+    """Спред события берётся из reprice_at_price (как уровень стакана), а не из
+    линейной оценки по якорю.
+
+    Регресс: наклон считался от верха стакана, но bid/ask приходят потоком
+    котировок, а лестница — батч-снимком глубины. На рассинхроне якорь уезжал, и
+    у короткой бумаги (наклон до −450 bps на 1пп) событие показывало сотни bps
+    мимо: РСетиМР1Р5 20.08.2026 — 378 bps на цене 100.34, где верный Y-IDX +5.
+    """
+    from datetime import date
+    uni, metrics, depth = _market()
+    isin = "RU000A0000A1"
+    # якорь ПРОТУХ: цена ask уже подтянулась к лестнице, а её Y-IDX остался от
+    # прежней цены (~99.5) — ровно рассинхрон «котировки vs снимок глубины»
+    metrics[isin] = dict(metrics[isin], ask=100.30, yoi_ask=380.0, yoi_slope=-450.0)
+    depth[isin] = {"a": [[100.30, 500], [100.35, 500]], "b": [[99.9, 100]]}
+
+    p = core.normalize_params({"spread_min": -100, "spread_max": 500,
+                               "min_money_rub": 500_000, "isins": [isin]})
+    cands = core.static_candidates(p, uni, date(2026, 8, 21))
+
+    # наклон почти не двигает число от протухшего якоря → сотни bps мимо
+    slope_only = core.evaluate_candidates(p, cands, metrics, depth)[0]
+    assert slope_only["val_bps"] > 300, "предусловие: наклон тащит протухший якорь"
+
+    # точный путь: подсовываем «reprice» через прогретый контекст
+    core.drop_exact_cache()
+    today = date.today().isoformat()
+    core._exact_ctx[isin] = (today, {"stub": True})
+    monkeypatch.setattr(core, "exact_y_idx",
+                        lambda i, px: 5.0 if i == isin else None)
+
+    exact = core.evaluate_candidates(p, cands, metrics, depth, exact=True)[0]
+    assert exact["val_bps"] == pytest.approx(5.0), "число должно прийти из reprice"
+    assert exact["price"] == pytest.approx(slope_only["price"]), "цена набора та же"
+    core.drop_exact_cache()
+
+
+def test_exact_falls_back_to_slope_when_ctx_cold(monkeypatch):
+    """Контекст не прогрет (рестарт, новая бумага) — бумага не исчезает из
+    фильтра, число берётся наклоном, как раньше."""
+    from datetime import date
+    uni, metrics, depth = _market()
+    core.drop_exact_cache()          # ни одного тёплого контекста
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 1e6})
+    cands = core.static_candidates(p, uni, date(2026, 8, 21))
+    got = core.evaluate_candidates(p, cands, metrics, depth, exact=True)
+    assert [m["isin"] for m in got] == ["RU000A0000A1"]
+    assert got[0]["val_bps"] is not None

@@ -446,9 +446,94 @@ def _qty(lvl) -> Optional[float]:
         return None
 
 
+# ── ТОЧНЫЙ Y-IDX по цене (та же механика, что стакан и карточка) ───────────
+#
+# Наклонная оценка (y_idx_at) считает Y-IDX линейно от якоря — верха стакана.
+# Формула верна, ломается ЯКОРЬ: bid/ask приходят из потока котировок
+# (событийно), лестница стакана — из батч-снимка глубины (~раз в 120с). Пока
+# один обновился, а второй нет, якорь и цена набора относятся к разным моментам.
+# У короткой бумаги наклон достигает −450 bps на 1пп цены, и зазор в десятые
+# доли пункта даёт сотни bps: РСетиМР1Р5 20.08.2026 — сигнал 378 bps на цене
+# 100.34, где верный Y-IDX +5 (378 — это цена ≈99.5, куда уехал якорь).
+#
+# Поэтому число, которое видит пользователь, считается ВЕРИФИЦИРОВАННЫМ путём:
+# reprice_at_price на тёплом контексте — тот же вызов, что per-level метрики
+# стакана и калькулятор карточки, поэтому цифры сходятся поштучно.
+_exact_ctx: dict = {}       # isin → (день, ctx); ctx тёплый, пересобирается раз в день
+_exact_memo: dict = {}      # (isin, цена, день) → Y-IDX; стакан шевелится чаще, чем цены меняются
+_EXACT_PX_DIGITS = 3
+
+
+async def warm_exact_ctx(isins) -> int:
+    """Тёплые контексты пересчёта для бумаг-кандидатов. Один сетевой gather на
+    бумагу в день (дальше из памяти), поэтому зовётся из тика — промахи
+    случаются только на новых бумагах и на смене дня."""
+    from datetime import date as _date
+    from services.bond_details import load_reprice_ctx
+    from services.market_data import MarketDataService
+    from services.paths import cache_path
+
+    today = _date.today().isoformat()
+    need = [i for i in isins
+            if i and (_exact_ctx.get(i) or (None,))[0] != today]
+    if not need:
+        return 0
+    cache = MarketDataService.get_local_bond_cache(cache_path("isins_cache.json"))
+    done = 0
+    for isin in need:
+        try:
+            _exact_ctx[isin] = (today, await load_reprice_ctx(isin, cache))
+            done += 1
+        except Exception as e:
+            # бумага без контекста просто не получит точного числа — фильтр
+            # отсеет её по None, а не пропустит с кривой оценкой
+            logger.debug("warm_exact_ctx %s: %s", isin, e)
+            _exact_ctx[isin] = (today, None)
+    return done
+
+
+def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
+    """Y-IDX по цене ТОЧНО: reprice_at_price на горизонте по правилу цены —
+    один в один с уровнем стакана. None — контекст не прогрет/расчёт не сошёлся."""
+    from datetime import date as _date
+    if px is None or not isin:
+        return None
+    today = _date.today().isoformat()
+    day, ctx = _exact_ctx.get(isin) or (None, None)
+    if day != today or ctx is None:
+        return None
+    key = (isin, round(float(px), _EXACT_PX_DIGITS), today)
+    if key in _exact_memo:
+        return _exact_memo[key]
+    try:
+        from services.bond_details import reprice_at_price
+        from services.valuation import pick_horizon
+        m = reprice_at_price(ctx, float(px))
+        h = pick_horizon(m, "auto")
+        val = h.get("yield_over_index_bps", m.get("yield_over_index_bps"))
+    except Exception as e:
+        logger.debug("exact_y_idx %s@%s: %s", isin, px, e)
+        val = None
+    _exact_memo[key] = val
+    return val
+
+
+def drop_exact_cache(isin: Optional[str] = None) -> None:
+    """Сброс тёплых контекстов: правка параметров бумаги в Справочнике меняет
+    поток, а значит и Y-IDX любой цены."""
+    if isin:
+        _exact_ctx.pop(isin, None)
+        for k in [k for k in _exact_memo if k[0] == isin]:
+            _exact_memo.pop(k, None)
+    else:
+        _exact_ctx.clear()
+        _exact_memo.clear()
+
+
 def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:
-    """Y-IDX по произвольной цене: линейно от известного якоря через наклон
-    dY/dP. На масштабе стакана Y-IDX(цена) практически прямая (см. vwap.js)."""
+    """Y-IDX по произвольной цене ПРИБЛИЖЁННО: линейно от якоря через наклон
+    dY/dP. Держится только рядом с якорем и только пока якорь свеж — наружу
+    такое число не отдаём (см. exact_y_idx), это грубый предфильтр."""
     k = row.get("yoi_slope")
     if px is None or k is None:
         return None
@@ -494,8 +579,20 @@ def static_candidates(params: dict, uni: List[dict],
     return out
 
 
+def _price_y_idx(isin: str, row: dict, px: Optional[float], side: str,
+                 exact: bool) -> Optional[float]:
+    """Y-IDX цены для скринера. exact — верифицированный путь (как стакан), с
+    откатом на наклон, если контекст бумаги не прогрет: без отката бумага молча
+    исчезала бы из фильтра на первом тике после рестарта."""
+    if exact:
+        v = exact_y_idx(isin, px)
+        if v is not None:
+            return float(v)
+    return y_idx_at(row, px, side)
+
+
 def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
-                        depth_map: dict) -> List[dict]:
+                        depth_map: dict, exact: bool = False) -> List[dict]:
     """Рыночная часть: по уже отобранным бумагам считает цену/спред/деньги и
     отсеивает по диапазону спреда и объёму.
 
@@ -528,7 +625,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             if not best or best["money"] < want:
                 continue
             price = single_px = best["price"]
-            val = y_idx_at(row, price, side)
+            val = _price_y_idx(isin, row, price, side, exact)
             if val is None and price == row.get(side):
                 val = top_val          # заявка стоит первой — спред верха точен
             money = best["money"]
@@ -538,7 +635,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             if not vwap_passes(v, want):
                 continue
             price = round(v["px"], 4)
-            val = y_idx_at(row, v["px"], side)
+            val = _price_y_idx(isin, row, v["px"], side, exact)
             if val is None and v["levels"] == 1:
                 # набор уложился в один уровень — VWAP-цена и есть верх стакана,
                 # его спред точен (а не приближение), наклон тут не нужен
@@ -548,7 +645,12 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             partial = v["partial"]
         else:
             price = row.get(side)
-            val = top_val
+            # верх стакана: у метрик он уже посчитан точно (y_idx_by_price по
+            # bid/ask), но при exact сверяем тем же путём — на случай, если
+            # котировка ушла вперёд снимка метрик
+            val = _price_y_idx(isin, row, price, side, exact) if exact else top_val
+            if val is None:
+                val = top_val
             money = side_money_rub(depth_map.get(isin), side, face, accrued)
             levels, partial = None, False
 

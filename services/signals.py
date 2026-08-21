@@ -23,7 +23,7 @@ from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: 
                                     block_matches, evaluate,
                                     evaluate_candidates, market_snapshot,
                                     normalize_block_params, normalize_params,
-                                    static_candidates, years_left)
+                                    static_candidates, warm_exact_ctx, years_left)
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +500,11 @@ async def preview(user_email: str, params: dict, limit: int = 20) -> dict:
     uni, metrics, depth_map = await market_snapshot()
     if not metrics:
         return {"ready": False, "total": 0, "matches": []}
-    ms = evaluate(p, uni, metrics, depth_map)
+    # превью считает тем же верифицированным путём, что лента: иначе форма
+    # обещала бы один спред, а событие приносило другой
+    cands = static_candidates(p, uni)
+    await warm_exact_ctx([c.get("isin") for c in cands])
+    ms = evaluate_candidates(p, cands, metrics, depth_map, exact=True)
     return {"ready": True, "total": len(ms), "matches": ms[:limit]}
 
 
@@ -538,7 +542,13 @@ async def run_cycle() -> int:
     for f in filters:
         try:
             cands = _candidates(f, uni)
-            matches = evaluate_candidates(f["params"], cands, metrics, depth_map)
+            # контексты пересчёта для кандидатов фильтра: Y-IDX события считается
+            # верифицированным путём (как уровень стакана), а не наклоном от
+            # якоря — наклон врал сотнями bps, когда котировка и снимок глубины
+            # расходились во времени (см. screener_core.exact_y_idx)
+            await warm_exact_ctx([c.get("isin") for c in cands])
+            matches = evaluate_candidates(f["params"], cands, metrics, depth_map,
+                                          exact=True)
             events = detect_events(f["id"], f["user_email"], f["params"]["side"],
                                    f.get("change_pct") or 10.0, matches,
                                    f["params"].get("min_money_rub"))
