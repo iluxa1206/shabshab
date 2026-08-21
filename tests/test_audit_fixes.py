@@ -653,3 +653,54 @@ def test_horizon_beyond_flow_end_is_dropped(keyrate_curve, ruonia_curve, calc_da
     # и главное следствие: спред убывает с ценой, без разворота
     for (p1, y1), (p2, y2) in zip(ys, ys[1:]):
         assert y2 < y1, f"спред вырос с ценой: {p1}→{p2} дало {y1}→{y2}"
+
+
+def test_horizon_picked_by_yield_not_price():
+    """Горизонт выбирается по ДОХОДНОСТИ, а не по цене выкупа.
+
+    Регресс: пут брался при цене ниже выкупа на _PAR_BUFFER_PCT. Цена — прокси
+    доходности, и на близкой оферте прокси врёт: ГПБФин1Р10 при цене 100.00 даёт
+    14.96% к оферте против 14.30% к погашению — держатель предъявит, а витрина
+    считала к погашению (11 бумаг из 523 на проде, до 75 bps). Плюс разрыв: на
+    границе буфера Y-IDX прыгал с 4701 на 61 bps от четверти пункта цены.
+    """
+    from services.valuation import _preferred_horizon
+
+    put_better = {
+        "maturity": {"date": date(2028, 2, 12), "yield_xirr_pct": 14.30},
+        "put": {"date": date(2026, 9, 1), "price_pct": 100.0, "yield_xirr_pct": 14.96},
+    }
+    # цена РОВНО номинал: старое правило дало бы maturity, доходность говорит put
+    assert _preferred_horizon(100.0, put_better) == "put"
+    assert _preferred_horizon(101.0, put_better) == "put", "решает доходность, не цена"
+
+    put_worse = {
+        "maturity": {"date": date(2031, 10, 9), "yield_xirr_pct": 17.56},
+        "put": {"date": date(2026, 10, 20), "price_pct": 100.0, "yield_xirr_pct": 14.69},
+    }
+    assert _preferred_horizon(100.5, put_worse) == "maturity"
+
+    # колл — право эмитента: отзовёт, когда держателю это ХУЖЕ
+    call_worse_for_holder = {
+        "maturity": {"date": date(2033, 12, 24), "yield_xirr_pct": 18.0},
+        "call": {"date": date(2027, 12, 30), "price_pct": 100.0, "yield_xirr_pct": 12.0},
+    }
+    assert _preferred_horizon(99.0, call_worse_for_holder) == "call"
+    call_better_for_holder = dict(call_worse_for_holder,
+                                  call={"date": date(2027, 12, 30), "price_pct": 100.0,
+                                        "yield_xirr_pct": 21.0})
+    assert _preferred_horizon(101.0, call_better_for_holder) == "maturity"
+
+    # мёртвая зона: разница меньше буфера — горизонт не дребезжит
+    tiny = {
+        "maturity": {"date": date(2028, 2, 12), "yield_xirr_pct": 14.30},
+        "put": {"date": date(2026, 9, 1), "price_pct": 100.0, "yield_xirr_pct": 14.305},
+    }
+    assert _preferred_horizon(99.0, tiny) == "maturity"
+
+    # солвер не сошёлся → откат на правило цены, а не на «всегда погашение»
+    no_yield = {
+        "maturity": {"date": date(2028, 2, 12), "yield_xirr_pct": 14.30},
+        "put": {"date": date(2026, 9, 1), "price_pct": 100.0, "yield_xirr_pct": None},
+    }
+    assert _preferred_horizon(98.0, no_yield) == "put"
