@@ -187,19 +187,23 @@ def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
 
 
 def _issue_link(m: dict) -> str:
-    """Выпуск: имя моноширинным, следом ISIN.
+    """Имя выпуска моноширинным.
 
     Без ссылки на карточку: в Telegram <code> — это tap-to-copy, и из чата
-    чаще нужен сам код бумаги (вбить в терминал, найти в таблице), чем переход
-    на сайт. Моноширинный шрифт заодно ставит имена в колонку — в ленте
-    сообщений их сравнивают глазом, а не читают по одному."""
+    чаще нужен сам текст (вбить в терминал, найти в таблице), чем переход на
+    сайт. Моноширинный шрифт заодно ставит имена в колонку — в ленте сообщений
+    их сравнивают глазом, а не читают по одному."""
     # имена приходят из справочников MOEX — экранируем, иначе один «&» в
     # названии рушит разбор HTML, и Telegram отбивает всё сообщение
     name = html.escape(str(m.get("name") or m.get("isin") or "—"))
+    return f"<code>{name}</code>"
+
+
+def _isin_line(m: dict) -> str:
+    """ISIN ОТДЕЛЬНОЙ строкой, последней в записи: его копируют целиком, а в
+    хвосте строки с цифрами тап попадал бы то в него, то в соседнее число."""
     isin = m.get("isin")
-    if not isin:
-        return f"<code>{name}</code>"
-    return f"<code>{name}</code> · <code>{html.escape(str(isin))}</code>"
+    return f"<code>{html.escape(str(isin))}</code>" if isin else ""
 
 
 def _money_of(m: dict, kind: str) -> Optional[float]:
@@ -272,7 +276,10 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None) -> str:
             sub.append(want)
 
     line = f"{_icon(m, kind, side)}  " + " · ".join(b for b in head if b)
-    return line + (f"\n{' · '.join(sub)}" if sub else "")
+    if sub:
+        line += f"\n{' · '.join(sub)}"
+    isin = _isin_line(m)
+    return line + (f"\n{isin}" if isin else "")
 
 
 # Сколько уровней стакана прикладывать к заявке. Четыре — компромисс: экран

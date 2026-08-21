@@ -162,7 +162,11 @@ def test_signal_text_shows_issue_and_isin_monospace():
                                      "val_bps": 250.0, "reason": "new"}]})
     assert "<code>Тест</code>" in txt and "<code>RU000A10AU99</code>" in txt
     assert 'href="' not in txt
-    assert txt.index("Тест") < txt.index("RU000A10AU99"), "ISIN после имени"
+    lines = txt.split("\n")
+    assert "Тест" in lines[0], "имя — в шапке записи"
+    isin_line = next(i for i, ln in enumerate(lines) if "RU000A10AU99" in ln)
+    assert lines[isin_line] == "<code>RU000A10AU99</code>", "ISIN своей строкой"
+    assert isin_line > 0
 
 
 def test_reason_delta_shows_direction():
