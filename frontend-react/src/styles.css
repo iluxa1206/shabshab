@@ -1994,18 +1994,6 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh); outline: none;
 }
 .theme-win ::placeholder { color: var(--bev-sh); text-transform: none; letter-spacing: normal; }
-/* флажок: вдавленный белый квадрат с чёрной галкой */
-.theme-win .toggle input {
-  width: 13px; height: 13px; background: var(--bg);
-  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
-  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
-}
-.theme-win .toggle input:checked { background: var(--bg); }
-.theme-win .toggle input:checked::after {
-  content: "✔"; position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-  font: 700 10px/1 var(--ui); color: var(--fg);
-}
 /* фокус клавиатурой — пунктирный прямоугольник внутри контрола, не синий ореол */
 .theme-win button:focus-visible, .theme-win a:focus-visible,
 .theme-win select:focus-visible, .theme-win [role="button"]:focus-visible {
@@ -2286,6 +2274,38 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .theme-win .cmp-tbl tbody tr.on td *,
 .theme-win .grid tbody tr[aria-selected="true"] td * { color: var(--inv-fg) !important; }
 
+
+/* Выпадающий список: нативная стрелка браузера выдаёт эпоху мгновенно.
+   Рисуем свою — выпуклая кнопка с треугольником у правого края поля. */
+.theme-win select {
+  appearance: none; -webkit-appearance: none;
+  padding-right: 20px;
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='7' height='4'><path d='M0 0h7L3.5 4z' fill='black'/></svg>"),
+    linear-gradient(var(--face), var(--face));
+  background-repeat: no-repeat, no-repeat;
+  background-position: right 6px center, right 1px center;
+  background-size: 7px 4px, 16px calc(100% - 2px);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt),
+              /* бевел кнопки-стрелки: светлый сверху-слева, тень снизу-справа */
+              inset -17px 1px 0 -16px var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
+}
+.theme-win select:disabled { background-image: none; background: var(--face); }
+
+/* Выпадающие списки: подсветка пункта — сплошная инверсия navy, как в меню
+   эпохи. Серый hover для списка выбора выглядит современно и не читается. */
+.theme-win .add-opt:hover:not(:disabled), .theme-win .type-opt:hover,
+.theme-win .issuer-row:hover, .theme-win .sb-row:hover {
+  background: var(--inv-bg) !important; color: var(--inv-fg) !important;
+  border-color: transparent !important; box-shadow: none !important;
+}
+.theme-win .add-opt:hover:not(:disabled) *, .theme-win .type-opt:hover *,
+.theme-win .issuer-row:hover *, .theme-win .sb-row:hover * { color: var(--inv-fg) !important; }
+
+/* Курсор-ожидание, пока грузятся данные: песочные часы эпохи — это `wait`.
+   Указатель, который меняется на время загрузки, был нормой интерфейса. */
+.theme-win .loading, .theme-win [aria-busy="true"] { cursor: wait; }
+.theme-win .btn:disabled, .theme-win .chip-btn:disabled { cursor: default; }
 
 /* ── вкладка СРАВНЕНИЕ ── */
 /* Карточка графика во всю ширину (в отличие от сетки .analytics, где карточки
