@@ -704,3 +704,62 @@ def test_horizon_picked_by_yield_not_price():
         "put": {"date": date(2026, 9, 1), "price_pct": 100.0, "yield_xirr_pct": None},
     }
     assert _preferred_horizon(98.0, no_yield) == "put"
+
+
+# ── автоподбор спеки: петля «нашли → починили → пересчитали» ───────────────
+
+def test_autofit_applies_only_confirmed_fit():
+    """Спека применяется ТОЛЬКО когда фит подтверждён на отложенных купонах.
+
+    Систематику, которую не лечит ни один лаг, спекой маскировать нельзя — там
+    другая причина (смещённая маржа, битые данные). Такая бумага остаётся
+    помеченной, а автофит выдаёт подсказку по марже.
+    """
+    from services.spec_autofit import verdict, margin_hint, FIT_TOL_PP, MIN_COUPONS
+
+    good = {"cur_err": 2.359, "fit_err": 0.008, "test_err": 0.011, "n": 8}
+    assert verdict(good)[0] is True
+
+    # подгонка: на подборе идеально, на отложенных купонах разъехалось
+    overfit = {"cur_err": 2.5, "fit_err": 0.01, "test_err": 1.8, "n": 8}
+    ok, why = verdict(overfit)
+    assert ok is False and "hold-out" in why
+
+    # мало купонов — любой лаг «подберётся»
+    thin = {"cur_err": 2.5, "fit_err": 0.01, "test_err": 0.01, "n": MIN_COUPONS - 1}
+    assert verdict(thin)[0] is False
+
+    # выигрыш меньше порога — не трогаем
+    tiny = {"cur_err": 0.2, "fit_err": 0.19, "test_err": 0.05, "n": 9}
+    assert verdict(tiny)[0] is False
+
+    # знаковый сдвиг во всех купонах ≈ величине ошибки → это маржа, не лаг
+    r = {"med_signed": 0.5, "fit_err": 0.48, "margin_bps": 300}
+    assert margin_hint(r) == 250
+    # разнознаковый разброс — не маржа
+    assert margin_hint({"med_signed": 0.02, "fit_err": 0.9, "margin_bps": 300}) is None
+
+
+def test_drop_honest_clears_regardless_of_engine_version():
+    """Смена ПАРАМЕТРОВ бумаги требует сноса истории при той же версии движка.
+
+    drop_stale_honest смотрит на версию и такие строки не заметит: движок тот же,
+    а числа уже другие (новая спека фиксинга меняет проекцию прошлых купонов).
+    """
+    from services.spread_history import drop_honest, upsert_honest, drop_stale_honest
+    from services.backdate import HONEST_ENGINE_VERSION
+    from services.portfolio_db import init_db, _connect, _lock
+
+    init_db()
+    isin = "RU_TEST_DROP_1"
+    pts = [{"date": "2026-08-10", "price_pct": 100.0, "y_idx_bps": 200,
+            "dm_bps": 180, "yield_pct": 16.0}]
+    try:
+        upsert_honest(isin, pts, set(), HONEST_ENGINE_VERSION)
+        # версия текущая → «устаревшие» не находятся
+        assert drop_stale_honest(isin, HONEST_ENGINE_VERSION) == 0
+        # а безусловный снос — находит
+        assert drop_honest(isin) == 1
+    finally:
+        with _lock, _connect() as c:
+            c.execute("DELETE FROM spread_daily WHERE isin=?", (isin,))

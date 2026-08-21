@@ -19,6 +19,12 @@ from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
 
+# Автоподбор спеки за проход синка: считает по прошлым купонам каждой бумаги и
+# ходит в MOEX за расписанием, поэтому берём порцию — очередь бэктеста (шаг 8)
+# и так подаёт кандидатов постепенно.
+_AUTOFIT_LIMIT = 12
+_AUTOFIT_HISTORY_DAYS = 400
+
 # Замороженный seed-файл универса флоатеров (исторический дамп, читается без сети).
 # Используется только для холодного bootstrap реестра инструментов.
 _FROZEN_SEED = cache_path("nrd_universe_cache.json")
@@ -193,6 +199,34 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("spec backtest failed: %s", e)
 
+    # 8b. АВТОПОДБОР спеки для расходящихся + пересчёт их истории.
+    #     Шаг 8 только ПОМЕЧАЕТ вердиктом, и пометка может пролежать месяцами:
+    #     ОФЗ 29008/29009/29010 висели с BAD и ошибкой 2.4–2.9 пп в ставке
+    #     купона, пока их не нашли отдельным прогоном 21.08.2026. Замыкаем петлю:
+    #     что чинится лагом с подтверждением на отложенных купонах — чиним, что
+    #     не чинится — оставляем помеченным (там другая причина, обычно маржа).
+    fit_stats = {}
+    try:
+        from services import spec_autofit
+        fit_stats = await spec_autofit.autofit(apply=True, limit=_AUTOFIT_LIMIT)
+        if fit_stats.get("isins"):
+            # правка спеки меняет ПРОШЛЫЕ купоны в проекции, а история спреда
+            # живёт отдельно от витрины: без пересчёта график остаётся на старых
+            # числах до бампа версии движка
+            from services.backdate import ensure_honest_backfill
+            from services.spread_history import drop_honest
+            for isin in fit_stats["isins"]:
+                try:
+                    drop_honest(isin)
+                    await ensure_honest_backfill(isin, _AUTOFIT_HISTORY_DAYS)
+                except Exception as e:
+                    logger.warning("autofit history %s: %s", isin, e)
+        for isin, name, cur, sug in (fit_stats.get("suspect_margin") or []):
+            logger.warning("СПЕКА: %s %s — лагом не лечится, похоже смещена маржа "
+                           "%s → ~%s bps (нужен разбор руками)", isin, name, cur, sug)
+    except Exception as e:
+        logger.warning("spec autofit failed: %s", e)
+
     # 9. внешняя сверка типа купона (smart-lab): единственная проверка нашего
     #    вывода НЕ нашими данными — см. services/smartlab_audit
     sl_stats = {}
@@ -210,6 +244,8 @@ async def sync_instruments() -> dict:
                   "br_specs": br_stats.get("written", 0),
                   "spec_checked": bt_stats.get("checked", 0),
                   "spec_bad": bt_stats.get("bad", 0) + bt_stats.get("warn", 0),
+                  "spec_autofixed": fit_stats.get("applied", 0),
+                  "spec_margin_suspect": len(fit_stats.get("suspect_margin") or []),
                   "ofz_pk_normalized": ofz_fixed,
                   "reclassified_fixed": vstats.get("reclassified_fixed", 0),
                   "suspect": vstats.get("suspect", 0),

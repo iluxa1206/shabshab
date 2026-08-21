@@ -87,6 +87,18 @@ def keep_trade_days(rows: List[dict], trade_days) -> tuple:
     return kept, len(rows) - len(kept)
 
 
+def drop_honest(isin: str) -> int:
+    """Сносит ВСЕ honest-строки бумаги, независимо от версии движка.
+
+    Нужен, когда изменились ПАРАМЕТРЫ самой бумаги (спека фиксинга, маржа): версия
+    движка та же, а числа уже другие, поэтому drop_stale_honest такие строки не
+    заметит. Снимки 'snap' не трогаем — их писал живой движок в свой день.
+    Вызывающий обязан пересчитать историю заново (ensure_honest_backfill)."""
+    with _lock, _connect() as c:
+        cur = c.execute("DELETE FROM spread_daily WHERE isin=? AND src='honest'", (isin,))
+        return cur.rowcount or 0
+
+
 def drop_stale_honest(isin: str, engine_ver: int) -> int:
     """Сносит honest-строки, посчитанные СТАРЫМ as-of движком (engine_ver < текущей
     либо NULL). Точки, персистённые до фикса НКД/SECID, иначе живут вечно: бэкфилл
