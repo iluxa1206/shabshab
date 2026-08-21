@@ -611,3 +611,45 @@ def test_base_leg_matches_flow_end_not_declared_maturity(keyrate_curve, ruonia_c
         f"база ушла за конец потока: считали до {max(calls)}, поток режется {offer}")
     hz = (m.get("horizons") or {}).get("maturity") or {}
     assert hz.get("date") == offer, "метка обещает погашение, а поток кончается офертой"
+
+
+def test_horizon_beyond_flow_end_is_dropped(keyrate_curve, ruonia_curve, calc_date,
+                                            flat_index_15, monkeypatch):
+    """Горизонт ЗА концом потока не предлагается вовсе.
+
+    Регресс: поток режется пут-офертой (после неё ставка пересматривается), а
+    колл-опцион назначен позже — до него платежей уже нет, дисконтировать нечего.
+    Условие отбора сравнивало дату с bond.maturity_date, поэтому такой горизонт
+    не только считался, но и выигрывал по правилу цены: СИМПЛСК1Р1 — поток до
+    03.02.2027, call 30.12.2027 перехватывал витрину при цене выше 100.5, и Y-IDX
+    РОС с ценой (165 → 291), что экономически невозможно.
+    """
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None:
+                        (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    import services.valuation as sv
+    from services import ref_data
+    monkeypatch.setattr(ref_data, "cut_at_offer", lambda isin: True)
+
+    bond = make_bond(margin_bps=300, maturity=date(2033, 12, 24))
+    put = date(2027, 2, 3)
+    call = date(2027, 12, 30)          # ПОЗЖЕ пута → за концом потока
+    periods = quarterly_periods(settle_date(calc_date), bond.maturity_date)
+    offers = [{"date": put.isoformat(), "type": "Оферта", "price": 100.0},
+              {"date": call.isoformat(), "type": "call-опцион", "price": None}]
+
+    ys = []
+    for px in (100.0, 100.5, 101.0, 101.5):
+        m = sv.calculate_valuation_metrics(
+            bond, px, keyrate_curve, calc_date, accrued_override=0.0,
+            periods=periods, offers=offers, ruonia_curve=ruonia_curve)
+        hz = m.get("horizons") or {}
+        assert call not in [v.get("date") for v in hz.values()], (
+            f"горизонт {call} за концом потока {put} всё ещё предлагается")
+        y = m.get("yield_over_index_bps")
+        if y is not None:
+            ys.append((px, y))
+
+    # и главное следствие: спред убывает с ценой, без разворота
+    for (p1, y1), (p2, y2) in zip(ys, ys[1:]):
+        assert y2 < y1, f"спред вырос с ценой: {p1}→{p2} дало {y1}→{y2}"

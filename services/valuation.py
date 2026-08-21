@@ -401,7 +401,14 @@ def calculate_valuation_metrics(
         "yield_over_index_bps": yield_over_index_bps,
     }}
     for _key, _dt in (("put", _put), ("call", _call)):
-        if _dt is None or (bond.maturity_date is not None and _dt >= bond.maturity_date):
+        # Горизонт за КОНЦОМ ПОТОКА не существует: если поток режется пут-офертой
+        # (после неё эмитент пересматривает ставку), то колл-опцион, назначенный
+        # позже, ничего не дисконтирует — до него платежей уже нет. Раньше здесь
+        # стояло сравнение с bond.maturity_date, и такой горизонт не только
+        # считался, но и выигрывал по правилу цены: СИМПЛСК1Р1 — поток до
+        # 03.02.2027, а call 30.12.2027 перехватывал витрину при цене выше 100.5,
+        # и Y-IDX РОС с ценой (165 → 291), что экономически невозможно.
+        if _dt is None or (_mat_end is not None and _dt >= _mat_end):
             continue
         try:
             _m = _metrics_at(_dt)
