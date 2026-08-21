@@ -154,12 +154,15 @@ def test_trade_icons_by_side_and_ndm():
     assert "320м ₽" in one(side="buy", negotiated=False)   # деньги коротко
 
 
-def test_signal_text_links_to_card():
-    """Имя выпуска — ссылка на его карточку: из чата один тап до стакана."""
+def test_signal_text_shows_issue_and_isin_monospace():
+    """Выпуск: имя моноширинным, следом ISIN. Ссылки нет — в Telegram <code>
+    это tap-to-copy, а из чата чаще нужен код бумаги, чем переход на сайт."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A10AU99", "name": "Тест",
                                      "val_bps": 250.0, "reason": "new"}]})
-    assert 'href="' in txt and "isin=RU000A10AU99" in txt and "ob=1" in txt
+    assert "<code>Тест</code>" in txt and "<code>RU000A10AU99</code>" in txt
+    assert 'href="' not in txt
+    assert txt.index("Тест") < txt.index("RU000A10AU99"), "ISIN после имени"
 
 
 def test_reason_delta_shows_direction():
@@ -235,7 +238,8 @@ def test_issue_name_is_escaped():
     """Имена приходят из справочников MOEX: «&» в названии не должен рушить
     разбор HTML — иначе Telegram отбивает всё сообщение."""
     from services.tg_notify import _issue_link
-    assert "&amp;" in _issue_link({"isin": "RU000A1", "name": "Рога & Копыта"})
+    out = _issue_link({"isin": "RU000A1", "name": "Рога & Копыта"})
+    assert "Рога &amp; Копыта" in out and "&amp;amp;" not in out
 
 
 # --- окно коалесценции ---

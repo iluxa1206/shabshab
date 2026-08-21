@@ -37,8 +37,6 @@ SEND_CONCURRENCY = int(os.getenv("TG_SEND_CONCURRENCY", "8"))
 MAX_MATCHES = 8              # в одном сообщении; остальное сворачиваем в «ещё N»
 
 _MSK = timezone(timedelta(hours=3))
-# Ссылка на дашборд: имя выпуска в сообщении ведёт прямо в его карточку.
-_SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/app/")
 _REASON = {"new": "заявка", "price": "цена", "spread": "RS", "money": "объём",
            "block": "крупная сделка"}
 
@@ -189,14 +187,19 @@ def _icon(m: dict, kind: str, side: Optional[str] = None) -> str:
 
 
 def _issue_link(m: dict) -> str:
-    """Имя выпуска ссылкой на его карточку: из чата один тап до стакана."""
+    """Выпуск: имя моноширинным, следом ISIN.
+
+    Без ссылки на карточку: в Telegram <code> — это tap-to-copy, и из чата
+    чаще нужен сам код бумаги (вбить в терминал, найти в таблице), чем переход
+    на сайт. Моноширинный шрифт заодно ставит имена в колонку — в ленте
+    сообщений их сравнивают глазом, а не читают по одному."""
     # имена приходят из справочников MOEX — экранируем, иначе один «&» в
     # названии рушит разбор HTML, и Telegram отбивает всё сообщение
     name = html.escape(str(m.get("name") or m.get("isin") or "—"))
     isin = m.get("isin")
     if not isin:
-        return f"<b>{name}</b>"
-    return f'<a href="{_SITE_URL}?isin={isin}&amp;ob=1"><b>{name}</b></a>'
+        return f"<code>{name}</code>"
+    return f"<code>{name}</code> · <code>{html.escape(str(isin))}</code>"
 
 
 def _money_of(m: dict, kind: str) -> Optional[float]:
