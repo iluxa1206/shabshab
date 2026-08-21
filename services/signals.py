@@ -575,7 +575,8 @@ async def run_cycle() -> int:
                 row = metrics.get(e["isin"]) or {}
                 tg_events.append(dict(e, book=book_snapshot(
                     depth_map.get(e["isin"]), row,
-                    row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0)))
+                    row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0,
+                    isin=e["isin"])))
             tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
                                      f["params"]["side"], tg_events)
             fired += 1

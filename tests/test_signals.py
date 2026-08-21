@@ -1,4 +1,6 @@
 """Вкладка СИГНАЛЫ: ядро скринера, хранение фильтров, лента, анти-спам."""
+import asyncio
+
 import pytest
 
 from services import screener_core as core
@@ -646,8 +648,8 @@ def test_exact_y_idx_beats_stale_slope_anchor(monkeypatch):
 
     # точный путь: подсовываем «reprice» через прогретый контекст
     core.drop_exact_cache()
-    today = date.today().isoformat()
-    core._exact_ctx[isin] = (today, {"stub": True})
+    import time as _t
+    core._exact_ctx[isin] = (_t.monotonic(), {"stub": True}, {})
     monkeypatch.setattr(core, "exact_y_idx",
                         lambda i, px: 5.0 if i == isin else None)
 
@@ -686,8 +688,62 @@ def test_exact_single_level_uses_reprice_not_top_val(monkeypatch):
                                "isins": [isin]})
     cands = core.static_candidates(p, uni, date(2026, 8, 21))
     core.drop_exact_cache()
-    core._exact_ctx[isin] = (date.today().isoformat(), {"stub": True})
+    import time as _t
+    core._exact_ctx[isin] = (_t.monotonic(), {"stub": True}, {})
     monkeypatch.setattr(core, "exact_y_idx", lambda i, px: 28.0)
     got = core.evaluate_candidates(p, cands, metrics, depth, exact=True)
     assert got and got[0]["val_bps"] == pytest.approx(28.0)
+    core.drop_exact_cache()
+
+
+# ── свежесть контекста расчёта ──────────────────────────────────────────────
+
+def test_exact_ctx_expires(monkeypatch):
+    """Контекст живёт минуты, а не день. РусГид2Р01 21.08.2026: контекст,
+    собранный неудачно утром, звонил 181 bps на цене, где верные 103, — и так
+    до полуночи, потому что кэш был дневным."""
+    import time as _t
+    isin = "RU000A0000A1"
+    core.drop_exact_cache()
+    core._exact_ctx[isin] = (_t.monotonic() - core.EXACT_CTX_TTL_SEC - 1,
+                             {"stub": True}, {})
+    assert core.exact_y_idx(isin, 100.0) is None, "протухший контекст не считает"
+
+    core._exact_ctx[isin] = (_t.monotonic(), {"stub": True}, {})
+    monkeypatch.setattr(core, "reprice_at_price", lambda ctx, px: {}, raising=False)
+    core.drop_exact_cache()
+
+
+def test_rewarm_picks_cold_before_stale(monkeypatch):
+    """Бумага без контекста греется раньше протухшей: без числа она молчит
+    вовсе, а протухшее хотя бы близко."""
+    import time as _t
+    core.drop_exact_cache()
+    core._exact_ctx["STALE"] = (_t.monotonic() - core.EXACT_CTX_TTL_SEC - 1, {}, {})
+    monkeypatch.setattr(core, "EXACT_REWARM_PER_TICK", 1)
+
+    seen = []
+
+    async def fake_load(isin, cache):
+        seen.append(isin)
+        return {"ok": True}
+    monkeypatch.setattr("services.bond_details.load_reprice_ctx", fake_load)
+    monkeypatch.setattr(
+        "services.market_data.MarketDataService.get_local_bond_cache",
+        staticmethod(lambda p: {}))
+
+    asyncio.run(core.warm_exact_ctx(["STALE", "COLD"]))
+    assert seen == ["COLD"], "холодная бумага вперёд протухшей"
+    core.drop_exact_cache()
+
+
+def test_memo_dies_with_its_context():
+    """Пересборка контекста обнуляет и запомненные числа: иначе протухшее
+    значение пережило бы собственный контекст."""
+    import time as _t
+    core.drop_exact_cache()
+    core._exact_ctx["X"] = (_t.monotonic(), {"stub": True}, {100.0: 999.0})
+    assert core.exact_y_idx("X", 100.0) == 999.0          # взято из memo
+    core._exact_ctx["X"] = (_t.monotonic(), {"stub": True}, {})
+    assert core.exact_y_idx("X", 100.0) != 999.0          # memo уехал с контекстом
     core.drop_exact_cache()

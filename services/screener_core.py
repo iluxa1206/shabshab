@@ -10,7 +10,9 @@
 Ничего не считает сам: метрики берутся из market_cache['universe_metrics']
 (движок universe_stream), лестницы — из services.depth."""
 import logging
+import os
 import re
+import time
 from datetime import date
 from typing import List, Optional
 
@@ -377,15 +379,26 @@ def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
 
 
 def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
-                  accrued: float = 0.0, levels: int = 4) -> dict:
+                  accrued: float = 0.0, levels: int = 4,
+                  isin: Optional[str] = None) -> dict:
     """Лестница стакана НА МОМЕНТ СОБЫТИЯ: по levels уровней с каждой стороны,
     у каждого — цена, деньги и Y-IDX.
 
     Снимок делается там же, где сработал фильтр, из того же depth_map: пока
     уведомление доедет до телефона, книга уже поменяется, а вопрос «что там
-    вообще стояло» — первый после самого сигнала. Y-IDX уровня считается тем же
-    наклоном, что спред верха стакана (y_idx_at), рубли — как везде, грязные."""
+    вообще стояло» — первый после самого сигнала.
+
+    Y-IDX уровня считается ТЕМ ЖЕ путём, что число в шапке события —
+    exact_y_idx на тёплом контексте (десяток reprice без сети). Раньше здесь
+    стоял наклон y_idx_at, и лестница жила своей арифметикой: 21.08.2026
+    РусГид2Р01 приехал с 181 bps в шапке и 103 на том же уровне в стакане.
+    Наклон остаётся фолбэком для бумаг без контекста — лучше приблизительная
+    лестница, чем колонка прочерков."""
     d = depth_side or {}
+
+    def level_y(px: float, side: str) -> Optional[float]:
+        v = exact_y_idx(isin, px) if isin else None
+        return v if v is not None else y_idx_at(row, px, side)
 
     def side_rows(key: str, best_first: bool) -> list:
         out = []
@@ -395,7 +408,7 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
                 continue
             out.append({"price": px,
                         "money": level_money(px, qty, face, accrued),
-                        "y_idx": y_idx_at(row, px, "ask" if key == "a" else "bid")})
+                        "y_idx": level_y(px, "ask" if key == "a" else "bid")})
         return out if best_first else list(reversed(out))
 
     return {"asks": side_rows("a", False), "bids": side_rows("b", True)}
@@ -459,36 +472,61 @@ def _qty(lvl) -> Optional[float]:
 # Поэтому число, которое видит пользователь, считается ВЕРИФИЦИРОВАННЫМ путём:
 # reprice_at_price на тёплом контексте — тот же вызов, что per-level метрики
 # стакана и калькулятор карточки, поэтому цифры сходятся поштучно.
-_exact_ctx: dict = {}       # isin → (день, ctx); ctx тёплый, пересобирается раз в день
-_exact_memo: dict = {}      # (isin, цена, день) → Y-IDX; стакан шевелится чаще, чем цены меняются
+# isin → (собран_в_monotonic, ctx, memo). ЖИВЁТ МИНУТЫ, НЕ ДЕНЬ: в контексте
+# лежит снимок мира на момент сборки — кривая, НКД, расписание, номинал после
+# амортизации. Дневной кэш означал, что один неудачный сбор (кэши ещё не
+# прогреты после рестарта, расписание пришло без ставок будущих купонов)
+# отравлял число до полуночи: РусГид2Р01 21.08.2026 звонил с 181 bps на цене
+# 100,23, где верные 103 — и ровно те же 103 стояли в приложенном стакане,
+# потому что его уровни считались другим путём.
+# memo лежит ВНУТРИ записи: пересборка контекста обязана обнулять и его,
+# иначе протухшее число переживало бы собственный контекст.
+_exact_ctx: dict = {}
 _EXACT_PX_DIGITS = 3
+# Пересборка тёплой бумаги стоит ~58 мс (замер на проде 21.08.2026: всё из
+# кэшей — кривые в памяти, расписание на диске), поэтому окно короткое.
+EXACT_CTX_TTL_SEC = float(os.getenv("SIGNALS_EXACT_CTX_TTL_SEC", "600"))
+# Потолок пересборок за тик: обновление размазывается по тактам, а не встаёт
+# одним десятисекундным комом на всём наборе кандидатов.
+EXACT_REWARM_PER_TICK = int(os.getenv("SIGNALS_EXACT_REWARM", "40"))
+
+
+def _ctx_fresh(rec) -> bool:
+    return bool(rec) and (time.monotonic() - rec[0]) < EXACT_CTX_TTL_SEC
 
 
 async def warm_exact_ctx(isins) -> int:
-    """Тёплые контексты пересчёта для бумаг-кандидатов. Один сетевой gather на
-    бумагу в день (дальше из памяти), поэтому зовётся из тика — промахи
-    случаются только на новых бумагах и на смене дня."""
-    from datetime import date as _date
+    """Тёплые контексты пересчёта для бумаг-кандидатов.
+
+    Бумага БЕЗ контекста греется вперёд протухшей: без числа она молчит вовсе,
+    а протухшее хотя бы близко (и живёт максимум EXACT_CTX_TTL_SEC)."""
     from services.bond_details import load_reprice_ctx
     from services.market_data import MarketDataService
     from services.paths import cache_path
 
-    today = _date.today().isoformat()
-    need = [i for i in isins
-            if i and (_exact_ctx.get(i) or (None,))[0] != today]
+    cold, stale = [], []
+    for i in isins:
+        if not i:
+            continue
+        rec = _exact_ctx.get(i)
+        if rec is None:
+            cold.append(i)
+        elif not _ctx_fresh(rec):
+            stale.append(i)
+    need = (cold + stale)[:EXACT_REWARM_PER_TICK]
     if not need:
         return 0
     cache = MarketDataService.get_local_bond_cache(cache_path("isins_cache.json"))
     done = failed = 0
     for isin in need:
         try:
-            _exact_ctx[isin] = (today, await load_reprice_ctx(isin, cache))
+            _exact_ctx[isin] = (time.monotonic(), await load_reprice_ctx(isin, cache), {})
             done += 1
         except Exception as e:
             # бумага без контекста просто не получит точного числа — фильтр
             # отсеет её по None, а не пропустит с кривой оценкой
             logger.debug("warm_exact_ctx %s: %s", isin, e)
-            _exact_ctx[isin] = (today, None)
+            _exact_ctx[isin] = (time.monotonic(), None, {})
             failed += 1
     # массовый промах = фильтры молчат, и молчат ТИХО: без этой строки сигналы
     # выглядели бы как «рынок спокоен», хотя на деле отвалился источник
@@ -501,17 +539,17 @@ async def warm_exact_ctx(isins) -> int:
 
 def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     """Y-IDX по цене ТОЧНО: reprice_at_price на горизонте по правилу цены —
-    один в один с уровнем стакана. None — контекст не прогрет/расчёт не сошёлся."""
-    from datetime import date as _date
+    один в один с уровнем стакана. None — контекст не прогрет/протух/расчёт
+    не сошёлся (протухший НЕ используем: тихое старое число хуже молчания)."""
     if px is None or not isin:
         return None
-    today = _date.today().isoformat()
-    day, ctx = _exact_ctx.get(isin) or (None, None)
-    if day != today or ctx is None:
+    rec = _exact_ctx.get(isin)
+    if not _ctx_fresh(rec) or rec[1] is None:
         return None
-    key = (isin, round(float(px), _EXACT_PX_DIGITS), today)
-    if key in _exact_memo:
-        return _exact_memo[key]
+    ctx, memo = rec[1], rec[2]
+    key = round(float(px), _EXACT_PX_DIGITS)
+    if key in memo:
+        return memo[key]
     try:
         from services.bond_details import reprice_at_price
         from services.valuation import pick_horizon
@@ -521,7 +559,7 @@ def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     except Exception as e:
         logger.debug("exact_y_idx %s@%s: %s", isin, px, e)
         val = None
-    _exact_memo[key] = val
+    memo[key] = val
     return val
 
 
@@ -530,11 +568,8 @@ def drop_exact_cache(isin: Optional[str] = None) -> None:
     поток, а значит и Y-IDX любой цены."""
     if isin:
         _exact_ctx.pop(isin, None)
-        for k in [k for k in _exact_memo if k[0] == isin]:
-            _exact_memo.pop(k, None)
     else:
         _exact_ctx.clear()
-        _exact_memo.clear()
 
 
 def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:

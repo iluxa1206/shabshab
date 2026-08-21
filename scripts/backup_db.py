@@ -15,7 +15,9 @@
     docker compose -f docker-compose.prod.yml exec -T floaters \\
         python scripts/backup_db.py
 
-Ретеншен: RETAIN_DAILY последних ежедневных + RETAIN_WEEKLY воскресных.
+Ретеншен: RETAIN_DAILY последних ежедневных + RETAIN_WEEKLY воскресных. Плюс
+подчищаются ручные копии data/*.bak-* старше MANUAL_KEEP_DAYS (те, что делают
+перед миграциями и забывают) и осиротевшие временные файлы прерванных прогонов.
 Проверка: копия открывается и в ней считаются строки контрольных таблиц —
 битый или обрезанный файл до ротации не доживёт.
 """
@@ -41,6 +43,13 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR") or DATA_DIR / "backups")
 # базы — поэтому копий немного, а зеркало снаружи снимает scripts/pull_backup.sh.
 RETAIN_DAILY = int(os.environ.get("BACKUP_RETAIN_DAILY", "2"))
 RETAIN_WEEKLY = int(os.environ.get("BACKUP_RETAIN_WEEKLY", "2"))
+# Ручные копии (*.db.bak-*), которые оставляют перед миграциями, лежат в data/ и
+# ротацией НЕ покрыты — она смотрит только в backups/. Один такой файл занимал
+# 1.9 ГБ (portfolio.db.bak-echo-20260814) и держал диск на 80%, пока его не
+# нашли руками. Сносим те, что старше порога, и только если по этой базе есть
+# СВЕЖАЯ проверенная штатная копия: страховка перед миграцией не должна исчезать
+# раньше, чем появится замена.
+MANUAL_KEEP_DAYS = int(os.environ.get("BACKUP_MANUAL_KEEP_DAYS", "14"))
 
 # Что бэкапим и чем проверяем копию (таблица → её ждём непустой).
 DATABASES = {
@@ -115,6 +124,40 @@ def _rotate(prefix: str, suffix: str = ".gz") -> list[str]:
     return removed
 
 
+def _clean_tmp() -> list[str]:
+    """Осиротевшие .tmp-shm/.tmp-wal от прерванных прогонов: сам .tmp удаляется в
+    finally, а спутники SQLite оставались лежать вечно."""
+    out = []
+    for f in list(BACKUP_DIR.glob(".*tmp-shm")) + list(BACKUP_DIR.glob(".*tmp-wal")):
+        try:
+            f.unlink(missing_ok=True)
+            out.append(f.name)
+        except OSError:
+            pass
+    return out
+
+
+def _rotate_manual() -> list[str]:
+    """Ручные копии в data/ старше MANUAL_KEEP_DAYS — при наличии свежей штатной."""
+    cutoff = time.time() - MANUAL_KEEP_DAYS * 86400
+    out = []
+    for f in sorted(DATA_DIR.glob("*.bak-*")):
+        try:
+            if f.stat().st_mtime >= cutoff:
+                continue
+            # есть ли штатная копия этой же базы?
+            stem = f.name.split(".")[0]
+            if not any(BACKUP_DIR.glob(f"{stem}-*.gz")):
+                _log(f"ручная копия {f.name} старая, но штатной копии {stem} нет — оставляю")
+                continue
+            gb = round(f.stat().st_size / 1e9, 2)
+            f.unlink()
+            out.append(f"{f.name} ({gb} ГБ)")
+        except OSError as e:
+            _log(f"ручная копия {f.name}: {e}")
+    return out
+
+
 def backup_one(name: str, tables: tuple[str, ...], stamp: str) -> dict:
     src = DATA_DIR / name
     if not src.exists():
@@ -165,6 +208,12 @@ def main() -> int:
         shutil.copy2(src, dst)
         _rotate(src.stem, src.suffix)
         _log(f"{{'file': '{dst.name}', 'kb': {round(dst.stat().st_size / 1e3, 1)}}}")
+    tmp = _clean_tmp()
+    if tmp:
+        _log(f"снесены осиротевшие временные файлы: {len(tmp)}")
+    manual = _rotate_manual()
+    if manual:
+        _log(f"снесены ручные копии старше {MANUAL_KEEP_DAYS} дн: {', '.join(manual)}")
     _log(f"свободно после: {round(_free_bytes(BACKUP_DIR) / 1e9, 1)} ГБ")
     return rc
 
