@@ -26,7 +26,12 @@ from auth import alor_token, REFRESH_TOKEN, BASE_API
 logger = logging.getLogger(__name__)
 
 _WS_URL = BASE_API.replace("https://", "wss://") + "/ws"
-_DEPTH = 50            # глубина подписки (фронт нарезает под свой селектор)
+# Глубина подписки. ПОТОЛОК БЕЗ СЖАТИЯ — 20: на 50 Alor отвечал «400 The
+# orderbook subscription with the depth more than 20 is allowed only with
+# enabled compression», подписка отклонялась КАЖДЫЙ раз, и стакан карточки молча
+# жил на HTTP-поллинге 3 с. Ошибка терялась вместе с ответами на подписку (у них
+# нет поля data), поэтому в логах не было ни строки.
+_DEPTH = 20
 _FREQ_MS = 800         # серверный троттл Alor: не чаще раза в 800мс на бумагу
 # Потолок бумаг с живым VWAP (подписка AllTrades на бумагу), звёздочек можно
 # наставить до 300 (_MAX_SUBS_PER_CLIENT). Сверх потолка средневзвес бумаги —

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fmt, dmColor } from "../format.js";
 import { fetchOrderbook, connectOrderbookWs } from "../api.js";
 
+// 30 и 50 живут только на HTTP-поллинге: поток Alor без сжатия отдаёт максимум 20
 const DEPTHS = [10, 20, 30, 50];
 
 // Набор тикета `vol` рублей по лестнице стороны от лучшей цены — та же схема,
@@ -105,7 +106,11 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // горизонт, которого в потоке нет, по-прежнему обслуживает HTTP.
   const wsProbe = wsSrc?.bids?.[0] || wsSrc?.asks?.[0] || null;
   const swapAlt = horizon !== "auto" && horizon === wsProbe?.alt_horizon;
-  const wsUsable = wsLive && (horizon === "auto" || horizon === wsProbe?.horizon || swapAlt);
+  // Поток отдаёт 20 уровней (потолок Alor без сжатия) — на 30/50 его не хватает,
+  // такие глубины обслуживает HTTP.
+  const wsDeepEnough = depth <= 20;
+  const wsUsable = wsLive && wsDeepEnough
+    && (horizon === "auto" || horizon === wsProbe?.horizon || swapAlt);
   const pickAlt = (rows) => (rows || []).map((l) => (
     swapAlt ? { ...l, y_idx_bps: l.y_idx_alt_bps } : l));
   const ob = wsUsable
