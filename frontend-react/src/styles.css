@@ -2028,10 +2028,6 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   padding: 5px 6px; min-height: 0;
 }
 /* группы фильтров — вертикальный разделитель-бевел, как в тулбарах Office 97 */
-.theme-win .fgroup {
-  border-left: 1px solid var(--bev-sh); box-shadow: -1px 0 0 var(--bev-hi) inset;
-  padding-left: 8px; margin-left: 4px;
-}
 /* KPI-полоса = ряд group box'ов: каждый вдавлен в серебро */
 .theme-win .kpis { gap: 3px; padding: 3px; border-bottom: 1px solid var(--bev-sh); }
 .theme-win .kpi {
@@ -2133,8 +2129,18 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 
 /* ── Статусбар: ряд вдавленных полей, как у окна проводника ──────────────── */
 .theme-win .statusbar {
-  height: 24px; gap: 2px; padding: 2px; border-top: 1px solid var(--bev-hi);
+  height: 24px; gap: 2px; padding: 2px 20px 2px 2px; border-top: 1px solid var(--bev-hi);
   box-shadow: inset 0 1px 0 var(--bev-hi);
+  position: relative;              /* под грип-уголок, см. ниже */
+}
+/* грип — ручка размера окна: три диагональные насечки в правом нижнем углу */
+.theme-win .statusbar::after {
+  content: ""; position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px;
+  background:
+    linear-gradient(135deg, transparent 44%, var(--bev-hi) 44% 58%, var(--bev-sh) 58% 70%, transparent 70%),
+    linear-gradient(135deg, transparent 61%, var(--bev-hi) 61% 75%, var(--bev-sh) 75% 87%, transparent 87%),
+    linear-gradient(135deg, transparent 78%, var(--bev-hi) 78% 92%, var(--bev-sh) 92% 100%);
+  pointer-events: none;
 }
 .theme-win .status-cell {
   padding: 0 6px; height: 100%; font-size: 11px; text-transform: none; color: var(--fg);
@@ -2258,17 +2264,6 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
 }
 .theme-win ::-webkit-scrollbar-button:double-button { display: none; }
-
-/* Грип в правом нижнем углу статусбара — ручка размера окна, три насечки. */
-.theme-win .statusbar { position: relative; padding-right: 20px; }
-.theme-win .statusbar::after {
-  content: ""; position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px;
-  background:
-    linear-gradient(135deg, transparent 44%, var(--bev-hi) 44% 58%, var(--bev-sh) 58% 70%, transparent 70%),
-    linear-gradient(135deg, transparent 61%, var(--bev-hi) 61% 75%, var(--bev-sh) 75% 87%, transparent 87%),
-    linear-gradient(135deg, transparent 78%, var(--bev-hi) 78% 92%, var(--bev-sh) 92% 100%);
-  pointer-events: none;
-}
 
 /* Group box: рамка вокруг блока фильтров вместо одинокой линии слева —
    стандартная вдавленная рамка группы в диалогах эпохи. */
