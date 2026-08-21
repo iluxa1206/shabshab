@@ -139,8 +139,14 @@ def backtest_bond(row, full, today) -> dict:
     if not idx or not idx[0]:
         return out
 
+    # compounded ОБЯЗАН ехать в спеку бэктеста: у индексных RUONIA-купонов
+    # (ВЭБ.РФ, Роснефть, ОФЗ 29026+) ставка это отношение накопленных индексов,
+    # а не среднее арифметическое дневных. Без флага прибор мерил их простым
+    # средним и рисовал ложные WARN 0.28–0.39 пп там, где прод считает верно —
+    # то есть звал чинить работающее.
     pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
-             "avg_window_days": spec.get("avg_window_days")}
+             "avg_window_days": spec.get("avg_window_days"),
+             "compounded": spec.get("compounded")}
 
     def _margin_for(s):
         o = ord_by_start.get(s)
