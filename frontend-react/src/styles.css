@@ -2333,6 +2333,84 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   box-shadow: 2px 2px 0 rgba(0,0,0,.28);
 }
 
+/* ── Карточка бумаги: читаемость ─────────────────────────────────────────────
+   Карточка рендерилась базовыми стилями поверх серого: метки шли вразрядку
+   0.16–0.2em (для Tahoma без сглаживания это каша), значения и подписи лежали
+   на том же сером, что и фон панели, а разделители в 1px --line на сером почти
+   не читались. Эпоха решала это иначе: ДАННЫЕ ВСЕГДА НА БЕЛОМ, во вдавленном
+   поле, а серебро остаётся хромом вокруг.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Плитки метрик — вдавленный белый listview с сеткой в 1px */
+.theme-win .val-cards {
+  /* фон = цвет сетки: ячейки белые, зазор в 1px между ними и есть линия */
+  background: var(--bev-sh); gap: 1px;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+  margin-bottom: 14px;
+}
+.theme-win .vc { background: var(--bg); border: 0 !important; padding: 8px 10px; }
+.theme-win .vc-label {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal;
+  color: var(--mut); line-height: 1.25;
+}
+.theme-win .vc-val {
+  font-family: var(--mono); letter-spacing: normal; margin-top: 4px;
+  font-size: 20px; font-weight: 700;
+}
+.theme-win .val-cards-6 .vc-val { font-size: 18px; }
+.theme-win .vc-val-sm, .theme-win .val-cards-6 .vc-val-sm { font-size: 15px; }
+.theme-win .vc-sub {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal;
+  margin-top: 3px; color: var(--mut-2); line-height: 1.3;
+}
+.theme-win .vc-u { font-family: var(--ui); font-size: 11px; color: var(--mut); }
+
+/* Заголовок секции — подпись группы, а не разреженный капс */
+.theme-win .section-title {
+  font-family: var(--ui); font-size: 11px; font-weight: 700; letter-spacing: normal;
+  color: var(--fg); text-transform: none; margin: 14px 0 6px; padding-bottom: 3px;
+  border-bottom: 1px solid var(--bev-sh); box-shadow: 0 1px 0 var(--bev-hi);
+  gap: 6px;
+}
+.theme-win .section-title::before { content: ""; }
+
+/* Референс — таблица параметров: белое поле, читаемая сетка, чередование строк */
+.theme-win .ref-grid {
+  background: var(--bev-sh); gap: 1px;
+  border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);
+  box-shadow: inset 1px 1px 0 var(--bev-dk), inset -1px -1px 0 var(--bev-lt);
+  margin-bottom: 14px;
+}
+.theme-win .ref-cell { background: var(--bg); border: 0 !important; padding: 5px 8px; }
+/* пара ячеек = строка: подкрашиваем через одну, чтобы глаз держал строку */
+.theme-win .ref-cell:nth-child(4n+3), .theme-win .ref-cell:nth-child(4n+4) {
+  background: #f4f4f4;
+}
+.theme-win .ref-k {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal; color: var(--mut);
+}
+.theme-win .ref-v { font-family: var(--mono); font-size: 12px; margin-top: 1px; }
+
+/* Калькулятор цены: подпись рядом с полем, без разрядки */
+.theme-win .pc-label {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal; color: var(--fg);
+}
+.theme-win .pc-input {
+  font-size: 13px; font-weight: 700; padding: 3px 24px 3px 5px; width: 96px;
+}
+.theme-win .pc-unit { font-family: var(--ui); font-size: 10px; right: 6px; color: var(--mut); }
+.theme-win .pc-status, .theme-win .fnote {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal; line-height: 1.35;
+}
+.theme-win .fnote { border-left: 2px solid var(--bev-sh); background: var(--bg); }
+
+/* Плашки актуальности данных (цена/ставки) */
+.theme-win .stale-chip, .theme-win .meta-chip {
+  font-family: var(--ui); font-size: 10px; letter-spacing: normal;
+  border-radius: 0; padding: 1px 5px;
+}
+
 /* ── вкладка СРАВНЕНИЕ ── */
 /* Карточка графика во всю ширину (в отличие от сетки .analytics, где карточки
    ужаты до 460px: там их три в ряд, здесь график один и ему нужна ось). */
