@@ -59,13 +59,18 @@ ssh $SSH_OPTS "$SERVER" \
 
 # Крон резервных копий: ставим/обновляем при каждом деплое — расписание должно
 # ехать вместе с кодом, а не жить только в голове того, кто его однажды завёл.
-# 04:30 МСК (сервер в UTC → 01:30): после ночного прун/VACUUM/ANALYZE в 03:30.
+# 04:30 МСК: после ночного прун/VACUUM/ANALYZE в 03:30 (и после прогрева спреда
+# в 03:00) — бэкап снимается с уже сжатой базы.
+# СЕРВЕР ЖИВЁТ В МСК, не в UTC: `date` на 161.104.17.23 отдаёт MSK, и cron берёт
+# ту же зону. Прежний комментарий обещал пересчёт «UTC → 01:30», из-за чего
+# расписание стояло на 30 1 и бэкап уходил в 01:30 МСК — ДО прунов, то есть
+# ровно мимо замысла. Часы в cron ниже — московские, пересчитывать не надо.
 echo ">>> cron бэкапов"
 # shellcheck disable=SC2086
 ssh $SSH_OPTS "$SERVER" "cat > /etc/cron.d/floaters-backup <<'CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-30 1 * * * root cd $REMOTE && docker compose -f docker-compose.prod.yml exec -T floaters python scripts/backup_db.py >> $REMOTE/data/logs/backup.log 2>&1
+30 4 * * * root cd $REMOTE && docker compose -f docker-compose.prod.yml exec -T floaters python scripts/backup_db.py >> $REMOTE/data/logs/backup.log 2>&1
 CRON
 chmod 0644 /etc/cron.d/floaters-backup"
 
