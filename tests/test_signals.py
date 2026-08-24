@@ -833,3 +833,33 @@ def test_removed_channel_falls_back_to_private(targets):
     f = signals.create(USER, "Р5", {"spread_min": 100}, tg_target_id=t1["id"])
     tg_targets.remove(USER, t1["id"])
     assert tg_targets.chat_id_for(f["tg_target_id"], USER) is None
+
+
+# ── объём в сообщении: деньги по цене сигнала ──────────────────────────────
+
+def test_level_money_is_full_level_not_taken_part():
+    """Набор берёт 1 млн, а на уровне стоит больше — показываем ВЕСЬ уровень.
+
+    Регресс Газпн3P13R 24.08: в шапке было 20,7м (вся сторона книги) при 3,8м
+    на уровне 99,86, по которому фильтр и сработал."""
+    lvls = [(99.86, 3800), (99.87, 2200)]     # 3,8м и 2,2м при номинале 1000
+    v = core.vwap_for(lvls, 1_000_000, face=1000.0)
+    assert v["levels"] == 1
+    assert v["money"] == pytest.approx(1_000_000), "набрали свой лимит"
+    # деньги = бумаги × грязная цена (99,86 % от 1000 ₽), отсюда не ровно 3,8м
+    assert v["book_money"] == pytest.approx(3_794_680), "а стоит на уровне — весь объём"
+
+
+def test_level_money_sums_used_levels():
+    """Набор занял два уровня — считаем оба целиком."""
+    lvls = [(99.86, 800), (99.87, 2200)]
+    v = core.vwap_for(lvls, 1_000_000, face=1000.0)
+    assert v["levels"] == 2
+    assert v["book_money"] == pytest.approx(798_880 + 2_197_140, rel=1e-3)
+
+
+def test_top_level_money_for_filter_without_volume():
+    """Фильтр без порога объёма: цена с верха стакана — и объём первого уровня."""
+    assert core.top_level_money([(99.9, 1500), (99.8, 9000)], face=1000.0) \
+        == pytest.approx(1_498_500)
+    assert core.top_level_money([], face=1000.0) is None

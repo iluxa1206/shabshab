@@ -403,6 +403,9 @@ _MIGRATIONS = [
     "ALTER TABLE signal_state ADD COLUMN last_reason TEXT",
     "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
+    # деньги ПО ЦЕНЕ СИГНАЛА (весь уровень стакана, а не набранный лимит и не
+    # сумма стороны) — то, что показывается человеку; см. screener_core
+    "ALTER TABLE signal_events ADD COLUMN level_money_rub REAL",
     "CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts)",
     # очередь колокольчика флагом вместо водяного знака по TRADENO (см. схему
     # block_trade). Старым строкам ins_at остаётся NULL — они в очередь не

@@ -4,7 +4,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectSignalsWs } from "../api.js";
 import { fmt, dmColor } from "../format.js";
-import { maturityTxt, reasonDelta, reasonTitle, sideInfo } from "../signalFormat.js";
+import { eventMoney, maturityTxt, reasonDelta, reasonTitle, sideInfo } from "../signalFormat.js";
 
 // Двухтональный сигнал через WebAudio (без ассета). Отличается от бипа алертов
 // стакана, чтобы на слух было понятно, что именно сработало.
@@ -83,7 +83,7 @@ export default function SignalsWatcher() {
         const body = payload.type === "block"
           // у крупной сделки спред считается по ЦЕНЕ ПРИНТА (не по набору
           // стакана): сумма без уровня не говорит, дорого забрали или дёшево
-          ? `${head.name} — ${money(head.money_rub)}` +
+          ? `${head.name} — ${money(eventMoney(head))}` +
             (head.val_bps != null ? ` · ${fmt.num(head.val_bps, 0)} бп` : "") +
             (head.negotiated ? " (адресная)" : "")
           : `${head.name} — ${fmt.num(head.val_bps, 0)} бп`
@@ -148,7 +148,7 @@ function SignalToast({ p, onOpen, onDismiss }) {
                   {m.negotiated ? "адресная" : "стакан"}</span>
               </span>
               <span className="sig-toast-val">
-                {money(m.money_rub)}
+                {money(eventMoney(m))}
                 {m.val_bps != null && (
                   <span style={{ ...dmColor(m.val_bps), marginLeft: 6, fontSize: "11px" }}>
                     {fmt.num(m.val_bps, 0)} бп</span>
@@ -216,8 +216,8 @@ function SignalToast({ p, onOpen, onDismiss }) {
                     {fmt.num(Math.abs(m.price - m.prev_price), 2)}
                   </span>)}
               </span>
-              {m.money_rub != null && (
-                <span>объём {money(m.money_rub)}{m.levels ? ` · ${m.levels} ур` : ""}
+              {eventMoney(m) != null && (
+                <span>объём {money(eventMoney(m))}{m.levels ? ` · ${m.levels} ур` : ""}
                   {m.partial ? " (частично)" : ""}</span>)}
               {maturityTxt(m) && <span>{maturityTxt(m)}</span>}
               {m.rating && <span>{m.rating}</span>}

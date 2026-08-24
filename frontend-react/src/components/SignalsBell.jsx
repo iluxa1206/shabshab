@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clearSignalEvents, fetchSignalEvents, markSignalEventsSeen } from "../api.js";
 import { fmt } from "../format.js";
-import { bookMode, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
+import { bookMode, eventMoney, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
 import { IconBell, IconAlert } from "./icons.jsx";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
@@ -171,7 +171,7 @@ export default function SignalsBell() {
                           <b><span className="sb-k">Y-IDX</span> {fmt.num(e.val_bps, 0)} бп</b>
                         )}
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
-                        <span className="sb-vol">{money(e.money_rub)} млн</span>
+                        <span className="sb-vol">{money(eventMoney(e))} млн</span>
                       </span>
                     ) : (
                       <span className="sb-row-2 num">
@@ -180,7 +180,7 @@ export default function SignalsBell() {
                         <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />
-                        <span className="sb-vol">{money(e.money_rub)} млн</span>
+                        <span className="sb-vol">{money(eventMoney(e))} млн</span>
                       </span>
                     )}
                     <span className="sb-row-mode">

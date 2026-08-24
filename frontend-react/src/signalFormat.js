@@ -70,6 +70,15 @@ const REASON_UNIT = {
            fmt: (d) => `${d > 0 ? "+" : "−"}${fmt.num(Math.abs(d), 2)} п.п.` },
 };
 
+/** Объём события, который показываем человеку: деньги ПО ЦЕНЕ СИГНАЛА (весь
+ *  уровень стакана). money_rub в режиме порога равен самому порогу, а
+ *  money_ok_rub без границ спреда — это вся сторона книги; оба оставлены
+ *  фолбэком для старых событий ленты, где нового поля ещё нет. */
+export function eventMoney(e) {
+  if (!e) return null;
+  return e.level_money_rub ?? e.money_ok_rub ?? e.money_rub ?? null;
+}
+
 export function reasonDelta(e) {
   if (!e || e.reason === "block") return null;
   if (e.reason === "new") return "попала под условия";

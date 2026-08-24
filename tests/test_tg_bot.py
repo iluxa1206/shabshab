@@ -526,3 +526,23 @@ def test_chats_command_lists_and_removes(linked, monkeypatch):
     assert "Ф5" in _cmd("/chats")
     assert "снят" in _cmd(f"/chats del {t['id']}")
     assert tg_targets.list_for_user("u@x.ru") == []
+
+
+def test_order_money_is_level_not_side_total():
+    """В шапке заявки — объём ПО ЦЕНЕ СИГНАЛА, а не сумма всей стороны.
+
+    Регресс Газпн3P13R 24.08: сообщение показывало 20,7м ₽ (весь оффер книги)
+    при 3,8м на уровне 99,86, по которому фильтр сработал."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(level_money_rub=3_800_000,
+                                                 money_ok_rub=20_700_000,
+                                                 money_rub=1_000_000)]})
+    assert "3,8м ₽" in txt and "20,7м ₽" not in txt
+
+
+def test_order_money_falls_back_for_old_events():
+    """Событие из ленты, записанное до появления поля — показываем что есть."""
+    m = _order_match(money_ok_rub=8_200_000, money_rub=1_000_000)
+    m.pop("level_money_rub", None)
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book", "matches": [m]})
+    assert "8,2м ₽" in txt
