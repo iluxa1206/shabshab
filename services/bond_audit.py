@@ -338,7 +338,8 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     from services.bonds import amort_remaining_face
     face_cache = ref_obj.face_value
     face_reg = (reg_row or {}).get("face_value")
-    face_amort = amort_remaining_face(amorts, calc_date)
+    face_amort = amort_remaining_face(amorts, calc_date,
+                                      getattr(ref, "face_value", None))
     face = face_amort or face_reg or face_cache or 1000.0
     ref_obj.face_value = face          # оценка/waterfall тоже на честном остатке
     srcs = {"график MOEX": face_amort, "реестр": face_reg, "кэш": face_cache}
@@ -729,7 +730,7 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
     # номинал: остаток из графика амортизаций > кэш (стейл-кэш травит калибровку,
     # см. одноимённый блок в build_bond_audit)
     from services.bonds import amort_remaining_face
-    _rem = amort_remaining_face(amorts, calc_date)
+    _rem = amort_remaining_face(amorts, calc_date, ref_obj.face_value)
     if _rem is not None:
         ref_obj.face_value = _rem
 

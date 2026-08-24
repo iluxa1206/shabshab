@@ -206,7 +206,8 @@ async def build_payments_calendar() -> dict:
                     # остатке 800 → две строки по 100 ₽ на 08.04.27).
                     full_i = full_by.get(isin) or {}
                     reconcile_face(ref, full_i.get("coupons") or [], calc_date)
-                    rem = amort_remaining_face(full_i.get("amorts"), calc_date)
+                    rem = amort_remaining_face(full_i.get("amorts"), calc_date,
+                                               ref.face_value)
                     if rem is not None and abs(rem - (ref.face_value or 0)) > 0.5:
                         ref.face_value = rem
                     name = shortnames.get(isin) or u.get("name") or isin

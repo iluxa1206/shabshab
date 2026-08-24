@@ -186,3 +186,31 @@ def test_margin_schedule_per_period_delta(keyrate_curve, calc_date, flat_index_1
     r150 = max(c.coupon_rate_pct for c in coupons if c.spread_bps == 150)
     r350 = max(c.coupon_rate_pct for c in coupons if c.spread_bps == 350)
     assert abs((r350 - r150) - 2.0) < 0.05
+
+
+# ── неполный график амортизаций ────────────────────────────────────────────
+
+def test_amort_remaining_ignores_partial_schedule():
+    """У ипотечных агентов MOEX публикует только объявленные транши, дальние —
+    нулями. Сумма графика тогда много меньше номинала, и «Σ будущих» даёт
+    копейки вместо остатка.
+
+    Регресс sИАДОМ1P19 24.08: 8,78 ₽ против биржевых 577,64 ₽ — цена в % от
+    такого «номинала» давала Y-IDX в тысячи bps."""
+    from datetime import date
+    from services.bonds import amort_remaining_face
+
+    today = date(2026, 8, 24)
+    partial = ([{"date": "2022-09-28", "value": 26.14}] * 1
+               + [{"date": "2026-09-28", "value": 8.78}]
+               + [{"date": "2030-12-28", "value": 0}])
+    assert amort_remaining_face(partial, today, 577.64) is None, \
+        "график не покрывает номинал — доверяем бирже, а не арифметике по огрызку"
+
+    # полный график работает как раньше
+    full = [{"date": "2026-01-28", "value": 400.0},
+            {"date": "2027-01-28", "value": 300.0},
+            {"date": "2028-01-28", "value": 300.0}]
+    assert amort_remaining_face(full, today, 600.0) == pytest.approx(600.0)
+    assert amort_remaining_face(full, today) == pytest.approx(600.0), \
+        "без текущего номинала — прежнее поведение"

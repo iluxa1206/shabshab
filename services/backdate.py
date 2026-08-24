@@ -481,7 +481,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
     from services.bonds import amort_remaining_face
     face_asof = hist_row.get("facevalue") if hist_row else None
     if face_asof is None or (stale_days or 0) > 0:
-        face_by_sched = amort_remaining_face(amorts, d)
+        face_by_sched = amort_remaining_face(amorts, d, ref_obj.face_value)
         if face_by_sched is not None:
             if face_asof is not None and abs(face_by_sched - face_asof) > 0.5:
                 warnings.append(

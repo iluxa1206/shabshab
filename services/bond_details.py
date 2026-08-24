@@ -103,7 +103,8 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         ref_dict["face_value"] = ref_obj.face_value
     # остаток из графика амортизаций авторитетнее кэша: стейл-кэш у
     # амортизируемых бумаг завышал dirty/SM/DM (БалтЛизП10: 1000 vs 900)
-    _rem = amort_remaining_face((sched_full or {}).get("amorts"), _cd_face)
+    _rem = amort_remaining_face((sched_full or {}).get("amorts"), _cd_face,
+                                ref_obj.face_value)
     if _rem is not None and abs(_rem - ref_obj.face_value) > 0.5:
         ref_obj.face_value = _rem
         ref_dict["face_value"] = _rem
@@ -317,7 +318,8 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
 
     # номинал и НКД — как в карточке (иначе dirty/ставка расходятся)
     reconcile_face(ref_obj, (sched_full or {}).get("coupons"), calc_date)
-    _rem = amort_remaining_face((sched_full or {}).get("amorts"), calc_date)
+    _rem = amort_remaining_face((sched_full or {}).get("amorts"), calc_date,
+                                ref_obj.face_value)
     if _rem is not None and abs(_rem - ref_obj.face_value) > 0.5:
         ref_obj.face_value = _rem
     accrued_live = snapshot.get(isin, {}).get("accrued")

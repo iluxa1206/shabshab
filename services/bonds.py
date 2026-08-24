@@ -168,15 +168,23 @@ def yidx_at_price(row: dict, price: Optional[float]) -> Optional[float]:
     return int(round(yoi + (price - last) * slope))
 
 
-def amort_remaining_face(amorts, calc_date: date) -> Optional[float]:
+def amort_remaining_face(amorts, calc_date: date,
+                        current_face: Optional[float] = None) -> Optional[float]:
     """Остаток номинала на calc_date из графика амортизаций MOEX = Σ будущих
     траншей (вкл. финальное погашение). Авторитетнее кэша securities: isins_cache
     у амортизируемых бумаг стейлится (БалтЛизП10: кэш 1000₽ при остатке 900₽ →
     dirty/SM/DM карточки и бэктест паспорта завышали номинал на 11%).
-    None — графика нет (не амортизируется или нет данных), берите прежний face."""
+    None — графика нет (не амортизируется или нет данных), берите прежний face.
+
+    НЕПОЛНЫЙ ГРАФИК ТОЖЕ ДАЁТ None. У ипотечных агентов MOEX публикует только
+    объявленные транши, дальние стоят нулями: сумма всего графика оказывается
+    много меньше номинала, и «Σ будущих» превращается в копейки (sИАДОМ1P19
+    24.08: 8,78₽ против биржевых 577,64₽ — цена в % от такого «номинала»
+    давала Y-IDX в тысячи bps). Сверяем сумму графика с текущим номиналом:
+    не сходится — доверяем бирже, а не арифметике по огрызку."""
     if not amorts:
         return None
-    tot = 0.0
+    tot = whole = 0.0
     for a in amorts:
         d = a.get("date")
         if isinstance(d, str):
@@ -184,8 +192,14 @@ def amort_remaining_face(amorts, calc_date: date) -> Optional[float]:
                 d = date.fromisoformat(d)
             except (ValueError, TypeError):
                 continue
-        if isinstance(d, date) and a.get("value") is not None and d > calc_date:
-            tot += float(a["value"])
+        if not isinstance(d, date) or a.get("value") is None:
+            continue
+        v = float(a["value"])
+        whole += v
+        if d > calc_date:
+            tot += v
+    if current_face and whole < current_face * 0.95:
+        return None
     return tot if tot > 0 else None
 
 
