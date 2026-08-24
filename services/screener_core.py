@@ -339,14 +339,18 @@ def level_money(px_pct: Optional[float], qty: Optional[float], face: float,
 def vwap_for(levels, want_rub: float, face: float,
              accrued: float = 0.0) -> Optional[dict]:
     """Средневзвешенная цена набора want_rub рублей по лестнице (от лучшей цены).
-    → {px, money, levels, partial} либо None. partial=True — глубины не хватило,
-    px посчитан по всей книге.
+    → {px, money, last_px, levels, partial} либо None. partial=True — глубины не
+    хватило, px посчитан по всей книге.
 
-    money — сколько НАБРАЛИ (≈ want_rub, наш лимит). Объём, который показывают
-    человеку, считает money_upto по итоговой цене: «сколько стоит по 99,86»."""
+    money — сколько НАБРАЛИ (≈ want_rub, наш лимит). last_px — цена ПОСЛЕДНЕГО
+    задействованного уровня, то есть граница, до которой дошёл набор: по ней и
+    меряется накопленный объём (money_upto). Средневзвешенная px для этого не
+    годится — она всегда ЛУЧШЕ худшего взятого уровня, и накопление по ней
+    выходило меньше самого набора (Газпн3P14R 24.08: набрали 1 млн, а в шапке
+    стояло 250,5к, потому что 3 из 7 уровней оказались дороже средневзвеса)."""
     if not levels or not (want_rub > 0) or not face:
         return None
-    left, cost, taken, used = float(want_rub), 0.0, 0.0, 0
+    left, cost, taken, used, last = float(want_rub), 0.0, 0.0, 0, None
     for lvl in levels:
         try:
             px, qty = float(lvl[0]), float(lvl[1])
@@ -356,6 +360,7 @@ def vwap_for(levels, want_rub: float, face: float,
         if money <= 0:
             continue
         used += 1
+        last = px
         part = min(money, left)
         cost += part * px           # цену взвешиваем деньгами, не количеством
         taken += part
@@ -364,18 +369,18 @@ def vwap_for(levels, want_rub: float, face: float,
             break
     if taken <= 0:
         return None
-    return {"px": cost / taken, "money": taken,
+    return {"px": cost / taken, "money": taken, "last_px": last,
             "levels": used, "partial": left > 1e-9}
 
 
 def money_upto(levels, px: Optional[float], side: str, face: float,
                accrued: float = 0.0) -> Optional[float]:
-    """НАКОПЛЕННЫЙ объём по цене сигнала: сколько денег стоит по цене не хуже
-    px — для оффера это уровни дешевле-или-равно, для бида дороже-или-равно.
+    """НАКОПЛЕННЫЙ объём до цены px: сколько денег стоит по цене не хуже неё —
+    для оффера это уровни дешевле-или-равно, для бида дороже-или-равно.
 
     Именно это число человек и называет «объёмом по 99,86»: не наш набранный
-    лимит (он равен порогу фильтра) и не сумма всей стороны книги, а всё, что
-    реально можно взять по цене сигнала."""
+    лимит (он равен порогу фильтра) и не сумма всей стороны книги, а вся
+    глубина до цены, куда дошёл набор."""
     if px is None or not levels or not face:
         return None
     tot = 0.0
@@ -739,7 +744,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             best = best_level(ladder, face, accrued)
             if not best or best["money"] < want:
                 continue
-            price = single_px = best["price"]
+            price = single_px = depth_px = best["price"]
             val = _price_y_idx(isin, row, price, side, exact)
             if val is None and not exact and price == row.get(side):
                 val = top_val          # заявка стоит первой — спред верха точен
@@ -750,6 +755,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             if not vwap_passes(v, want):
                 continue
             price = round(v["px"], 4)
+            depth_px = v["last_px"]
             val = _price_y_idx(isin, row, v["px"], side, exact)
             if val is None and not exact and v["levels"] == 1:
                 # набор уложился в один уровень — VWAP-цена и есть верх стакана,
@@ -759,7 +765,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             levels = v["levels"]
             partial = v["partial"]
         else:
-            price = row.get(side)
+            price = depth_px = row.get(side)
             # верх стакана: у метрик он уже посчитан точно (y_idx_by_price по
             # bid/ask), но при exact сверяем тем же путём — на случай, если
             # котировка ушла вперёд снимка метрик
@@ -767,9 +773,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             money = side_money_rub(depth_map.get(isin), side, face, accrued)
             levels, partial = None, False
 
-        # накопленный объём по цене сигнала — одинаково для всех режимов набора:
-        # цена уже определена выше (верх стакана / VWAP / уровень заявки)
-        level_rub = money_upto(ladder, price, side, face, accrued)
+        # Накопленный объём — по ГРАНИЦЕ набора (цена последнего взятого
+        # уровня), а не по средневзвесу: тот всегда лучше худшего уровня, и по
+        # нему накопление выходило меньше самого набора. Для верха стакана и
+        # одной заявки граница совпадает с ценой сигнала.
+        level_rub = money_upto(ladder, depth_px, side, face, accrued)
 
         # спред нужен для отсева ТОЛЬКО когда заданы границы: фильтр «крупные
         # заявки в ААА» не должен терять бумагу из-за непосчитанного Y-IDX

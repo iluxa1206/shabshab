@@ -835,17 +835,15 @@ def test_removed_channel_falls_back_to_private(targets):
     assert tg_targets.chat_id_for(f["tg_target_id"], USER) is None
 
 
-# ── объём в сообщении: накопленный объём по цене сигнала ──────────────────
+# ── объём в сообщении: накопленный объём до границы набора ────────────────
 
 def test_money_upto_price_is_cumulative_depth():
-    """Сколько денег стоит по цене НЕ ХУЖЕ цены сигнала.
+    """Сколько денег стоит по цене НЕ ХУЖЕ заданной.
 
     Регресс Газпн3P13R 24.08: в шапке было 20,7м (вся сторона книги) при 3,8м,
     доступных по 99,86 — цене, по которой фильтр и сработал."""
     ask = [(99.86, 3800), (99.87, 2200), (99.90, 2000), (99.91, 2000)]
-    # по лучшей цене доступен только свой уровень
     assert core.money_upto(ask, 99.86, "ask", 1000.0) == pytest.approx(3_794_680)
-    # цена глубже — накапливаем всё, что дешевле-или-равно
     assert core.money_upto(ask, 99.87, "ask", 1000.0) == pytest.approx(
         3_794_680 + 2_197_140, rel=1e-6)
     assert core.money_upto(ask, 99.91, "ask", 1000.0) == pytest.approx(
@@ -864,6 +862,25 @@ def test_money_upto_price_bid_side_is_mirrored():
 def test_money_upto_price_empty_side():
     assert core.money_upto([], 99.9, "ask", 1000.0) is None
     assert core.money_upto([(99.9, 10)], None, "ask", 1000.0) is None
+
+
+def test_depth_is_measured_at_last_taken_level_not_vwap():
+    """Граница накопления — цена ПОСЛЕДНЕГО взятого уровня, а не средневзвес.
+
+    Регресс Газпн3P14R 24.08: набор занял 7 уровней, средневзвес 101,18 оказался
+    лучше трёх худших из них, и накопленный объём по нему вышел 250,5к — меньше
+    самого набранного миллиона."""
+    ask = [(101.08, 204), (101.09, 184), (101.13, 10), (101.14, 31),
+           (101.20, 300), (101.25, 200), (101.30, 500)]
+    v = core.vwap_for(ask, 1_400_000, face=1000.0)
+    assert v["levels"] == 7 and v["partial"] is False
+    assert v["last_px"] == 101.30, "граница — худший взятый уровень"
+    assert v["px"] < v["last_px"], "средневзвес всегда лучше границы"
+
+    by_vwap = core.money_upto(ask, v["px"], "ask", 1000.0)
+    by_edge = core.money_upto(ask, v["last_px"], "ask", 1000.0)
+    assert by_vwap < v["money"], "предусловие: по средневзвесу выходит меньше набора"
+    assert by_edge >= v["money"], "по границе — не меньше того, что набрали"
 
 
 # ── повтор только по спреду ────────────────────────────────────────────────
