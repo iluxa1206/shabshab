@@ -332,3 +332,35 @@ def test_zero_accrued_kept_on_payment_day(keyrate_curve, calc_date, flat_index_1
                                     accrued_override=0.0, periods=periods)
     assert m["accrued_settle_rub"] == pytest.approx(0.0, abs=1e-6)
     assert not any("НКД источника 0" in w for w in m["warnings"])
+
+
+def test_zero_accrued_replaced_when_coupon_rate_unpublished(keyrate_curve, calc_date,
+                                                            flat_index_15, monkeypatch):
+    """У флоатера ставка ТЕКУЩЕГО купона обычно не объявлена, и точный НКД по
+    графику не считается — но подставить ноль нельзя.
+
+    Регресс Газпн3P14R 24.08: сигнал 259 bps против 61 верного, разница ровно
+    в НКД 10,97 ₽. Оцениваем по последнему известному купону."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    start = calc_date - timedelta(days=20)
+    periods = [(start - timedelta(days=30), start, 25.0),   # прошлый — известен
+               (start, start + timedelta(days=30), None)]   # текущий — нет
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=0.0, periods=periods)
+    assert m["accrued_settle_rub"] > 15, "НКД оценён по прошлому купону, а не занулён"
+    assert any("НКД источника 0" in w for w in m["warnings"])
+
+
+def test_accrued_estimate_falls_back_to_last_known_coupon():
+    """Оценка = дневная ставка последнего известного купона × дни периода."""
+    from core.valuation import accrued_estimate, accrued_at
+    per = [(date(2026, 6, 7), date(2026, 7, 7), 13.5),
+           (date(2026, 7, 7), date(2026, 8, 6), 13.33),
+           (date(2026, 8, 6), date(2026, 9, 5), None)]
+    d = date(2026, 8, 24)
+    assert accrued_at(per, d) is None, "предусловие: точный НКД не считается"
+    assert accrued_estimate(per, d) == pytest.approx(13.33 / 30 * 18, rel=1e-9)
+    assert accrued_estimate(per, date(2026, 8, 6)) == 0.0, "в день старта — ноль"
+    assert accrued_estimate([], d) is None

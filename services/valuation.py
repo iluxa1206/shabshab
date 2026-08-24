@@ -154,7 +154,11 @@ def calculate_valuation_metrics(
     # НКД 11,46 ₽). Ноль законен только в день выплаты, когда период начался
     # сегодня; в остальных случаях верим расписанию, а не снапшоту.
     if accrued is not None and abs(accrued) < 0.005 and periods:
-        _sched = _acc_at(periods, settle_dt)
+        from core.valuation import accrued_estimate as _acc_est
+        # ставка текущего купона у флоатера обычно ещё не объявлена, и точный
+        # НКД по графику не считается — оцениваем по последнему известному
+        # купону: ошибка в проценты от НКД против сотен bps от нуля
+        _sched = _acc_est(periods, settle_dt)
         if _sched and _sched > 0.01:
             warnings.append(
                 f"НКД источника 0 посреди купонного периода — заменён расчётным "

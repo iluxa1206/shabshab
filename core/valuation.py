@@ -317,6 +317,31 @@ def accrued_at(periods, d: date) -> Optional[float]:
     return v * (d - s).days / ((e - s).days or 1)
 
 
+def accrued_estimate(periods, d: date) -> Optional[float]:
+    """НКД на дату d, когда ставка текущего купона ЕЩЁ НЕ ОБЪЯВЛЕНА.
+
+    У флоатера это норма: MOEX публикует value уже после фиксинга, и accrued_at
+    возвращает None ровно там, где НКД нужнее всего. Оцениваем по последнему
+    ИЗВЕСТНОМУ купону — соседние периоды у флоатера отличаются на движение
+    ставки за месяц, то есть на проценты от НКД. Против нуля (а именно ноль
+    иногда приходит от ISS) это ошибка на два порядка меньше.
+    """
+    exact = accrued_at(periods, d)
+    if exact is not None:
+        return exact
+    p = period_at(periods, d)
+    if not p:
+        return None
+    s, e, _ = p
+    prev = [(ps, pe, pv) for ps, pe, pv in (periods or [])
+            if pv is not None and pe <= s]
+    if not prev:
+        return None
+    ps, pe, pv = max(prev, key=lambda x: x[1])
+    per_day = pv / ((pe - ps).days or 1)
+    return per_day * max(0, (d - s).days)
+
+
 def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
                      periods, to_date: Optional[date] = None
                      ) -> tuple[Optional[float], Optional[str]]:
