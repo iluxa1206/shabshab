@@ -595,3 +595,23 @@ def test_repeat_count_joins_details_line():
                         "matches": [m, m]})
     line = [ln for ln in txt.split("\n") if "срабатываний" in ln][0]
     assert "заявка" in line and "срабатываний за такт: 2" in line
+
+
+def test_order_rating_goes_after_isin():
+    """У заявки рейтинг стоит в паспортной строке, за ISIN."""
+    line = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                         "matches": [_order_match(rating="AAA")]}).split("\n")[1]
+    assert line.endswith("· AAA")
+    assert line.index("RU000A109B33") < line.index("AAA")
+
+
+def test_trade_rating_not_duplicated():
+    """У сделки рейтинг остаётся в подробностях рядом со временем — там он и
+    был согласован, дублировать в паспортной строке незачем."""
+    txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
+                        "matches": [{"isin": "RU000A10AU99", "name": "Т",
+                                     "price": 100.1, "money_rub": 2.6e8,
+                                     "rating": "AAA", "ts": "2026-08-24 12:47:02"}]})
+    assert txt.count("AAA") == 1
+    rating_line = [ln for ln in txt.split("\n") if "AAA" in ln][0]
+    assert "12:47:02" in rating_line

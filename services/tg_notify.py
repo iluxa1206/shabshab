@@ -308,12 +308,15 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
             sub.append(want)
 
     head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
-    # цена и ISIN рядом: одно про «почём», другое про «что» — вместе они
-    # отвечают на вопрос, который возникает первым после шапки
+    # цена, ISIN и рейтинг рядом: «почём», «что» и «чьё» — паспорт строки,
+    # который читают сразу после шапки. У сделки рейтинг стоит в подробностях
+    # рядом со временем и здесь не дублируется.
     px = [f"{_num(m['price'])}%"] if m.get("price") is not None else []
     isin = _isin_line(m)
     if isin:
         px.append(isin)
+    if kind != "block" and m.get("rating"):
+        px.append(html.escape(str(m["rating"])))
     return head_line, " · ".join(px), " · ".join(b for b in sub if b)
 
 
