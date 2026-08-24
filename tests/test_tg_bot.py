@@ -135,8 +135,9 @@ def test_book_line_layout():
     assert first.startswith("🔴")                      # оффер красный
     # число без подписи: в строке это единственное значение в бп
     assert "171 бп" in first and "R-spread" not in first
-    assert "1м ₽" in first and "1,5 г" in first
-    assert first.index("171 бп") < first.index("Газпн3P13R")
+    assert "1м ₽" in first and "(1,5 г)" in first, "срок — в скобках при имени"
+    # порядок шапки: спред → выпуск со сроком → объём
+    assert first.index("171 бп") < first.index("Газпн3P13R") < first.index("₽")
     assert "99,90%" in second and "1 ур" in second and "объём +6 %" in second
     # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
     # не добавляет к имени фильтра, а строку начинает мусором
@@ -546,3 +547,22 @@ def test_order_money_falls_back_for_old_events():
     m.pop("level_money_rub", None)
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book", "matches": [m]})
     assert "8,2м ₽" in txt
+
+
+def test_head_order_is_spread_issue_money():
+    """Шапка: спред · выпуск (срок) · объём — и ничего между именем и сроком."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(years=1.1,
+                                                 level_money_rub=12_100_000)]})
+    head = txt.split("\n")[0]
+    assert "<code>Газпн3P13R</code> (1,1 г)" in head
+    assert head.index("168 бп") < head.index("Газпн3P13R") < head.index("12,1м ₽")
+
+
+def test_head_without_maturity_has_no_empty_brackets():
+    """Срок неизвестен — скобок нет вовсе."""
+    m = _order_match()
+    m.pop("years", None)
+    head = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                         "matches": [m]}).split("\n")[0]
+    assert "()" not in head and "Газпн3P13R" in head

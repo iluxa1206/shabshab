@@ -271,15 +271,17 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
     """
     head, sub = [], []
 
+    # Порядок шапки: спред → выпуск со сроком → объём. Спред первым, потому что
+    # по нему решают, стоит ли читать дальше; срок в скобках при имени, потому
+    # что «180 бп» у годовой бумаги и у пятилетней — разные новости; объём
+    # замыкает как размер возможности.
     if m.get("val_bps") is not None:
         head.append(f"<b>{m['val_bps']:.0f} бп</b>")
+    years = _fmt_years(m.get("years"))
+    head.append(_issue_link(m) + (f" ({years})" if years else ""))
     money = _short_money(_money_of(m, kind))
     if money:
         head.append(money)
-    years = _fmt_years(m.get("years"))
-    if years:
-        head.append(years)
-    head.append(_issue_link(m))
 
     if m.get("price") is not None:
         sub.append(f"{_num(m['price'])}%")
