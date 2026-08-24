@@ -118,10 +118,17 @@ async def call(method: str, payload: Optional[dict] = None,
 async def send_message(chat_id: int, text: str, *,
                        parse_mode: Optional[str] = "HTML",
                        disable_notification: bool = False,
+                       reply_to: Optional[int] = None,
                        reply_markup: Optional[dict] = None) -> Optional[dict]:
+    """reply_to — ответить на сообщение (follow-up к сигналу виден связкой).
+    allow_sending_without_reply: исходное могли удалить, и ответ не должен
+    пропадать вместе с ним."""
     payload = {"chat_id": chat_id, "text": text,
                "disable_notification": disable_notification,
                "link_preview_options": {"is_disabled": True}}
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": int(reply_to),
+                                       "allow_sending_without_reply": True}
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if reply_markup:

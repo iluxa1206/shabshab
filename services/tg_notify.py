@@ -449,6 +449,24 @@ def _signal_text(buf: dict) -> str:
     return f"{body}{sep}{foot}"
 
 
+def _arm_followup(chat_id: int, res: Optional[dict], buf: dict) -> None:
+    """Ставит проверку судьбы заявки на отправленное сообщение.
+
+    Только «заявка» (первое попадание бумаги под условия): повторы по спреду и
+    объёму дали бы цепочку ответов на одну и ту же бумагу. Только book —
+    у сделки нет уровня, судьбу которого можно проследить."""
+    if not res or buf.get("kind") == "block":
+        return
+    ms = buf.get("matches") or []
+    if not ms or (ms[-1].get("reason") or "") != "new":
+        return
+    mid = res.get("message_id")
+    if not mid:
+        return
+    from services import signal_followup
+    signal_followup.schedule(chat_id, mid, ms[-1], buf.get("side"))
+
+
 def _due(now: float) -> list:
     """Какие ключи буфера пора отправлять.
 
@@ -492,9 +510,11 @@ async def _flush_signals() -> None:
     async def send(chat_id: int, buf: dict) -> None:
         async with sem:
             try:
-                await telegram.send_message(chat_id, _signal_text(buf))
+                res = await telegram.send_message(chat_id, _signal_text(buf))
             except Exception as e:
                 logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
+                return
+            _arm_followup(chat_id, res, buf)
 
     # Чаты параллельно: сериальный цикл складывал RTT прокси на каждое
     # сообщение, и хвост пачки приезжал заметно позже головы.

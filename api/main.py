@@ -584,6 +584,30 @@ BLOCK_POLL_INTERVAL = int(os.getenv("BLOCK_POLL_INTERVAL", "60"))     # опро
 BLOCK_WORKER = os.getenv("BLOCK_WORKER", "1") not in ("0", "false", "False")
 
 
+FOLLOWUP_TICK_SEC = int(os.getenv("SIGNAL_FOLLOWUP_TICK", "30"))
+
+
+async def followup_worker():
+    """Судьба заявки: раз в полминуты добираем созревшие проверки.
+
+    Такт частый и дешёвый (запрос по индексу done+due_at, обычно пустой), зато
+    ответ приходит близко к обещанным 15 минутам, а не «когда-нибудь». Вне
+    торговых часов не крутим: «уровня нет» после закрытия ничего не значит."""
+    from services import signal_followup
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                n = await signal_followup.run_due()
+                if n:
+                    logger.info("followup: отправлено %d", n)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("followup worker error: %s", e)
+        await asyncio.sleep(FOLLOWUP_TICK_SEC)
+
+
 async def block_trades_worker():
     """Крупные сделки по всему рынку облигаций: безадресные + РПС/адресные.
 
@@ -775,12 +799,15 @@ async def lifespan(app: FastAPI):
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
     tg_sig_task = asyncio.create_task(tg_signal_worker())
+    # судьба заявки: что стало с уровнем через четверть часа после сигнала
+    followup_task = asyncio.create_task(followup_worker())
     # команды бота: на этом VPS Telegram до нас не достучится (вебхук молчит),
     # поэтому апдейты забираем сами — см. services/tg_poll.py
     tg_poll_task = asyncio.create_task(tg_poll_worker())
     signals_task = asyncio.create_task(signals_worker())
     yield
     tg_sig_task.cancel()
+    followup_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()
