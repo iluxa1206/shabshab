@@ -322,6 +322,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
   const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
+  const [repeatMoney, setRepeatMoney] = useState(ep.repeat_on_money !== false);
   const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
@@ -339,8 +340,9 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
     hide_subord: hideSub,
+    repeat_on_money: repeatMoney,
   }), [ratings, emitters, isins, issuers, side, smin, smax, minMoney, moneyMode,
-       ymin, ymax, hideSub]);
+       ymin, ymax, hideSub, repeatMoney]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
@@ -421,6 +423,13 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
         <div className="sig-field">
           <label className="sig-label">Повторно сообщать при сдвиге</label>
           <Seg pairs={CHANGES} value={changePct} onChange={setChangePct} />
+          {/* Спред звонит всегда, объём — по желанию: у ликвидной бумаги стакан
+              дышит объёмом постоянно, и тому, кто следит за уровнем спреда, это
+              шум. Первое попадание бумаги в набор приходит в любом случае. */}
+          <label className="sig-check-inline" title="Стакан ликвидной бумаги дышит объёмом постоянно — выключи, если следишь только за уровнем спреда">
+            <input type="checkbox" checked={repeatMoney}
+              onChange={(e) => setRepeatMoney(e.target.checked)} /> и при изменении объёма
+          </label>
         </div>
         {minMoney !== "" && (
           <div className="sig-field">
@@ -674,6 +683,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
+          {f.params.repeat_on_money === false ? " (только спред)" : ""}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
           {tgTargetTitle(f, targets)}
         </div>

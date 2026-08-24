@@ -1731,6 +1731,10 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 
 .sig-checks { display: flex; gap: 18px; font-size: 12px; color: var(--fg); }
 .sig-checks label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+/* Приписка к переключателю сдвига: «и при изменении объёма» — стоит под
+   сегментами, поэтому свой отступ, а не .sig-checks (там строка из чекбоксов). */
+.sig-check-inline { display: inline-flex; align-items: center; gap: 6px;
+  margin-top: 6px; font-size: 12px; color: var(--mut); cursor: pointer; }
 .sig-preview { margin-top: 12px; padding: 9px 12px; background: var(--hover);
                border-left: 3px solid var(--accent); font-size: 12px; line-height: 1.45; }
 .sig-err { margin-top: 10px; color: var(--neg); font-size: 12px; }

@@ -380,11 +380,14 @@ def _moved_pct(prev: Optional[float], cur: Optional[float], pct: float) -> bool:
 
 
 def detect_events(fid: int, user_email: str, side: str, change_pct: float,
-                  matches: List[dict], want_money: Optional[float]) -> List[dict]:
+                  matches: List[dict], want_money: Optional[float],
+                  repeat_on_money: bool = True) -> List[dict]:
     """Сравнивает набор с прошлым состоянием → только события.
 
     Две причины повтора, у каждой своя единица (см. пороги выше): спред ушёл на
     SPREAD_REPEAT_BPS бп, объём по нашим условиям — на change_pct %.
+    repeat_on_money=False выключает вторую: остаётся только спред (и первое
+    попадание бумаги в набор — оно не повтор).
     «Заявка» (бумага пришла в набор) — только если
     её не видели дольше RETURN_GRACE_MIN; иначе это то же самое, что уже
     звонило, и проверяются обычные пороги. Поверх всего кулдаун COOLDOWN_MIN на
@@ -419,7 +422,8 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                 why = []
                 if _moved_abs(prev["val_bps"], m.get("val_bps"), SPREAD_REPEAT_BPS):
                     why.append("spread")
-                if _moved_pct(prev["money_ok_rub"], m.get("money_ok_rub"), change_pct):
+                if repeat_on_money and _moved_pct(
+                        prev["money_ok_rub"], m.get("money_ok_rub"), change_pct):
                     why.append("money")
                 since = _age_min(prev["last_event_at"], now_dt)
                 if since is not None and since < COOLDOWN_MIN and prev["last_reason"] in why:
@@ -574,7 +578,9 @@ async def run_cycle() -> int:
                                           exact=True)
             events = detect_events(f["id"], f["user_email"], f["params"]["side"],
                                    f.get("change_pct") or 10.0, matches,
-                                   f["params"].get("min_money_rub"))
+                                   f["params"].get("min_money_rub"),
+                                   repeat_on_money=f["params"].get(
+                                       "repeat_on_money", True))
             if not events:
                 continue
             # дата погашения и срок — во всплывающее окно и в телеграм: «спред

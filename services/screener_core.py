@@ -47,6 +47,11 @@ PARAM_DEFAULTS = {
     "years_min": None,      # лет до погашения, нижняя граница
     "years_max": None,      # лет до погашения, верхняя граница
     "hide_subord": False,   # прятать суборды (см. _SUBORD_RE)
+    # ПОВТОРНОЕ срабатывание по уже найденной бумаге. Спред — всегда, объём —
+    # по желанию: стакан по ликвидной бумаге дышит объёмом постоянно, и для
+    # того, кто следит за уровнем спреда, это шум. Первое попадание («заявка»)
+    # приходит в любом случае — это не повтор.
+    "repeat_on_money": True,
 }
 
 MAX_SELECTOR_ITEMS = 50
@@ -134,6 +139,8 @@ def normalize_params(raw: dict) -> dict:
         raise FilterError("side: ask | bid")
     p["issuer"] = _issuer(raw.get("issuer"))
     p["hide_subord"] = bool(raw.get("hide_subord"))
+    p["repeat_on_money"] = (True if raw.get("repeat_on_money") is None
+                            else bool(raw.get("repeat_on_money")))
     _floats(raw, p, ("spread_min", "spread_max", "min_money_rub",
                      "years_min", "years_max"))
     if p["min_money_rub"] is not None and p["min_money_rub"] <= 0:
@@ -220,6 +227,8 @@ def normalize_block_params(raw: dict) -> dict:
         raise FilterError("Диапазон спреда: «от» больше «до»")
     _years_bounds(raw, p)
     p["hide_subord"] = bool(raw.get("hide_subord"))
+    p["repeat_on_money"] = (True if raw.get("repeat_on_money") is None
+                            else bool(raw.get("repeat_on_money")))
     return p
 
 

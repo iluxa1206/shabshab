@@ -864,3 +864,52 @@ def test_money_upto_price_bid_side_is_mirrored():
 def test_money_upto_price_empty_side():
     assert core.money_upto([], 99.9, "ask", 1000.0) is None
     assert core.money_upto([(99.9, 10)], None, "ask", 1000.0) is None
+
+
+# ── повтор только по спреду ────────────────────────────────────────────────
+
+def _state_row(fid, isin, val_bps, money_ok):
+    """Кладёт прошлое состояние бумаги, как его пишет тик скринера."""
+    from datetime import datetime, timezone, timedelta
+    old = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    with _lock, _connect() as c:
+        c.execute(
+            "INSERT INTO signal_state(filter_id,isin,val_bps,price,money_rub,"
+            "money_ok_rub,last_seen_at,last_event_at,last_reason,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (fid, isin, val_bps, 100.0, 1e6, money_ok, old, old, "new", old))
+
+
+def test_money_trigger_can_be_switched_off():
+    """repeat_on_money=False: объём вырос вдвое — молчим, спред не двигался."""
+    f = signals.create(USER, "только спред",
+                       {"spread_min": 100, "repeat_on_money": False})
+    assert f["params"]["repeat_on_money"] is False
+    _state_row(f["id"], "RU000A0000A1", 150.0, 1_000_000)
+    m = [{"isin": "RU000A0000A1", "name": "Б", "val_bps": 150.0, "price": 100.0,
+          "money_rub": 2e6, "money_ok_rub": 2_000_000}]
+    assert signals.detect_events(f["id"], USER, "ask", 10.0, m, None,
+                                 repeat_on_money=False) == []
+
+
+def test_spread_trigger_still_fires_when_money_off():
+    """Тот же фильтр: спред ушёл — событие есть."""
+    f = signals.create(USER, "только спред 2",
+                       {"spread_min": 100, "repeat_on_money": False})
+    _state_row(f["id"], "RU000A0000A2", 150.0, 1_000_000)
+    m = [{"isin": "RU000A0000A2", "name": "Б", "val_bps": 190.0, "price": 100.0,
+          "money_rub": 1e6, "money_ok_rub": 1_000_000}]
+    ev = signals.detect_events(f["id"], USER, "ask", 10.0, m, None,
+                               repeat_on_money=False)
+    assert [e["reason"] for e in ev] == ["spread"]
+
+
+def test_money_trigger_on_by_default():
+    """Умолчание не меняется: старые фильтры звонят и на объём."""
+    f = signals.create(USER, "как раньше", {"spread_min": 100})
+    assert f["params"]["repeat_on_money"] is True
+    _state_row(f["id"], "RU000A0000A3", 150.0, 1_000_000)
+    m = [{"isin": "RU000A0000A3", "name": "Б", "val_bps": 150.0, "price": 100.0,
+          "money_rub": 2e6, "money_ok_rub": 2_000_000}]
+    ev = signals.detect_events(f["id"], USER, "ask", 10.0, m, None)
+    assert [e["reason"] for e in ev] == ["money"]
