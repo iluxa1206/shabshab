@@ -383,15 +383,14 @@ def _signal_text(buf: dict) -> str:
         m = ms[-1]
         head, px, details = _match_parts(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
-        # стакан ВНУТРИ записи: после цены, до подробностей срабатывания
-        parts = [head, px]
-        if book:
-            parts.append(book)
         if n > 1:
             details = ((details + " · ") if details else "") \
                 + f"<i>срабатываний за такт: {n}</i>"
-        parts.append(details)
-        body = "\n".join(p for p in parts if p)
+        # стакан ВНУТРИ записи: после цены, до подробностей срабатывания — и
+        # отбит пустыми строками с обеих сторон, иначе лестница слипается с
+        # текстом и глазу негде остановиться
+        top = "\n".join(p for p in (head, px) if p)
+        body = "\n\n".join(p for p in (top, book, details) if p)
     else:
         body = "\n\n".join(_fmt_match(m, kind, side_key, icons)
                             for m in ms[:MAX_MATCHES])

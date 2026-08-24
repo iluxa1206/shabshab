@@ -579,9 +579,11 @@ def test_book_layout_puts_details_after_orderbook():
                           "matches": [m]}).split("\n")
     assert "бп" in lines[0] and "Газпн3P13R" in lines[0]
     assert lines[1].startswith("100,05%") and "RU000A109B33" in lines[1]
-    assert lines[2].startswith("<blockquote")
+    assert lines[2] == "", "пустая строка перед стаканом"
+    assert lines[3].startswith("<blockquote")
     book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
-    details = lines[book_end + 1]
+    assert lines[book_end + 1] == "", "пустая строка после стакана"
+    details = lines[book_end + 2]
     assert "заявка" in details and "12:47:02" in details and ">1м" in details
     assert lines[-1] == "<b>Тест 2</b> · оффер", "подпись сразу под подробностями"
 
