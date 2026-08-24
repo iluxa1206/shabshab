@@ -190,10 +190,10 @@ def test_reason_delta_shows_direction():
 
 # --- снимок стакана в уведомлении о заявке ---
 
-_BOOK = {"asks": [{"price": 100.20, "money": 913050.0, "y_idx": 153.0},
-                  {"price": 100.05, "money": 1215600.0, "y_idx": 168.0}],
-         "bids": [{"price": 99.80, "money": 3031500.0, "y_idx": 174.0},
-                  {"price": 99.75, "money": 505000.0, "y_idx": 179.0}]}
+_BOOK = {"asks": [{"price": 100.20, "qty": 900, "money": 913050.0, "y_idx": 153.0},
+                  {"price": 100.05, "qty": 1200, "money": 1215600.0, "y_idx": 168.0}],
+         "bids": [{"price": 99.80, "qty": 3000, "money": 3031500.0, "y_idx": 174.0},
+                  {"price": 99.75, "qty": 500, "money": 505000.0, "y_idx": 179.0}]}
 
 
 def _book_match(**kw):
@@ -573,8 +573,8 @@ def test_head_without_maturity_has_no_empty_brackets():
 def test_book_layout_puts_details_after_orderbook():
     """Стакан стоит ВНУТРИ записи: шапка → цена+ISIN → книга → подробности."""
     m = _order_match(years=1.1, level_money_rub=32_600_000, reason="new")
-    m["book"] = {"asks": [{"price": 99.83, "money": 37_900, "y_idx": 164}],
-                 "bids": [{"price": 99.71, "money": 14_300, "y_idx": 178}]}
+    m["book"] = {"asks": [{"price": 99.83, "qty": 38, "money": 37_900, "y_idx": 164}],
+                 "bids": [{"price": 99.71, "qty": 14, "money": 14_300, "y_idx": 178}]}
     lines = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                           "matches": [m]}).split("\n")
     assert "бп" in lines[0] and "Газпн3P13R" in lines[0]
@@ -615,3 +615,24 @@ def test_trade_rating_not_duplicated():
     assert txt.count("AAA") == 1
     rating_line = [ln for ln in txt.split("\n") if "AAA" in ln][0]
     assert "12:47:02" in rating_line
+
+
+def test_book_volume_in_lots_not_rubles():
+    """Колонка стакана — БУМАГИ: в стакане торгуют количеством, а рубли уже
+    стоят в шапке (накопленный объём)."""
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_book_match()]})
+    body = txt[txt.index("<blockquote"):txt.index("</blockquote>")]
+    assert "ШТ" in body and "ОБЪЁМ" not in body
+    assert "1 200" in body and "3 000" in body      # точное число бумаг
+    assert "913" not in body and "1215" not in body  # рублёвых сумм нет
+
+
+def test_book_volume_small_and_large():
+    """До сотни тысяч — точное число, крупнее — порядок: «0к» вместо 38 бумаг
+    бесполезно, а миллион цифрами не влезает в колонку телефона."""
+    from services.tg_notify import _book_qty
+    assert _book_qty({"qty": 38}).strip() == "38"
+    assert _book_qty({"qty": 24_950}).strip() == "24 950"
+    assert _book_qty({"qty": 120_000}).strip() == "120к"
+    assert _book_qty({"qty": None}).strip() == ""

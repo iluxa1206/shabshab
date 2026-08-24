@@ -331,11 +331,21 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
 BOOK_LEVELS = int(os.getenv("TG_BOOK_LEVELS", "4"))
 
 
-def _book_money(v: Optional[float]) -> str:
-    """Деньги уровня — в колонку фиксированной ширины (моноширинный блок)."""
+def _book_qty(lvl: dict) -> str:
+    """Объём уровня В БУМАГАХ — в колонку фиксированной ширины.
+
+    Штуки, а не рубли: в стакане торгуют количеством, а рублёвый эквивалент
+    уже стоит в шапке сообщения (накопленный объём). Событиям из старого
+    буфера, где qty ещё нет, колонка достаётся пустой — но не рублями, иначе
+    два разных смысла в одной колонке."""
+    v = lvl.get("qty")
     if not v:
         return "".rjust(6)
-    return _compact(v).rjust(6)
+    # до сотни тысяч — точное число («38», «24 950»): в стакане облигаций это
+    # обычный размер заявки, и «0к» вместо него бесполезно. Крупнее — порядок
+    # («120к»), иначе колонка не влезает в экран телефона.
+    txt = (f"{v:,.0f}".replace(",", " ") if abs(v) < 100_000 else _compact(v))
+    return txt.rjust(6)
 
 
 def _book_pre(m: dict, side: Optional[str]) -> str:
@@ -359,9 +369,9 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
         # они двойной ширины и рвут колонки
         hit = " ←" if (px is not None and lvl.get("price") is not None
                        and abs(lvl["price"] - px) < 0.005) else ""
-        return f"{_num(lvl['price']).rjust(7)} {_book_money(lvl.get('money'))} {y_txt}{hit}"
+        return f"{_num(lvl['price']).rjust(7)} {_book_qty(lvl)} {y_txt}{hit}"
 
-    lines = [f"{'ЦЕНА':>7} {'ОБЪЁМ':>6} {'RS':>5}"]
+    lines = [f"{'ЦЕНА':>7} {'ШТ':>6} {'RS':>5}"]
     lines += [row(l) for l in asks]
     lines.append("─" * 20)          # выше разделителя оффера, ниже биды
     lines += [row(l) for l in bids]

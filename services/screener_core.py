@@ -450,7 +450,7 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
             px, qty = _px(lvl), _qty(lvl)
             if px is None or qty is None:
                 continue
-            out.append({"price": px,
+            out.append({"price": px, "qty": qty,
                         "money": level_money(px, qty, face, accrued),
                         "y_idx": level_y(px, "ask" if key == "a" else "bid")})
         return out if best_first else list(reversed(out))
