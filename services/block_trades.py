@@ -959,6 +959,8 @@ async def _notify_blocks() -> int:
             "board": r["board"], "negotiated": r["market"] == "ndm",
             "side": r["side"], "ts": r["ts"], "reason": "block",
             "rating": lb.get("rating"), "fired_at": now,
+            "base": lb.get("base"), "margin_bps": lb.get("margin_bps"),
+            "cpy": lb.get("coupons_per_year"),
         }
 
     payloads = {k: [_match(r) for r in rs] for k, rs in routed.items()}

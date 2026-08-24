@@ -803,6 +803,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                     "level_money_rub": level_rub,
                     "levels": levels, "partial": partial, "single_px": single_px,
                     "rating": u.get("rating"), "emitter": u.get("emitter_name"),
+                    # формула купона в уведомление: «КС + 1,2% (12)» отвечает,
+                    # ЧЕМ бумага платит — без этого спред висит в воздухе
+                    "base": u.get("base_rate_type"),
+                    "margin_bps": u.get("spread_issue_bps"),
+                    "cpy": u.get("coupons_per_year"),
                     "years": u.get("_years")})
     # по убыванию спреда; бумаги без спреда — в конец, по убыванию денег
     out.sort(key=lambda m: (m["val_bps"] is not None, m["val_bps"] or 0,

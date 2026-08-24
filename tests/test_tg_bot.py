@@ -636,3 +636,22 @@ def test_book_volume_small_and_large():
     assert _book_qty({"qty": 24_950}).strip() == "24 950"
     assert _book_qty({"qty": 120_000}).strip() == "120к"
     assert _book_qty({"qty": None}).strip() == ""
+
+
+def test_coupon_formula_under_orderbook():
+    """Формула купона — первой в строке под стаканом: спред без ответа «чем
+    бумага платит» висит в воздухе."""
+    from services.tg_notify import _formula
+    assert _formula({"base": "KEYRATE", "margin_bps": 120, "cpy": 12}) == "КС + 1,2% (12)"
+    assert _formula({"base": "RUONIA", "margin_bps": 87.5, "cpy": 4}) == "RU + 0,88% (4)"
+    assert _formula({"base": "KEYRATE", "margin_bps": 200}) == "КС + 2%"
+    assert _formula({"base": None, "margin_bps": 120}) == "", "без базы не пишем"
+
+    m = _order_match(base="KEYRATE", margin_bps=120, cpy=12)
+    m["book"] = {"asks": [{"price": 99.83, "qty": 38, "y_idx": 164}],
+                 "bids": [{"price": 99.71, "qty": 14, "y_idx": 178}]}
+    lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                          "matches": [m]}).split("\n")
+    book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
+    details = lines[book_end + 2]
+    assert details.startswith("КС + 1,2% (12) · ")

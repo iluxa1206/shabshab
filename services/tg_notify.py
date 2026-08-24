@@ -253,6 +253,30 @@ def _money_of(m: dict, kind: str) -> Optional[float]:
     return None
 
 
+_BASE_SHORT = {"KEYRATE": "КС", "RUONIA": "RU"}
+
+
+def _formula(m: dict) -> str:
+    """Формула купона одной строкой: «КС + 1,2% (12)» — база, маржа выпуска и
+    сколько раз в год платят.
+
+    Стоит под стаканом, потому что отвечает на вопрос, который возникает сразу
+    после цифр: чем эта бумага вообще платит. Без базы не пишем ничего —
+    «+ 1,2%» само по себе бессмысленно."""
+    base = _BASE_SHORT.get(m.get("base") or "")
+    if not base:
+        return ""
+    out = base
+    bps = m.get("margin_bps")
+    if bps:
+        pct = f"{bps / 100:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+        out += f" + {pct}%"
+    cpy = m.get("cpy")
+    if cpy:
+        out += f" ({int(cpy)})"
+    return out
+
+
 def _fmt_threshold(v: Optional[float]) -> str:
     """Порог объёма из настроек фильтра: «>1м». Он в строке нужен, чтобы
     сравнивать фактический объём с тем, на что подписан — без него «8,2м» не
@@ -282,6 +306,9 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
     if money:
         head.append(money)
 
+    formula = _formula(m)
+    if formula:
+        sub.append(formula)
     if kind == "block":
         # время — ПОСЛЕ рейтинга: слева то, чем сделку оценивают, справа
         # отметка времени, по которой её потом ищут в ленте
