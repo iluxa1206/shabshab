@@ -835,31 +835,32 @@ def test_removed_channel_falls_back_to_private(targets):
     assert tg_targets.chat_id_for(f["tg_target_id"], USER) is None
 
 
-# ── объём в сообщении: деньги по цене сигнала ──────────────────────────────
+# ── объём в сообщении: накопленный объём по цене сигнала ──────────────────
 
-def test_level_money_is_full_level_not_taken_part():
-    """Набор берёт 1 млн, а на уровне стоит больше — показываем ВЕСЬ уровень.
+def test_money_upto_price_is_cumulative_depth():
+    """Сколько денег стоит по цене НЕ ХУЖЕ цены сигнала.
 
-    Регресс Газпн3P13R 24.08: в шапке было 20,7м (вся сторона книги) при 3,8м
-    на уровне 99,86, по которому фильтр и сработал."""
-    lvls = [(99.86, 3800), (99.87, 2200)]     # 3,8м и 2,2м при номинале 1000
-    v = core.vwap_for(lvls, 1_000_000, face=1000.0)
-    assert v["levels"] == 1
-    assert v["money"] == pytest.approx(1_000_000), "набрали свой лимит"
-    # деньги = бумаги × грязная цена (99,86 % от 1000 ₽), отсюда не ровно 3,8м
-    assert v["book_money"] == pytest.approx(3_794_680), "а стоит на уровне — весь объём"
-
-
-def test_level_money_sums_used_levels():
-    """Набор занял два уровня — считаем оба целиком."""
-    lvls = [(99.86, 800), (99.87, 2200)]
-    v = core.vwap_for(lvls, 1_000_000, face=1000.0)
-    assert v["levels"] == 2
-    assert v["book_money"] == pytest.approx(798_880 + 2_197_140, rel=1e-3)
+    Регресс Газпн3P13R 24.08: в шапке было 20,7м (вся сторона книги) при 3,8м,
+    доступных по 99,86 — цене, по которой фильтр и сработал."""
+    ask = [(99.86, 3800), (99.87, 2200), (99.90, 2000), (99.91, 2000)]
+    # по лучшей цене доступен только свой уровень
+    assert core.money_upto(ask, 99.86, "ask", 1000.0) == pytest.approx(3_794_680)
+    # цена глубже — накапливаем всё, что дешевле-или-равно
+    assert core.money_upto(ask, 99.87, "ask", 1000.0) == pytest.approx(
+        3_794_680 + 2_197_140, rel=1e-6)
+    assert core.money_upto(ask, 99.91, "ask", 1000.0) == pytest.approx(
+        9_985_800, rel=1e-3)
 
 
-def test_top_level_money_for_filter_without_volume():
-    """Фильтр без порога объёма: цена с верха стакана — и объём первого уровня."""
-    assert core.top_level_money([(99.9, 1500), (99.8, 9000)], face=1000.0) \
-        == pytest.approx(1_498_500)
-    assert core.top_level_money([], face=1000.0) is None
+def test_money_upto_price_bid_side_is_mirrored():
+    """У бида «не хуже» — это ДОРОЖЕ-или-равно."""
+    bid = [(99.82, 2202), (99.80, 100), (99.78, 80)]
+    assert core.money_upto(bid, 99.82, "bid", 1000.0) == pytest.approx(
+        2_202 * 998.2, rel=1e-6)
+    assert core.money_upto(bid, 99.80, "bid", 1000.0) == pytest.approx(
+        2_202 * 998.2 + 100 * 998.0, rel=1e-6)
+
+
+def test_money_upto_price_empty_side():
+    assert core.money_upto([], 99.9, "ask", 1000.0) is None
+    assert core.money_upto([(99.9, 10)], None, "ask", 1000.0) is None
