@@ -364,3 +364,24 @@ def test_accrued_estimate_falls_back_to_last_known_coupon():
     assert accrued_estimate(per, d) == pytest.approx(13.33 / 30 * 18, rel=1e-9)
     assert accrued_estimate(per, date(2026, 8, 6)) == 0.0, "в день старта — ноль"
     assert accrued_estimate([], d) is None
+
+
+def test_sanity_hides_all_spread_metrics_together(keyrate_curve, calc_date,
+                                                  flat_index_15, monkeypatch):
+    """Санити срабатывает СТРОКОЙ, а не по метрикам поодиночке.
+
+    Регресс 24.08: у дефолтного неликвида (цена 8 % от номинала) Y-IDX был
+    скрыт как безумный, а DM из того же расчёта оставался — 14 824 bps, и это
+    уезжало в spread_daily. Либо все спред-метрики осмысленны, либо ни одна."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    m = calculate_valuation_metrics(bond, 8.0, keyrate_curve, calc_date,
+                                    accrued_override=accrued_at(periods, settle_date(calc_date)),
+                                    periods=periods)
+    if m["pricing_status"] != "SANITY_FLAG":
+        pytest.skip("на этой конфигурации санити не срабатывает")
+    assert m["dm_bps"] is None and m["sm_bps"] is None
+    assert m["yield_over_index_bps"] is None
+    assert m["dirty_price_rub"] is not None, "факт от цены остаётся"

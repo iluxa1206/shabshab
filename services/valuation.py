@@ -486,8 +486,21 @@ def calculate_valuation_metrics(
         for _h in horizons.values():
             _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
 
+    # САНИТИ — ВСЕЙ СТРОКОЙ, А НЕ ПОМЕТРИЧНО. Пороги ловят метрики по одной, и
+    # строка выходила противоречивой: Y-IDX скрыт как безумный, а DM из того же
+    # расчёта остаётся (24.08: dm 14 824 bps при пустом Y-IDX — цена 8 % от
+    # номинала, дефолтный неликвид). Спред-метрики одного расчёта либо все
+    # осмысленны, либо все нет; yield и dirty оставляем — это факт от цены.
+    _sanity = any(w.startswith("sanity:") for w in warnings)
+    if _sanity:
+        sm_bps = disc_margin_bps = yield_over_index_bps = None
+        sm_to_offer = dm_to_offer = None
+        y_idx_by_price = {}
+        for _h in horizons.values():
+            _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
+
     status = "SUCCESS" if sm_bps is not None else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
-    if any(w.startswith("sanity:") for w in warnings):
+    if _sanity:
         status = "SANITY_FLAG"
 
     return {
