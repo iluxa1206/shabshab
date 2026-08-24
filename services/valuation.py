@@ -146,6 +146,20 @@ def calculate_valuation_metrics(
     from core.valuation import (settle_date as _sd_ex, accrue_to_settle as _ats,
                                 accrued_at as _acc_at)
     settle_dt = _sd_ex(calc_date)
+
+    # НУЛЕВОЙ НКД ОТ ИСТОЧНИКА — ПРОВЕРЯЕМ ПО ГРАФИКУ. ISS изредка отдаёт
+    # ACCRUEDINT=0 посреди купонного периода; цена тогда считается «чистой»
+    # без накопленного купона, доходность взлетает, и число уезжает на сотню
+    # bps (РостелP21R 24.08: сигнал 233 bps против 120 верных — ровно разница
+    # НКД 11,46 ₽). Ноль законен только в день выплаты, когда период начался
+    # сегодня; в остальных случаях верим расписанию, а не снапшоту.
+    if accrued is not None and abs(accrued) < 0.005 and periods:
+        _sched = _acc_at(periods, settle_dt)
+        if _sched and _sched > 0.01:
+            warnings.append(
+                f"НКД источника 0 посреди купонного периода — заменён расчётным "
+                f"из графика ({_sched:.2f} ₽ на {settle_dt.isoformat()})")
+            accrued, accrued_date = _sched, settle_dt
     # Биржа публикует НКД ВМЕСТЕ со своей датой расчётов (SETTLEDATE). Наша
     # settle считается сама (T+1 раб) и с биржевой расходится — в пятницу и
     # перед праздниками на 3 дня. Пока даты не сверялись, НКД мог быть на одну

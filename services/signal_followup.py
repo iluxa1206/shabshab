@@ -39,19 +39,27 @@ PX_EPS = 0.01
 _MSK = timezone(timedelta(hours=3))
 
 
-def classify(qty_then: Optional[float], qty_now: Optional[float],
-             traded_qty: float) -> str:
-    """Исход: kept | partial | taken | pulled. Чистая функция — вся арифметика
-    порогов здесь, чтобы её можно было проверить без стакана и без сети."""
-    if not qty_then or qty_then <= 0:
-        return "kept" if qty_now else "pulled"
-    left = (qty_now or 0.0) / qty_then
+def classify(then: Optional[float], now: Optional[float],
+             traded: float) -> Optional[str]:
+    """Исход: kept | partial | taken | pulled, либо None — «не знаем».
+
+    Меряем НАКОПЛЕННЫЙ объём до цены сигнала, а не один уровень: набор часто
+    занимает несколько уровней, и уровня с ценой средневзвеса в книге может не
+    быть вовсе (РостелP21R 24.08: 11 уровней, объём уровня None — и молчание
+    выдавалось за «стоит»). Без исходного объёма исхода нет: лучше промолчать,
+    чем сообщить выдуманное.
+
+    Чистая функция — вся арифметика порогов здесь, чтобы её можно было
+    проверить без стакана и без сети."""
+    if not then or then <= 0:
+        return None
+    left = (now or 0.0) / then
     if left >= KEEP_RATIO:
         return "kept"
-    gone = qty_then - (qty_now or 0.0)
+    gone = then - (now or 0.0)
     if left > GONE_RATIO:
         return "partial"
-    return "taken" if gone > 0 and traded_qty >= TRADED_RATIO * gone else "pulled"
+    return "taken" if gone > 0 and traded >= TRADED_RATIO * gone else "pulled"
 
 
 def schedule(chat_id: int, message_id: int, m: dict, side: Optional[str]) -> None:
@@ -100,21 +108,23 @@ def close(fid: int, outcome: str, done: int = 1) -> None:
 
 
 def level_now(isin: str, side: str, px: float) -> tuple:
-    """(qty на уровне сейчас, лучшая цена стороны) из живого стакана."""
+    """(накопленные деньги до цены px сейчас, лучшая цена стороны).
+
+    Та же величина, что показана в шапке сигнала (screener_core.money_upto), —
+    иначе follow-up сравнивал бы разные вещи."""
     from services.market_data import market_cache
-    from services.screener_core import _px as _p, _qty as _q
+    from services.screener_core import money_upto, _px as _p
     ladder = ((market_cache.get("depth") or {}).get(isin) or {}).get(
         "a" if side == "ask" else "b") or []
-    qty, best = None, None
-    for lvl in ladder:
-        p, q = _p(lvl), _q(lvl)
-        if p is None:
-            continue
-        if best is None:
-            best = p
-        if abs(p - px) < 0.005:
-            qty = q
-    return qty, best
+    if not ladder:
+        return None, None
+    best = next((_p(l) for l in ladder if _p(l) is not None), None)
+    # номинал и НКД — из снимка метрик, как их берёт сам скринер: деньги уровня
+    # считаются от ГРЯЗНОЙ цены, и с дефолтной тысячей число разъехалось бы
+    row = (market_cache.get("universe_metrics") or {}).get(isin) or {}
+    face = row.get("face_px") or 1000.0
+    accrued = row.get("accrued_settle") or 0.0
+    return money_upto(ladder, px, side, face, accrued), best
 
 
 def traded_since(isin: str, side: str, px: float, frm_iso: str) -> tuple:
@@ -153,7 +163,7 @@ _HEAD = {"taken": "забрали", "pulled": "сняли", "partial": "част
 def render(row: dict, outcome: str, qty_now: Optional[float], best: Optional[float],
            traded_qty: float, traded_val: float, y_now: Optional[float]) -> str:
     """Одна строка ответа: что стало с уровнем и куда ушёл спред."""
-    from services.tg_notify import _num, _short_money, _book_qty
+    from services.tg_notify import _num, _short_money
 
     bits = [f"<b>{_HEAD.get(outcome, outcome)}</b>"]
     if outcome == "taken":
@@ -162,14 +172,11 @@ def render(row: dict, outcome: str, qty_now: Optional[float], best: Optional[flo
         bits.append("без сделок" if traded_qty <= 0
                     else f"сделками {_short_money(traded_val)}")
     elif outcome == "partial":
-        left = _book_qty({"qty": qty_now}).strip()
-        was = _book_qty({"qty": row.get("qty")}).strip()
-        bits.append(f"осталось {left} из {was}"
+        bits.append(f"осталось {_short_money(qty_now)} из {_short_money(row.get('money'))}"
                     + (f", прошло {_short_money(traded_val)}" if traded_val else ""))
     else:                                   # kept
-        left = _book_qty({"qty": qty_now}).strip()
-        if left:
-            bits.append(f"{left} на {_num(row['price'])}")
+        if qty_now:
+            bits.append(f"{_short_money(qty_now)} по {_num(row['price'])}")
 
     # спред «было → стало»: половина ценности ответа в том, куда уехала оценка
     was_y = row.get("val_bps")
@@ -208,7 +215,11 @@ async def run_due() -> int:
                 continue
             traded_qty, traded_val = traded_since(
                 r["isin"], r["side"], r["price"], r["fired_at"])
-            outcome = classify(r.get("qty"), qty_now, traded_qty)
+            outcome = classify(r.get("money"), qty_now, traded_val)
+            if outcome is None:
+                # исходного объёма нет — сказать нечего, молчим
+                close(r["id"], "unknown", done=2)
+                continue
             y_now = exact_y_idx(r["isin"], r["price"])
             text = render(r, outcome, qty_now, best, traded_qty, traded_val, y_now)
             # «стоит» — без звука: ответ нужен для полноты картины, а телефон

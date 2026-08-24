@@ -22,32 +22,36 @@ def fu(tmp_path, monkeypatch):
 
 # ── пороги исходов ─────────────────────────────────────────────────────────
 
-def test_kept_when_level_survives(fu):
-    """Стакан дышит мелочью: −5 % это не «сняли»."""
-    assert fu.classify(1000, 950, 0) == "kept"
+def test_kept_when_depth_survives(fu):
+    """Стакан дышит мелочью: −2 % это не «сняли»."""
+    assert fu.classify(5_900_000, 5_800_000, 0) == "kept"
 
 
 def test_partial_when_half_left(fu):
-    assert fu.classify(1000, 500, 200) == "partial"
+    assert fu.classify(5_900_000, 3_000_000, 1_000_000) == "partial"
 
 
 def test_taken_needs_trades(fu):
     """Объём ушёл И сделки были — забрали."""
-    assert fu.classify(1000, 50, 800) == "taken"
+    assert fu.classify(5_900_000, 200_000, 5_000_000) == "taken"
 
 
 def test_pulled_when_gone_without_trades(fu):
-    """Тот же уход объёма, но сделок нет — заявку сняли.
+    """Тот же уход объёма, но сделок почти нет — заявку сняли.
 
-    Порог не «хоть одна сделка»: снятие заявки на 25 млн и случайный принт на
-    100к иначе выглядели бы одинаково."""
-    assert fu.classify(1000, 50, 10) == "pulled"
+    Порог долевой, а не «хоть одна сделка»: снятие заявки на 25 млн и
+    случайный принт на 100к иначе выглядели бы одинаково."""
+    assert fu.classify(5_900_000, 200_000, 100_000) == "pulled"
 
 
-def test_unknown_level_size_is_not_guessed(fu):
-    """Снимка уровня не было — не выдумываем исход по пустому месту."""
-    assert fu.classify(None, 100, 0) == "kept"
-    assert fu.classify(None, None, 0) == "pulled"
+def test_unknown_depth_gives_no_outcome(fu):
+    """Исходного объёма нет — исхода нет.
+
+    Регресс РостелP21R 24.08: набор занял 11 уровней, уровня с ценой
+    средневзвеса в книге не было, объём вышел None — и молчание выдавалось за
+    «стоит»."""
+    assert fu.classify(None, 1_000_000, 0) is None
+    assert fu.classify(0, None, 0) is None
 
 
 # ── постановка и отправка ──────────────────────────────────────────────────
@@ -66,6 +70,7 @@ def test_schedule_takes_level_qty_from_snapshot(fu):
         r = dict(c.execute("SELECT * FROM signal_followup").fetchone())
     assert r["chat_id"] == 42 and r["message_id"] == 7
     assert r["qty"] == 24950, "количество бумаг взято из снимка стакана"
+    assert r["money"] == 24_900_000, "накопленный объём — то, с чем сравниваем"
     assert r["price"] == 99.75 and r["val_bps"] == 173.0
 
 
@@ -86,13 +91,14 @@ def test_only_new_events_are_armed(monkeypatch):
 
 
 def test_render_shows_outcome_and_spread_move(fu):
-    row = {"price": 99.75, "qty": 24950, "val_bps": 173.0, "side": "ask"}
-    taken = fu.render(row, "taken", 1000, 99.80, 18000, 18_400_000, 165.0)
+    row = {"price": 99.75, "qty": 24950, "money": 24_900_000,
+           "val_bps": 173.0, "side": "ask"}
+    taken = fu.render(row, "taken", 100_000, 99.80, 18000, 18_400_000, 165.0)
     assert "забрали" in taken and "18,4м ₽" in taken and "RS 173 → 165" in taken
     pulled = fu.render(row, "pulled", 0, 99.80, 0, 0, 171.0)
     assert "сняли" in pulled and "без сделок" in pulled
-    kept = fu.render(row, "kept", 24950, 99.75, 0, 0, 173.0)
-    assert "стоит" in kept and "24 950" in kept
+    kept = fu.render(row, "kept", 24_500_000, 99.75, 0, 0, 173.0)
+    assert "стоит" in kept and "24,5м ₽" in kept
 
 
 def test_kept_is_sent_silently(fu, monkeypatch):
@@ -101,7 +107,7 @@ def test_kept_is_sent_silently(fu, monkeypatch):
     with fu._lock, fu._connect() as c:
         c.execute("UPDATE signal_followup SET due_at='2000-01-01T00:00:00+00:00'")
 
-    monkeypatch.setattr(fu, "level_now", lambda i, s, p: (24950, 99.75))
+    monkeypatch.setattr(fu, "level_now", lambda i, s, p: (24_900_000, 99.75))
     monkeypatch.setattr(fu, "traded_since", lambda i, s, p, f: (0, 0))
     monkeypatch.setattr("services.screener_core.warm_exact_ctx",
                         lambda isins: asyncio.sleep(0))
@@ -118,3 +124,25 @@ def test_kept_is_sent_silently(fu, monkeypatch):
     assert calls[0]["disable_notification"] is True
     assert calls[0]["reply_to"] == 7, "ответ на исходный сигнал"
     assert fu.due() == [], "проверка закрыта, повтора не будет"
+
+
+def test_no_outcome_means_no_message(fu, monkeypatch):
+    """Не знаем исходного объёма — молчим, а не сообщаем выдуманное «стоит»."""
+    m = dict(_MATCH, level_money_rub=None, book={"asks": [], "bids": []})
+    fu.schedule(42, 7, m, "ask")
+    with fu._lock, fu._connect() as c:
+        c.execute("UPDATE signal_followup SET due_at='2000-01-01T00:00:00+00:00'")
+
+    monkeypatch.setattr(fu, "level_now", lambda i, s, p: (1_000_000, 99.75))
+    monkeypatch.setattr(fu, "traded_since", lambda i, s, p, f: (0, 0))
+    monkeypatch.setattr("services.screener_core.warm_exact_ctx",
+                        lambda isins: asyncio.sleep(0))
+    monkeypatch.setattr("services.screener_core.exact_y_idx", lambda i, p: 173.0)
+    sent = []
+    monkeypatch.setattr("services.telegram.send_message",
+                        lambda *a, **k: sent.append(1))
+
+    assert asyncio.run(fu.run_due()) == 0
+    assert sent == []
+    with fu._connect() as c:
+        assert c.execute("SELECT outcome FROM signal_followup").fetchone()[0] == "unknown"

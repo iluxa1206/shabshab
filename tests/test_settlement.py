@@ -296,3 +296,39 @@ def test_exchange_accrued_date_matching_settle_is_untouched(keyrate_curve, calc_
                                     accrued_date=settle)
 
     assert m["accrued_settle_rub"] == pytest.approx(acc_settle, abs=1e-4)
+
+
+def test_zero_accrued_from_source_is_replaced_by_schedule(keyrate_curve, calc_date,
+                                                          flat_index_15, monkeypatch):
+    """ISS изредка отдаёт ACCRUEDINT=0 посреди купонного периода.
+
+    Цена тогда считается «чистой» без накопленного купона, доходность взлетает,
+    и Y-IDX уезжает на сотню bps (РостелP21R 24.08: сигнал 233 против 120
+    верных). Верим расписанию, а не такому нулю."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    good = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                       accrued_override=accrued_at(periods, settle_date(calc_date)),
+                                       periods=periods)
+    zeroed = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                         accrued_override=0.0, periods=periods)
+
+    assert zeroed["accrued_settle_rub"] == pytest.approx(good["accrued_settle_rub"], abs=1e-4)
+    assert zeroed["yield_over_index_bps"] == good["yield_over_index_bps"]
+    assert any("НКД источника 0" in w for w in zeroed["warnings"])
+
+
+def test_zero_accrued_kept_on_payment_day(keyrate_curve, calc_date, flat_index_15,
+                                          monkeypatch):
+    """В день выплаты ноль законен: период только начался, начислять нечего."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    settle = settle_date(calc_date)
+    periods = _periods(settle, value=25.0)          # период стартует на поставку
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=0.0, periods=periods)
+    assert m["accrued_settle_rub"] == pytest.approx(0.0, abs=1e-6)
+    assert not any("НКД источника 0" in w for w in m["warnings"])
