@@ -124,8 +124,8 @@ def test_signal_text_caps_matches():
 
 
 def test_book_line_layout():
-    """Первая строка: сторона · спред · деньги · срок · ИМЯ В КОНЦЕ (имена разной
-    длины, впереди они ломали бы колонку чисел). Вторая — цена, глубина, причина."""
+    """Порядок записи: шапка (спред · выпуск со сроком · объём), под ней цена и
+    ISIN, а подробности срабатывания — последней строкой, за стаканом."""
     txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A109B33", "name": "Газпн3P13R",
                                      "val_bps": 171.0, "price": 99.9, "money_rub": 1e6,
@@ -138,7 +138,9 @@ def test_book_line_layout():
     assert "1м ₽" in first and "(1,5 г)" in first, "срок — в скобках при имени"
     # порядок шапки: спред → выпуск со сроком → объём
     assert first.index("171 бп") < first.index("Газпн3P13R") < first.index("₽")
-    assert "99,90%" in second and "1 ур" in second and "объём +6 %" in second
+    assert "99,90%" in second and "RU000A109B33" in second
+    last = txt.strip().split("\n")[-2]
+    assert "1 ур" in last and "объём +6 %" in last, "подробности — за стаканом"
     # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
     # не добавляет к имени фильтра, а строку начинает мусором
     assert txt.strip().endswith("<b>Тест 2</b> · оффер")
@@ -566,3 +568,28 @@ def test_head_without_maturity_has_no_empty_brackets():
     head = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                          "matches": [m]}).split("\n")[0]
     assert "()" not in head and "Газпн3P13R" in head
+
+
+def test_book_layout_puts_details_after_orderbook():
+    """Стакан стоит ВНУТРИ записи: шапка → цена+ISIN → книга → подробности."""
+    m = _order_match(years=1.1, level_money_rub=32_600_000, reason="new")
+    m["book"] = {"asks": [{"price": 99.83, "money": 37_900, "y_idx": 164}],
+                 "bids": [{"price": 99.71, "money": 14_300, "y_idx": 178}]}
+    lines = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
+                          "matches": [m]}).split("\n")
+    assert "бп" in lines[0] and "Газпн3P13R" in lines[0]
+    assert lines[1].startswith("100,05%") and "RU000A109B33" in lines[1]
+    assert lines[2].startswith("<blockquote")
+    book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
+    details = lines[book_end + 1]
+    assert "заявка" in details and "12:47:02" in details and ">1м" in details
+    assert lines[-1] == "<b>Тест 2</b> · оффер", "подпись сразу под подробностями"
+
+
+def test_repeat_count_joins_details_line():
+    """Счётчик повторов такта — в той же строке подробностей, не отдельной."""
+    m = _order_match(reason="new")
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [m, m]})
+    line = [ln for ln in txt.split("\n") if "срабатываний" in ln][0]
+    assert "заявка" in line and "срабатываний за такт: 2" in line

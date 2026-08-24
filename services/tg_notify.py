@@ -260,15 +260,14 @@ def _fmt_threshold(v: Optional[float]) -> str:
     return f">{_compact(v)}" if v else ""
 
 
-def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
-               icons: Optional[dict] = None) -> str:
-    """Две строки на бумагу.
+def _match_parts(m: dict, kind: str, side: Optional[str] = None,
+                 icons: Optional[dict] = None) -> tuple:
+    """Запись о бумаге тремя частями: (шапка, цена+ISIN, детали).
 
-    Первая — то, ради чего сообщение открывают: сторона значком, спред, деньги,
-    срок; ИМЯ ВЫПУСКА В КОНЦЕ, потому что оно длинное и разной длины — если
-    ставить его первым, числа в ленте сообщений встают рваной лесенкой и их
-    не сравнить между собой. Вторая строка — детали: цена, глубина, причина.
-    """
+    Разложено, а не склеено, потому что между второй и третьей частью встаёт
+    СТАКАН: сверху — ради чего открывают сообщение (спред, выпуск, объём) и по
+    какой цене, дальше книга, а «сколько уровней, почему и когда» читают уже
+    после неё, если событие зацепило."""
     head, sub = [], []
 
     # Порядок шапки: спред → выпуск со сроком → объём. Спред первым, потому что
@@ -283,8 +282,6 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
     if money:
         head.append(money)
 
-    if m.get("price") is not None:
-        sub.append(f"{_num(m['price'])}%")
     if kind == "block":
         # время — ПОСЛЕ рейтинга: слева то, чем сделку оценивают, справа
         # отметка времени, по которой её потом ищут в ленте
@@ -310,11 +307,20 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
         if want:
             sub.append(want)
 
-    line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
-    if sub:
-        line += f"\n{' · '.join(sub)}"
+    head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
+    # цена и ISIN рядом: одно про «почём», другое про «что» — вместе они
+    # отвечают на вопрос, который возникает первым после шапки
+    px = [f"{_num(m['price'])}%"] if m.get("price") is not None else []
     isin = _isin_line(m)
-    return line + (f"\n{isin}" if isin else "")
+    if isin:
+        px.append(isin)
+    return head_line, " · ".join(px), " · ".join(b for b in sub if b)
+
+
+def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
+               icons: Optional[dict] = None) -> str:
+    """Запись без стакана — сделки идут пачкой, книгу к ним не прикладываем."""
+    return "\n".join(p for p in _match_parts(m, kind, side, icons) if p)
 
 
 # Сколько уровней стакана прикладывать к заявке. Четыре — компромисс: экран
@@ -375,12 +381,17 @@ def _signal_text(buf: dict) -> str:
         # одно сообщение = одна бумага (см. _group): показываем последнее
         # состояние и прикладываем к нему стакан того же такта
         m = ms[-1]
-        body = _fmt_match(m, kind, side_key, icons)
+        head, px, details = _match_parts(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
+        # стакан ВНУТРИ записи: после цены, до подробностей срабатывания
+        parts = [head, px]
         if book:
-            body += "\n" + book
+            parts.append(book)
         if n > 1:
-            body += f"\n<i>срабатываний за такт: {n}</i>"
+            details = ((details + " · ") if details else "") \
+                + f"<i>срабатываний за такт: {n}</i>"
+        parts.append(details)
+        body = "\n".join(p for p in parts if p)
     else:
         body = "\n\n".join(_fmt_match(m, kind, side_key, icons)
                             for m in ms[:MAX_MATCHES])
@@ -393,7 +404,10 @@ def _signal_text(buf: dict) -> str:
     else:
         side = {"ask": "оффер", "bid": "бид"}.get(side_key or "", "")
         foot = f"<b>{buf['name']}</b>" + (f" · {side}" if side else "")
-    return f"{body}\n\n{foot}"
+    # подпись сразу под подробностями: они уже отделены от шапки стаканом,
+    # и лишняя пустая строка растягивала бы сообщение на пустом месте
+    sep = "\n" if kind == "book" else "\n\n"
+    return f"{body}{sep}{foot}"
 
 
 def _due(now: float) -> list:
