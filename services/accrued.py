@@ -14,6 +14,9 @@
      ни индекс, ни спека, ошибка в проценты (23,06 против 22,70);
   4) ИНДЕКС + МАРЖА на дату — последняя соломинка, когда нет ни графика ставок,
      ни спеки. Систематически завышает при падающей ставке, поэтому последний.
+
+Отдельная ветка — когда расписания НЕТ ВОВСЕ: тогда сетка купонных дат строится
+из параметров выпуска (bond + curve), тем же генератором, что и поток.
 """
 from __future__ import annotations
 
@@ -28,7 +31,8 @@ def accrued_for(periods, d: date, *, face: float,
                 base: Optional[str] = None, margin_bps: Optional[int] = None,
                 isin: Optional[str] = None, idx=None,
                 index_pct: Optional[float] = None,
-                calc_date: Optional[date] = None) -> tuple:
+                calc_date: Optional[date] = None,
+                bond=None, curve=None) -> tuple:
     """НКД на дату d → (значение, чем посчитали) либо (None, None).
 
     periods — [(start, end, value)]; value=None у необъявленного купона.
@@ -43,6 +47,13 @@ def accrued_for(periods, d: date, *, face: float,
 
     p = period_at(periods, d)
     if not p:
+        # расписания нет вовсе — остаётся сетка купонных дат из параметров
+        # выпуска (та же, по которой строится поток) и форвард кривой
+        if bond is not None and curve is not None:
+            from core.valuation import accrued_from_grid
+            own = accrued_from_grid(bond, curve, d)
+            if own:
+                return own, "параметры выпуска"
         return None, None
     s, e, _ = p
     days = max(0, (d - s).days)
