@@ -233,3 +233,45 @@ def test_feed_min_value_has_tolerance(bt):
                 (2, "RU000FLOAT01", 4_400_000)])
     got = {r["trade_id"] for r in mod.read_blocks(min_value=5_000_000)}
     assert got == {1}
+
+
+# ── один принт в два канала ────────────────────────────────────────────────
+
+def _targets(sig, monkeypatch, mapping):
+    """Адресаты Telegram без реальной таблицы tg_targets: id → chat_id."""
+    from services import tg_targets
+    monkeypatch.setattr(tg_targets, "get", lambda tid: (
+        {"user_email": "u@x.ru", "chat_id": mapping[int(tid)]}
+        if int(tid) in mapping else None))
+
+
+def test_one_trade_reaches_both_channels(bt, sig, monkeypatch):
+    """Разные каналы — разные адресаты: широкий фильтр («Ф5», порог 1 млн) не
+    имеет права забрать сделку у узкого («Р5», порог 50 млн), иначе канал Р5 не
+    получает НИЧЕГО."""
+    pdb, mod = bt
+    _targets(sig, monkeypatch, {1: -100, 2: -200})
+    sig.create("u@x.ru", "Ф5", {"min_value_rub": 1_000_000}, kind="block",
+               tg_target_id=2)
+    sig.create("u@x.ru", "Р5", {"min_value_rub": 50_000_000}, kind="block",
+               tg_target_id=1)
+    _seed(pdb, [(1, "RU000FLOAT01", 60_000_000)])
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1        # сделка одна…
+    # …а звонков по ней два — по одному на канал
+    assert sorted(p["filter_name"] for p in sent) == ["Р5", "Ф5"]
+
+
+def test_same_channel_still_gets_one_message(bt, sig, monkeypatch):
+    """Два подходящих фильтра с одним адресатом — по-прежнему одно событие:
+    дубль в тот же чат это шум."""
+    pdb, mod = bt
+    _targets(sig, monkeypatch, {1: -100})
+    sig.create("u@x.ru", "широкий", {"min_value_rub": 1_000_000}, kind="block",
+               tg_target_id=1)
+    sig.create("u@x.ru", "узкий", {"min_value_rub": 50_000_000}, kind="block",
+               tg_target_id=1)
+    _seed(pdb, [(1, "RU000FLOAT01", 60_000_000)])
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [p["filter_name"] for p in sent] == ["широкий"]

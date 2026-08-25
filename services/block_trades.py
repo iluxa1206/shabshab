@@ -923,13 +923,21 @@ async def _notify_blocks() -> int:
             if _legacy_ok(r):
                 routed.setdefault((u, 0, "Крупная сделка", True, True), []).append(r)
         for u, fs in by_user.items():
-            # первый подошедший фильтр забирает сделку: два письма об одном
-            # принте — шум, а не два разных события
+            # первый подошедший фильтр забирает сделку — НО ОТДЕЛЬНО ПО КАЖДОМУ
+            # АДРЕСАТУ: два письма об одном принте в один чат — шум, а вот
+            # разные каналы («Р5» и «Ф5») ждут одну и ту же сделку каждый у
+            # себя. Раньше ключом был только пользователь, и более широкий
+            # фильтр (Ф5, порог 1 млн) забирал сделку себе, а канал Р5 (порог
+            # 50 млн) не получал НИЧЕГО ни разу.
+            taken: set = set()
             for f in fs:
+                dest = f.get("tg_target_id")
+                if dest in taken:
+                    continue
                 if signals.block_matches(r, meta, f["params"], today):
+                    taken.add(dest)
                     routed.setdefault((u, f["id"], f["name"], f["sound"],
                                        f["desktop"]), []).append(r)
-                    break
     if not routed:
         await run_bg(mark_alerted, seen_ids)
         return 0
