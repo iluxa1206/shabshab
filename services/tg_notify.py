@@ -87,24 +87,30 @@ def _group(matches: List[dict], kind: str):
     Заодно повторы по одной бумаге внутри такта схлопываются в последнее
     состояние.
 
-    СДЕЛКИ — по одному сообщению на СДЕЛКУ. Пачкой они читались хуже: три
-    принта по одной бумаге в одном сообщении отличаются только объёмом, и глаз
-    ищет разницу вместо того, чтобы её увидеть. Ключ группы — trade_id, а где
-    его нет (события из ленты) — выпуск с моментом и объёмом: две сделки не
-    должны слипнуться только потому, что пришли одним тактом."""
-    if kind != "book":
-        return [(_trade_key(m), [m]) for m in matches]
-    by_isin: dict = {}
+    СДЕЛКИ — по одному сообщению на НАБОР ОДИНАКОВЫХ. Разные сделки склеивать
+    нельзя: пачкой они отличаются только объёмом, и глаз ищет разницу вместо
+    того, чтобы её увидеть. Но три принта по одной бумаге, по одной цене и в
+    одну сторону — это ОДНО событие, разбитое биржей на части: у них общие
+    спред, формула и рейтинг, и печатать их тремя одинаковыми карточками
+    значит трижды повторить одно и то же. Такие уходят одним сообщением с
+    суммарным объёмом и расшифровкой (см. _signal_text)."""
+    key = (lambda m: m.get("isin")) if kind == "book" else _trade_key
+    groups: dict = {}
     for m in matches:
-        by_isin.setdefault(m.get("isin"), []).append(m)
-    return list(by_isin.items())
+        groups.setdefault(key(m), []).append(m)
+    return list(groups.items())
 
 
 def _trade_key(m: dict) -> tuple:
-    """Чем сделка отличается от соседней в буфере."""
-    tid = m.get("trade_id")
-    return ("t", tid) if tid else ("x", m.get("isin"), m.get("ts"),
-                                   m.get("money_rub"))
+    """Что делает две сделки ОДНИМ событием: бумага, цена, сторона агрессора и
+    режим торгов.
+
+    Спред и формула из этих полей и следуют, поэтому в ключ не входят. Время в
+    ключе тоже не нужно: части одного набора расходятся на доли секунды, а
+    сделка получасом позже приедет отдельным сообщением сама — её буфер к тому
+    моменту уже слит."""
+    return (m.get("isin"), m.get("price"), m.get("side"),
+            bool(m.get("negotiated")))
 
 
 def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
@@ -442,6 +448,46 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
     return f"<blockquote expandable>{body}</blockquote>"
 
 
+def _breakdown(ms: List[dict]) -> str:
+    """Из чего сложился суммарный объём: «3 сделки · 198м · 47,8м · 6,4м».
+
+    Тотал отвечает «сколько взяли», расшифровка — «одним куском или мелочью»:
+    198 млн одним принтом и те же 198 млн двадцатью кусками говорят о рынке
+    разное. Мелкой строкой и ПОД параметрами: это уточнение к цифре из шапки,
+    а не самостоятельная новость. Длинный хвост сворачиваем — на экране
+    телефона два десятка чисел всё равно не читаются."""
+    if len(ms) < 2:
+        return ""
+    vals = sorted((x.get("money_rub") or 0 for x in ms), reverse=True)
+    shown = [_compact(v) for v in vals[:MAX_MATCHES]]
+    if len(vals) > MAX_MATCHES:
+        shown.append(f"…ещё {len(vals) - MAX_MATCHES}")
+    return f"<i>{len(ms)} {_trades_word(len(ms))} · " + " · ".join(shown) + "</i>"
+
+
+def _trades_word(n: int) -> str:
+    """«2 сделки», «5 сделок» — падеж в строке, которую читают каждый день,
+    важнее краткости кода."""
+    if 11 <= n % 100 <= 14:
+        return "сделок"
+    last = n % 10
+    if last == 1:
+        return "сделка"
+    return "сделки" if 2 <= last <= 4 else "сделок"
+
+
+def _trade_time(ms: List[dict]) -> str:
+    """Время набора: момент — если сделки в одну секунду, иначе интервал.
+
+    Одна отметка на растянутый набор врала бы: «взяли 250 млн в 15:40:33»
+    читается как один принт, хотя набирали три минуты."""
+    stamps = [t for t in (_hhmmss(m) for m in ms) if t]
+    if not stamps:
+        return ""
+    lo, hi = min(stamps), max(stamps)
+    return lo if lo == hi else f"{lo}–{hi}"
+
+
 def _signal_text(buf: dict) -> str:
     kind = "block" if buf.get("kind") == "block" else "book"
     ms = buf["matches"]
@@ -466,15 +512,16 @@ def _signal_text(buf: dict) -> str:
         top = "\n\n".join(p for p in (head, px) if p)
         body = "\n".join(p for p in (top, book, details) if p)
     else:
-        # время сделки уходит в подпись, если сделка в сообщении одна; в пачке
-        # оно остаётся при своей записи — иначе непонятно, к какой относится
-        single = n == 1
-        body = "\n\n".join(_fmt_match(m, kind, side_key, icons, not single)
-                            for m in ms[:MAX_MATCHES])
-        if n > MAX_MATCHES:
-            body += f"\n\n…ещё {n - MAX_MATCHES}"
-        if single:
-            extra = _hhmmss(ms[-1])
+        # набор одинаковых сделок (см. _group и _trade_key) — одна карточка с
+        # СУММАРНЫМ объёмом: параметры у них общие, и повторять их построчно
+        # значит заставлять читателя сверять три одинаковых блока
+        m = dict(ms[-1])
+        if n > 1:
+            m["money_rub"] = sum(x.get("money_rub") or 0 for x in ms)
+        head, px, details, _foot = _match_parts(m, kind, side_key, icons)
+        body = "\n\n".join(p for p in ("\n".join((head, px)).strip(),
+                                       details, _breakdown(ms)) if p)
+        extra = _trade_time(ms)
     # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал,
     # почему и когда» это сноска, которую читают, только если событие зацепило.
     if kind == "block":

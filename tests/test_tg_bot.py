@@ -114,15 +114,15 @@ def test_fmt_event():
     assert "Тест-бонд" in s and "284 бп" in s and "3.2 млн ₽" in s and "10:42" in s
 
 
-def test_signal_text_caps_matches():
-    """Сделки идут пачкой и режутся по MAX_MATCHES (у заявок своё правило —
-    отдельное сообщение на бумагу, см. test_book_events_split_by_issue)."""
-    ms = [{"isin": f"RU000A00000{i}", "name": f"Б{i}", "val_bps": 300 - i,
-           "price": 100.0, "money_rub": 2e6, "side": "buy"} for i in range(12)]
+def test_signal_text_caps_breakdown():
+    """Расшифровка набора режется по MAX_MATCHES: два десятка чисел на экране
+    телефона всё равно не читаются."""
+    ms = [{"isin": "RU000A0000A1", "name": "Б", "val_bps": 300, "price": 100.0,
+           "money_rub": 2e6 + i, "side": "buy"} for i in range(12)]
     txt = _signal_text({"name": "следим", "side": None, "kind": "block",
                         "matches": ms})
-    assert "следим" in txt and "…ещё 4" in txt
-    assert txt.count("👍") == 8          # маркер стороны на каждой показанной сделке
+    assert "следим" in txt and "12 сделок" in txt and "…ещё 4" in txt
+    assert txt.count("👍") == 1          # набор одинаковых — одна карточка
 
 
 def test_book_line_layout():
@@ -809,11 +809,12 @@ def test_stale_signal_is_dropped_not_kept_forever(monkeypatch):
 
 
 def test_trades_go_one_message_each(sent):
-    """Три принта по одной бумаге — три сообщения: пачкой они отличались только
-    объёмом, и разницу приходилось искать глазом."""
+    """Сделки с РАЗНЫМИ параметрами — разные сообщения: склеенные, они
+    отличались бы только объёмом, и разницу приходилось искать глазом."""
     import services.tg_notify as tg
     ms = [{"trade_id": i, "isin": "RU000A107XA1", "name": "ВЭБP-41",
-           "price": 99.0, "money_rub": v, "val_bps": 200.0, "side": "buy"}
+           "price": 99.0 + i * 0.01, "money_rub": v, "val_bps": 200.0,
+           "side": "buy"}
           for i, v in enumerate((47.8e6, 198e6, 6.4e6))]
     for group, part in tg._group(ms, "block"):
         tg._pending[(1, 7, group)] = {"name": "сделки Ф5", "side": None,
@@ -837,3 +838,38 @@ def test_filter_name_is_italic(sent):
                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
                                      "price": 100.1, "money_rub": 2e6}]})
     assert "<i>Крупные сделки</i>" in blk
+
+
+def test_identical_trades_collapse_with_total(sent):
+    """Три принта по одной бумаге, цене и стороне — одно событие, разбитое
+    биржей: одна карточка с суммарным объёмом и расшифровкой под параметрами."""
+    import services.tg_notify as tg
+    ms = [{"isin": "RU000A107XA1", "name": "ВЭБP-41", "price": 99.0,
+           "money_rub": v, "val_bps": 200.0, "side": "buy", "rating": "AAA",
+           "ts": f"2026-08-25T12:40:3{i}+00:00"}
+          for i, v in enumerate((47.8e6, 198e6, 6.4e6))]
+    for group, part in tg._group(ms, "block"):
+        tg._pending[(1, 7, group)] = {"name": "сделки Ф5", "side": None,
+                                      "kind": "block", "matches": part,
+                                      "first_ts": 0.0}
+    asyncio.run(tg._flush_signals())
+    assert len(sent) == 1
+    txt = sent[0]["text"]
+    assert "<b>252,2м ₽</b>" in txt, "в шапке суммарный объём"
+    # расшифровка по убыванию, отдельной строкой под параметрами
+    assert "<i>3 сделки · 198м · 47,8м · 6,4м</i>" in txt
+    lines = txt.split("\n")
+    assert lines.index("<i>3 сделки · 198м · 47,8м · 6,4м</i>") > lines.index(
+        "<b>99,00%</b>")
+    # набор растянут во времени — в подписи интервал, а не выдуманный момент
+    assert txt.strip().split("\n")[-1] == "<i>сделки Ф5</i> · 12:40:30–12:40:32"
+
+
+def test_negotiated_trade_not_merged_with_market(sent):
+    """Адресная сделка и безадресная по той же цене — разные события: слепить
+    их значило бы приписать рынку объём, которого на нём не было."""
+    import services.tg_notify as tg
+    base = {"isin": "RU000A107XA1", "name": "ВЭБP-41", "price": 99.0,
+            "money_rub": 10e6, "val_bps": 200.0, "side": "buy"}
+    groups = tg._group([base, {**base, "negotiated": True}], "block")
+    assert len(groups) == 2
