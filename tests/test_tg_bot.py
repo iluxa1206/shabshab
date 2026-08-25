@@ -1,6 +1,7 @@
 """Телеграм-бот: привязка чата к веб-аккаунту, вебхук, форматирование доставки.
 Своей настройки у бота нет — сигналы заводятся на сайте."""
 import asyncio
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -755,3 +756,50 @@ def test_trades_have_no_thread(sent):
     _flush(((1, 7, None), buf))
     _flush(((1, 7, None), dict(buf)))
     assert [s["reply_to"] for s in sent] == [None, None]
+
+
+# ── отказ канала доставки ──────────────────────────────────────────────────
+
+def test_failed_send_returns_signal_to_queue(monkeypatch):
+    """Bot API молчит — сигнал остаётся в очереди, а не исчезает.
+
+    Раньше буфер чистился ДО результата отправки: упавший прокси-сайдкар
+    стирал сигналы бесследно (в вебе есть, в телеграм не придут никогда)."""
+    from services import tg_notify as tn
+    tn._pending.clear(); tn._last_sent.clear()
+    m = {"isin": "RU000A1", "name": "Т", "val_bps": 150.0, "price": 100.0,
+         "reason": "new", "level_money_rub": 2e6}
+    tn._pending[(1, 7, None)] = {"name": "ф", "side": "ask", "kind": "book",
+                                 "matches": [m], "first_ts": time.monotonic()}
+
+    async def dead(*a, **k):
+        return None
+    monkeypatch.setattr(tn.telegram, "send_message", dead)
+    asyncio.run(tn._flush_signals())
+    assert (1, 7, None) in tn._pending, "сигнал должен вернуться в очередь"
+    assert 1 not in tn._last_sent, "чат снова считается молчавшим"
+
+    sent = []
+
+    async def alive(chat_id, text, **k):
+        sent.append(chat_id)
+        return {"message_id": 1}
+    monkeypatch.setattr(tn.telegram, "send_message", alive)
+    asyncio.run(tn._flush_signals())
+    assert sent == [1] and not tn._pending, "канал вернулся — доставили"
+
+
+def test_stale_signal_is_dropped_not_kept_forever(monkeypatch):
+    """Канал молчит дольше окна — бросаем: сигнал уже не новость."""
+    from services import tg_notify as tn
+    tn._pending.clear(); tn._last_sent.clear()
+    old = time.monotonic() - tn.REQUEUE_MAX_SEC - 1
+    tn._pending[(1, 7, None)] = {"name": "ф", "side": "ask", "kind": "book",
+                                 "matches": [{"isin": "RU000A1", "name": "Т",
+                                              "reason": "new"}], "first_ts": old}
+
+    async def dead(*a, **k):
+        return None
+    monkeypatch.setattr(tn.telegram, "send_message", dead)
+    asyncio.run(tn._flush_signals())
+    assert not tn._pending, "старое не держим вечно"

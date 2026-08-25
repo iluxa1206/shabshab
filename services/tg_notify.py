@@ -542,6 +542,32 @@ def _due(now: float) -> list:
     return ready
 
 
+# Сколько держим неотправленное. Прокси-сайдкар и Bot API падают на минуты, а
+# не на часы; сигнал старше этого срока уже не новость, и слать его вдогонку —
+# только путать. Пока держим — доставим, как только канал вернётся.
+REQUEUE_MAX_SEC = float(os.getenv("TG_REQUEUE_MAX_SEC", "600"))
+
+
+def _requeue(key: tuple, buf: dict, now: float) -> None:
+    """Возвращает неотправленное в буфер. Раньше отправка чистила очередь ДО
+    результата, и отказ канала (упавший прокси, 5xx Bat API) стирал сигналы
+    бесследно: в вебе они есть, в телеграм не придут никогда."""
+    age = now - buf.get("first_ts", now)
+    if age > REQUEUE_MAX_SEC:
+        logger.warning("tg_notify: сигнал по %s брошен — канал молчит %.0f мин",
+                       buf.get("name") or key, age / 60)
+        return
+    old = _pending.get(key)
+    if old:                      # пока ждали, накопилось новое — склеиваем
+        old["matches"] = (buf.get("matches", []) + old.get("matches", []))[-40:]
+        old["first_ts"] = min(old.get("first_ts", now), buf.get("first_ts", now))
+    else:
+        _pending[key] = buf
+    # чат снова считается «молчавшим»: иначе окно коалесценции задержало бы
+    # повторную попытку ещё на такт
+    _last_sent.pop(key[0], None)
+
+
 async def _flush_signals() -> None:
     if not _pending:
         return
@@ -566,6 +592,9 @@ async def _flush_signals() -> None:
                     reply_to=_thread_anchor(key, buf, now))
             except Exception as e:
                 logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
+                res = None
+            if res is None:
+                _requeue(key, buf, now)
                 return
             _remember_thread(key, res, buf, now)
 
