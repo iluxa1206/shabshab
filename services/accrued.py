@@ -50,8 +50,13 @@ def accrued_for(periods, d: date, *, face: float,
         return 0.0, "период начался сегодня"
 
     if isin and base and face:
-        rate = _rate_by_spec(isin, base, s, e, calc_date or d, idx)
-        if rate is not None:
+        rate, compounded = _rate_by_spec(isin, base, s, e, calc_date or d, idx)
+        # У КАПИТАЛИЗИРУЕМОГО купона (ставка = отношение накопленных индексов
+        # ЦБ) ставка НЕПОЛНОГО окна не равна ставке периода: на середине она
+        # заметно ниже (ВЭБ2Р-50 25.08: 15,4 ₽ против биржевых 22,7). Там
+        # честнее пропорция прошлого купона — соседние периоды отличаются на
+        # движение ставки за месяц, а не на половину окна.
+        if rate is not None and not compounded:
             full = rate + (margin_bps or 0) / 100.0
             return face * full / 100.0 * days / 365.0, "спека фиксинга"
 
@@ -66,8 +71,8 @@ def accrued_for(periods, d: date, *, face: float,
 
 
 def _rate_by_spec(isin: str, base: str, start: date, end: date,
-                  calc_date: date, idx) -> Optional[float]:
-    """Ставка индекса за период по спеке фиксинга бумаги, % годовых."""
+                  calc_date: date, idx) -> tuple:
+    """(ставка индекса за период по спеке, % годовых; капитализируемая ли она)."""
     try:
         from services.coupon_calib import _index, projected_ks_pct
         from services.ref_data import coupon_formula
@@ -78,8 +83,9 @@ def _rate_by_spec(isin: str, base: str, start: date, end: date,
                 "base": base,
                 "avg_window_days": sp.get("avg_window_days"),
                 "compounded": sp.get("compounded")}
-        return projected_ks_pct(spec, start, end, calc_date,
+        rate = projected_ks_pct(spec, start, end, calc_date,
                                 fwd_pct=lambda _d: None, idx=idx or _index(base))
+        return rate, bool(spec["compounded"])
     except Exception as e:
         logger.debug("accrued by spec %s: %s", isin, e)
-        return None
+        return None, False
