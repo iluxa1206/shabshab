@@ -265,44 +265,54 @@ def _thread_stacks_brief() -> str:
 STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
 
 
-# Как часто ПОВТОРЯТЬ предупреждение о том же отказе. Сторож ходит раз в пять
-# минут, но одна и та же поломка не должна звонить каждые пять: чинить её
-# начинают с первого сообщения, а дальше поток превращает тревогу в фон.
+# Как часто ПОВТОРЯТЬ предупреждение об одной и той же беде. Сторожа ходят
+# часто, но одна поломка не должна звонить каждый такт: чинить её начинают с
+# первого сообщения, а дальше поток превращает тревогу в фон.
 STREAM_ALERT_REPEAT_MIN = float(os.getenv("STREAM_ALERT_REPEAT_MIN", "60"))
 
-# что сейчас сломано → когда об этом сообщили в последний раз
+# что сейчас сломано → когда об этом сообщили в последний раз, по сторожам
 _stream_alerted: dict = {}
+_disk_alerted: dict = {}
 
 
-async def _stream_alert(problems: dict) -> None:
+async def _watch_alert(state: dict, problems: dict, title: str, tail: str,
+                       ok_text: str) -> None:
     """Доводит находки сторожа до людей и даёт отбой, когда починилось.
 
-    Лога мало: тихий отказ тем и коварен, что снаружи выглядит как спокойный
-    рынок, и никто не идёт смотреть логи — идти незачем, сигналов ведь нет по
-    той же причине. Поэтому предупреждение уходит в телеграм админам.
+    Лога мало: отказы, которые тут ловятся, тем и коварны, что снаружи
+    выглядят нормально — рынок «спокоен», обслуживание «прошло». Никто не идёт
+    смотреть логи, потому что нет повода. Поэтому предупреждение уходит в
+    телеграм админам.
 
-    Новая поломка сообщается сразу, известная — не чаще
-    STREAM_ALERT_REPEAT_MIN. Восстановление сообщается один раз: «отбой» без
-    предшествующей тревоги никому не нужен."""
+    Новая беда сообщается сразу, известная — не чаще STREAM_ALERT_REPEAT_MIN.
+    Восстановление сообщается один раз: «отбой» без предшествующей тревоги
+    никому не нужен. Недоставленное предупреждение НЕ помечается сообщённым —
+    иначе одна сетевая ошибка похоронила бы его до конца дня."""
     from services.tg_notify import notify_admins
     now = time.monotonic()
 
-    fixed = [k for k in _stream_alerted if k not in problems]
+    fixed = [k for k in state if k not in problems]
     for k in fixed:
-        _stream_alerted.pop(k, None)
+        state.pop(k, None)
     if fixed and not problems:
-        await notify_admins("✅ <b>Стримы ожили</b> — данные снова идут")
+        await notify_admins(ok_text)
 
-    due = [k for k, _ in problems.items()
-           if now - _stream_alerted.get(k, float("-inf"))
-           >= STREAM_ALERT_REPEAT_MIN * 60]
+    due = [k for k in problems
+           if now - state.get(k, float("-inf")) >= STREAM_ALERT_REPEAT_MIN * 60]
     if not due:
         return
     body = "\n".join(f"• {problems[k]}" for k in due)
-    if await notify_admins(f"🛑 <b>Стрим молчит</b>\n{body}\n\n"
-                           "<i>Скринер слеп: сигналы не придут, пока это так.</i>"):
+    if await notify_admins(f"{title}\n{body}\n\n{tail}"):
         for k in due:
-            _stream_alerted[k] = now
+            state[k] = now
+
+
+async def _stream_alert(problems: dict) -> None:
+    """Тревога сторожа стримов: молчащий сокет — это слепой скринер."""
+    await _watch_alert(
+        _stream_alerted, problems, "🛑 <b>Стрим молчит</b>",
+        "<i>Скринер слеп: сигналы не придут, пока это так.</i>",
+        "✅ <b>Стримы ожили</b> — данные снова идут")
 
 
 async def stream_watchdog(period_sec: int = 300):
@@ -749,6 +759,75 @@ async def block_trades_worker():
         await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else idle)
 
 
+# Порог тревоги по свободному месту. Считается не «сколько осталось вообще», а
+# «хватит ли на обслуживание»: VACUUM переписывает базу целиком и требует места
+# в её размер, штатный бэкап снимает несжатую копию — тоже в размер базы.
+# Кончится место — база перестанет ужиматься и перестанет копироваться, причём
+# ТИХО: оба шага честно отказываются и пишут skip в лог.
+DISK_NEED_RATIO = float(os.getenv("DISK_NEED_RATIO", "1.5"))
+# Свежесть последней копии. Проверяем результат, а не механику: так ловится и
+# упавший крон, и отказ по месту, и битый файл, не доживший до ротации.
+BACKUP_STALE_HOURS = float(os.getenv("BACKUP_STALE_HOURS", "36"))
+DISK_WATCH_PERIOD_SEC = int(os.getenv("DISK_WATCH_PERIOD_SEC", "3600"))
+
+
+def _disk_problems() -> dict:
+    """Что не так с местом и копиями. Пусто — всё в порядке."""
+    import shutil
+
+    from services.portfolio_db import DB_PATH
+    out: dict = {}
+    db = DB_PATH                       # тот же путь, что мерит сам VACUUM
+    data = db.parent
+    free = shutil.disk_usage(data).free
+    size = db.stat().st_size if db.exists() else 0
+    need = size * DISK_NEED_RATIO
+    if size and free < need:
+        out["space"] = (f"свободно {free / 1e9:.1f} ГБ при базе {size / 1e9:.1f} ГБ — "
+                        f"на VACUUM и бэкап нужно ~{need / 1e9:.1f} ГБ; "
+                        f"база перестанет ужиматься и копироваться")
+
+    backups = sorted((data / "backups").glob("portfolio-*.db.gz"),
+                     key=lambda f: f.stat().st_mtime, reverse=True)
+    if not backups:
+        out["backup"] = "резервных копий базы нет вовсе"
+    else:
+        age_h = (time.time() - backups[0].stat().st_mtime) / 3600
+        if age_h > BACKUP_STALE_HOURS:
+            out["backup"] = (f"последняя копия {age_h / 24:.1f} сут назад "
+                             f"({backups[0].name}) — крон бэкапа не отработал")
+    return out
+
+
+async def _disk_alert(problems: dict) -> None:
+    await _watch_alert(
+        _disk_alerted, problems, "💽 <b>Диск и копии</b>",
+        "<i>Тиковый архив и история спредов есть только здесь — "
+        "восстановить их неоткуда.</i>",
+        "✅ <b>С местом и копиями снова порядок</b>")
+
+
+async def disk_watchdog(period_sec: int = DISK_WATCH_PERIOD_SEC):
+    """Сторож места на диске и свежести резервных копий.
+
+    Отказ тут не громкий, а тихий: и VACUUM (services/trades_archive.vacuum), и
+    штатный бэкап заранее проверяют место и при нехватке ОТКАЗЫВАЮТСЯ — это
+    правильно, но заметить отказ можно только в логе, куда никто не смотрит.
+    Тем временем база растёт, место не возвращается, копии не снимаются."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            problems = await run_bg(_disk_problems)
+            for msg in problems.values():
+                logger.warning("ДИСК: %s", msg)
+            await _disk_alert(problems)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("disk watchdog error: %s", e)
+        await asyncio.sleep(period_sec)
+
+
 ARCHIVE_VACUUM_MIN_ROWS = int(os.getenv("ARCHIVE_VACUUM_MIN_ROWS", "200000"))
 
 
@@ -772,6 +851,12 @@ async def archive_maintenance():
             if res.get("deleted", 0) >= ARCHIVE_VACUUM_MIN_ROWS:
                 vac = await run_bg(ta.vacuum)
                 logger.info("tick archive vacuum: %s", vac)
+                if vac.get("skipped"):
+                    # место кончилось ровно тогда, когда его надо возвращать —
+                    # молча пропустить значит дать базе расти дальше
+                    await _disk_alert({"vacuum": f"VACUUM пропущен: {vac['skipped']} "
+                                                 f"(свободно {vac.get('free_mb')} МБ "
+                                                 f"при базе {vac.get('before_mb')} МБ)"})
             # статистика планировщика: таблицы растут каждый день, и по стухшей
             # он выбирает индекс, из-за которого лента читает лишние сотни тысяч
             # строк (см. services/tape)
@@ -869,6 +954,8 @@ async def lifespan(app: FastAPI):
     lag_task = asyncio.create_task(loop_lag_watchdog())
     # тихий отказ стримов выглядит как «рынок спокоен» — сторож делает его громким
     stream_wd_task = asyncio.create_task(stream_watchdog())
+    # место на диске и свежесть копий: оба отказа тихие, см. disk_watchdog
+    disk_wd_task = asyncio.create_task(disk_watchdog())
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
     tg_sig_task = asyncio.create_task(tg_signal_worker())
@@ -879,6 +966,7 @@ async def lifespan(app: FastAPI):
     yield
     tg_sig_task.cancel()
     stream_wd_task.cancel()
+    disk_wd_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()

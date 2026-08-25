@@ -6,6 +6,7 @@
 починка даёт отбой ровно один раз.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -87,3 +88,69 @@ def test_failed_delivery_is_retried_next_tick(sent, monkeypatch):
     monkeypatch.setattr("services.tg_notify.notify_admins", alive)
     _alert({"books": "стаканы — 0 бумаг на сокетах"})
     assert len(sent) == 1
+
+
+# --- сторож диска и резервных копий ---
+
+@pytest.fixture()
+def disk(tmp_path, monkeypatch):
+    """Подсовывает сторожу свою базу, свою папку копий и своё свободное место."""
+    import shutil
+    db = tmp_path / "portfolio.db"
+    db.write_bytes(b"x" * 1000)
+    (tmp_path / "backups").mkdir()
+    monkeypatch.setattr("services.portfolio_db.DB_PATH", db)
+    m._disk_alerted.clear()
+
+    state = {"free": 10_000}
+    monkeypatch.setattr(shutil, "disk_usage",
+                        lambda p: type("U", (), {"free": state["free"]})())
+    return tmp_path, state
+
+
+def _backup(tmp_path, age_hours: float, name="portfolio-20260825-0130.db.gz"):
+    import os
+    f = tmp_path / "backups" / name
+    f.write_bytes(b"gz")
+    old = time.time() - age_hours * 3600
+    os.utime(f, (old, old))
+    return f
+
+
+def test_disk_ok_when_space_and_backup_fresh(disk):
+    tmp_path, _ = disk
+    _backup(tmp_path, age_hours=2)
+    assert m._disk_problems() == {}
+
+
+def test_disk_warns_before_maintenance_starves(disk):
+    """Тревога поднимается ЗАРАНЕЕ: места должно хватать не «вообще», а на
+    VACUUM и бэкап, каждый из которых требует места в размер базы."""
+    tmp_path, state = disk
+    _backup(tmp_path, age_hours=2)
+    state["free"] = 1400            # база 1000 Б, нужно 1500 при ratio 1.5
+    p = m._disk_problems()
+    assert "space" in p and "перестанет ужиматься" in p["space"]
+
+
+def test_stale_backup_is_a_problem(disk):
+    """Проверяем результат, а не механику: так ловится и упавший крон, и отказ
+    по месту, и битый файл, не доживший до ротации."""
+    tmp_path, _ = disk
+    _backup(tmp_path, age_hours=50)
+    p = m._disk_problems()
+    assert "backup" in p and "крон бэкапа не отработал" in p["backup"]
+
+
+def test_missing_backups_are_a_problem(disk):
+    assert m._disk_problems()["backup"] == "резервных копий базы нет вовсе"
+
+
+def test_disk_alert_shares_dedup_with_streams(disk, sent):
+    """У дискового сторожа своя память тревог: беда с местом не должна глушить
+    сообщение о молчащем стриме и наоборот."""
+    tmp_path, _ = disk
+    asyncio.run(m._disk_alert({"space": "мало места"}))
+    asyncio.run(m._stream_alert({"books": "стаканы — 0 бумаг на сокетах"}))
+    assert len(sent) == 2
+    assert "Диск и копии" in sent[0] and "Стрим молчит" in sent[1]
