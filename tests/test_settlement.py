@@ -448,3 +448,21 @@ def test_zero_accrued_with_schedule_still_repaired(keyrate_curve, calc_date,
                                     accrued_override=0.0, periods=periods)
     assert m["accrued_settle_rub"] > 0, f"НКД не восстановлен: {m['warnings']}"
     assert not any("расписание купонов недоступно" in w for w in m["warnings"])
+
+
+def test_status_not_success_without_spread(keyrate_curve, calc_date, flat_index_15,
+                                           monkeypatch):
+    """Y-IDX пуст → статус не «успех».
+
+    Так выглядела недоступная RUONIA-кривая (база сравнения): спреда нет, а
+    статус SUCCESS, и потребитель считал число просто отсутствующим, а не
+    сбойным."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (None, []))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=accrued_at(periods, settle_date(calc_date)),
+                                    periods=periods)
+    if m["yield_over_index_bps"] is None:
+        assert m["pricing_status"] != "SUCCESS"

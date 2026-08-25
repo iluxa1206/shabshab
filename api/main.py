@@ -262,6 +262,56 @@ def _thread_stacks_brief() -> str:
     return " | ".join(out) or "(стеков нашего кода нет — C-код/сеть)"
 
 
+STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
+
+
+async def stream_watchdog(period_sec: int = 300):
+    """Сторож молчания стримов Alor.
+
+    Самый неприятный отказ — тихий: сокеты не поднялись или отвалились,
+    стаканы и сделки не идут, а система выглядит как «рынок спокоен». Сигналы
+    честно молчат (скринер не видит глубины), и понять это можно только зайдя
+    в /api/status. Раз в пять минут в торговые часы сверяем, есть ли бумаги на
+    сокетах и капали ли сделки за последние STREAM_SILENCE_MIN минут."""
+    from services import trades_stream, universe_stream
+    from services.market_data import market_cache as _mc
+    await asyncio.sleep(300)          # даём пулам подняться после старта
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                us, ts = universe_stream.stats(), trades_stream.stats()
+                if not us.get("streamed"):
+                    logger.warning("СТРИМ МОЛЧИТ: стаканы — 0 бумаг на сокетах, "
+                                   "скринер слеп и сигналы не придут")
+                elif not (_mc.get("depth") or {}):
+                    logger.warning("СТРИМ МОЛЧИТ: сокеты стаканов живы (%d бумаг), "
+                                   "но кэш глубины пуст", us["streamed"])
+                if not ts.get("streamed"):
+                    logger.warning("СТРИМ МОЛЧИТ: сделки — 0 бумаг на сокетах")
+                else:
+                    last = ts.get("last_ts")
+                    quiet = _quiet_min(last)
+                    if quiet is not None and quiet > STREAM_SILENCE_MIN:
+                        logger.warning("СТРИМ МОЛЧИТ: сделок нет %.0f мин "
+                                       "(последняя %s)", quiet, last)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("stream watchdog error: %s", e)
+        await asyncio.sleep(period_sec)
+
+
+def _quiet_min(last_ts):
+    """Сколько минут прошло с отметки стрима ('YYYY-MM-DD HH:MM:SS' МСК)."""
+    if not last_ts:
+        return None
+    try:
+        seen = datetime.strptime(last_ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_MSK)
+    except (ValueError, TypeError):
+        return None
+    return (datetime.now(_MSK) - seen).total_seconds() / 60
+
+
 async def loop_lag_watchdog():
     """Сторож event loop: секундный такт, замер задержки пробуждения. Лаг
     больше полсекунды = что-то синхронное держит ядро — пишем в лог, чтобы
@@ -772,6 +822,8 @@ async def lifespan(app: FastAPI):
     tape_task = asyncio.create_task(trades_stream_pool())
     engine_task = asyncio.create_task(metrics_worker())
     lag_task = asyncio.create_task(loop_lag_watchdog())
+    # тихий отказ стримов выглядит как «рынок спокоен» — сторож делает его громким
+    stream_wd_task = asyncio.create_task(stream_watchdog())
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
     tg_sig_task = asyncio.create_task(tg_signal_worker())
@@ -781,6 +833,7 @@ async def lifespan(app: FastAPI):
     signals_task = asyncio.create_task(signals_worker())
     yield
     tg_sig_task.cancel()
+    stream_wd_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()

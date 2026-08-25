@@ -514,7 +514,11 @@ def calculate_valuation_metrics(
         for _h in horizons.values():
             _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
 
-    status = "SUCCESS" if sm_bps is not None else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
+    # Y-IDX пуст, а статус «успех» — противоречие: так выглядела недоступная
+    # RUONIA-кривая (база сравнения), и потребитель считал число просто
+    # отсутствующим, а не сбойным. Первичная метрика решает статус наравне с SM.
+    _ok = sm_bps is not None and yield_over_index_bps is not None
+    status = "SUCCESS" if _ok else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
     if _sanity:
         status = "SANITY_FLAG"
 
