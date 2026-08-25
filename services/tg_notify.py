@@ -286,71 +286,86 @@ def _fmt_threshold(v: Optional[float]) -> str:
 
 def _match_parts(m: dict, kind: str, side: Optional[str] = None,
                  icons: Optional[dict] = None) -> tuple:
-    """Запись о бумаге тремя частями: (шапка, цена+ISIN, детали).
+    """Запись о бумаге четырьмя частями: (шапка, цена, детали, хвост).
 
     Разложено, а не склеено, потому что между второй и третьей частью встаёт
-    СТАКАН: сверху — ради чего открывают сообщение (спред, выпуск, объём) и по
-    какой цене, дальше книга, а «сколько уровней, почему и когда» читают уже
-    после неё, если событие зацепило."""
-    head, sub = [], []
+    СТАКАН: сверху — ради чего открывают сообщение (спред, выпуск, цена,
+    объём), дальше книга, а «чем платит и что копировать» читают уже после
+    неё. Хвост — обстоятельства срабатывания (уровни, причина, время, порог):
+    он уезжает в подпись сообщения, к имени фильтра, потому что это уже не про
+    бумагу, а про то, кто и когда позвал."""
+    head, sub, foot = [], [], []
 
-    # Порядок шапки: спред → выпуск со сроком → объём. Спред первым, потому что
-    # по нему решают, стоит ли читать дальше; срок в скобках при имени, потому
-    # что «180 бп» у годовой бумаги и у пятилетней — разные новости; объём
-    # замыкает как размер возможности.
+    # Порядок шапки: спред → выпуск со сроком. Спред первым, потому что по
+    # нему решают, стоит ли читать дальше; срок в скобках при имени, потому
+    # что «180 бп» у годовой бумаги и у пятилетней — разные новости.
     if m.get("val_bps") is not None:
         head.append(f"<b>{m['val_bps']:.0f} бп</b>")
     years = _fmt_years(m.get("years"))
     head.append(_issue_link(m) + (f" ({years})" if years else ""))
+
+    # Цена и объём — ЖИРНЫМ: это две цифры, ради которых сообщение открывают,
+    # остальное в строке им подпись.
     money = _short_money(_money_of(m, kind))
-    if money:
-        head.append(money)
+    px = [f"<b>{_num(m['price'])}%</b>"] if m.get("price") is not None else []
 
     formula = _formula(m)
     if formula:
         sub.append(formula)
     if kind == "block":
-        # время — ПОСЛЕ рейтинга: слева то, чем сделку оценивают, справа
-        # отметка времени, по которой её потом ищут в ленте
+        # у сделки объём замыкает шапку: он и есть событие («кто-то взял на
+        # 1,9м»), цена с рейтингом читаются уже под ним
+        if money:
+            head.append(f"<b>{money}</b>")
         if m.get("rating"):
-            sub.append(str(m["rating"]))
+            sub.append(html.escape(str(m["rating"])))
         ts = _hhmmss(m)
         if ts:
-            sub.append(ts)
+            foot.append(ts)
     else:
+        # у заявки объём — накопленная глубина ДО этой цены, поэтому стоит
+        # рядом с ней, а не в шапке: «почём и на сколько» — одна мысль
+        if m.get("rating"):
+            px.append(html.escape(str(m["rating"])))
+        if money:
+            px.append(f"<b>{money}</b>")
         if m.get("single_px") is not None:
-            sub.append(f"одна заявка {_num(m['single_px'])}")
+            foot.append(f"одна заявка {_num(m['single_px'])}")
         elif m.get("levels"):
-            sub.append(f"{m['levels']} ур")
+            foot.append(f"{m['levels']} ур")
         # причина ДЕЛЬТОЙ («объём +6 %»): слово без величины не говорит,
         # стоит ли отрываться от текущего дела
         why = _reason_delta(m) or _REASON.get(m.get("reason") or "", "")
         if why:
-            sub.append(why)
+            foot.append(why)
         ts = _hhmmss(m)
         if ts:
-            sub.append(ts)
+            foot.append(ts)
         want = _fmt_threshold(m.get("want_money_rub"))
         if want:
-            sub.append(want)
+            foot.append(want)
 
-    head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
-    # цена, ISIN и рейтинг рядом: «почём», «что» и «чьё» — паспорт строки,
-    # который читают сразу после шапки. У сделки рейтинг стоит в подробностях
-    # рядом со временем и здесь не дублируется.
-    px = [f"{_num(m['price'])}%"] if m.get("price") is not None else []
+    # ISIN замыкает детали: его копируют целиком, и в конце строки тап по нему
+    # не спорит с соседними числами
     isin = _isin_line(m)
     if isin:
-        px.append(isin)
-    if kind != "block" and m.get("rating"):
-        px.append(html.escape(str(m["rating"])))
-    return head_line, " · ".join(px), " · ".join(b for b in sub if b)
+        sub.append(isin)
+
+    head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
+    return (head_line, " · ".join(px), " · ".join(b for b in sub if b),
+            " · ".join(b for b in foot if b))
 
 
 def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
-               icons: Optional[dict] = None) -> str:
-    """Запись без стакана — сделки идут пачкой, книгу к ним не прикладываем."""
-    return "\n".join(p for p in _match_parts(m, kind, side, icons) if p)
+               icons: Optional[dict] = None, with_foot: bool = True) -> str:
+    """Запись без стакана — сделки идут пачкой, книгу к ним не прикладываем.
+
+    with_foot=False, когда время уезжает в подпись сообщения (одна сделка на
+    сообщение): дважды его печатать незачем."""
+    head, px, details, foot = _match_parts(m, kind, side, icons)
+    top = "\n".join(p for p in (head, px) if p)
+    parts = [top, details] + ([foot] if with_foot else [])
+    return "\n\n".join(p for p in parts if p)
 
 
 # Сколько уровней стакана прикладывать к заявке. Четыре — компромисс: экран
@@ -417,36 +432,41 @@ def _signal_text(buf: dict) -> str:
     # маркеры чата кладёт enqueue_signal: набор известен там, где известен
     # адресат, и доставка не ходит за ним в базу на каждое сообщение
     icons = buf.get("icons")
+    extra = ""
     if kind == "book":
         # одно сообщение = одна бумага (см. _group): показываем последнее
         # состояние и прикладываем к нему стакан того же такта
         m = ms[-1]
-        head, px, details = _match_parts(m, kind, side_key, icons)
+        head, px, details, extra = _match_parts(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
         if n > 1:
-            details = ((details + " · ") if details else "") \
+            extra = ((extra + " · ") if extra else "") \
                 + f"<i>срабатываний за такт: {n}</i>"
-        # стакан ВНУТРИ записи: после цены, до подробностей срабатывания — и
-        # отбит пустыми строками с обеих сторон, иначе лестница слипается с
-        # текстом и глазу негде остановиться
-        top = "\n".join(p for p in (head, px) if p)
-        body = "\n\n".join(p for p in (top, book, details) if p)
+        # стакан ВНУТРИ записи: сразу под ценой, до формулы с ISIN. Шапка от
+        # цены отбита пустой строкой — иначе спред, выпуск и цифры сливаются
+        # в одну простыню, и глазу негде остановиться.
+        top = "\n\n".join(p for p in (head, px) if p)
+        body = "\n".join(p for p in (top, book, details) if p)
     else:
-        body = "\n\n".join(_fmt_match(m, kind, side_key, icons)
+        # время сделки уходит в подпись, если сделка в сообщении одна; в пачке
+        # оно остаётся при своей записи — иначе непонятно, к какой относится
+        single = n == 1
+        body = "\n\n".join(_fmt_match(m, kind, side_key, icons, not single)
                             for m in ms[:MAX_MATCHES])
         if n > MAX_MATCHES:
             body += f"\n\n…ещё {n - MAX_MATCHES}"
-    # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал»
-    # это сноска, которую читают, только если событие зацепило.
+        if single:
+            extra = _hhmmss(ms[-1])
+    # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал,
+    # почему и когда» это сноска, которую читают, только если событие зацепило.
     if kind == "block":
         foot = f"<b>{buf['name']}</b>" if buf.get("name") else "<b>Крупные сделки</b>"
     else:
         side = {"ask": "оффер", "bid": "бид"}.get(side_key or "", "")
         foot = f"<b>{buf['name']}</b>" + (f" · {side}" if side else "")
-    # подпись сразу под подробностями: они уже отделены от шапки стаканом,
-    # и лишняя пустая строка растягивала бы сообщение на пустом месте
-    sep = "\n" if kind == "book" else "\n\n"
-    return f"{body}{sep}{foot}"
+    if extra:
+        foot += f" · {extra}"
+    return f"{body}\n\n{foot}"
 
 
 def _arm_followup(chat_id: int, res: Optional[dict], buf: dict) -> None:

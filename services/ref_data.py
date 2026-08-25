@@ -254,19 +254,13 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
             out["margin_schedule"] = parse_margin_schedule(p["coupon_text"])
         except Exception:
             pass
-    # 0) слой bondresearch.ru (импорт scripts/import_bondresearch_specs.py):
-    #    наблюдаемые рынком лаг/метод. Выше парсера, ниже ручной правки.
-    if out["fixing_lag"] is None or out["coupon_mode"] is None:
-        br = _br_specs().get(isin)
-        if br:
-            if out["fixing_lag"] is None and br.get("fixing_lag") is not None:
-                out["fixing_lag"] = br["fixing_lag"]
-                out["fixing_lag_unit"] = br.get("fixing_lag_unit", "cal")
-            if out["coupon_mode"] is None and br.get("coupon_mode"):
-                out["coupon_mode"] = br["coupon_mode"]
-                if out["avg_window_days"] is None and br.get("avg_window_days") is not None:
-                    out["avg_window_days"] = br["avg_window_days"]
-    # 1) текст формулы из проспекта (точный режим + лаг + кэп/флор)
+    # 0) ТЕКСТ ПРОСПЕКТА — первым. Это первоисточник: в нём написано, по какому
+    #    окну и с каким лагом считается купон. Раньше выше стоял слой
+    #    bondresearch.ru, и его «average» затирал распознанный парсером
+    #    «avg_prev» у РЖД/РСХБ/Росагро — ошибка бэктеста 0.008 → 0.386 пп
+    #    (25.08, регресс приехал с обновлением импорта). Сверка на бэктесте:
+    #    из 17 бумаг с расхождением парсер точнее у 1, хуже — ни у одной,
+    #    у остальных одинаково.
     if (out["fixing_lag"] is None or out["coupon_mode"] is None
             or out["capped"] is None or out["compounded"] is None) and p.get("coupon_text"):
         try:
@@ -290,7 +284,20 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
                     out["floor_pct"] = ps.get("floor_pct")
         except Exception:
             pass
-    # 2) фолбэк: калибровка из истории купонов
+    # 2) слой bondresearch.ru (импорт scripts/import_bondresearch_specs.py):
+    #    наблюдаемые рынком лаг/метод — ФОЛБЭК для бумаг, где проспекта нет
+    #    или парсер его не распознал.
+    if out["fixing_lag"] is None or out["coupon_mode"] is None:
+        br = _br_specs().get(isin)
+        if br:
+            if out["fixing_lag"] is None and br.get("fixing_lag") is not None:
+                out["fixing_lag"] = br["fixing_lag"]
+                out["fixing_lag_unit"] = br.get("fixing_lag_unit", "cal")
+            if out["coupon_mode"] is None and br.get("coupon_mode"):
+                out["coupon_mode"] = br["coupon_mode"]
+                if out["avg_window_days"] is None and br.get("avg_window_days") is not None:
+                    out["avg_window_days"] = br["avg_window_days"]
+    # 3) фолбэк: калибровка из истории купонов
     if (out["fixing_lag"] is None or out["coupon_mode"] is None) and coupons and calc_date:
         try:
             from services.coupon_calib import calibrate

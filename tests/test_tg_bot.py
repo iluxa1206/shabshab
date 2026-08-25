@@ -124,26 +124,30 @@ def test_signal_text_caps_matches():
 
 
 def test_book_line_layout():
-    """Порядок записи: шапка (спред · выпуск со сроком · объём), под ней цена и
-    ISIN, а подробности срабатывания — последней строкой, за стаканом."""
+    """Порядок записи: шапка (спред · выпуск со сроком), под ней цена с
+    рейтингом и объёмом, а обстоятельства срабатывания — в подписи."""
     txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A109B33", "name": "Газпн3P13R",
                                      "val_bps": 171.0, "price": 99.9, "money_rub": 1e6,
                                      "levels": 1, "years": 1.5, "reason": "money",
                                      "money_ok_rub": 1.06e6, "prev_money_ok_rub": 1e6}]})
-    first, second = txt.split("\n")[0], txt.split("\n")[1]
+    lines = txt.split("\n")
+    first, price = lines[0], lines[2]
     assert first.startswith("🔴")                      # оффер красный
     # число без подписи: в строке это единственное значение в бп
     assert "171 бп" in first and "R-spread" not in first
-    assert "1м ₽" in first and "(1,5 г)" in first, "срок — в скобках при имени"
-    # порядок шапки: спред → выпуск со сроком → объём
-    assert first.index("171 бп") < first.index("Газпн3P13R") < first.index("₽")
-    assert "99,90%" in second and "RU000A109B33" in second
-    last = txt.strip().split("\n")[-2]
-    assert "1 ур" in last and "объём +6 %" in last, "подробности — за стаканом"
+    assert "(1,5 г)" in first, "срок — в скобках при имени"
+    # порядок шапки: спред → выпуск со сроком; объём уехал к цене
+    assert first.index("171 бп") < first.index("Газпн3P13R")
+    assert "₽" not in first
+    assert "<b>99,90%</b>" in price and "1м ₽" in price
+    assert "RU000A109B33" in lines[3], "ISIN — в деталях, за формулой"
     # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
-    # не добавляет к имени фильтра, а строку начинает мусором
-    assert txt.strip().endswith("<b>Тест 2</b> · оффер")
+    # не добавляет к имени фильтра, а строку начинает мусором. Обстоятельства
+    # срабатывания — там же, у имени фильтра.
+    last = txt.strip().split("\n")[-1]
+    assert last.startswith("<b>Тест 2</b> · оффер")
+    assert "1 ур" in last and "объём +6 %" in last
     assert "📡" not in txt
 
 
@@ -297,17 +301,16 @@ def test_burst_is_capped_per_chat(monkeypatch):
 
 
 def test_block_message_shows_seconds_after_rating():
-    """Крупная сделка: время с секундами и ПОСЛЕ рейтинга — внутри минуты по
-    крупным принтам важна очерёдность."""
+    """Крупная сделка: время с секундами — в подписи, за именем фильтра: внутри
+    минуты по крупным принтам важна очерёдность."""
     txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
                         "matches": [{"isin": "RU000A109B33", "name": "Газпн",
                                      "price": 100.05, "money_rub": 26_100_000,
                                      "val_bps": 168.0, "side": "buy",
                                      "rating": "AAA",
                                      "ts": "2026-08-21 10:42:07"}]})
-    sub = [ln for ln in txt.split("\n") if "AAA" in ln][0]
-    assert "10:42:07" in sub
-    assert sub.index("AAA") < sub.index("10:42:07")
+    last = txt.strip().split("\n")[-1]
+    assert last == "<b>блоки</b> · 10:42:07"
 
 
 def test_block_time_falls_back_to_fire_moment():
@@ -552,13 +555,16 @@ def test_order_money_falls_back_for_old_events():
 
 
 def test_head_order_is_spread_issue_money():
-    """Шапка: спред · выпуск (срок) · объём — и ничего между именем и сроком."""
+    """Шапка заявки: спред · выпуск (срок); объём стоит у цены, потому что это
+    накопленная глубина именно до неё."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_order_match(years=1.1,
                                                  level_money_rub=12_100_000)]})
-    head = txt.split("\n")[0]
+    lines = txt.split("\n")
+    head, price = lines[0], lines[2]
     assert "<code>Газпн3P13R</code> (1,1 г)" in head
-    assert head.index("168 бп") < head.index("Газпн3P13R") < head.index("12,1м ₽")
+    assert head.index("168 бп") < head.index("Газпн3P13R")
+    assert "12,1м ₽" in price and "₽" not in head
 
 
 def test_head_without_maturity_has_no_empty_brackets():
@@ -571,25 +577,26 @@ def test_head_without_maturity_has_no_empty_brackets():
 
 
 def test_book_layout_puts_details_after_orderbook():
-    """Стакан стоит ВНУТРИ записи: шапка → цена+ISIN → книга → подробности."""
+    """Стакан стоит ВНУТРИ записи: шапка → цена → книга → формула с ISIN."""
     m = _order_match(years=1.1, level_money_rub=32_600_000, reason="new")
     m["book"] = {"asks": [{"price": 99.83, "qty": 38, "money": 37_900, "y_idx": 164}],
                  "bids": [{"price": 99.71, "qty": 14, "money": 14_300, "y_idx": 178}]}
     lines = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                           "matches": [m]}).split("\n")
     assert "бп" in lines[0] and "Газпн3P13R" in lines[0]
-    assert lines[1].startswith("100,05%") and "RU000A109B33" in lines[1]
-    assert lines[2] == "", "пустая строка перед стаканом"
-    assert lines[3].startswith("<blockquote")
+    assert lines[1] == "", "пустая строка между шапкой и ценой"
+    assert lines[2].startswith("<b>100,05%</b>")
+    assert lines[3].startswith("<blockquote"), "стакан сразу под ценой"
     book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
-    assert lines[book_end + 1] == "", "пустая строка после стакана"
-    details = lines[book_end + 2]
-    assert "заявка" in details and "12:47:02" in details and ">1м" in details
-    assert lines[-1] == "<b>Тест 2</b> · оффер", "подпись сразу под подробностями"
+    assert "RU000A109B33" in lines[book_end + 1], "формула с ISIN — за стаканом"
+    assert lines[-2] == "", "подпись отбита от записи"
+    foot = lines[-1]
+    assert foot.startswith("<b>Тест 2</b> · оффер")
+    assert "заявка" in foot and "12:47:02" in foot and ">1м" in foot
 
 
 def test_repeat_count_joins_details_line():
-    """Счётчик повторов такта — в той же строке подробностей, не отдельной."""
+    """Счётчик повторов такта — в той же строке подписи, не отдельной."""
     m = _order_match(reason="new")
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [m, m]})
@@ -597,24 +604,24 @@ def test_repeat_count_joins_details_line():
     assert "заявка" in line and "срабатываний за такт: 2" in line
 
 
-def test_order_rating_goes_after_isin():
-    """У заявки рейтинг стоит в паспортной строке, за ISIN."""
+def test_order_rating_goes_after_price():
+    """У заявки рейтинг стоит между ценой и объёмом: «почём, чьё, на сколько»."""
     line = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [_order_match(rating="AAA")]}).split("\n")[1]
-    assert line.endswith("· AAA")
-    assert line.index("RU000A109B33") < line.index("AAA")
+                         "matches": [_order_match(rating="AAA")]}).split("\n")[2]
+    assert line.index("100,05") < line.index("AAA") < line.index("₽")
 
 
 def test_trade_rating_not_duplicated():
-    """У сделки рейтинг остаётся в подробностях рядом со временем — там он и
-    был согласован, дублировать в паспортной строке незачем."""
+    """У сделки рейтинг стоит в деталях рядом с формулой и ISIN, и только
+    там — дублировать его в строке цены незачем."""
     txt = _signal_text({"name": "блоки", "side": None, "kind": "block",
                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
                                      "price": 100.1, "money_rub": 2.6e8,
                                      "rating": "AAA", "ts": "2026-08-24 12:47:02"}]})
     assert txt.count("AAA") == 1
     rating_line = [ln for ln in txt.split("\n") if "AAA" in ln][0]
-    assert "12:47:02" in rating_line
+    assert "RU000A10AU99" in rating_line
+    assert "12:47:02" in txt.strip().split("\n")[-1], "время — в подписи"
 
 
 def test_book_volume_in_lots_not_rubles():
@@ -653,5 +660,5 @@ def test_coupon_formula_under_orderbook():
     lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                           "matches": [m]}).split("\n")
     book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
-    details = lines[book_end + 2]
+    details = lines[book_end + 1]
     assert details.startswith("КС + 1,2% (12) · ")
