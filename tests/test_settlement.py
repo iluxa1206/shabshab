@@ -385,3 +385,33 @@ def test_sanity_hides_all_spread_metrics_together(keyrate_curve, calc_date,
     assert m["dm_bps"] is None and m["sm_bps"] is None
     assert m["yield_over_index_bps"] is None
     assert m["dirty_price_rub"] is not None, "факт от цены остаётся"
+
+
+def test_zero_accrued_without_schedule_hides_spread(keyrate_curve, calc_date,
+                                                    flat_index_15, monkeypatch):
+    """Нулевой НКД и НЕТ расписания — проверить нечем, спред не отдаём.
+
+    Регресс РостелP21R 25.08: сигнал 250 bps против 121 верного. Вчерашняя
+    защита требовала расписания, а когда fetch_coupon_schedules промахнулся,
+    ноль проходил насквозь и цена считалась «чистой»."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=0.0, periods=None)
+    assert m["yield_over_index_bps"] is None and m["dm_bps"] is None
+    assert m["pricing_status"] == "SANITY_FLAG"
+    assert any("расписание купонов недоступно" in w for w in m["warnings"])
+
+
+def test_zero_accrued_with_schedule_still_repaired(keyrate_curve, calc_date,
+                                                   flat_index_15, monkeypatch):
+    """Расписание есть — чиним, как и вчера, а не глушим метрики."""
+    monkeypatch.setattr("services.valuation._index_provider",
+                        lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150)
+    periods = _periods(calc_date - timedelta(days=40), value=25.0)
+    m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                    accrued_override=0.0, periods=periods)
+    assert m["accrued_settle_rub"] > 0, f"НКД не восстановлен: {m['warnings']}"
+    assert not any("расписание купонов недоступно" in w for w in m["warnings"])

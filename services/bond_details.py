@@ -95,7 +95,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     last_price = market_prices.get(isin)
     prev_close_pct = snapshot.get(isin, {}).get("prev")
     accrued_live = snapshot.get(isin, {}).get("accrued")
-    periods = schedules.get(isin)
+    periods = schedules.get(isin) or _periods_from_coupons(sched_full.get("coupons"))
 
     # Номинал: сверяем с фактом купона (value/valueprc); правит тихий фолбэк на 1000
     _cd_face = calc_date or date.today()
@@ -266,6 +266,22 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     }
 
 
+def _periods_from_coupons(coupons) -> list:
+    """[(start, end, value)] из расписания bondization.
+
+    Нужен, когда fetch_coupon_schedules промахнулся, а полное расписание есть:
+    два независимых источника одного и того же, и терять оба сразу незачем.
+    Без периодов расчёт слепнет — не видит фактических купонов и не может
+    проверить НКД (РостелP21R 25.08: periods пусто + НКД 0 от ISS → сигнал
+    250 bps против 121 верного)."""
+    out = []
+    for c in coupons or []:
+        s, e = _acc_date(c.get("start")), _acc_date(c.get("end"))
+        if s and e:
+            out.append((s, e, c.get("value")))
+    return sorted(out, key=lambda x: x[0])
+
+
 def _acc_date(v):
     """'YYYY-MM-DD' из ISS → date. Мусор/пусто → None (тогда работает прежняя
     эвристика accrued_basis)."""
@@ -342,7 +358,10 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
         "calc_date": calc_date,
         "accrued_live": accrued_live,
         "accrued_date": accrued_date,
-        "periods": schedules.get(isin),
+        # расписание купонов: свой источник, а при его промахе — из полного
+        # bondization (см. _periods_from_coupons)
+        "periods": schedules.get(isin) or _periods_from_coupons(
+            sched_full.get("coupons")),
         "coupons": sched_full.get("coupons", []),
         "amorts": sched_full.get("amorts"),
         "offers": sched_full.get("offers"),

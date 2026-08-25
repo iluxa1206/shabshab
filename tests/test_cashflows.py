@@ -214,3 +214,21 @@ def test_amort_remaining_ignores_partial_schedule():
     assert amort_remaining_face(full, today, 600.0) == pytest.approx(600.0)
     assert amort_remaining_face(full, today) == pytest.approx(600.0), \
         "без текущего номинала — прежнее поведение"
+
+
+def test_periods_rebuilt_from_bondization_when_schedule_missing():
+    """Расписание купонов есть в двух источниках — терять оба сразу незачем.
+
+    fetch_coupon_schedules промахнулся, а полное bondization на месте: строим
+    периоды из него, иначе расчёт слепнет (не видит фактических купонов и не
+    может проверить НКД)."""
+    from services.bond_details import _periods_from_coupons
+    from datetime import date
+
+    coupons = [{"start": "2026-07-07", "end": "2026-08-06", "value": 13.33},
+               {"start": "2026-08-06", "end": "2026-09-05", "value": None},
+               {"bad": "row"}]
+    per = _periods_from_coupons(coupons)
+    assert per == [(date(2026, 7, 7), date(2026, 8, 6), 13.33),
+                   (date(2026, 8, 6), date(2026, 9, 5), None)]
+    assert _periods_from_coupons(None) == []
