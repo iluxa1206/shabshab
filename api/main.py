@@ -265,6 +265,46 @@ def _thread_stacks_brief() -> str:
 STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
 
 
+# Как часто ПОВТОРЯТЬ предупреждение о том же отказе. Сторож ходит раз в пять
+# минут, но одна и та же поломка не должна звонить каждые пять: чинить её
+# начинают с первого сообщения, а дальше поток превращает тревогу в фон.
+STREAM_ALERT_REPEAT_MIN = float(os.getenv("STREAM_ALERT_REPEAT_MIN", "60"))
+
+# что сейчас сломано → когда об этом сообщили в последний раз
+_stream_alerted: dict = {}
+
+
+async def _stream_alert(problems: dict) -> None:
+    """Доводит находки сторожа до людей и даёт отбой, когда починилось.
+
+    Лога мало: тихий отказ тем и коварен, что снаружи выглядит как спокойный
+    рынок, и никто не идёт смотреть логи — идти незачем, сигналов ведь нет по
+    той же причине. Поэтому предупреждение уходит в телеграм админам.
+
+    Новая поломка сообщается сразу, известная — не чаще
+    STREAM_ALERT_REPEAT_MIN. Восстановление сообщается один раз: «отбой» без
+    предшествующей тревоги никому не нужен."""
+    from services.tg_notify import notify_admins
+    now = time.monotonic()
+
+    fixed = [k for k in _stream_alerted if k not in problems]
+    for k in fixed:
+        _stream_alerted.pop(k, None)
+    if fixed and not problems:
+        await notify_admins("✅ <b>Стримы ожили</b> — данные снова идут")
+
+    due = [k for k, _ in problems.items()
+           if now - _stream_alerted.get(k, float("-inf"))
+           >= STREAM_ALERT_REPEAT_MIN * 60]
+    if not due:
+        return
+    body = "\n".join(f"• {problems[k]}" for k in due)
+    if await notify_admins(f"🛑 <b>Стрим молчит</b>\n{body}\n\n"
+                           "<i>Скринер слеп: сигналы не придут, пока это так.</i>"):
+        for k in due:
+            _stream_alerted[k] = now
+
+
 async def stream_watchdog(period_sec: int = 300):
     """Сторож молчания стримов Alor.
 
@@ -272,28 +312,33 @@ async def stream_watchdog(period_sec: int = 300):
     стаканы и сделки не идут, а система выглядит как «рынок спокоен». Сигналы
     честно молчат (скринер не видит глубины), и понять это можно только зайдя
     в /api/status. Раз в пять минут в торговые часы сверяем, есть ли бумаги на
-    сокетах и капали ли сделки за последние STREAM_SILENCE_MIN минут."""
+    сокетах и капали ли сделки за последние STREAM_SILENCE_MIN минут; находки
+    идут в лог И в телеграм админам (см. _stream_alert) — лог тут не адресат,
+    в него никто не смотрит именно тогда, когда надо."""
     from services import trades_stream, universe_stream
     from services.market_data import market_cache as _mc
     await asyncio.sleep(300)          # даём пулам подняться после старта
     while True:
         try:
             if _in_moex_trading_hours():
+                problems: dict = {}
                 us, ts = universe_stream.stats(), trades_stream.stats()
                 if not us.get("streamed"):
-                    logger.warning("СТРИМ МОЛЧИТ: стаканы — 0 бумаг на сокетах, "
-                                   "скринер слеп и сигналы не придут")
+                    problems["books"] = ("стаканы — 0 бумаг на сокетах")
                 elif not (_mc.get("depth") or {}):
-                    logger.warning("СТРИМ МОЛЧИТ: сокеты стаканов живы (%d бумаг), "
-                                   "но кэш глубины пуст", us["streamed"])
+                    problems["depth"] = (f"сокеты стаканов живы "
+                                         f"({us['streamed']} бумаг), но кэш глубины пуст")
                 if not ts.get("streamed"):
-                    logger.warning("СТРИМ МОЛЧИТ: сделки — 0 бумаг на сокетах")
+                    problems["trades"] = "сделки — 0 бумаг на сокетах"
                 else:
                     last = ts.get("last_ts")
                     quiet = _quiet_min(last)
                     if quiet is not None and quiet > STREAM_SILENCE_MIN:
-                        logger.warning("СТРИМ МОЛЧИТ: сделок нет %.0f мин "
-                                       "(последняя %s)", quiet, last)
+                        problems["quiet"] = (f"сделок нет {quiet:.0f} мин "
+                                             f"(последняя {last})")
+                for msg in problems.values():
+                    logger.warning("СТРИМ МОЛЧИТ: %s", msg)
+                await _stream_alert(problems)
         except asyncio.CancelledError:
             raise
         except Exception as e:

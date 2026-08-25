@@ -873,3 +873,32 @@ def test_negotiated_trade_not_merged_with_market(sent):
             "money_rub": 10e6, "val_bps": 200.0, "side": "buy"}
     groups = tg._group([base, {**base, "negotiated": True}], "block")
     assert len(groups) == 2
+
+
+def test_notify_admins_targets_only_admins(db, monkeypatch, sent):
+    """Служебное предупреждение идёт тем, кто чинит, а не всем подписчикам."""
+    from services import tg_notify
+    import services.auth_users as au
+    monkeypatch.setattr(au, "list_users", lambda: [
+        {"email": "boss@x.ru", "role": "admin"},
+        {"email": "user@x.ru", "role": "user"},
+    ])
+    monkeypatch.setattr(tg_users, "chats_for_email", lambda e: {
+        "boss@x.ru": [{"chat_id": 10}, {"chat_id": 11}],
+        "user@x.ru": [{"chat_id": 20}],
+    }.get(e, []))
+    monkeypatch.setattr(tg_notify.telegram, "enabled", lambda: True)
+    n = asyncio.run(tg_notify.notify_admins("🛑 тест"))
+    assert n == 2
+    assert {s["chat"] for s in sent} == {10, 11}, "рядовой подписчик не адресат"
+
+
+def test_notify_admins_survives_missing_chats(monkeypatch):
+    """Админам не привязан чат — доставлять некуда, но сторож падать не должен."""
+    from services import tg_notify
+    import services.auth_users as au
+    monkeypatch.setattr(au, "list_users",
+                        lambda: [{"email": "boss@x.ru", "role": "admin"}])
+    monkeypatch.setattr(tg_users, "chats_for_email", lambda e: [])
+    monkeypatch.setattr(tg_notify.telegram, "enabled", lambda: True)
+    assert asyncio.run(tg_notify.notify_admins("🛑 тест")) == 0
