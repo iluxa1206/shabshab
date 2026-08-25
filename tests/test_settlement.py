@@ -349,8 +349,10 @@ def test_zero_accrued_replaced_when_coupon_rate_unpublished(keyrate_curve, calc_
                (start, start + timedelta(days=30), None)]   # текущий — нет
     m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
                                     accrued_override=0.0, periods=periods)
-    assert m["accrued_settle_rub"] > 15, "НКД оценён по прошлому купону, а не занулён"
-    assert any("НКД источника 0" in w for w in m["warnings"])
+    # точное значение зависит от того, какая ступень лестницы сработала
+    # (спека фиксинга / прошлый купон) — важно, что ноль не прошёл
+    assert m["accrued_settle_rub"] > 1, "НКД оценён, а не занулён"
+    assert any("посчитан сам" in w for w in m["warnings"])
 
 
 def test_accrued_estimate_falls_back_to_last_known_coupon():
@@ -401,8 +403,8 @@ def test_zero_accrued_without_schedule_is_computed_from_issue_terms(
     m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
                                     accrued_override=0.0, periods=None)
     assert m["accrued_settle_rub"] > 1, "НКД посчитан, а не оставлен нулём"
-    assert any("посчитан по параметрам выпуска" in w for w in m["warnings"])
-    assert not any("расписания нет и посчитать" in w for w in m["warnings"])
+    assert any("посчитан сам" in w for w in m["warnings"])
+    assert not any("посчитать его нечем" in w for w in m["warnings"])
 
 
 def test_accrued_from_grid_matches_schedule():
@@ -466,3 +468,43 @@ def test_status_not_success_without_spread(keyrate_curve, calc_date, flat_index_
                                     periods=periods)
     if m["yield_over_index_bps"] is None:
         assert m["pricing_status"] != "SUCCESS"
+
+
+# ── единая лестница НКД ────────────────────────────────────────────────────
+
+def test_accrued_ladder_prefers_published_coupon():
+    """Купон опубликован — берём точный НКД, ничего не оцениваем."""
+    from services.accrued import accrued_for
+    per = [(date(2026, 7, 7), date(2026, 8, 6), 13.33),
+           (date(2026, 8, 6), date(2026, 9, 5), 12.0)]
+    val, how = accrued_for(per, date(2026, 8, 21), face=1000.0)
+    assert how == "купон опубликован"
+    assert val == pytest.approx(12.0 * 15 / 30)
+
+
+def test_accrued_ladder_falls_to_prev_coupon_without_spec():
+    """Ставки текущего купона нет и спеку не спросить — пропорция прошлого."""
+    from services.accrued import accrued_for
+    per = [(date(2026, 7, 7), date(2026, 8, 6), 13.33),
+           (date(2026, 8, 6), date(2026, 9, 5), None)]
+    val, how = accrued_for(per, date(2026, 8, 21), face=1000.0)
+    assert how == "прошлый купон"
+    assert val == pytest.approx(13.33 / 30 * 15, rel=1e-9)
+
+
+def test_accrued_ladder_last_resort_is_index_plus_margin():
+    """Нет ни ставок, ни спеки — индекс плюс маржа, но только последним."""
+    from services.accrued import accrued_for
+    per = [(date(2026, 8, 6), date(2026, 9, 5), None)]
+    val, how = accrued_for(per, date(2026, 8, 21), face=1000.0,
+                           margin_bps=150, index_pct=14.0)
+    assert how == "индекс + маржа"
+    assert val == pytest.approx(1000 * 0.155 * 15 / 365, rel=1e-6)
+
+
+def test_accrued_ladder_zero_on_period_start():
+    """День старта периода — начислять нечего, и это не «нет данных»."""
+    from services.accrued import accrued_for
+    per = [(date(2026, 8, 6), date(2026, 9, 5), None)]
+    assert accrued_for(per, date(2026, 8, 6), face=1000.0)[0] == 0.0
+    assert accrued_for([], date(2026, 8, 6), face=1000.0) == (None, None)

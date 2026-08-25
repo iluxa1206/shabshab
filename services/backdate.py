@@ -305,9 +305,12 @@ def _accrued_from_periods(periods, d: date, face: float) -> Optional[float]:
 
 def _accrued_estimate(periods, d: date, face: float, index_pct: Optional[float],
                       margin_bps: int) -> Optional[float]:
-    """Последний рубеж, когда НКД неоткуда взять: купон периода ещё НЕ опубликован
-    (value=None) и биржевого ACCINT на дату нет. Начисляем по конвенции выпуска
-    (индекс + маржа) simple ACT/365 от факта индекса ЦБ на d."""
+    """ЛЕГАСИ, оставлено для тестов: «индекс на дату + маржа», simple ACT/365.
+
+    В расчёте больше не используется — это последняя ступень общей лестницы
+    services/accrued.accrued_for, и вызывается она оттуда. Отдельно этот путь
+    завышал НКД вдвое при падающей ставке, потому что берёт СПОТ индекса вместо
+    ставки периода по спеке."""
     p = _period_at(periods, d)
     if not p or index_pct is None:
         return None
@@ -510,11 +513,17 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
                 idx_at_d = _r
             else:
                 break
-        accrued_asof = _accrued_estimate(periods, d, ref_obj.face_value, idx_at_d,
-                                         ref_obj.spread_issue_bps)
+        # единая лестница источников (services/accrued): спека фиксинга →
+        # прошлый купон → индекс+маржа. Своя реализация «спот-индекс + маржа»
+        # завышала вдвое (ВЭБ2Р-50 25.08: 42 ₽ против биржевых 22,7)
+        from services.accrued import accrued_for
+        accrued_asof, how = accrued_for(
+            periods, d, face=ref_obj.face_value, base=ref_obj.base,
+            margin_bps=ref_obj.spread_issue_bps, isin=isin,
+            index_pct=idx_at_d, calc_date=d)
         if accrued_asof is not None:
-            warnings.append("НКД на дату начислен по конвенции выпуска (индекс+маржа): "
-                            "ни биржевого ACCINT, ни опубликованного купона периода нет")
+            warnings.append(f"НКД на дату оценён ({how}): ни биржевого ACCINT, "
+                            "ни опубликованного купона периода нет")
     if accrued_asof is None:
         raise CalculationException(f"НКД на {d.isoformat()} не восстановился")
 

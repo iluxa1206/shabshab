@@ -49,6 +49,20 @@ def _index_provider(base: str, warnings: list, calc_date: date = None):
                         "фиксинги начавшихся периодов спроецированы форвардом")
         return (lambda *a, **k: None), None
 
+def bond_periods_or_none(periods):
+    """Периоды как их ждёт services/accrued: [(start, end, value)] либо None."""
+    return periods or None
+
+
+def _face_for_accrued(bond, amorts, calc_date) -> float:
+    """Номинал, от которого начисляется НКД: остаток на дату расчёта."""
+    from core.valuation import face_for_pricing
+    try:
+        return face_for_pricing(bond.face_value, amorts, calc_date) or bond.face_value
+    except Exception:
+        return bond.face_value or 1000.0
+
+
 def calculate_valuation_metrics(
     bond: BondRefData,
     price: float,
@@ -153,32 +167,29 @@ def calculate_valuation_metrics(
     # bps (РостелP21R 24.08: сигнал 233 bps против 120 верных — ровно разница
     # НКД 11,46 ₽). Ноль законен только в день выплаты, когда период начался
     # сегодня; в остальных случаях верим расписанию, а не снапшоту.
-    if accrued is not None and abs(accrued) < 0.005 and not periods:
-        # Расписания нет, но параметров выпуска хватает, чтобы посчитать НКД
-        # самим: сетка купонных дат + форвард кривой с маржой. Ошибка — единицы
-        # копеек против сотни bps, которые даёт нулевой НКД.
-        from core.valuation import accrued_from_grid as _acc_grid
-        _own = _acc_grid(bond, curve, settle_dt)
+    if accrued is not None and abs(accrued) < 0.005:
+        # Ноль от биржи посреди купонного периода — почти всегда сбой источника
+        # (ISS отдаёт ACCRUEDINT=0), и цена тогда считается «чистой» без
+        # накопленного купона: доходность улетает на сотню bps. Считаем сами
+        # ОБЩЕЙ лестницей (services/accrued): купон опубликован → спека фиксинга
+        # → прошлый купон → индекс+маржа. Та же лестница у as-of движка, чтобы
+        # история и живой расчёт не расходились.
+        from services.accrued import accrued_for
+        _own, _how = accrued_for(bond_periods_or_none(periods), settle_dt,
+                                 face=_face_for_accrued(bond, amorts, calc_date),
+                                 base=bond.base, margin_bps=bond.spread_issue_bps,
+                                 isin=bond.isin, calc_date=calc_date)
+        if _own is None and curve is not None:
+            # расписания нет вовсе — сетка купонных дат из параметров выпуска
+            from core.valuation import accrued_from_grid as _acc_grid
+            _own, _how = _acc_grid(bond, curve, settle_dt), "параметры выпуска"
         if _own and _own > 0.01:
-            warnings.append(
-                f"НКД источника 0 и расписания нет — посчитан по параметрам "
-                f"выпуска ({_own:.2f} ₽ на {settle_dt.isoformat()})")
+            warnings.append(f"НКД источника 0 — посчитан сам ({_how}): "
+                            f"{_own:.2f} ₽ на {settle_dt.isoformat()}")
             accrued, accrued_date = _own, settle_dt
-        else:
-            # даже так не вышло (нет дат/кривой) — считать цену «чистой» нельзя
-            warnings.append("sanity: НКД источника 0, расписания нет и посчитать "
-                            "по параметрам выпуска не удалось")
-    if accrued is not None and abs(accrued) < 0.005 and periods:
-        from core.valuation import accrued_estimate as _acc_est
-        # ставка текущего купона у флоатера обычно ещё не объявлена, и точный
-        # НКД по графику не считается — оцениваем по последнему известному
-        # купону: ошибка в проценты от НКД против сотен bps от нуля
-        _sched = _acc_est(periods, settle_dt)
-        if _sched and _sched > 0.01:
-            warnings.append(
-                f"НКД источника 0 посреди купонного периода — заменён расчётным "
-                f"из графика ({_sched:.2f} ₽ на {settle_dt.isoformat()})")
-            accrued, accrued_date = _sched, settle_dt
+        elif not periods:
+            # ни расписания, ни параметров — считать цену «чистой» нельзя
+            warnings.append("sanity: НКД источника 0, посчитать его нечем")
     # Биржа публикует НКД ВМЕСТЕ со своей датой расчётов (SETTLEDATE). Наша
     # settle считается сама (T+1 раб) и с биржевой расходится — в пятницу и
     # перед праздниками на 3 дня. Пока даты не сверялись, НКД мог быть на одну
