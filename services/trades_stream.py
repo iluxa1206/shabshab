@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import time
+from datetime import timedelta, timezone
 from typing import Optional
 
 import aiohttp
@@ -39,6 +40,7 @@ from services.pools import run_bg
 logger = logging.getLogger(__name__)
 
 _WS_URL = BASE_API.replace("https://", "wss://") + "/ws"
+_MSK_TZ = timezone(timedelta(hours=3))
 TRADES_STREAM = os.getenv("TRADES_STREAM", "1") not in ("0", "false", "no")
 _SHARD_SIZE = int(os.getenv("ALOR_TRADES_SHARD", "250"))   # ISIN на сокет
 # Пишем пачками: SQLite синхронный, а на открытии рынка тики идут очередью по
@@ -65,17 +67,38 @@ _OTHER_MIN_RUB = float(os.getenv("TRADES_STREAM_MIN_RUB", "1000000"))
 _buf: dict[str, list] = {}          # isin → сырые тики до ближайшего flush
 _streamed: set = set()              # ISIN на живых сокетах
 _core: set = set()                  # из них — флоатер-юниверс (пишем целиком)
-_faces: dict = {"at": 0.0, "map": {}}
+_faces: dict = {"at": 0.0, "map": {}, "unit": {}}
+_fx: dict = {"at": 0.0, "rates": {}}
+_FX_TTL = 600               # курс валюты номинала: порог в рублях, а не в юанях
 _stats = {"ticks": 0, "saved": 0, "flushes": 0, "last_ts": None, "no_board": 0,
-          "skipped_small": 0}
+          "skipped_small": 0, "no_fx": 0}
+# Состояние каждого сокета: тихо отвалившийся шард уносит с собой ~250 бумаг, а
+# снаружи это неотличимо от «по ним просто не торгуют». Считаем ВХОДЯЩИЕ
+# сообщения до порога — это признак жизни сокета, а не ликвидности бумаг.
+_shards: dict[int, dict] = {}
+# Переподписка добирает хвост: при обрыве сокета сделки идут мимо нас, и
+# крупный принт приезжал потом ISS-дрейном с его 15 минутами (замер 2026-08-25:
+# 57 крупных биржевых сделок за день, кучами вокруг обрывов и рестартов).
+# Брокер отдаёт последние сделки прямо на подписку — depth>0 закрывает дыру
+# без отдельного REST-запроса; дубли снимает INSERT OR IGNORE по TRADENO.
+_RESUB_DEPTH = int(os.getenv("ALOR_TRADES_RESUB_DEPTH", "10"))
 _REPORT_SEC = 300           # период сводки в лог
 _last_report = 0.0
 
 
 def stats() -> dict:
     """Состояние слоя — для /api/status."""
+    now = time.time()
+    shards = [{"id": sid, "isins": s["isins"], "up": s["up"], "ticks": s["ticks"],
+               "resubs": s["resubs"], "errors": s["errors"],
+               "quiet_min": round((now - s["last"]) / 60, 1) if s["last"] else None}
+              for sid, s in sorted(_shards.items())]
     return {"streamed": len(_streamed), "core": len(_core), "scope": _SCOPE,
-            "buffered": sum(len(v) for v in _buf.values()), **_stats}
+            "buffered": sum(len(v) for v in _buf.values()),
+            "shards": {"total": len(shards), "up": sum(1 for s in shards if s["up"]),
+                       "mute": [s["id"] for s in shards if s["up"] and not s["ticks"]],
+                       "list": shards},
+            **_stats}
 
 
 def live_isins() -> set:
@@ -97,7 +120,28 @@ async def _faces_map() -> dict:
     m = {i: v["face"] for i, v in (listing or {}).items() if v.get("face")}
     if m:                       # пустой ответ ISS не должен обнулять карту
         _faces["map"], _faces["at"] = m, now
+        _faces["unit"] = {i: v["face_unit"] for i, v in (listing or {}).items()
+                          if v.get("face_unit")}
     return _faces["map"]
+
+
+async def _fx_map() -> dict:
+    """{валюта: курс к рублю} — по нему рублёвый объём тика валютной бумаги.
+
+    Курс живёт отдельно от номиналов: номинал меняется раз в день (амортизация),
+    курс — постоянно, и шестичасовой TTL номиналов ему не годится."""
+    now = time.time()
+    if _fx["rates"] and now - _fx["at"] < _FX_TTL:
+        return _fx["rates"]
+    try:
+        from services import fx
+        rates = await fx.get_fx_rates()
+    except Exception as e:
+        logger.warning("trades stream fx: %s", e)
+        return _fx["rates"]
+    if rates:
+        _fx["rates"], _fx["at"] = rates, now
+    return _fx["rates"]
 
 
 def _flush_sync(chunks: list[tuple[str, list]], faces: dict) -> int:
@@ -116,16 +160,28 @@ BLOCK_ALERTS_FROM_STREAM = os.getenv("TRADES_STREAM_ALERTS", "1") not in ("0", "
 
 
 def _alert_rows(chunks: list[tuple[str, list]], floor: float) -> list[dict]:
-    """Тики такта крупнее порога → строки для block_trades.ingest_ticks."""
+    """Тики такта крупнее порога → строки для block_trades.ingest_ticks.
+
+    Возраст СДЕЛКИ проверяется отдельно от возраста записи: переподписка
+    добирает у брокера хвост (depth>0), и после долгого обрыва в буфер приедет
+    то, что случилось давно. В архив это нужно, звонить об этом — нет."""
     from services.trades_archive import _msk_ts
+    from services.block_trades import ALERT_MAX_AGE_MIN
+    from datetime import datetime, timedelta
+    old = (datetime.now(_MSK_TZ) - timedelta(minutes=ALERT_MAX_AGE_MIN)
+           ).strftime("%Y-%m-%d %H:%M:%S")
     out = []
     for isin, raw in chunks:
         for t in raw:
             val = t.get("val") or 0.0
             if val < floor or t.get("id") is None:
                 continue
-            out.append({"isin": isin, "trade_id": t["id"],
-                        "ts": _msk_ts(str(t.get("time") or "")),
+            if not t.get("fx_ok", True):
+                continue        # рублёвый объём недостоверен — звонить нечем
+            ts = _msk_ts(str(t.get("time") or ""))
+            if ts < old:
+                continue
+            out.append({"isin": isin, "trade_id": t["id"], "ts": ts,
                         "price": t.get("price"), "qty": t.get("qty"),
                         "value": val, "side": t.get("side"),
                         "board": t.get("board")})
@@ -165,6 +221,8 @@ async def _flusher(stop: asyncio.Event) -> None:
             continue
         try:
             faces = await _faces_map()
+            await _fx_map()     # курс валюты номинала — тем же тактом: без него
+                                # порог режет замещайки как «мелочь» (_tick_value)
             saved = await run_bg(_flush_sync, chunks, faces)
         except asyncio.CancelledError:
             raise
@@ -183,15 +241,26 @@ async def _flusher(stop: asyncio.Event) -> None:
         global _last_report
         if time.time() - _last_report >= _REPORT_SEC:
             _last_report = time.time()
-            logger.info("trades stream: %d сделок записано, %d бумаг на сокетах",
-                        _stats["saved"], len(_streamed))
+            sh = stats()["shards"]
+            logger.info("trades stream: %d сделок записано, %d бумаг на сокетах, "
+                        "шарды %d/%d живы%s", _stats["saved"], len(_streamed),
+                        sh["up"], sh["total"],
+                        f", БЕЗ ЕДИНОГО ТИКА: {sh['mute']}" if sh["mute"] else "")
 
 
 async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None:
     """Сокет шарда: AllTradesGetAndSubscribe по своим бумагам → буфер.
 
-    depth=0 — только новые сделки: историю сессии при подписке брокер отдал бы
-    пачкой на каждую бумагу, а её и так закрывает drain/ISS."""
+    Первая подписка идёт с depth=0 — только новые сделки: историю сессии брокер
+    отдал бы пачкой на каждую из 250 бумаг, а её и так закрывает drain/ISS.
+    ПЕРЕподписка (обрыв, реконнект) берёт depth=_RESUB_DEPTH: за время обрыва
+    сделки шли мимо нас, и крупный принт приезжал потом ISS-дрейном с его 15
+    минутами. Хвост от брокера закрывает эту дыру сразу; дубли снимает
+    INSERT OR IGNORE по TRADENO, а звонок по несвежей сделке — отсечка возраста
+    в _alert_rows."""
+    st = _shards.setdefault(shard_id, {"isins": len(isins), "up": False, "ticks": 0,
+                                       "resubs": 0, "errors": 0, "last": 0.0})
+    st["isins"] = len(isins)
     backoff = 1
     while not stop.is_set():
         token = await alor_token()
@@ -202,17 +271,23 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
                     backoff = 1
+                    depth = _RESUB_DEPTH if st["resubs"] else 0
+                    st["resubs"] += 1
+                    st["up"] = True
                     guid_isin = {}
                     for n, isin in enumerate(isins):
                         guid = f"ut{shard_id}-{isin}-{n}"
                         guid_isin[guid] = isin
                         await ws.send_json({
                             "opcode": "AllTradesGetAndSubscribe", "code": isin,
-                            "exchange": "MOEX", "format": "Simple", "depth": 0,
+                            "exchange": "MOEX", "format": "Simple", "depth": depth,
                             "guid": guid, "token": token})
                         if n % 50 == 49:
                             await asyncio.sleep(0.2)   # не бить пачкой подписок
                     _streamed.update(isins)
+                    if depth:
+                        logger.info("trades stream: шард %d переподписан (%d бумаг, "
+                                    "добор хвоста depth=%d)", shard_id, len(isins), depth)
                     while not stop.is_set():
                         try:
                             msg = await ws.receive(timeout=5.0)
@@ -220,6 +295,9 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                             continue
                         if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR,
                                         aiohttp.WSMsgType.CLOSING):
+                            logger.warning("trades stream: шард %d — сокет закрылся (%s), "
+                                           "%d бумаг без потока до переподписки",
+                                           shard_id, msg.type.name, len(isins))
                             break
                         if msg.type != aiohttp.WSMsgType.TEXT:
                             continue
@@ -231,28 +309,54 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                         isin = guid_isin.get(guid)
                         if not data or not isin:
                             continue
+                        # счётчик ДО порога: это признак жизни сокета, а не
+                        # ликвидности его бумаг
+                        st["ticks"] += 1
+                        st["last"] = time.time()
                         _on_trade(isin, data)
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            st["errors"] += 1
             logger.warning("trades stream shard %d: %s", shard_id, e)
         finally:
+            st["up"] = False
             _streamed.difference_update(isins)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
 
 
-def _tick_value(isin: str, price, qty) -> float:
-    """Рублёвый объём тика по кэшу номиналов (цена — % от номинала).
+# Валюта номинала MOEX → ключ курса в services/fx. Рубль пишут и SUR, и RUB.
+_RUB_UNITS = ("", "SUR", "RUB", "RUR")
+_FX_ALIAS = {"CNH": "CNY"}
 
-    Кэш пустой на старте (первый flush его и наливает) — тогда считаем по 1000 ₽:
-    для порога этого достаточно, а промах в номинале даёт лишнюю запись, а не
-    потерянную сделку."""
+
+def _tick_value(isin: str, price, qty) -> tuple[float, bool]:
+    """(рублёвый объём тика, курс известен) — цена идёт в % от номинала.
+
+    Кэш номиналов пустой на старте (первый flush его и наливает) — тогда считаем
+    по 1000 ₽: для порога этого достаточно, а промах в номинале даёт лишнюю
+    запись, а не потерянную сделку.
+
+    У замещающих и юаневых бумаг номинал — В ВАЛЮТЕ (FACEUNIT), хотя расчёты
+    рублёвые; без курса объём занижался в 12–83 раза, и порог TRADES_STREAM_MIN_RUB
+    выбрасывал такую сделку как мелочь — в ленту она попадала только ISS-дрейном
+    с его 15 минутами. Курса нет — объём отдаём как есть со ФЛАГОМ False: тик
+    важен для архива и баров, а вот звонить по недостоверному рублёвому объёму
+    нельзя (см. _alert_rows)."""
     face = _faces["map"].get(isin) or 1000.0
     try:
-        return float(qty) * face * float(price) / 100.0
+        base = float(qty) * face * float(price) / 100.0
     except (TypeError, ValueError):
-        return 0.0
+        return 0.0, True
+    unit = (_faces["unit"].get(isin) or "").upper()
+    if unit in _RUB_UNITS:
+        return base, True
+    rate = _fx["rates"].get(_FX_ALIAS.get(unit, unit))
+    if not rate:
+        _stats["no_fx"] += 1
+        return base, False
+    return base * rate, True
 
 
 def _on_trade(isin: str, data: dict) -> None:
@@ -260,8 +364,11 @@ def _on_trade(isin: str, data: dict) -> None:
     (тот же, что у REST alltrades: id/price/qty/time/side/board)."""
     if data.get("id") is None or data.get("price") is None or not data.get("qty"):
         return
-    val = _tick_value(isin, data.get("price"), data.get("qty"))
-    if isin not in _core and _OTHER_MIN_RUB > 0 and val < _OTHER_MIN_RUB:
+    val, fx_ok = _tick_value(isin, data.get("price"), data.get("qty"))
+    # Порогом режем только то, чей рублёвый объём знаем достоверно: у валютной
+    # бумаги без курса «мелкий» объём — артефакт пересчёта, а не размер сделки.
+    if (isin not in _core and _OTHER_MIN_RUB > 0 and fx_ok
+            and val < _OTHER_MIN_RUB):
         _stats["skipped_small"] += 1
         return
     if not data.get("board"):
@@ -273,7 +380,7 @@ def _on_trade(isin: str, data: dict) -> None:
         # рублёвый объём уже посчитан — кладём рядом, чтобы очередь алертов
         # (см. _alert_rows) не считала его второй раз; trade_tick лишний ключ
         # игнорирует, у него объём пересчитывается по номиналу дня
-        "val": val,
+        "val": val, "fx_ok": fx_ok,
     })
     _stats["ticks"] += 1
     _stats["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -326,6 +433,7 @@ async def trades_stream_pool() -> None:
                 isins = await subscription_isins()
                 await _faces_map()      # номиналы нужны ДО первого тика: по ним
                                         # считается рублёвый объём (_tick_value)
+                await _fx_map()         # и курс — у валютных номиналов тоже
                 # дневные агрегаты юниверса из архива — счёт с открытия сессии, а
                 # не с момента старта процесса; сверка идемпотентна
                 from services import live_quotes
@@ -343,6 +451,10 @@ async def trades_stream_pool() -> None:
                         stop = asyncio.Event()
                         stops.append(stop)
                         tasks.append(asyncio.create_task(_shard_socket(n, shard, stop)))
+                    # рынок ужался — лишние номера шардов уходят из статистики,
+                    # иначе в сводке вечно висел бы «мёртвый» сокет без тиков
+                    for sid in [s for s in _shards if s >= len(shards)]:
+                        _shards.pop(sid, None)
                     current = key
                     logger.info("trades stream: %d бумаг (%d юниверс) / %d сокетов "
                                 "сделок, охват %s", len(isins), len(_core),

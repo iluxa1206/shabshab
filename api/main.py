@@ -356,6 +356,56 @@ async def stream_watchdog(period_sec: int = 300):
         await asyncio.sleep(period_sec)
 
 
+# Доля крупных сделок, пойманных живьём, ниже которой лента считается больной.
+FEED_LIVE_MIN = float(os.getenv("FEED_LIVE_MIN", "0.5"))
+# Меньше этого числа сделок в окне — не выборка, а шум: молчим.
+FEED_LIVE_MIN_SAMPLE = int(os.getenv("FEED_LIVE_MIN_SAMPLE", "20"))
+_feed_alerted: dict = {}
+
+
+async def _feed_alert(problems: dict) -> None:
+    """Тревога сторожа свежести ленты."""
+    await _watch_alert(
+        _feed_alerted, problems, "🐢 <b>Лента отстаёт</b>",
+        "<i>Сделки доезжают дрейном ISS (+15 мин): сигналы будут приходить "
+        "поздно.</i>",
+        "✅ <b>Лента снова живая</b> — сделки ловятся сразу")
+
+
+async def feed_lag_watchdog(period_sec: int = 1800):
+    """Сторож СВЕЖЕСТИ ленты, а не живости сокетов.
+
+    stream_watchdog отвечает на вопрос «поток есть?», а этот — на вопрос
+    «доезжает ли он вовремя». Разница не теоретическая: сокеты бывают подняты и
+    тики капают, но часть бумаг при этом молча едет через ISS с его 15
+    минутами, и сигнал по крупному принту приходит, когда он уже никому не
+    нужен (замер 2026-08-25: так проехало 290 крупных сделок за день).
+
+    Меряем результат — долю сделок, записанных в первую минуту после
+    совершения (services/block_trades.live_capture). Ложных тревог по неликвиду
+    тут нет: считаются только состоявшиеся сделки, а не ожидание по бумагам,
+    которыми никто не торгует."""
+    from services import block_trades as bt
+    await asyncio.sleep(900)          # первое окно должно набраться
+    while True:
+        try:
+            if _in_moex_trading_hours():
+                cap = await run_bg(bt.live_capture)
+                problems: dict = {}
+                if (cap["ratio"] is not None and cap["total"] >= FEED_LIVE_MIN_SAMPLE
+                        and cap["ratio"] < FEED_LIVE_MIN):
+                    problems["capture"] = (
+                        f"живьём поймано {cap['live']} из {cap['total']} крупных "
+                        f"сделок за час ({cap['ratio']:.0%})")
+                    logger.warning("ЛЕНТА ОТСТАЁТ: %s", problems["capture"])
+                await _feed_alert(problems)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("feed lag watchdog error: %s", e)
+        await asyncio.sleep(period_sec)
+
+
 def _quiet_min(last_ts):
     """Сколько минут прошло с отметки стрима ('YYYY-MM-DD HH:MM:SS' МСК)."""
     if not last_ts:
@@ -956,6 +1006,8 @@ async def lifespan(app: FastAPI):
     stream_wd_task = asyncio.create_task(stream_watchdog())
     # место на диске и свежесть копий: оба отказа тихие, см. disk_watchdog
     disk_wd_task = asyncio.create_task(disk_watchdog())
+    # живой сокет ≠ свежая лента: сторож меряет, доезжают ли сделки вовремя
+    feed_wd_task = asyncio.create_task(feed_lag_watchdog())
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
     tg_sig_task = asyncio.create_task(tg_signal_worker())
@@ -967,6 +1019,7 @@ async def lifespan(app: FastAPI):
     tg_sig_task.cancel()
     stream_wd_task.cancel()
     disk_wd_task.cancel()
+    feed_wd_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
     quotes_task.cancel()

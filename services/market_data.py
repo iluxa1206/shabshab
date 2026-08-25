@@ -1185,7 +1185,8 @@ class MarketDataService:
                     client,
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
                     params={"iss.only": "securities", "iss.meta": "off",
-                            "securities.columns": "ISIN,SHORTNAME,MATDATE,COUPONPERCENT,FACEVALUE"},
+                            "securities.columns": "ISIN,SHORTNAME,MATDATE,COUPONPERCENT,"
+                                                  "FACEVALUE,FACEUNIT"},
                     timeout=20)
             if resp is not None and resp.status_code == 200:
                 sec = (await asyncio.to_thread(resp.json)).get("securities", {})
@@ -1212,6 +1213,12 @@ class MarketDataService:
                         "maturity": mat,
                         "coupon_percent": float(cp) if cp not in (None, "") else None,
                         "face": fv,
+                        # ВАЛЮТА НОМИНАЛА (не расчётов): у замещающих и юаневых
+                        # бумаг FACEVALUE — в долларах/юанях, а CURRENCYID при
+                        # этом SUR (расчёты рублёвые). Без FACEUNIT рублёвый
+                        # объём сделки занижается в 12–83 раза.
+                        "face_unit": (row[idx["FACEUNIT"]] or "").upper()
+                                     if "FACEUNIT" in idx else "",
                     }
         except Exception as e:
             logger.warning(f"bond listing error: {e}")

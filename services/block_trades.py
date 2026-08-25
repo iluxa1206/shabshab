@@ -1006,6 +1006,42 @@ async def _notify_blocks() -> int:
     return len(hot)
 
 
+# Сколько минут «свежая» сделка имеет право ехать до записи. Живой тик Alor
+# доезжает за секунды; всё, что дольше, пришло ISS-дрейном с его 15 минутами.
+LIVE_CAPTURE_SEC = float(os.getenv("LIVE_CAPTURE_SEC", "60"))
+
+
+def live_capture(minutes: int = 60, min_value: float = 1_000_000.0) -> dict:
+    """Доля КРУПНЫХ БИРЖЕВЫХ сделок, пойманных живьём за последние `minutes`.
+
+    Прямой измеритель того, работает ли стрим НА САМОМ ДЕЛЕ: сокеты могут быть
+    подняты, тики капать, а часть бумаг при этом молча ехать через ISS. Считаем
+    по разнице «время сделки → время записи» и только по безадресным (РПС Alor
+    не отдаёт вовсе, там 15 минут — норма).
+
+    Свежий хвост окна отбрасываем: сделку, случившуюся минуту назад, ISS ещё не
+    привозил, и она посчиталась бы «живой» просто потому, что альтернативы не
+    было. → {total, live, ratio} (ratio=None, если считать не на чем)."""
+    now = int(time.time())
+    lo = now - minutes * 60
+    hi = now - int(ALERT_MAX_AGE_MIN * 60)      # хвост окна ещё не разрешился
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT ts, ins_at FROM block_trade WHERE ins_at>=? AND ins_at<=? "
+            "AND market!='ndm' AND value>=?", (lo, hi, min_value)).fetchall()
+    total = live = 0
+    for r in rows:
+        try:
+            t = datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=_MSK)
+        except (ValueError, TypeError):
+            continue
+        total += 1
+        if r["ins_at"] - t.timestamp() < LIVE_CAPTURE_SEC:
+            live += 1
+    return {"total": total, "live": live,
+            "ratio": (live / total) if total else None}
+
+
 def db_stats() -> dict:
     """Состояние слоя — для /api/status."""
     with _connect() as c:

@@ -211,17 +211,65 @@ def test_tick_ingest_rings_and_iss_copy_is_not_a_dupe(bt, monkeypatch):
     assert _run(mod, monkeypatch, sent2) == 0
 
 
+def _utc(minutes_ago: float) -> str:
+    """Время тика в формате Alor (UTC, Z) — свежесть считается от него."""
+    from datetime import datetime, timedelta, timezone
+    t = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def test_stream_alert_rows_respect_floor():
     """В ленту блоков из потока уходит только то, что кому-то нужно."""
     from services.trades_stream import _alert_rows
     chunks = [("RU000FLOAT01", [
-        {"id": 1, "price": 100.0, "qty": 10, "time": "2026-08-21T10:00:00Z",
+        {"id": 1, "price": 100.0, "qty": 10, "time": _utc(1),
          "side": "buy", "board": "TQCB", "val": 500_000},
-        {"id": 2, "price": 100.0, "qty": 10_000, "time": "2026-08-21T10:00:01Z",
+        {"id": 2, "price": 100.0, "qty": 10_000, "time": _utc(1),
          "side": "sell", "board": "TQCB", "val": 5_000_000}])]
     rows = _alert_rows(chunks, 1_000_000)
     assert [r["trade_id"] for r in rows] == [2]
     assert rows[0]["isin"] == "RU000FLOAT01" and rows[0]["value"] == 5_000_000
+
+
+def test_stale_tick_from_resubscribe_does_not_ring():
+    """Переподписка добирает хвост у брокера: в архив он нужен, а звонить о
+    сделке получасовой давности — нет."""
+    from services.trades_stream import _alert_rows
+    chunks = [("RU000FLOAT01", [
+        {"id": 1, "price": 100.0, "qty": 10_000, "time": _utc(30),
+         "side": "buy", "board": "TQCB", "val": 5_000_000},
+        {"id": 2, "price": 100.0, "qty": 10_000, "time": _utc(1),
+         "side": "buy", "board": "TQCB", "val": 5_000_000}])]
+    assert [r["trade_id"] for r in _alert_rows(chunks, 1_000_000)] == [2]
+
+
+def test_currency_face_tick_is_not_dropped_as_small():
+    """Замещайка: номинал в долларах, порог — в рублях. Без курса объём
+    занижался в 83 раза, и сделка на 8 млн ₽ выпадала как «мелочь»."""
+    from services import trades_stream as ts
+    ts._faces["map"]["RU000USD001"] = 100.0        # $100 номинал
+    ts._faces["unit"]["RU000USD001"] = "USD"
+    ts._fx["rates"] = {"USD": 80.0, "RUB": 1.0}
+    val, fx_ok = ts._tick_value("RU000USD001", 100.0, 1000)
+    assert fx_ok and val == 8_000_000              # 1000 × $100 × 100% × 80
+
+    # курса нет — объём недостоверен: тик не режем порогом, но и не звоним
+    ts._fx["rates"] = {"RUB": 1.0}
+    val, fx_ok = ts._tick_value("RU000USD001", 100.0, 1000)
+    assert not fx_ok and val == 100_000
+    chunks = [("RU000USD001", [{"id": 1, "price": 100.0, "qty": 1000,
+                                "time": _utc(1), "side": "buy", "board": "TQCB",
+                                "val": val, "fx_ok": fx_ok}])]
+    assert ts._alert_rows(chunks, 50_000) == []
+
+
+def test_rouble_face_tick_unaffected_by_fx():
+    """Рублёвая бумага считается как раньше — курс к ней не применяется."""
+    from services import trades_stream as ts
+    ts._faces["map"]["RU000RUB001"] = 1000.0
+    ts._faces["unit"].pop("RU000RUB001", None)
+    ts._fx["rates"] = {"USD": 80.0, "RUB": 1.0}
+    assert ts._tick_value("RU000RUB001", 100.0, 1000) == (1_000_000.0, True)
 
 
 def test_feed_min_value_has_tolerance(bt):

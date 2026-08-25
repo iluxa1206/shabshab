@@ -154,3 +154,59 @@ def test_disk_alert_shares_dedup_with_streams(disk, sent):
     asyncio.run(m._stream_alert({"books": "стаканы — 0 бумаг на сокетах"}))
     assert len(sent) == 2
     assert "Диск и копии" in sent[0] and "Стрим молчит" in sent[1]
+
+
+# ── свежесть ленты: сокет живой ≠ сделки доезжают вовремя ──────────────────
+
+def test_feed_lag_alert_says_what_it_costs(monkeypatch):
+    """Отставание ленты — отдельная тревога: поток есть, но сигналы опаздывают."""
+    log = []
+
+    async def fake(text):
+        log.append(text)
+        return 1
+
+    monkeypatch.setattr("services.tg_notify.notify_admins", fake)
+    m._feed_alerted.clear()
+    asyncio.run(m._feed_alert({"capture": "живьём поймано 3 из 40 крупных сделок"}))
+    assert len(log) == 1
+    assert "Лента отстаёт" in log[0] and "3 из 40" in log[0]
+    assert "+15 мин" in log[0], "человек должен видеть цену отставания"
+
+
+def test_live_capture_counts_only_resolved_window(tmp_path, monkeypatch):
+    """Доля живых считается по разрешившемуся окну: сделку минутной давности
+    ISS ещё не привозил, и она бы «живой» стала просто по отсутствию копии."""
+    import importlib
+    monkeypatch.setenv("PORTFOLIO_DB", str(tmp_path / "t.db"))
+    import services.portfolio_db as pdb
+    importlib.reload(pdb)
+    pdb.init_db()
+    import services.block_trades as bt
+    importlib.reload(bt)
+
+    from datetime import datetime, timedelta
+    now = time.time()
+
+    def ts(sec_ago):
+        return (datetime.now(bt._MSK) - timedelta(seconds=sec_ago)).strftime(
+            "%Y-%m-%d %H:%M:%S")
+
+    rows = [
+        # (сделка, запись) — живая: записана через 2 секунды
+        (1, ts(1800), now - 1800 + 2),
+        # доехала дрейном ISS: 15 минут спустя
+        (2, ts(2400), now - 2400 + 900),
+        # свежая, окно ещё не разрешилось — в счёт не идёт
+        (3, ts(60), now - 58),
+    ]
+    with pdb._connect() as c:
+        c.executemany(
+            "INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,qty,"
+            "value,side,ins_at) VALUES(?,?,?,?,'bonds','TQCB',100.0,1000,?,'buy',?)",
+            [(tid, "RU000FLOAT01", "RU000FLOAT01", t, 5_000_000, int(ins))
+             for tid, t, ins in rows])
+
+    cap = bt.live_capture(minutes=60)
+    assert cap["total"] == 2 and cap["live"] == 1
+    assert cap["ratio"] == 0.5
