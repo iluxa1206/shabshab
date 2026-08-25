@@ -1,6 +1,7 @@
 """Телеграм-бот: привязка чата к веб-аккаунту, вебхук, форматирование доставки.
 Своей настройки у бота нет — сигналы заводятся на сайте."""
 import asyncio
+import re
 import time
 
 import pytest
@@ -147,7 +148,7 @@ def test_book_line_layout():
     # не добавляет к имени фильтра, а строку начинает мусором. Обстоятельства
     # срабатывания — там же, у имени фильтра.
     last = txt.strip().split("\n")[-1]
-    assert last.startswith("<b>Тест 2</b> · оффер")
+    assert last.startswith("<i>Тест 2</i> · оффер")
     assert "1 ур" in last and "объём +6 %" in last
     assert "📡" not in txt
 
@@ -232,13 +233,15 @@ def test_book_snapshot_absent_is_ok():
 
 def test_book_events_split_by_issue():
     """Заявки бьются по бумагам: одно сообщение = один выпуск (к каждому свой
-    стакан). Сделки остаются пачкой."""
+    стакан). Сделки бьются поштучно."""
     from services.tg_notify import _group
     a, b = _book_match(), _book_match(isin="RU000A1083W0", name="МТС 2P-05")
     groups = _group([a, b, a], "book")
     assert len(groups) == 2
     assert {g[0] for g in groups} == {"RU000A109B33", "RU000A1083W0"}
-    assert len(_group([a, b], "block")) == 1
+    # сделки — по одному сообщению на сделку: пачкой три принта по одной
+    # бумаге отличались только объёмом, и глаз искал разницу
+    assert len(_group([a, b], "block")) == 2
 
 
 def test_book_message_keeps_last_state_and_counts():
@@ -311,7 +314,7 @@ def test_block_message_shows_seconds_after_rating():
                                      "rating": "AAA",
                                      "ts": "2026-08-21 10:42:07"}]})
     last = txt.strip().split("\n")[-1]
-    assert last == "<b>блоки</b> · 10:42:07"
+    assert last == "<i>блоки</i> · 10:42:07"
 
 
 def test_block_time_falls_back_to_fire_moment():
@@ -592,7 +595,7 @@ def test_book_layout_puts_details_after_orderbook():
     assert "RU000A109B33" in lines[book_end + 1], "формула с ISIN — за стаканом"
     assert lines[-2] == "", "подпись отбита от записи"
     foot = lines[-1]
-    assert foot.startswith("<b>Тест 2</b> · оффер")
+    assert foot.startswith("<i>Тест 2</i> · оффер")
     assert "заявка" in foot and "12:47:02" in foot and ">1м" in foot
 
 
@@ -803,3 +806,34 @@ def test_stale_signal_is_dropped_not_kept_forever(monkeypatch):
     monkeypatch.setattr(tn.telegram, "send_message", dead)
     asyncio.run(tn._flush_signals())
     assert not tn._pending, "старое не держим вечно"
+
+
+def test_trades_go_one_message_each(sent):
+    """Три принта по одной бумаге — три сообщения: пачкой они отличались только
+    объёмом, и разницу приходилось искать глазом."""
+    import services.tg_notify as tg
+    ms = [{"trade_id": i, "isin": "RU000A107XA1", "name": "ВЭБP-41",
+           "price": 99.0, "money_rub": v, "val_bps": 200.0, "side": "buy"}
+          for i, v in enumerate((47.8e6, 198e6, 6.4e6))]
+    for group, part in tg._group(ms, "block"):
+        tg._pending[(1, 7, group)] = {"name": "сделки Ф5", "side": None,
+                                      "kind": "block", "matches": part,
+                                      "first_ts": 0.0}
+    asyncio.run(tg._flush_signals())
+    assert len(sent) == 3
+    assert all(s["text"].count("ВЭБP-41") == 1 for s in sent), "по сделке в сообщении"
+    money = {re.search(r"<b>([\d,]+м) ₽</b>", s["text"]).group(1) for s in sent}
+    assert money == {"47,8м", "198м", "6,4м"}
+    assert all(s["reply_to"] is None for s in sent), "у сделок нити нет"
+
+
+def test_filter_name_is_italic(sent):
+    """Имя алерта — курсивом: это сноска «кто позвал», жирный спорил бы с ценой
+    и объёмом, ради которых сообщение открывают."""
+    txt = _signal_text({"name": "Тест & Ко", "side": "ask", "kind": "book",
+                        "matches": [_order_match()]})
+    assert txt.strip().split("\n")[-1].startswith("<i>Тест &amp; Ко</i> · оффер")
+    blk = _signal_text({"name": None, "side": None, "kind": "block",
+                        "matches": [{"isin": "RU000A10AU99", "name": "Т",
+                                     "price": 100.1, "money_rub": 2e6}]})
+    assert "<i>Крупные сделки</i>" in blk

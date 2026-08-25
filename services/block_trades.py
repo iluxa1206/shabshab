@@ -958,7 +958,9 @@ async def _notify_blocks() -> int:
         lb = labels.get(r["isin"]) or {}
         return {
             "maturity": lb.get("maturity"), "years": _years(lb.get("maturity")),
-            "isin": r["isin"],
+            # id сделки едет в уведомление: по нему телеграм отличает соседние
+            # принты друг от друга (одно сообщение на сделку, см. tg_notify._group)
+            "trade_id": r.get("trade_id"), "isin": r["isin"],
             "name": lb.get("name") or names.get(r["isin"]) or r["isin"],
             "price": r["price"], "money_rub": r["value"],
             "val_bps": r.get("y_idx_bps"),      # тем же ключом, что у алертов стакана

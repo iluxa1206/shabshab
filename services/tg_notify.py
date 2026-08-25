@@ -85,14 +85,26 @@ def _group(matches: List[dict], kind: str):
     ЗАЯВКИ — по одному сообщению на выпуск: к каждой прикладывается снимок
     стакана, и склеенные в пачку они превращались бы в простыню из лестниц.
     Заодно повторы по одной бумаге внутри такта схлопываются в последнее
-    состояние. СДЕЛКИ остаются пачкой: их читают потоком, стакан к ним не
-    прикладывается."""
+    состояние.
+
+    СДЕЛКИ — по одному сообщению на СДЕЛКУ. Пачкой они читались хуже: три
+    принта по одной бумаге в одном сообщении отличаются только объёмом, и глаз
+    ищет разницу вместо того, чтобы её увидеть. Ключ группы — trade_id, а где
+    его нет (события из ленты) — выпуск с моментом и объёмом: две сделки не
+    должны слипнуться только потому, что пришли одним тактом."""
     if kind != "book":
-        return [(None, matches)]
+        return [(_trade_key(m), [m]) for m in matches]
     by_isin: dict = {}
     for m in matches:
         by_isin.setdefault(m.get("isin"), []).append(m)
     return list(by_isin.items())
+
+
+def _trade_key(m: dict) -> tuple:
+    """Чем сделка отличается от соседней в буфере."""
+    tid = m.get("trade_id")
+    return ("t", tid) if tid else ("x", m.get("isin"), m.get("ts"),
+                                   m.get("money_rub"))
 
 
 def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
@@ -466,10 +478,14 @@ def _signal_text(buf: dict) -> str:
     # Подпись фильтра — В КОНЦЕ: сверху должно быть само событие, а «кто позвал,
     # почему и когда» это сноска, которую читают, только если событие зацепило.
     if kind == "block":
-        foot = f"<b>{buf['name']}</b>" if buf.get("name") else "<b>Крупные сделки</b>"
+        # имя алерта КУРСИВОМ: это сноска «кто позвал», и жирный спорил с
+        # ценой и объёмом — единственным, что должно тянуть взгляд
+        foot = (f"<i>{html.escape(str(buf['name']))}</i>" if buf.get("name")
+                else "<i>Крупные сделки</i>")
     else:
         side = {"ask": "оффер", "bid": "бид"}.get(side_key or "", "")
-        foot = f"<b>{buf['name']}</b>" + (f" · {side}" if side else "")
+        foot = (f"<i>{html.escape(str(buf['name']))}</i>"
+                + (f" · {side}" if side else ""))
     if extra:
         foot += f" · {extra}"
     return f"{body}\n\n{foot}"
