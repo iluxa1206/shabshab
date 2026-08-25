@@ -483,7 +483,15 @@ def _past_rows(coupons: list, margin_pct: float, face: float, calc_date: date,
         if face_p <= 0:
             continue
         days = (e - s).days or 1
-        rows.append((s, e, float(v) / face_p * 365.0 / days * 100.0 - margin_pct))
+        # valueprc — ОБЪЯВЛЕННАЯ биржей ставка купона, твёрдый факт. Считать её
+        # заново из рублей и восстановленного номинала значит добавлять свою
+        # ошибку к чужому факту: у амортизируемых бумаг откат номинала неточен,
+        # когда график траншей неполный (ипотечные агенты), и наблюдённая ставка
+        # уезжала на десятые доли пп. Берём факт, когда он есть.
+        vp = c.get("valueprc")
+        rate = (float(vp) if vp
+                else float(v) / face_p * 365.0 / days * 100.0)
+        rows.append((s, e, rate - margin_pct))
     rows.sort(key=lambda r: r[1])          # порядок `coupons` не гарантирован
     return rows[-8:]
 
