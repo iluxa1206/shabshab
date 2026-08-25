@@ -406,27 +406,6 @@ _MIGRATIONS = [
     # деньги ПО ЦЕНЕ СИГНАЛА (весь уровень стакана, а не набранный лимит и не
     # сумма стороны) — то, что показывается человеку; см. screener_core
     "ALTER TABLE signal_events ADD COLUMN level_money_rub REAL",
-    # Судьба заявки: через FOLLOWUP_MIN проверяем, что стало с уровнем, и
-    # отвечаем в тот же чат реплаем на исходное сообщение (см. services/
-    # signal_followup). Отдельная таблица, а не поле события: проверка живёт
-    # своим расписанием и переживает рестарт.
-    """CREATE TABLE IF NOT EXISTS signal_followup(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER NOT NULL,
-        message_id INTEGER NOT NULL,   -- на что отвечаем
-        isin TEXT NOT NULL,
-        name TEXT,
-        side TEXT NOT NULL,            -- ask | bid
-        price REAL NOT NULL,           -- цена уровня в момент события
-        qty REAL,                      -- бумаг на уровне тогда
-        money REAL,                    -- рублей на уровне тогда
-        val_bps REAL,                  -- спред события
-        fired_at TEXT NOT NULL,
-        due_at TEXT NOT NULL,          -- когда проверять
-        done INTEGER NOT NULL DEFAULT 0,  -- 0 ждёт | 1 отправлено | 2 отменено
-        outcome TEXT
-    )""",
-    "CREATE INDEX IF NOT EXISTS ix_followup_due ON signal_followup(done, due_at)",
     "CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts)",
     # очередь колокольчика флагом вместо водяного знака по TRADENO (см. схему
     # block_trade). Старым строкам ins_at остаётся NULL — они в очередь не

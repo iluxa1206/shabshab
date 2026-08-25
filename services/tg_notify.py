@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 _pending: dict = {}
 # chat_id → монотонное время последней отправки: по нему считается «тишина»
 _last_sent: dict = {}
+# ключ буфера (chat_id, filter_id, isin) → (message_id, монотонное время)
+# последнего сообщения по этой бумаге: следующее уходит ответом на него
+_threads: dict = {}
+# Сколько живёт нить. Три часа: заявка, о которой не было слышно полсессии, —
+# уже другая история, и ответ на неё уводил бы в архив вместо связи.
+THREAD_TTL_SEC = float(os.getenv("TG_THREAD_TTL_MIN", "180")) * 60
 SIGNAL_FLUSH_SEC = float(os.getenv("TG_SIGNAL_FLUSH_SEC", "10"))
 # Тик воркера: окно проверяется чаще, чем длится, иначе «сразу» превращается
 # в «в пределах окна» и весь смысл раннего флаша теряется.
@@ -469,22 +475,44 @@ def _signal_text(buf: dict) -> str:
     return f"{body}\n\n{foot}"
 
 
-def _arm_followup(chat_id: int, res: Optional[dict], buf: dict) -> None:
-    """Ставит проверку судьбы заявки на отправленное сообщение.
+def _thread_anchor(key: tuple, buf: dict, now: float) -> Optional[int]:
+    """На какое сообщение отвечать этим сигналом.
 
-    Только «заявка» (первое попадание бумаги под условия): повторы по спреду и
-    объёму дали бы цепочку ответов на одну и ту же бумагу. Только book —
-    у сделки нет уровня, судьбу которого можно проследить."""
-    if not res or buf.get("kind") == "block":
-        return
+    Повтор по бумаге (спред уехал, объём набрался) уходит ОТВЕТОМ на прошлое
+    сообщение о ней: в чате получается история одной заявки, а не десяток
+    одинаковых карточек, между которыми глазом ищешь, что изменилось.
+    Нить ведётся по ключу буфера (чат, фильтр, выпуск) — у сделок выпуска в
+    ключе нет, они идут пачкой, и отвечать там не на что.
+
+    Нить начинается заново на «заявке» (первое попадание бумаги под условия):
+    уровень пропал и появился снова — это новая история. Просроченная нить
+    тоже начинается заново: ответ на утреннее сообщение к вечеру уводит
+    читателя в архив, а не показывает связь."""
+    if buf.get("kind") != "book" or key[2] is None:
+        return None
+    mid, ts = _threads.get(key, (None, 0.0))
+    if not mid or now - ts > THREAD_TTL_SEC:
+        return None
     ms = buf.get("matches") or []
-    if not ms or (ms[-1].get("reason") or "") != "new":
+    if ms and (ms[-1].get("reason") or "") == "new":
+        return None
+    return mid
+
+
+def _remember_thread(key: tuple, res: Optional[dict], buf: dict, now: float) -> None:
+    """Запоминает отправленное сообщение как хвост нити по бумаге."""
+    if buf.get("kind") != "book" or key[2] is None or not res:
         return
     mid = res.get("message_id")
-    if not mid:
-        return
-    from services import signal_followup
-    signal_followup.schedule(chat_id, mid, ms[-1], buf.get("side"))
+    if mid:
+        _threads[key] = (int(mid), now)
+
+
+def _prune_threads(now: float) -> None:
+    """Чистит протухшие нити: словарь живёт всё время процесса, а бумаг за день
+    проходят сотни."""
+    for k in [k for k, (_, ts) in _threads.items() if now - ts > THREAD_TTL_SEC]:
+        _threads.pop(k, None)
 
 
 def _due(now: float) -> list:
@@ -527,18 +555,23 @@ async def _flush_signals() -> None:
 
     sem = asyncio.Semaphore(max(1, SEND_CONCURRENCY))
 
-    async def send(chat_id: int, buf: dict) -> None:
+    _prune_threads(now)
+
+    async def send(key: tuple, buf: dict) -> None:
+        chat_id = key[0]
         async with sem:
             try:
-                res = await telegram.send_message(chat_id, _signal_text(buf))
+                res = await telegram.send_message(
+                    chat_id, _signal_text(buf),
+                    reply_to=_thread_anchor(key, buf, now))
             except Exception as e:
                 logger.warning("tg_notify signal send error (chat %s): %s", chat_id, e)
                 return
-            _arm_followup(chat_id, res, buf)
+            _remember_thread(key, res, buf, now)
 
     # Чаты параллельно: сериальный цикл складывал RTT прокси на каждое
     # сообщение, и хвост пачки приезжал заметно позже головы.
-    await asyncio.gather(*(send(key[0], buf) for key, buf in batch))
+    await asyncio.gather(*(send(key, buf) for key, buf in batch))
 
 
 # --- воркеры ---

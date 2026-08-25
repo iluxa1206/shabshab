@@ -662,3 +662,96 @@ def test_coupon_formula_under_orderbook():
     book_end = next(i for i, ln in enumerate(lines) if "</blockquote>" in ln)
     details = lines[book_end + 1]
     assert details.startswith("КС + 1,2% (12) · ")
+
+
+# --- нить по бумаге: повтор отвечает на прошлое сообщение ---
+
+@pytest.fixture()
+def sent(monkeypatch):
+    """Перехват отправки: копим (chat_id, reply_to) и раздаём message_id."""
+    import services.tg_notify as tg
+    tg._pending.clear()
+    tg._last_sent.clear()
+    tg._threads.clear()
+    log = []
+
+    async def fake_send(chat_id, text, **kw):
+        mid = 100 + len(log) + 1
+        log.append({"chat": chat_id, "reply_to": kw.get("reply_to"),
+                    "text": text, "mid": mid})
+        return {"message_id": mid}
+
+    monkeypatch.setattr("services.tg_notify.telegram.send_message", fake_send)
+    return log
+
+
+def _flush(*bufs):
+    """Кладёт буферы под их ключами и сливает — как это делает воркер."""
+    import services.tg_notify as tg
+    for key, buf in bufs:
+        buf.setdefault("first_ts", 0.0)
+        tg._pending[key] = buf
+    asyncio.run(tg._flush_signals())
+
+
+def _book_buf(reason, isin="RU000A109B33"):
+    return {"name": "ф", "side": "ask", "kind": "book",
+            "matches": [_order_match(isin=isin, reason=reason)]}
+
+
+def test_repeat_replies_to_previous_message(sent):
+    """Повтор по бумаге уходит ОТВЕТОМ на прошлое сообщение о ней: в чате
+    видно историю одной заявки, а не набор одинаковых карточек."""
+    key = (1, 7, "RU000A109B33")
+    _flush((key, _book_buf("new")))
+    _flush((key, _book_buf("spread")))
+    _flush((key, _book_buf("money")))
+    assert [s["reply_to"] for s in sent] == [None, 101, 102], "нить тянется за хвостом"
+
+
+def test_new_signal_starts_new_thread(sent):
+    """«Заявка» начинает нить заново: уровень пропал и появился снова — это
+    новая история, а не продолжение прошлой."""
+    key = (1, 7, "RU000A109B33")
+    _flush((key, _book_buf("new")))
+    _flush((key, _book_buf("spread")))
+    _flush((key, _book_buf("new")))
+    assert [s["reply_to"] for s in sent] == [None, 101, None]
+
+
+def test_stale_thread_is_dropped(sent, monkeypatch):
+    """Протухшая нить начинается заново: ответ на утреннее сообщение к вечеру
+    уводит читателя в архив вместо связи."""
+    import services.tg_notify as tg
+    monkeypatch.setattr(tg, "THREAD_TTL_SEC", 0.0)
+    key = (1, 7, "RU000A109B33")
+    _flush((key, _book_buf("new")))
+    _flush((key, _book_buf("spread")))
+    assert [s["reply_to"] for s in sent] == [None, None]
+    tg._prune_threads(tg.time.monotonic())
+    assert tg._threads == {}, "протухшие нити чистятся, словарь не растёт"
+
+
+def test_threads_are_per_issue_and_chat(sent):
+    """Нить своя у каждой пары (чат, выпуск): ответ в чужую бумагу или в чужой
+    чат был бы хуже отсутствия связи."""
+    a, b = (1, 7, "RU000A109B33"), (1, 7, "RU000A1083W0")
+    other = (2, 7, "RU000A109B33")
+    _flush((a, _book_buf("new")), (b, _book_buf("new", "RU000A1083W0")))
+    assert [s["reply_to"] for s in sent] == [None, None], "две новые нити"
+    first_a = next(s for s in sent if "RU000A109B33" in s["text"])
+
+    _flush((a, _book_buf("spread")), (other, _book_buf("spread")))
+    repeat_a = next(s for s in sent[2:] if s["chat"] == 1)
+    repeat_other = next(s for s in sent[2:] if s["chat"] == 2)
+    assert repeat_a["reply_to"] == first_a["mid"], "ответ в нить своей бумаги"
+    assert repeat_other["reply_to"] is None, "чужой чат нити не наследует"
+
+
+def test_trades_have_no_thread(sent):
+    """Сделки идут пачкой: выпуска в ключе нет, отвечать не на что."""
+    m = {"isin": "RU000A10AU99", "name": "Т", "price": 100.1, "money_rub": 2e6}
+    buf = {"name": "блоки", "side": None, "kind": "block", "matches": [m]}
+    _flush(((1, 7, None), buf))
+    _flush(((1, 7, None), dict(buf)))
+    assert [s["reply_to"] for s in sent] == [None, None]
