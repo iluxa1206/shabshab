@@ -51,3 +51,23 @@ def test_to_iso_and_num():
     assert _to_iso("08.04.2027") == "2027-04-08"
     assert _num("900 руб") == 900.0
     assert _num("8 000 000 шт") == 8000000.0
+
+
+def test_inverse_floater_detected_by_short_index_name():
+    """Инверсный купон ловится, как бы ни звали индекс в проспекте.
+
+    АЛЬФАБ1Р11: «max (25.90% - R; 12.90%)» — ставка ПАДАЕТ при росте КС.
+    Шаблон искал только «− КС» и пропускал одиночную R, поэтому бумага
+    считалась как КС+25,9 % → 40 % годовых вместо реальных 12,9 %."""
+    from services.enrich_corpbonds import _parse_formula
+    p = _parse_formula("2-12 купоны: Сi = max (25.90% - R; 12.90%), где R — "
+                       "ключевая ставка Банка России")
+    assert p.get("exotic") == "inverse"
+
+
+def test_normal_floater_not_marked_inverse():
+    """Обычная формула не должна попадать в инверсные из-за буквы R рядом."""
+    from services.enrich_corpbonds import _parse_formula
+    p = _parse_formula("Купон = КС + 2%, где КС — ключевая ставка; "
+                       "RUONIA - справочная ставка")
+    assert p.get("exotic") != "inverse"
