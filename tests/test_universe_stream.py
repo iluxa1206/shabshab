@@ -140,3 +140,28 @@ def test_px_or_none_normalizes_zero():
     assert _px_or_none(None) is None
     assert _px_or_none("") is None
     assert _px_or_none(99.75) == 99.75
+
+
+# ── спред по средневзвесу: наклон только вблизи цены сделки ────────────────
+
+def test_wap_far_from_last_uses_exact_path(monkeypatch):
+    """Средневзвес далеко от цены сделки — считаем точно, а не наклоном.
+
+    Наклон честен на масштабе долей пункта; у неликвида wap уходит на пункты, и
+    линеаризация врёт сотнями bps (замер 25.08: сдвиг 1 пп → до 214, 2 пп → 410).
+    Тогда витрина и график показывали бы РАЗНЫЕ числа одной метрики."""
+    from services import universe_stream as us
+    from services.bonds import yidx_at_price
+
+    row = {"yoi": 200.0, "yoi_slope": -50.0, "last": 100.0}
+    near, far = 100.2, 97.0
+    assert abs(near - row["last"]) <= us.WAP_EXACT_PP
+    assert abs(far - row["last"]) > us.WAP_EXACT_PP
+
+    # вблизи — наклон, он же и остаётся в строке
+    assert yidx_at_price(row, near) == pytest.approx(190, abs=1)
+    # далеко — наклон даёт 350, а точный путь 260: расходятся на 90 bps
+    assert yidx_at_price(row, far) == pytest.approx(350, abs=1)
+    monkeypatch.setattr("services.screener_core.exact_y_idx", lambda i, p: 260.0)
+    from services.screener_core import exact_y_idx
+    assert int(round(exact_y_idx("RU1", far))) == 260

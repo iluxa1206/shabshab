@@ -31,7 +31,13 @@ router = APIRouter()
 # Одиночный процесс (uvicorn 1 воркер) — общий dict достаточен; при масштабировании
 # на воркеры вынести в Redis. Экспоненциальный порог: чем больше неудач, тем дольше
 # окно. Цель — сорвать онлайн-брутфорс единственного админ-пароля, не мешая юзеру.
-_LOGIN_FAILS: dict[str, tuple[int, float]] = {}   # key -> (fail_count, window_start)
+# ВАЖНО: второй элемент — момент ПОСЛЕДНЕЙ неудачи, а не первой. Раньше здесь
+# лежало начало окна и оно не двигалось, а блокировка капнута часом — значит
+# через час от первого промаха `start + block - now` уходил в минус НАВСЕГДА:
+# счётчик рос, блокировка больше не наступала, и rate-limit самоотключался.
+# Отсчёт от последней неудачи чинит и это, и эскалацию (каждый промах начинает
+# блок заново, длиннее прежнего).
+_LOGIN_FAILS: dict[str, tuple[int, float]] = {}   # key -> (fail_count, last_fail_ts)
 _LOGIN_MAX_FAILS = 5           # неудач до блокировки
 _LOGIN_WINDOW_SEC = 300        # окно счётчика / базовая блокировка
 _LOGIN_FAILS_MAX_ENTRIES = 4096  # защита самого dict от разрастания
@@ -48,17 +54,22 @@ def _login_key(request: Request, email: str) -> str:
     return f"{ip}|{(email or '').strip().lower()}"
 
 
+def _login_block_sec(fails: int) -> float:
+    """Длина блокировки при таком числе неудач (0 = порог не достигнут).
+
+    Растёт с числом неудач сверх порога (5→300с, 6→600с, capped 1ч)."""
+    if fails < _LOGIN_MAX_FAILS:
+        return 0.0
+    return min(_LOGIN_WINDOW_SEC * (2 ** (fails - _LOGIN_MAX_FAILS)), 3600)
+
+
 def _login_blocked_for(key: str, now: float) -> float:
     """Секунд до разблокировки (0 = не заблокирован)."""
     ent = _LOGIN_FAILS.get(key)
     if not ent:
         return 0.0
-    fails, start = ent
-    if fails < _LOGIN_MAX_FAILS:
-        return 0.0
-    # блокировка растёт с числом неудач сверх порога (5→300с, 6→600с, capped 1ч)
-    block = min(_LOGIN_WINDOW_SEC * (2 ** (fails - _LOGIN_MAX_FAILS)), 3600)
-    remaining = start + block - now
+    fails, last = ent
+    remaining = last + _login_block_sec(fails) - now
     return remaining if remaining > 0 else 0.0
 
 
@@ -68,10 +79,13 @@ def _login_record_fail(key: str, now: float) -> None:
         for k, (_f, s) in list(_LOGIN_FAILS.items()):
             if now - s > 3600:
                 _LOGIN_FAILS.pop(k, None)
-    fails, start = _LOGIN_FAILS.get(key, (0, now))
-    if now - start > _LOGIN_WINDOW_SEC and fails < _LOGIN_MAX_FAILS:
-        fails, start = 0, now      # окно истекло без блокировки — сброс
-    _LOGIN_FAILS[key] = (fails + 1, start if fails else now)
+    fails, last = _LOGIN_FAILS.get(key, (0, now))
+    # счётчик остывает, если с прошлой неудачи прошло больше и окна, и текущей
+    # блокировки: иначе одна давняя серия промахов держала бы ключ на взводе
+    # вечно (а верный пароль и так сбрасывает запись через _login_reset)
+    if now - last > max(_LOGIN_WINDOW_SEC, _login_block_sec(fails)):
+        fails = 0
+    _LOGIN_FAILS[key] = (fails + 1, now)
 
 
 def _login_reset(key: str) -> None:

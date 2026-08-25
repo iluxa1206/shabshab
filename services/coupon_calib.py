@@ -16,11 +16,14 @@ manual > парсер проспекта (авторитетно) > калибр
 Спека применяется к текущему/будущим незафиксированным купонам для точной
 проекции: прошлые дни периода — факт ЦБ, будущие — форвард-прогноз."""
 from __future__ import annotations
+import logging
 import re
 from datetime import date, timedelta
 from typing import Optional, Callable, List, Tuple
 
 from services import cbr
+
+logger = logging.getLogger(__name__)
 
 _MAX_LAG = 12
 _ERR_TOL_PP = 0.10     # порог средней ошибки, п.п.
@@ -997,12 +1000,32 @@ def _compounded_pct(spec: dict, start: date, end: date, calc_date: date,
     return compounded_index_bounds(spec, start, end, calc_date, fwd_pct, idx, lag, unit)[2]
 
 
+def _no_rate(spec: dict, start: date, why: str) -> None:
+    """Ставку восстановить нечем → None + запись в лог.
+
+    Отдельная функция, а не голый `return None`: провал данных обязан быть
+    видимым. Молчаливый 0.0 на этом месте читался вызывающим как «индекс равен
+    нулю» и превращал купон в чистую маржу выпуска."""
+    logger.warning("projected_ks_pct: нет ставки (%s, mode=%s, W=%s, start=%s) — %s",
+                   spec.get("base"), spec.get("mode"), spec.get("avg_window_days"),
+                   start.isoformat(), why)
+    return None
+
+
 def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
-                     fwd_pct: Callable[[date], float], idx=None) -> float:
+                     fwd_pct: Callable[[date], float], idx=None) -> Optional[float]:
     """Компонента ставки купона (%) по спеке: прошлые дни — факт ЦБ (КС/RUONIA),
     будущие ИЛИ не покрытые стейл-историей — fwd_pct(date). point → одна дата;
     average → среднее по дням. lag_unit='work' — лаг в рабочих днях.
-    idx — инжектированная история (index_history); None → сам фетчит."""
+    idx — инжектированная история (index_history); None → сам фетчит.
+
+    None → ставку восстановить НЕЧЕМ (ни факта ЦБ, ни форварда: в бэктест-путях
+    fwd_pct намеренно возвращает None, а окно фиксинга не покрыто историей).
+    Раньше такой провал возвращал 0.0 — «ставка индекса ноль», и купон молча
+    становился чистой маржой выпуска. В bond_audit это давало err_pp во весь
+    купон и ложный вердикт BAD для всех режимов кроме point; в прайсинге
+    контракт None уже штатный — period_index_pct пробрасывает его наверх, и
+    valuation откатывается на форвард-проекцию кривой."""
     if idx is None:
         idx = _index(spec.get("base", "KEYRATE"))
     lag = spec.get("lag", 0)
@@ -1028,7 +1051,7 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                 n += 1
             cur += timedelta(days=1)
         if n < 1:
-            return 0.0
+            return _no_rate(spec, start, "compounded-приближение: ни одного дня со ставкой")
         return (factor - 1.0) * 365.0 / n * 100.0
     # Единая параметризация: явное окно усреднения W дней, зафиксированное на
     # старте периода — окно [obs(start) − W, obs(start)). W=1 ≡ point,
@@ -1037,7 +1060,8 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
     if w:
         w_hi = _obs_date(start, lag, unit)
         if w <= 1:
-            return (_rate_at(idx, w_hi) if _realized(idx, w_hi, calc_date) else fwd_pct(w_hi)) or 0.0
+            return (_rate_at(idx, w_hi) if _realized(idx, w_hi, calc_date)
+                    else fwd_pct(w_hi))
         tot, n, cur = 0.0, 0, w_hi - timedelta(days=int(w))
         while cur < w_hi:
             k = _rate_at(idx, cur) if _realized(idx, cur, calc_date) else fwd_pct(cur)
@@ -1045,15 +1069,17 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                 tot += k
                 n += 1
             cur += timedelta(days=1)
-        return (tot / n) if n else 0.0
+        return (tot / n) if n else _no_rate(spec, start, f"окно W={int(w)}д без ставок")
     if spec.get("mode") == "point":
         fix = _obs_date(start, lag, unit)
-        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
+        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date)
+                else fwd_pct(fix))
     if spec.get("mode") == "month_start":
         # фиксинг на 1-е число месяца, на который приходится старт периода
         # (ИЖА ДОМ.РФ): ставка известна с начала месяца, лаг не участвует
         fix = start.replace(day=1)
-        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date) else fwd_pct(fix)) or 0.0
+        return (_rate_at(idx, fix) if _realized(idx, fix, calc_date)
+                else fwd_pct(fix))
     if spec.get("mode") == "avg_prev":
         # среднее индекса по ПРЕДЫДУЩЕМУ периоду со сдвигом lag назад от старта:
         # окно [start − period − lag, start − lag), period = длина текущего периода.
@@ -1070,7 +1096,7 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
                 tot += k
                 n += 1
             cur += timedelta(days=1)
-        return (tot / n) if n else 0.0
+        return (tot / n) if n else _no_rate(spec, start, "окно avg_prev без ставок")
     # ДНИ ДОХОДА = (start, end]: НКД-конвенция — день старта не начисляется,
     # день выплаты начисляется («Dji — дата, на которую рассчитывается доход»).
     # Раньше цикл шёл по [start, end): те же N дней, но все obs-даты сдвинуты
@@ -1086,4 +1112,4 @@ def projected_ks_pct(spec: dict, start: date, end: date, calc_date: date,
             tot += k
             n += 1
         cur += timedelta(days=1)
-    return (tot / n) if n else 0.0
+    return (tot / n) if n else _no_rate(spec, start, "период без единой ставки")

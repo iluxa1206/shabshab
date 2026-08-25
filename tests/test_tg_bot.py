@@ -16,16 +16,16 @@ SECRET = "test-secret"
 
 
 @pytest.fixture()
-def db():
+def db(tmp_path, monkeypatch):
+    """Пустая БД во временном каталоге (см. тот же приём в test_signals).
+
+    Раньше тест работал в боевой data/portfolio.db и подчищал за собой
+    DELETE'ами по фиктивному 'u@x.ru' — при падении теста строки оставались,
+    а signal_events вообще не подчищались."""
     from services import portfolio_db
-    from services.portfolio_db import _connect, _lock
+    monkeypatch.setattr(portfolio_db, "DB_PATH", tmp_path / "portfolio.db")
     portfolio_db.init_db()
-    with _lock, _connect() as c:
-        c.execute("DELETE FROM tg_targets WHERE user_email='u@x.ru'")
     yield
-    with _lock, _connect() as c:
-        c.execute("DELETE FROM tg_users WHERE tg_user_id IN (?, 555)", (UID,))
-        c.execute("DELETE FROM tg_targets WHERE user_email='u@x.ru'")
 
 
 @pytest.fixture()

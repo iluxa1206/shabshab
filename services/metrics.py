@@ -27,10 +27,18 @@ def years_to(d: Optional[date], calc_date: date) -> Optional[float]:
 def macaulay_years(cfs, calc_date: date, y: float) -> Optional[float]:
     """Macaulay-длительность потоков при непрерывной доходности y (годы).
     Для флоатера это spread duration — приближённая dP/P на 1% параллельного
-    сдвига дисконт-кривой (кредитного спреда), т.к. будущие купоны уже прогнозные."""
+    сдвига дисконт-кривой (кредитного спреда), т.к. будущие купоны уже прогнозные.
+
+    τ отсчитывается от ДАТЫ ПОСТАВКИ (T+1 раб), а не от calc_date: ровно от неё
+    дисконтирует solve_flat_y, который и выдал y, и на неё же снят dirty. Пока
+    якорь был на calc_date, срок и доходность считались от разных дней — в
+    пятницу зазор 3 дня, и Macaulay завышалась ровно на него (сдвиг τ выносится
+    за скобки, поэтому ошибка равна зазору в точности: +0.008 года)."""
+    from core.valuation import settle_date
+    anchor = settle_date(calc_date)
     num = den = 0.0
     for pay, amt in cfs:
-        tau = (pay - calc_date).days / 365.0
+        tau = (pay - anchor).days / 365.0
         if tau <= 0:
             continue
         df = amt * math.exp(-y * tau)
@@ -49,13 +57,17 @@ def duration_metrics(cfs, calc_date: date, y: float, dirty_rub: Optional[float])
       PVBP      = mod_dur · dirty · 1e-4             (₽ за 1 bp)
     Для флоатера потоки уже прогнозные → это чувствительность к доходности/спреду
     (spread-basis), отличается от НРД effective-duration, но корректна и
-    самодостаточна. cfs — список (pay_date, amount)."""
+    самодостаточна. cfs — список (pay_date, amount).
+
+    Якорь τ — дата поставки (T+1 раб), как в macaulay_years и solve_flat_y."""
+    from core.valuation import settle_date
+    anchor = settle_date(calc_date)
     ya = math.exp(y) - 1.0
     if ya <= -1.0:
         return None, None, None
     P = mac = conv = 0.0
     for pay, amt in cfs:
-        tau = (pay - calc_date).days / 365.0
+        tau = (pay - anchor).days / 365.0
         if tau <= 0:
             continue
         df = amt / (1.0 + ya) ** tau

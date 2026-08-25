@@ -802,9 +802,12 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
         pspec = {"mode": mode, "lag": lag, "lag_unit": unit, "base": base,
                  "avg_window_days": avg_w, "compounded": spec.get("compounded")}
         try:
-            prod = round(projected_ks_pct(pspec, s, e, calc_date,
-                                          fwd_pct=lambda d: _fwd_step(d) or 0.0,
-                                          idx=idx), 4)
+            # projected_ks_pct отдаёт None, когда ставку восстановить нечем —
+            # округлять нечего, но и исключением это ловить не надо
+            _prod = projected_ks_pct(pspec, s, e, calc_date,
+                                     fwd_pct=lambda d: _fwd_step(d) or 0.0,
+                                     idx=idx)
+            prod = round(_prod, 4) if _prod is not None else None
         except Exception:
             prod = None
         # compounded: уровни индекса ЦБ на границах окна наблюдения — ровно та

@@ -11,14 +11,22 @@ USER = "signals-test@example.com"
 
 
 @pytest.fixture(autouse=True)
-def clean_db():
+def clean_db(tmp_path, monkeypatch):
+    """Каждый тест — на своей пустой БД во временном каталоге.
+
+    Раньше фикстура работала прямо в боевой data/portfolio.db (единственный
+    тест-модуль без подмены пути) и подчищала за собой DELETE'ами. Два изъяна:
+    фиктивные ISIN оседали в signal_events при падении теста, а зачистка
+    signal_state шла БЕЗ фильтра по user_email — то есть удаляла осиротевшие
+    строки состояния всех пользователей, о которых тест ничего не знает.
+
+    Подменяем DB_PATH атрибутом модуля, а не reload'ом: _connect() читает
+    глобал в момент вызова, поэтому подмена видна и signals, который взял
+    _connect импортом на уровне модуля."""
+    import services.portfolio_db as pdb
+    monkeypatch.setattr(pdb, "DB_PATH", tmp_path / "portfolio.db")
     init_db()
     yield
-    with _lock, _connect() as c:
-        c.execute("DELETE FROM signal_filters WHERE user_email=?", (USER,))
-        c.execute("DELETE FROM signal_events WHERE user_email=?", (USER,))
-        c.execute("DELETE FROM signal_state WHERE filter_id NOT IN "
-                  "(SELECT id FROM signal_filters)")
 
 
 def _market():

@@ -740,7 +740,7 @@ def test_autofit_applies_only_confirmed_fit():
     assert margin_hint({"med_signed": 0.02, "fit_err": 0.9, "margin_bps": 300}) is None
 
 
-def test_drop_honest_clears_regardless_of_engine_version():
+def test_drop_honest_clears_regardless_of_engine_version(tmp_path, monkeypatch):
     """Смена ПАРАМЕТРОВ бумаги требует сноса истории при той же версии движка.
 
     drop_stale_honest смотрит на версию и такие строки не заметит: движок тот же,
@@ -748,18 +748,17 @@ def test_drop_honest_clears_regardless_of_engine_version():
     """
     from services.spread_history import drop_honest, upsert_honest, drop_stale_honest
     from services.backdate import HONEST_ENGINE_VERSION
-    from services.portfolio_db import init_db, _connect, _lock
+    import services.portfolio_db as pdb
 
-    init_db()
+    # пустая БД во временном каталоге: тест писал RU_TEST_DROP_1 прямо в боевой
+    # spread_daily и убирал за собой в finally — при падении строка оставалась
+    monkeypatch.setattr(pdb, "DB_PATH", tmp_path / "portfolio.db")
+    pdb.init_db()
     isin = "RU_TEST_DROP_1"
     pts = [{"date": "2026-08-10", "price_pct": 100.0, "y_idx_bps": 200,
             "dm_bps": 180, "yield_pct": 16.0}]
-    try:
-        upsert_honest(isin, pts, set(), HONEST_ENGINE_VERSION)
-        # версия текущая → «устаревшие» не находятся
-        assert drop_stale_honest(isin, HONEST_ENGINE_VERSION) == 0
-        # а безусловный снос — находит
-        assert drop_honest(isin) == 1
-    finally:
-        with _lock, _connect() as c:
-            c.execute("DELETE FROM spread_daily WHERE isin=?", (isin,))
+    upsert_honest(isin, pts, set(), HONEST_ENGINE_VERSION)
+    # версия текущая → «устаревшие» не находятся
+    assert drop_stale_honest(isin, HONEST_ENGINE_VERSION) == 0
+    # а безусловный снос — находит
+    assert drop_honest(isin) == 1

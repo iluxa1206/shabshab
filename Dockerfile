@@ -13,6 +13,18 @@ RUN npm run build
 FROM python:3.12-slim AS runtime
 WORKDIR /app
 
+# Таймзона контейнера = Москва. Без tzdata переменная TZ молча игнорируется и
+# время остаётся UTC — а сервисный слой опирается на наивный date.today(), и в
+# окне 00:00-03:00 МСК «сегодня» съезжало на вчера. Пакет ставим явно, чтобы
+# фикс не зависел от того, что окажется в базовом образе.
+# Знак по POSIX инвертирован: Etc/GMT-3 == UTC+3 == МСК.
+ENV TZ=Etc/GMT-3
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

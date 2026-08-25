@@ -7,6 +7,7 @@
   /start — заявка на доступ, /signals — последние события,
   /mute, /unmute, /status, /custom, /help
 """
+import hmac
 import html
 import logging
 import os
@@ -36,7 +37,11 @@ _HELP = (
 
 
 def _fmt_event(e: dict) -> str:
-    name = e.get("name") or e.get("isin")
+    # имя приходит из внешних справочников (MOEX/Cbonds/SmartLab), а лента
+    # сделок тянет их по ВСЕМУ рынку, не только по юниверсу. Любой & или < в
+    # названии без экранирования ломает parse_mode=HTML: Bot API отвечает
+    # "can't parse entities" и сигнал не доходит совсем
+    name = html.escape(str(e.get("name") or e.get("isin") or ""))
     bits = []
     if e.get("val_bps") is not None:
         bits.append(f"R-spread {e['val_bps']:.0f} бп")
@@ -269,7 +274,7 @@ async def tg_webhook(request: Request,
     """Оставлен для сети, где Telegram до нас достучится. На текущем VPS не
     работает (Connection timed out со стороны Telegram) — там включён поллер."""
     secret = os.getenv("TG_WEBHOOK_SECRET") or ""
-    if not secret or x_telegram_bot_api_secret_token != secret:
+    if not secret or not hmac.compare_digest(x_telegram_bot_api_secret_token, secret):
         # 200 без обработки: 4xx заставит Telegram ретраить мусор бесконечно
         logger.warning("tg webhook: неверный secret token")
         return {"ok": True}
