@@ -342,6 +342,54 @@ def accrued_estimate(periods, d: date) -> Optional[float]:
     return per_day * max(0, (d - s).days)
 
 
+def accrued_from_grid(bond, curve, d: date) -> Optional[float]:
+    """НКД на дату d, когда расписания купонов НЕТ ВОВСЕ.
+
+    Последний рубеж: биржа отдала ACCRUEDINT=0 (так бывает), расписание не
+    доехало, и сверить ноль не с чем — но параметров выпуска хватает, чтобы
+    посчитать НКД самим. Сетка купонных дат строится тем же генератором, что
+    и поток, ставка периода — форвард кривой плюс маржа выпуска, ровно как
+    начисляется прогнозный купон.
+
+    Точность: ставка прогнозная, ошибка в десятые доли процента годовых, то
+    есть единицы копеек НКД и пара bps в спреде — против сотни bps, которые
+    даёт нулевой НКД (РостелP21R 25.08: 250 против 121).
+    """
+    if not bond or not curve or not bond.maturity_date:
+        return None
+    try:
+        if bond.coupon_period_days and bond.issue_date:
+            grid = generate_coupon_dates_by_period(
+                bond.issue_date, bond.maturity_date, bond.coupon_period_days)
+        elif bond.first_coupon_date and bond.coupons_per_year:
+            grid = generate_coupon_dates(
+                bond.first_coupon_date, bond.maturity_date, bond.coupons_per_year)
+        else:
+            return None
+    except Exception:
+        return None
+    if not grid:
+        return None
+
+    # период, накрывающий d: (предыдущая выплата, ближайшая выплата]
+    nxt = next((x for x in grid if x >= d), None)
+    if nxt is None:
+        return None
+    prev = max([x for x in grid if x < nxt], default=None) or bond.issue_date
+    if prev is None or nxt <= prev:
+        return None
+
+    days = (d - prev).days
+    if days <= 0:
+        return 0.0
+    try:
+        rate = curve.forward(prev, nxt) + (bond.spread_issue_bps or 0) / 10000.0
+    except Exception:
+        return None
+    face = bond.face_value or 1000.0
+    return face * rate * days / 365.0
+
+
 def accrue_to_settle(accrued_calc: Optional[float], calc_date: date,
                      periods, to_date: Optional[date] = None
                      ) -> tuple[Optional[float], Optional[str]]:

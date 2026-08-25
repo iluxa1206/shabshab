@@ -154,11 +154,20 @@ def calculate_valuation_metrics(
     # НКД 11,46 ₽). Ноль законен только в день выплаты, когда период начался
     # сегодня; в остальных случаях верим расписанию, а не снапшоту.
     if accrued is not None and abs(accrued) < 0.005 and not periods:
-        # проверить ноль нечем: расписания нет, а считать цену «чистой» без
-        # накопленного купона — это молча завысить доходность на сотню bps.
-        # Спред в таком состоянии не отдаём вовсе (см. sanity ниже).
-        warnings.append("sanity: НКД источника 0, расписание купонов недоступно — "
-                        "проверить нечем")
+        # Расписания нет, но параметров выпуска хватает, чтобы посчитать НКД
+        # самим: сетка купонных дат + форвард кривой с маржой. Ошибка — единицы
+        # копеек против сотни bps, которые даёт нулевой НКД.
+        from core.valuation import accrued_from_grid as _acc_grid
+        _own = _acc_grid(bond, curve, settle_dt)
+        if _own and _own > 0.01:
+            warnings.append(
+                f"НКД источника 0 и расписания нет — посчитан по параметрам "
+                f"выпуска ({_own:.2f} ₽ на {settle_dt.isoformat()})")
+            accrued, accrued_date = _own, settle_dt
+        else:
+            # даже так не вышло (нет дат/кривой) — считать цену «чистой» нельзя
+            warnings.append("sanity: НКД источника 0, расписания нет и посчитать "
+                            "по параметрам выпуска не удалось")
     if accrued is not None and abs(accrued) < 0.005 and periods:
         from core.valuation import accrued_estimate as _acc_est
         # ставка текущего купона у флоатера обычно ещё не объявлена, и точный

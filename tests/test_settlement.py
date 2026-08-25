@@ -387,21 +387,54 @@ def test_sanity_hides_all_spread_metrics_together(keyrate_curve, calc_date,
     assert m["dirty_price_rub"] is not None, "факт от цены остаётся"
 
 
-def test_zero_accrued_without_schedule_hides_spread(keyrate_curve, calc_date,
-                                                    flat_index_15, monkeypatch):
-    """Нулевой НКД и НЕТ расписания — проверить нечем, спред не отдаём.
+def test_zero_accrued_without_schedule_is_computed_from_issue_terms(
+        keyrate_curve, calc_date, flat_index_15, monkeypatch):
+    """Нулевой НКД и НЕТ расписания — считаем НКД сами по параметрам выпуска.
 
-    Регресс РостелP21R 25.08: сигнал 250 bps против 121 верного. Вчерашняя
-    защита требовала расписания, а когда fetch_coupon_schedules промахнулся,
-    ноль проходил насквозь и цена считалась «чистой»."""
+    Регресс РостелP21R 25.08: сигнал 250 bps против 121 верного. Защита от
+    нуля требовала расписания, а когда fetch_coupon_schedules промахнулся,
+    ноль проходил насквозь и цена считалась «чистой». Сетки купонных дат и
+    форварда кривой хватает, чтобы посчитать НКД без расписания вовсе."""
     monkeypatch.setattr("services.valuation._index_provider",
                         lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
     bond = make_bond(margin_bps=150)
     m = calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
                                     accrued_override=0.0, periods=None)
-    assert m["yield_over_index_bps"] is None and m["dm_bps"] is None
-    assert m["pricing_status"] == "SANITY_FLAG"
-    assert any("расписание купонов недоступно" in w for w in m["warnings"])
+    assert m["accrued_settle_rub"] > 1, "НКД посчитан, а не оставлен нулём"
+    assert any("посчитан по параметрам выпуска" in w for w in m["warnings"])
+    assert not any("расписания нет и посчитать" in w for w in m["warnings"])
+
+
+def test_accrued_from_grid_matches_schedule():
+    """Свой расчёт НКД сходится с расчётом по фактическому расписанию.
+
+    Проверяем именно порядок величины: ставка периода прогнозная (форвард
+    кривой + маржа), поэтому копейка в копейку не обязана, а вот разойтись в
+    разы не имеет права."""
+    from core.valuation import accrued_from_grid, accrued_at
+    bond = make_bond(margin_bps=150)
+    d = date(2026, 3, 10)
+
+    class _FlatCurve:
+        def forward(self, t1, t2):
+            return 0.15                      # 15 % годовых на любом отрезке
+
+    own = accrued_from_grid(bond, _FlatCurve(), d)
+    assert own is not None and own > 0
+    # тот же период по фактическому графику под ту же ставку
+    per = _periods(bond.first_coupon_date - timedelta(days=91), n=12,
+                   value=bond.face_value * 0.165 * 91 / 365)
+    sched = accrued_at(per, d)
+    if sched:
+        assert own == pytest.approx(sched, rel=0.35)
+
+
+def test_accrued_from_grid_needs_terms():
+    """Нет дат или кривой — не выдумываем."""
+    from core.valuation import accrued_from_grid
+    bond = make_bond(margin_bps=150)
+    assert accrued_from_grid(bond, None, date(2026, 3, 10)) is None
+    assert accrued_from_grid(None, object(), date(2026, 3, 10)) is None
 
 
 def test_zero_accrued_with_schedule_still_repaired(keyrate_curve, calc_date,
