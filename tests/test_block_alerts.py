@@ -222,3 +222,14 @@ def test_stream_alert_rows_respect_floor():
     rows = _alert_rows(chunks, 1_000_000)
     assert [r["trade_id"] for r in rows] == [2]
     assert rows[0]["isin"] == "RU000FLOAT01" and rows[0]["value"] == 5_000_000
+
+
+def test_feed_min_value_has_tolerance(bt):
+    """Лента и таблица живут по тому же люфту, что и фильтры: «от 5 млн»
+    показывает сделку на 4,6 млн — иначе настройка на витрине и в алертах
+    означала бы разное."""
+    pdb, mod = bt
+    _seed(pdb, [(1, "RU000FLOAT01", 4_600_000),
+                (2, "RU000FLOAT01", 4_400_000)])
+    got = {r["trade_id"] for r in mod.read_blocks(min_value=5_000_000)}
+    assert got == {1}

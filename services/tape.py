@@ -27,6 +27,7 @@ from typing import Optional
 
 from services.block_trades import _bind_isins, _TMP
 from services.portfolio_db import _connect
+from services.screener_core import money_floor
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,11 @@ def _cond(frm: Optional[str], till: Optional[str], min_value: float,
         q += f" AND {p}ts <= ?"
         args.append(till + " 23:59:59" if len(till) == 10 else till)
     if min_value:
+        # порог с ЛЮФТОМ (screener_core.money_floor): «от 10 млн» оставляет в
+        # ленте и сделку на 9,5 — иначе таблица и сигналы расходятся в том, что
+        # считается попаданием, при одинаковой настройке
         q += f" AND {p}value >= ?"
-        args.append(min_value)
+        args.append(money_floor(min_value))
     if max_value:
         q += f" AND {p}value <= ?"
         args.append(max_value)

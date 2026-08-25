@@ -938,3 +938,36 @@ def test_money_trigger_on_by_default():
           "money_rub": 2e6, "money_ok_rub": 2_000_000}]
     ev = signals.detect_events(f["id"], USER, "ask", 10.0, m, None)
     assert [e["reason"] for e in ev] == ["money"]
+
+
+# --- люфт порога объёма (screener_core.money_floor) ---
+
+def test_money_floor_is_ten_percent():
+    """Порог объёма — про ПОРЯДОК, а не про границу до рубля: 48 млн под
+    фильтром «от 50» — ровно та сделка, ради которой фильтр заведён."""
+    assert core.money_floor(50e6) == 45e6
+    assert core.money_floor(None) is None
+    assert core.money_floor(0) is None
+
+
+def test_block_value_has_tolerance():
+    """Сделка чуть мельче порога попадает и в алерты, и в таблицу; заметно
+    мельче — по-прежнему нет."""
+    from datetime import date as _d
+    today = _d(2026, 8, 11)
+    assert core.block_matches(_trade(value=4_600_000), _meta(), _blk(), today)
+    assert not core.block_matches(_trade(value=4_400_000), _meta(), _blk(), today)
+
+
+def test_single_mode_order_has_tolerance():
+    """Крупная заявка чуть мельче порога — тоже крупная заявка: 6,0 млн под
+    фильтром «от 6,5» проходит, под «от 7» уже нет."""
+    uni, metrics, _small, big = _big_small()   # одна заявка на 6,003 млн
+    p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 6.5e6,
+                               "money_mode": "single"})
+    m = core.evaluate(p, uni, metrics, big)[0]
+    assert m["levels"] == 1 and m["money_rub"] == pytest.approx(6_003_000)
+
+    p2 = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 7e6,
+                                "money_mode": "single"})
+    assert core.evaluate(p2, uni, metrics, big) == []

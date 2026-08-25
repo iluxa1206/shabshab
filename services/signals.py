@@ -22,6 +22,7 @@ from services.portfolio_db import _connect, _lock
 from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
                                     block_matches, evaluate,
                                     evaluate_candidates, market_snapshot,
+                                    money_floor,
                                     normalize_block_params, normalize_params,
                                     static_candidates, warm_exact_ctx, years_left)
 
@@ -503,7 +504,10 @@ def preview_block(params: dict, limit: int = 20) -> dict:
             "SELECT trade_id,isin,secid,ts,market,side,value,y_idx_bps FROM block_trade "
             "WHERE ts >= ? AND value >= ? AND (cur IS NULL OR cur='SUR') "
             "ORDER BY value DESC LIMIT 500",
-            (day, p["min_value_rub"])).fetchall()]
+            # выборка по порогу С ЛЮФТОМ (money_floor): сделка на 48 млн под
+            # «от 50» проходит block_matches, и предвыборка не должна отрезать
+            # её раньше
+            (day, money_floor(p["min_value_rub"]))).fetchall()]
     labels = reg.labels_map()
     today = date.today()
     hits = [r for r in rows

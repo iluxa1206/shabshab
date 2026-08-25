@@ -239,7 +239,7 @@ def block_matches(trade: dict, meta: dict, params: dict,
     trade — строка block_trade (value/market/side/isin/secid/y_idx_bps), meta —
     подпись бумаги из instruments_registry.labels_map: {name, emitter, base,
     rating, maturity}."""
-    if (trade.get("value") or 0) < params["min_value_rub"]:
+    if (trade.get("value") or 0) < money_floor(params["min_value_rub"]):
         return False
     if params["markets"] == "ndm" and trade.get("market") != "ndm":
         return False
@@ -327,6 +327,21 @@ def side_money_rub(ladder: Optional[dict], side: str, face: float,
 # засчитывается при добранных ≥ VOL_TOL от запрошенного. ---
 
 VOL_TOL = 0.9
+
+
+def money_floor(want: Optional[float]) -> Optional[float]:
+    """Порог объёма с люфтом: сколько денег ДЕЙСТВИТЕЛЬНО отсекает «от 50 млн».
+
+    Человек, ставя порог, называет ПОРЯДОК, а не границу с точностью до рубля:
+    сделка на 48 млн под фильтром «от 50» — ровно то, ради чего фильтр заведён,
+    а жёсткое сравнение выбрасывало её и из алертов, и из таблицы. Тот же
+    VOL_TOL, что уже применялся к неполному набору по лестнице (vwap_passes) —
+    правило одно на все пороги объёма, чтобы витрина, лента и сигналы не
+    расходились в том, что считается попаданием.
+
+    Возвращает None для пустого порога (фильтра по объёму нет) — вызывающему
+    остаётся передать результат туда же, где стоял сырой порог."""
+    return None if not want else float(want) * VOL_TOL
 
 
 def level_money(px_pct: Optional[float], qty: Optional[float], face: float,
@@ -742,7 +757,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
             # лестнице тут не годится — двадцать мелких заявок на 5 млн не то
             # же самое, что одна заявка на 5 млн.
             best = best_level(ladder, face, accrued)
-            if not best or best["money"] < want:
+            if not best or best["money"] < money_floor(want):
                 continue
             price = single_px = depth_px = best["price"]
             val = _price_y_idx(isin, row, price, side, exact)

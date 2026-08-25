@@ -38,6 +38,7 @@ from typing import Optional
 import httpx
 
 from services.portfolio_db import _connect, _lock
+from services.screener_core import money_floor
 
 from services.pools import run_bg
 
@@ -583,8 +584,10 @@ def _where(frm: Optional[str], till: Optional[str], min_value: float,
         q += " AND ts <= ?"
         args.append(till + " 23:59:59" if len(till) == 10 else till)
     if min_value:
+        # порог с ЛЮФТОМ: «от 50 млн» показывает и сделку на 48 — человек
+        # называет порядок, а не границу до рубля (screener_core.money_floor)
         q += " AND value >= ?"
-        args.append(min_value)
+        args.append(money_floor(min_value))
     if market in MARKETS:
         q += " AND market = ?"
         args.append(market)
@@ -688,7 +691,7 @@ def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
         args.append(till)
     if min_value:
         q += " AND value >= ?"
-        args.append(min_value)
+        args.append(money_floor(min_value))
     with _connect() as c:
         if not isin and isins is not None:
             if _bind_isins(c, isins):
@@ -792,7 +795,9 @@ async def alert_floor() -> float:
     except Exception as e:
         logger.warning("block alert floor: %s", e)
         vals = []
-    val = min(vals + [BLOCK_ALERT_MIN_RUB])
+    # люфт — здесь же: выборка обязана быть не уже, чем условие block_matches,
+    # иначе сделка на 48 млн под фильтром «от 50» не доедет до проверки
+    val = money_floor(min(vals + [BLOCK_ALERT_MIN_RUB]))
     _floor_cache["at"], _floor_cache["val"] = now, val
     return val
 
@@ -870,8 +875,9 @@ async def _notify_blocks() -> int:
 
     # Порог выборки — минимальный из тех, что кому-то нужен: тянуть из базы
     # мельче бессмысленно, крупнее — значит молча потерять чужой сигнал.
-    floor = min([f["params"]["min_value_rub"] for f in bfilters]
-                + ([BLOCK_ALERT_MIN_RUB] if legacy_users else []) or [BLOCK_ALERT_MIN_RUB])
+    floor = money_floor(
+        min([f["params"]["min_value_rub"] for f in bfilters]
+            + ([BLOCK_ALERT_MIN_RUB] if legacy_users else []) or [BLOCK_ALERT_MIN_RUB]))
     rows = await run_bg(pending_alerts, 50, floor)
     if not rows:
         return 0
