@@ -400,7 +400,7 @@ def _reprice_z(ctx: dict, price: float) -> dict:
             from services.zspread import compute_z_bps
             cpn_dicts = [{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")}
                          for c in coupons]
-            z_model = compute_z_bps(
+            z_model, _dur = compute_z_bps(
                 ref_obj, exp, g_curve, calc_date, price,
                 accrued_live if accrued_live is not None else ref_obj.accrued_rub,
                 cpn_dicts, amorts, offers)

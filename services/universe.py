@@ -98,6 +98,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
+    spread_dur = None      # Macaulay прогнозных потоков — та же, что в карточке
     yoi_bid = yoi_ask = None
     face_px = accrued_settle = yoi_slope = None
     implausible = False
@@ -191,9 +192,10 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                        if coupons_full else
                        [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
                         for (s, e, v) in periods])
-            z_model = compute_z_bps(ref, exp, g_curve, calc_date, price_calc,
-                                    accrued if accrued is not None else ref.accrued_rub,
-                                    coupons, amorts, offers)
+            z_model, spread_dur = compute_z_bps(
+                ref, exp, g_curve, calc_date, price_calc,
+                accrued if accrued is not None else ref.accrued_rub,
+                coupons, amorts, offers)
         except Exception as e:
             logger.warning(f"z_model error {isin}: {e}")
 
@@ -225,7 +227,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
             "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
-            "next_coupon": next_cpn, "z_model": z_model,
+            "next_coupon": next_cpn, "z_model": z_model, "spread_dur": spread_dur,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
             # has_call сюда НЕ кладём: он статичный факт строки реестра, его

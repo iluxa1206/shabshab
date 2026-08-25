@@ -249,20 +249,25 @@ def current_period_len(coupons: list, calc_date: date) -> float:
 
 def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
                   price_pct: float, accrued_rub: float, coupons: list,
-                  amorts: list = None, offers: list = None) -> Optional[int]:
-    """Высокоуровнево: наш z-спред для флоатера (bps), сопоставимый с НРД z_spread.
+                  amorts: list = None, offers: list = None) -> tuple:
+    """Высокоуровнево: (z-спред флоатера в bps, спред-дюрация в годах).
+
+    Дюрация возвращается ВМЕСТЕ с z, потому что считается из тех же прогнозных
+    потоков: витрина раньше подставляла вместо неё срок до погашения, и у
+    амортизируемых бумаг расхождение с карточкой доходило до 2 лет
+    (sИАДОМ1P19 25.08: 3,85 против 5,85).
     RUONIA — п.4.9 (z по кривой КБД); KEYRATE — (e^y − 1) − G(τ_reset), см. докстринг модуля.
     Для амортизируемых бумаг ref.face_value = остаточный номинал на calc_date
     (цена в % котируется от него), amorts — график погашения принципала."""
     if ref.base not in ("RUONIA", "KEYRATE") or price_pct is None:
-        return None
+        return None, None
     from core.valuation import face_for_pricing, settle_date, first_offer_date
     settle = settle_date(calc_date)
     # Погашение ≤ T+1: весь поток покупателю не достаётся, но residual-ветка
     # project_cfs всё равно добавила бы принципал (условие > calc_date) → z-мусор.
     # Тот же MATURED-guard, что в services.valuation.calculate_valuation_metrics.
     if ref.maturity_date is not None and ref.maturity_date <= settle:
-        return None
+        return None, None
     # Перп (нет maturity): поток не терминируется — residual-принципала не будет,
     # z решался бы против голых купонов до обрыва расписания (глубоко отрицательный
     # мусор, молча). Осмыслен только при оферте с обрезкой (cut_at_offer).
@@ -276,7 +281,7 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
             except Exception:
                 put = None
         if put is None:
-            return None
+            return None, None
     dirty = face_for_pricing(ref.face_value, amorts, calc_date) * price_pct / 100.0 + (accrued_rub or 0.0)
     # I/O-граница: история индекса — один фетч здесь, в project_cfs — инжекция
     try:
@@ -286,13 +291,20 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     except Exception:
         index_pct_fn = lambda *a, **k: None   # деградация: начавшийся период → форвард
     cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers, index_pct_fn=index_pct_fn)
+    # Macaulay тех же прогнозных потоков — это и есть спред-дюрация выпуска.
+    # Отдаём рядом с z, потому что потоки уже построены: считать их второй раз
+    # ради витрины значило бы дублировать самый дорогой шаг.
+    dur = None
+    from services.metrics import macaulay_years
+    y_for_dur = solve_flat_y(cfs, calc_date, dirty)
+    if y_for_dur is not None:
+        dur = macaulay_years(cfs, calc_date, y_for_dur)
     if ref.base == "KEYRATE":
         if not g.ok():
-            return None
-        y = solve_flat_y(cfs, calc_date, dirty)
-        if y is None:
-            return None
+            return None, dur
+        if y_for_dur is None:
+            return None, dur
         tau = current_period_len(coupons, calc_date)
-        return round((math.exp(y) - 1 - g.r(tau)) * 10000)
+        return round((math.exp(y_for_dur) - 1 - g.r(tau)) * 10000), dur
     # RUONIA — методика НРД: дисконт по КБД ОФЗ, дискретный годовой компаундинг
-    return solve_z_discrete(g, cfs, calc_date, dirty)
+    return solve_z_discrete(g, cfs, calc_date, dirty), dur

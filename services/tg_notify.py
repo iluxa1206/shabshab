@@ -666,6 +666,38 @@ async def _flush_signals() -> None:
     await asyncio.gather(*(send(key, buf) for key, buf in batch))
 
 
+# --- служебные предупреждения ---
+
+async def notify_admins(text: str) -> int:
+    """Служебное сообщение владельцам системы. → сколько чатов получило.
+
+    Отдельный путь от сигналов: это не про рынок, а про то, что прибор
+    сломался, и адресат тут не «кто подписался на фильтр», а «кто чинит».
+    Поэтому и буфера нет — предупреждение не имеет смысла коалесцировать, оно
+    и так редкое, а задержка в десять секунд у него дороже.
+
+    Молчит, если админам не привязан чат: заводить доставку некуда, а падать
+    из-за этого сторожу нельзя."""
+    from services import auth_users
+    if not telegram.enabled():
+        return 0
+    try:
+        chats = {c["chat_id"] for u in auth_users.list_users()
+                 if u.get("role") == "admin"
+                 for c in tg_users.chats_for_email(u["email"])}
+    except Exception as e:
+        logger.warning("notify_admins: не собрать адресатов: %s", e)
+        return 0
+    sent = 0
+    for chat_id in chats:
+        try:
+            if await telegram.send_message(chat_id, text):
+                sent += 1
+        except Exception as e:
+            logger.warning("notify_admins send error (chat %s): %s", chat_id, e)
+    return sent
+
+
 # --- воркеры ---
 
 async def tg_signal_worker() -> None:

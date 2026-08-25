@@ -102,7 +102,7 @@ def test_compute_z_perp_guard_returns_none(exp_keyrate, gcurve, calc_date):
     bond = make_bond(base="KEYRATE", maturity=None)
     coupons = [{"start": "2025-10-12", "end": "2026-01-12", "value": 20.0},
                {"start": "2026-01-12", "end": "2026-04-12", "value": None}]
-    z = compute_z_bps(bond, exp_keyrate, gcurve, calc_date, 100.0, 0.0, coupons)
+    z, dur = compute_z_bps(bond, exp_keyrate, gcurve, calc_date, 100.0, 0.0, coupons)
     assert z is None
 
 
@@ -115,6 +115,9 @@ def test_compute_z_finite_for_normal_bond(exp_keyrate, gcurve, calc_date, flat_i
     bond = make_bond(base="KEYRATE", margin_bps=150)
     periods = quarterly_periods(calc_date, bond.maturity_date)
     coupons = [{"start": s, "end": e, "value": v} for s, e, v in periods]
-    z = compute_z_bps(bond, exp_keyrate, gcurve, calc_date, 100.0, 0.0, coupons)
+    z, dur = compute_z_bps(bond, exp_keyrate, gcurve, calc_date, 100.0, 0.0, coupons)
     assert z is not None
     assert -1000 < z < 2000, f"z={z} вне разумного коридора"
+    # дюрация приходит из ТЕХ ЖЕ потоков — витрине больше не нужен суррогат
+    # «срок до погашения», расходившийся с карточкой
+    assert dur is not None and 0 < dur < 10, f"дюрация={dur}"
