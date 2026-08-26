@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS bar_daily(
   volume REAL, value REAL,      -- бумаг / рублей за день
   trades INTEGER,
   hours INTEGER,                -- сколько часов с оборотом свёрнуто (диагностика)
+  -- горизонт дня и спред ко ВТОРОМУ горизонту: без них медианную линию по
+  -- средневзвесу строить нельзя (см. _one_horizon в api/routes/history)
+  horizon TEXT,
+  y_idx_alt_wap_bps REAL,
+  alt_horizon TEXT,
   metrics_ver INTEGER,          -- версия движка спреда (см. bars.BARS_METRICS_VERSION)
   built_at TEXT,
   PRIMARY KEY(isin, date)
@@ -414,6 +419,13 @@ _MIGRATIONS = [
     "ALTER TABLE block_trade ADD COLUMN ins_at INTEGER",
     "CREATE INDEX IF NOT EXISTS ix_block_alert ON block_trade(ins_at) "
     "WHERE alerted = 0",
+    # ГОРИЗОНТ в дневной свёртке баров. Часы его несут с BARS_METRICS_VERSION=6,
+    # а свёртка теряла — и медианные линии аналитики нельзя было строить по
+    # средневзвесу: без горизонта спред к оферте и спред к погашению сложились
+    # бы в одну линию (обвал на 220 б.п. без движения цены, см. _one_horizon).
+    "ALTER TABLE bar_daily ADD COLUMN horizon TEXT",
+    "ALTER TABLE bar_daily ADD COLUMN y_idx_alt_wap_bps REAL",
+    "ALTER TABLE bar_daily ADD COLUMN alt_horizon TEXT",
 ]
 
 

@@ -601,7 +601,8 @@ def last_bar_ts(isin: str) -> Optional[str]:
 def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
     """Свёртка часов бумаги в дни (без записи). frm — 'YYYY-MM-DD'."""
     q = ("SELECT substr(ts,1,10) d, kind, ts, vwap_pct, close, y_idx_bps, "
-         "g_spread_bps, y_close_bps, volume, value, trades, metrics_ver "
+         "g_spread_bps, y_close_bps, volume, value, trades, metrics_ver, "
+         "horizon, y_idx_alt_bps, alt_horizon "
          "FROM bar_hourly WHERE isin=?")
     args: list = [isin]
     if frm:
@@ -618,7 +619,9 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
         if a is None:
             a = acc[d] = {"isin": isin, "date": d, "kind": r["kind"] or "floater",
                           "pw": 0.0, "w": 0.0, "yw": 0.0, "yws": 0.0,
+                          "aw": 0.0, "aws": 0.0,
                           "close_pct": None, "y_idx_close_bps": None,
+                          "horizon": None, "alt_horizon": None,
                           "volume": 0.0, "value": 0.0, "trades": 0, "hours": 0,
                           "ver": None}
         w = r["value"] or 0.0
@@ -637,6 +640,14 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
         if r["close"] is not None:
             a["close_pct"] = r["close"]
             a["y_idx_close_bps"] = r["y_close_bps"]
+        # ГОРИЗОНТ ДНЯ — из последнего часа, который его назвал. Внутри дня он
+        # не меняется (правило цены смотрит на дневную цену), а переключение
+        # «погашение ↔ оферта» между днями и есть то, ради чего его хранят:
+        # без него линия истории обваливается на сотни б.п. без движения цены.
+        if r["horizon"]:
+            a["horizon"] = r["horizon"]
+        if r["alt_horizon"]:
+            a["alt_horizon"] = r["alt_horizon"]
         # у ФИКСОВ в тех же часовых полях лежит g-спред (см. spread_key в
         # build_bars): y_idx_bps там пуст, а y_close_bps — это спред к погашению
         # по цене закрытия. Разводим по своим колонкам на свёртке.
@@ -649,11 +660,17 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
         if sp is not None:
             a["yw"] += sp * w
             a["yws"] += w
+        # спред ко второму горизонту взвешиваем ТЕМ ЖЕ оборотом: обе ветки
+        # обязаны быть посчитаны по одной и той же средневзвешенной цене
+        if r["y_idx_alt_bps"] is not None:
+            a["aw"] += r["y_idx_alt_bps"] * w
+            a["aws"] += w
 
     out = []
     for d, a in sorted(acc.items()):
         wap = a["pw"] / a["w"] if a["w"] > 0 else None
         ywap = a["yw"] / a["yws"] if a["yws"] > 0 else None
+        awap = a["aw"] / a["aws"] if a["aws"] > 0 else None
         ycl = a["y_idx_close_bps"]
         fix = a["kind"] == "fixed"
         out.append({
@@ -664,6 +681,8 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
             "y_idx_close_bps": None if fix or ycl is None else round(ycl, 1),
             "g_spread_wap_bps": round(ywap, 1) if fix and ywap is not None else None,
             "g_spread_close_bps": round(ycl, 1) if fix and ycl is not None else None,
+            "horizon": a["horizon"], "alt_horizon": a["alt_horizon"],
+            "y_idx_alt_wap_bps": None if fix or awap is None else round(awap, 1),
             "volume": a["volume"] or None, "value": a["value"] or None,
             "trades": a["trades"] or None, "hours": a["hours"],
             "ver": a["ver"] or 0,
@@ -673,6 +692,7 @@ def _daily_rows(isin: str, frm: Optional[str] = None) -> list[dict]:
 
 _DAILY_COLS = ("isin", "date", "kind", "wap_pct", "close_pct", "y_idx_wap_bps",
                "y_idx_close_bps", "g_spread_wap_bps", "g_spread_close_bps",
+               "horizon", "y_idx_alt_wap_bps", "alt_horizon",
                "volume", "value", "trades", "hours")
 
 

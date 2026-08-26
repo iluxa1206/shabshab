@@ -396,9 +396,22 @@ class YidxAggBody(BaseModel):
 
 @router.post("/aggregate/yidx", tags=["History"])
 async def yidx_aggregate(body: YidxAggBody):
-    """Динамика медианного Y-IDX по рейтинг-бакетам или топ-эмитентам из дневных
-    строк spread_daily (точные снапшоты + candle-бэкфилл). Рейтинг/эмитент —
-    текущие из реестра (историю атрибутов не храним)."""
+    """Динамика медианного R-spread по рейтинг-бакетам или топ-эмитентам.
+
+    Источник — bar_daily: спред по СРЕДНЕВЗВЕШЕННОЙ цене дня, та же база, что у
+    scatter и box-графиков рядом и у сегодняшней точки, которую достраивает
+    фронт. Раньше читалось из spread_daily, где спред посчитан по цене закрытия
+    (вечерний снапшот) или по close свечи (honest-бэкфилл): три графика одной
+    вкладки стояли на двух разных базах, а последняя точка линии — на третьей.
+    Разница по бумаге 4–10 б.п. (медиана за 17–26.08.2026), по медиане бакета
+    до 18 б.п.
+
+    Побочно чинится и «цена дня, когда сделок не было»: spread_daily заводит
+    строку на каждый календарный день (в т.ч. выходные — 523 строки за субботу
+    16.08), и линия шла по стейл-цене. У bar_daily день без оборота не
+    существует вовсе.
+
+    Рейтинг/эмитент — текущие из реестра (историю атрибутов не храним)."""
     days, by = body.days, body.by
     if by not in ("rating", "issuer"):
         raise HTTPException(status_code=400, detail="by: rating | issuer")
@@ -411,9 +424,12 @@ async def yidx_aggregate(body: YidxAggBody):
 
     def _read_daily():
         with _connect() as c:
+            # имена колонок приводим к тем, что ждёт _one_horizon: у дневной
+            # свёртки они свои (y_idx_wap_bps), а гард общий с /series
             return c.execute(
-                "SELECT isin, date, y_idx, y_idx_alt, horizon, alt_horizon FROM spread_daily "
-                "WHERE kind='floater' AND y_idx IS NOT NULL AND date >= ? "
+                "SELECT isin, date, y_idx_wap_bps AS y_idx, "
+                "y_idx_alt_wap_bps AS y_idx_alt, horizon, alt_horizon FROM bar_daily "
+                "WHERE kind='floater' AND y_idx_wap_bps IS NOT NULL AND date >= ? "
                 "ORDER BY date", (cutoff,)).fetchall()
 
     rows = await asyncio.to_thread(_read_daily)
