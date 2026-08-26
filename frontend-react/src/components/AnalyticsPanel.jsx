@@ -322,7 +322,6 @@ function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH, full }) {
 const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
 // палитра линий эмитентов (рейтинг-цвета заняты бакетами); РЫНОК — нейтральный
 const ICOLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9", "#3fc6c6", "#d4b83f", "#f97cc0"];
-const dmm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 const YH_PAD = { l: 46, r: 14, t: 12, b: 30 };
 const MARKET = "РЫНОК";
 
@@ -479,7 +478,6 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
           );
         })}
       </div>
-      {data.exact_from && <div className="an-note">точная история копится с {dmm(data.exact_from)} — глубже данных пока нет</div>}
     </>
   );
 }

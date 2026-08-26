@@ -40,7 +40,6 @@ const BASES = [["vwap", "Ср.взвес"], ["bar_close", "Закрытие"], [
 
 const PAD = { l: 50, r: 14, t: 12, b: 30 };
 const trunc = (s, n = 16) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
-const dmm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 
 // Домен по данным, а не от нуля: линии спредов ходят в узкой полосе (см.
 // AnalyticsPanel — то же правило).
@@ -357,7 +356,6 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
     return sel.map((i) => by.get(i)).filter(Boolean);
   }, [data, sel]);
 
-  const missing = sel.filter((i) => !series.some((s) => s.isin === i));
 
   return (
     <section className="cmp">
@@ -405,15 +403,6 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
               hi={hi} onHi={setHi} />
             <CompareLegend series={series} names={names} metric={metric}
               hi={hi} onHi={setHi} onDrop={onToggle} />
-            {missing.length > 0 && (
-              <div className="an-note">
-                нет истории за окно: {missing.map((i) => names[i] || i).join(", ")}
-                {base !== "close" && " — архив часовых баров мельче окна"}
-              </div>
-            )}
-            {data.exact_from && (
-              <div className="an-note">история копится с {dmm(data.exact_from)} — глубже данных нет</div>
-            )}
           </>
         )}
       </div>
