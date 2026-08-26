@@ -339,7 +339,7 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     face_cache = ref_obj.face_value
     face_reg = (reg_row or {}).get("face_value")
     face_amort = amort_remaining_face(amorts, calc_date,
-                                      getattr(ref, "face_value", None))
+                                      getattr(ref_obj, "face_value", None))
     face = face_amort or face_reg or face_cache or 1000.0
     ref_obj.face_value = face          # оценка/waterfall тоже на честном остатке
     srcs = {"график MOEX": face_amort, "реестр": face_reg, "кэш": face_cache}
