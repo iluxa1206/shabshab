@@ -1305,7 +1305,14 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
         stats[res if res in stats else "updated"] = stats.get(res, 0) + 1
     # ручной слой поверх (lock=True — sync впредь не затрёт); manual уже отфильтрован
     for isin, p in manual.items():
-        set_manual(isin.strip(), p, lock=True)
+        try:
+            set_manual(isin.strip(), p, lock=True)
+        except Exception as e:
+            # ПО СТРОКЕ, а не всем скопом: у set_manual появилась валидация
+            # (coupons_per_year), и одна плохая ручная запись иначе обрывала
+            # импорт целиком — молча, на середине
+            _log.warning("ручной слой %s: %s", isin, e)
+            stats["manual_errors"] = stats.get("manual_errors", 0) + 1
     return stats
 
 

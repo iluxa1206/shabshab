@@ -666,7 +666,10 @@ def build_cashflows_to_maturity(
             start_1 = bond.issue_date
         else:
             coupon_dates = generate_coupon_dates(bond.first_coupon_date, bond.maturity_date, bond.coupons_per_year)
-            step_months = 12 // bond.coupons_per_year
+            # ТОТ ЖЕ КЛЭМП, что в generate_coupon_dates строкой выше: cpy=0 давал
+            # ZeroDivisionError, None → TypeError, а cpy>12 → шаг 0 → start_1
+            # совпадал с anchor, то есть первый период нулевой длины.
+            step_months = max(1, 12 // max(1, bond.coupons_per_year or 4))
             # first_coupon неизвестен → сетка заякорена на maturity (см.
             # generate_coupon_dates), start_1 — шаг назад от её первой даты
             anchor = bond.first_coupon_date or (coupon_dates[0] if coupon_dates else None)

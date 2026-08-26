@@ -147,7 +147,9 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
     _future_am = sum(float(a["value"]) for a in amorts
                      if a.get("value") is not None
                      and (_d(a.get("date")) or settle) > settle)
-    residual = (rem or 0.0) - _future_am
+    # см. core/valuation.py:906 — база pricing_face, а не остаток на calc_date
+    from core.valuation import face_for_pricing as _ffp
+    residual = _ffp(rem or 0.0, amorts, calc_date) - _future_am
     if mat and mat > settle and residual > 1e-9:
         out.append({**base, "date": mat, "type": "REDEMPTION",
                     "amount_rub": round(residual, 2), "rate_pct": None, "projected": False})

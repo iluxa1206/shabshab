@@ -44,7 +44,7 @@ def _d(s) -> Optional[date]:
 
 
 def build_fixed_cashflows(schedule: dict, calc_date: date,
-                          exchange_face=None) -> Tuple[List[tuple], float, Optional[date]]:
+                          exchange_face=None) -> Tuple[List[tuple], Optional[float], Optional[date]]:
     """Будущие кэшфлоу (pay_date, amount) из bondization + остаточный номинал на calc_date.
 
     Будущие купоны без value (после оферты купон не определён) → поток обрезается
@@ -258,7 +258,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             "name": nm, "issuer": _issuer_of(nm),
             "maturity_date": g(row, "MATDATE") or None,
             "coupon_pct": _numf(g(row, "COUPONPERCENT")),
-            "face": face, "linked": linked,
+            "face": face, "settle_face": settle_face, "linked": linked,
             "faceunit": (g(row, "FACEUNIT") or "").upper(),
             "accrued": _numf(g(row, "ACCRUEDINT")) or 0.0,
             "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
@@ -361,7 +361,11 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     if px is None or not full.get("coupons"):
         return out
     m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date,
-                                    g_curve, exchange_face=row.get("face"))
+                                    g_curve,
+                                    # номинал НА ДАТУ ПОСТАВКИ: face — на сегодня,
+                                    # а Σ будущих траншей считается от settle, и
+                                    # транш в окне (calc, settle] давал ложный отказ
+                                    exchange_face=row.get("settle_face") or row.get("face"))
     out.update({
         "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
@@ -386,7 +390,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
             else:
                 mw = fixed_metrics_from_schedule(full, wap, row.get("accrued") or 0.0,
                                                  calc_date, g_curve,
-                                                 exchange_face=row.get("face"))
+                                                 exchange_face=(row.get("settle_face")
+                                                                or row.get("face")))
                 out["g_spread_wap_bps"] = mw.get("g_spread_bps")
                 out["ytm_wap"] = mw.get("ytm_pct")
 
@@ -394,8 +399,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
         try:
             from services.zspread import solve_z_discrete
-            cfs, _face, _put = build_fixed_cashflows(full, calc_date,
-                                                     row.get("face"))
+            cfs, _face, _put = build_fixed_cashflows(
+                full, calc_date, row.get("settle_face") or row.get("face"))
             if cfs:
                 out["z_spread_bps"] = solve_z_discrete(g_curve, cfs, calc_date, m["dirty"])
         except Exception as e:

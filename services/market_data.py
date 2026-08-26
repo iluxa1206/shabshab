@@ -502,8 +502,12 @@ class MarketDataService:
             with open(SCHEDULE_FULL_CACHE_FILE, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             # v2: добавлен блок offers — старый формат без версии сбрасываем (regen)
+            # v3: amortizations читаются со ВСЕХ страниц пагинации ISS (раньше
+            #     только со start=0) — кэш v2 держит ОБРЕЗАННЫЕ графики, по
+            #     которым Σ траншей меньше номинала, поэтому его надо выкинуть,
+            #     а не доживать на нём до переката в 09:00 МСК.
             cls._full_mem = (raw.get("items", {})
-                             if raw.get("date") == today and raw.get("version") == 2 else {})
+                             if raw.get("date") == today and raw.get("version") == 3 else {})
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             cls._full_mem = {}
 
@@ -528,7 +532,7 @@ class MarketDataService:
         snapshot = dict(cls._full_mem)
         try:
             atomic_write_json(SCHEDULE_FULL_CACHE_FILE,
-                              {"date": cls._full_mem_date, "version": 2, "items": snapshot})
+                              {"date": cls._full_mem_date, "version": 3, "items": snapshot})
             cls._full_last_flush = now
             cls._full_dirty = False
         except OSError:

@@ -88,7 +88,8 @@ def build_ref_external(isin: str, mo: dict, base: Optional[str] = None,
     issue = _to_date(mo.get("issue"))
     maturity = _to_date(mo.get("maturity"))
     cpy = round(365 / cp) if cp else 4
-    first_coupon = add_months(issue, 12 // cpy) if (issue and cpy) else None
+    # 12 // 26 == 0 (14-дневный купон) → first_coupon == issue_date
+    first_coupon = add_months(issue, max(1, 12 // cpy)) if (issue and cpy) else None
 
     # Реестр — источник истины: непустые поля реестра побеждают MOEX/Cbonds.
     # Закрывает и старые дыры: base=UNKNOWN у бумаг вне isins_cache (ЕАБР П3-07)

@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import glob
 import os
 import threading
+import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.environ.get("CACHE_DIR") or os.path.join(_ROOT, "data", "cache")
@@ -32,6 +34,15 @@ def atomic_write_json(path: str, obj) -> None:
     # НАПОЛОВИНУ ПЕРЕЗАПИСАННЫЙ файл (наблюдалось на schedule_full_cache.json:
     # 7 КБ вместо 2.7 МБ).
     tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    # ПОДМЕТАЛКА осиротевших tmp: имя теперь уникально на писателя, значит после
+    # SIGKILL они копятся без предела (у schedule_full_cache это 2.7 МБ за штуку),
+    # тогда как раньше жил ровно один перезаписываемый файл.
+    for _old in glob.glob(f"{path}.tmp.*"):
+        try:
+            if time.time() - os.path.getmtime(_old) > 3600:
+                os.unlink(_old)
+        except OSError:
+            pass
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False)

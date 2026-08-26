@@ -137,7 +137,12 @@ def build_cashflow_from_moex(
         # последний транш сдвинут business-day adjustment'ом либо (у ABS) лежит за
         # горизонтом пагинации ISS. Считаем как канонический билдер (residual).
         _future_am = sum(amt for d, amt in _am_all if d > settle)
-        residual = (ref.face_value or 0.0) - _future_am
+        # База — pricing_face, РОВНО как в каноне (core/valuation.py:906): транш
+        # из окна (calc_date, settle] достаётся продавцу и уже эмитится выше
+        # как прошлая амортизация. Без вычета он попадал в поток дважды —
+        # накануне амортизации принципал завышался на весь транш.
+        from core.valuation import face_for_pricing as _ffp
+        residual = _ffp(ref.face_value or 0.0, amorts, calc_date) - _future_am
         if ref.maturity_date and ref.maturity_date > settle and residual > 1e-9:
             items.append(_item(
                 number=0, period_start=ref.maturity_date, period_end=ref.maturity_date,

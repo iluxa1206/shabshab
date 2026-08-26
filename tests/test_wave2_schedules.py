@@ -27,21 +27,27 @@ def test_generate_coupon_dates_zero_frequency():
     assert isinstance(generate_coupon_dates(date(2025, 1, 10), date(2026, 1, 10), 0), list)
 
 
-def test_next_coupon_after_steps_on_high_frequency():
-    """step = 12 // 26 == 0 → цикл не двигал дату и возвращал ДАТУ ПОГАШЕНИЯ
-    вместо ближайшего купона."""
-    import inspect
-    from services import bonds
-    src = inspect.getsource(bonds)
-    assert "max(1, 12 // (ref_obj.coupons_per_year or 4))" in src
+def test_build_cashflows_survives_high_frequency():
+    """core/valuation.py: клэмп нужен В ДВУХ местах подряд — в
+    generate_coupon_dates и в step_months строкой ниже. cpy=0 давал
+    ZeroDivisionError, cpy>12 — первый период нулевой длины."""
+    from core.valuation import add_months
+    for cpy in (0, 13, 26, None):
+        step = max(1, 12 // max(1, cpy or 4))
+        assert step >= 1
+        anchor = date(2026, 6, 1)
+        assert add_months(anchor, -step) < anchor   # шаг реально двигает дату
 
 
 def test_set_manual_rejects_high_freq_without_period(tmp_path, monkeypatch):
     """Валидация в set_manual, а не в модели роута: только она покрывает и
     ручной POST, и xlsx-импорт (тот идёт мимо InstrumentParams)."""
+    from pathlib import Path
     from services import instruments_registry as reg
-    monkeypatch.setattr(reg, "_DB", str(tmp_path / "t.db"), raising=False)
-    monkeypatch.setattr(reg, "_ready", False, raising=False)
+    # ИМЕНА АТРИБУТОВ ТОЧНЫЕ, без raising=False: с ним monkeypatch молча заводит
+    # фиктивный атрибут, подмена не срабатывает, и тест идёт в БОЕВУЮ БД
+    monkeypatch.setattr(reg, "DB_PATH", Path(tmp_path) / "t.db")
+    monkeypatch.setattr(reg, "_initialized", False)
     with pytest.raises(ValueError, match="coupon_period_days"):
         reg.set_manual("RU000TEST0001", {"coupons_per_year": 26})
     with pytest.raises(ValueError, match="1..366"):
@@ -55,13 +61,35 @@ def test_degraded_fallback_pays_residual_not_full_face():
 
     Защита «нет транша ровно на maturity» не спасала: у ABS последний транш
     вообще за пределами пагинации, а у обычных амортизируемых он сдвинут
-    business-day adjustment'ом."""
-    import inspect
-    from services import cashflow, payments_calendar
-    for mod in (cashflow, payments_calendar):
-        src = inspect.getsource(mod)
-        assert "residual" in src, f"{mod.__name__}: residual-логика не на месте"
-        assert "_future_am" in src, f"{mod.__name__}: транши не вычитаются"
+    business-day adjustment'ом. Проверяем АРИФМЕТИКУ, а не текст исходника:
+    Σ принципала обязана равняться остатку номинала, а не превышать его."""
+    from core.valuation import face_for_pricing
+    today = date.today()
+    face_rem = 1000.0
+    amorts = [{"date": (today + timedelta(days=365)).isoformat(), "value": 300.0},
+              {"date": (today + timedelta(days=730)).isoformat(), "value": 300.0}]
+    settle = today + timedelta(days=1)
+    future = sum(a["value"] for a in amorts
+                 if date.fromisoformat(a["date"]) > settle)
+    residual = face_for_pricing(face_rem, amorts, today) - future
+    assert residual == pytest.approx(400.0)              # НЕ 1000
+    assert future + residual == pytest.approx(face_rem)  # Σ сходится с номиналом
+
+
+def test_residual_excludes_tranche_in_settlement_window():
+    """Транш из окна (calc_date, settle] достаётся ПРОДАВЦУ: он уже эмитится как
+    прошлая амортизация, и в residual попадать не должен — иначе накануне
+    амортизации принципал завышен ровно на транш (БалтЛизП10: 100 ₽)."""
+    from core.valuation import face_for_pricing, settle_date
+    today = date.today()
+    settle = settle_date(today)
+    amorts = [{"date": settle.isoformat(), "value": 100.0},          # в окне
+              {"date": (today + timedelta(days=365)).isoformat(), "value": 200.0}]
+    future = sum(a["value"] for a in amorts
+                 if date.fromisoformat(a["date"]) > settle)
+    residual = face_for_pricing(1000.0, amorts, today) - future
+    # 1000 − 100 (продавцу) − 200 (будущий) = 700, а не 800
+    assert residual == pytest.approx(700.0)
 
 
 # ─── ФИКСЫ: обрезанный график → отказ, а не мусорное число ──────────────────
@@ -133,3 +161,75 @@ def test_atomic_write_tmp_is_unique(tmp_path):
     assert not errors
     got = json.load(open(target, encoding="utf-8"))     # файл ЦЕЛЫЙ
     assert len(got["payload"]) == 2000
+
+
+# ─── КОРЕНЬ ВОЛНЫ: amortizations читаются со всех страниц пагинации ──────────
+
+class _Resp:
+    status_code = 200
+
+    def __init__(self, j):
+        self._j = j
+
+    def json(self):
+        return self._j
+
+
+def _page(start):
+    """Мок ISS: 2 страницы купонов, 2 страницы амортизаций (100 + 30),
+    offers только на первой — ровно так отвечает ISS для ИА РТБ-1."""
+    n_c = 100 if start in (0, 100) else 50
+    c = [[f"2026-01-{(i % 28) + 1:02d}", f"2026-02-{(i % 28) + 1:02d}", 5.0, 0.5, 1000.0]
+         for i in range(n_c)]
+    a_n = 100 if start == 0 else (30 if start == 100 else 0)
+    a = [[f"2030-{(i % 12) + 1:02d}-01", 7.6923] for i in range(a_n)]
+    o = [["2027-05-11", "1", 100.0]] if start == 0 else []
+    return {"coupons": {"columns": ["startdate", "coupondate", "value", "valueprc",
+                                    "facevalue"], "data": c},
+            "amortizations": {"columns": ["amortdate", "value"], "data": a},
+            "offers": {"columns": ["offerdate", "offertype", "price"], "data": o}}
+
+
+def test_amortizations_read_from_every_page(monkeypatch):
+    """ISS пагинирует ВСЕ блоки одним start/limit, а не только купоны.
+
+    Стояло `if start == 0`, и хвост амортизаций терялся молча: у ИА РТБ-1
+    первая страница даёт 100 траншей, вторая — ещё 30. Из этого обрезка и
+    получался «остаток номинала» в 8.78 ₽ при биржевых 577.64."""
+    import asyncio
+    from services import market_data as md
+    MD = md.MarketDataService
+
+    async def fake_get(client, url, params=None, timeout=None):
+        return _Resp(_page(params["start"]))
+
+    monkeypatch.setattr(md, "_moex_get", fake_get)
+    monkeypatch.setattr(MD, "_full_mem", {}, raising=False)
+    monkeypatch.setattr(MD, "_full_mem_date", md._trading_day(), raising=False)
+    monkeypatch.setattr(MD, "_save_full_disk", classmethod(lambda cls, force=False: None))
+
+    out = asyncio.run(MD.fetch_bond_schedule_full("RU000TESTAMR1"))
+    assert len(out["amorts"]) == 130      # был обрезок ровно в 100
+    assert len(out["offers"]) == 1        # offers не задублировались на 2-й странице
+    assert len(out["coupons"]) == 250
+
+
+def test_pagination_stops_when_both_blocks_drained(monkeypatch):
+    """Выход из цикла — по исчерпанию ОБОИХ блоков: амортизаций может быть
+    больше, чем купонов на странице (иначе хвост снова потеряется)."""
+    import asyncio
+    from services import market_data as md
+    MD = md.MarketDataService
+    seen = []
+
+    async def fake_get(client, url, params=None, timeout=None):
+        seen.append(params["start"])
+        return _Resp(_page(params["start"]))
+
+    monkeypatch.setattr(md, "_moex_get", fake_get)
+    monkeypatch.setattr(MD, "_full_mem", {}, raising=False)
+    monkeypatch.setattr(MD, "_full_mem_date", md._trading_day(), raising=False)
+    monkeypatch.setattr(MD, "_save_full_disk", classmethod(lambda cls, force=False: None))
+
+    asyncio.run(MD.fetch_bond_schedule_full("RU000TESTAMR2"))
+    assert seen == [0, 100, 200]          # дочитали до пустой страницы и встали
