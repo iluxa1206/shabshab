@@ -963,12 +963,24 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     if done and done[0] == _date.today() and done[1] >= days:
         return 0
 
-    from services.spread_history import read_history, upsert_honest, drop_stale_honest
-    dropped = drop_stale_honest(isin, HONEST_ENGINE_VERSION)
-    if dropped:
-        logger.info("honest %s: снесено %d строк старого движка → пересчёт", isin, dropped)
-    existing = {r["date"]: r for r in read_history(isin, days=days + 10)
-                if (r.get("kind") or "floater") == "floater"}
+    from services.spread_history import (read_history, upsert_honest,
+                                         drop_honest_dates)
+    # СТРОКИ СТАРОГО ДВИЖКА НЕ СНОСИМ АВАНСОМ. Раньше здесь стоял
+    # drop_stale_honest: при сбое MOEX (honest_spread_series кидает «история за
+    # окно пуста», а вызывающий в api/routes/history.py это только логирует)
+    # ПЕРВЫЙ заход на график стирал год истории и не писал взамен ничего —
+    # пустая линия до следующей удачной попытки. Теперь считаем их «как
+    # отсутствующие» (пересчёт пойдёт по тем же датам), а удаляем ровно перед
+    # вставкой посчитанной замены — см. _flush.
+    rows_all = [r for r in read_history(isin, days=days + 10)
+                if (r.get("kind") or "floater") == "floater"]
+    stale = {r["date"] for r in rows_all
+             if r.get("src") == "honest"
+             and (r.get("engine_ver") or 0) < HONEST_ENGINE_VERSION}
+    if stale:
+        logger.info("honest %s: %d строк старого движка → пересчёт", isin, len(stale))
+    existing = {r["date"]: r for r in rows_all if r["date"] not in stale}
+    dropped = 0
     # Доверенные источники — вечерний снапшот ('snap', живой движок в свой день)
     # и honest-бэкфилл текущей версии. Строки БЕЗ src — легаси candle-est
     # (scripts/backfill_yidx_history.py: цена дня × модель на день прогона):
@@ -1014,6 +1026,12 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     def _flush(part: list) -> None:
         fresh = [p for p in part if p["date"] not in existing or p["date"] in overrides]
         if fresh:
+            # замена посчитана — ТОЛЬКО ТЕПЕРЬ сносим строку старого движка:
+            # INSERT OR IGNORE её иначе не перезапишет
+            hit = stale & {p["date"] for p in fresh}
+            if hit:
+                drop_honest_dates(isin, hit)
+                stale.difference_update(hit)
             written[0] += upsert_honest(isin, fresh, ex_dates, HONEST_ENGINE_VERSION,
                                         retrust_dates=untrusted)
 
@@ -1027,6 +1045,10 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
         missing_or_null = [p for p in series["points"]
                            if p["date"] not in existing or p["date"] in overrides]
         if missing_or_null:
+            hit = stale & {p["date"] for p in missing_or_null}
+            if hit:
+                drop_honest_dates(isin, hit)
+                stale.difference_update(hit)
             n = upsert_honest(isin, missing_or_null, ex_dates, HONEST_ENGINE_VERSION,
                               retrust_dates=untrusted)
     # недоверенные даты, до которых честный движок не дотянулся (нет строки
@@ -1040,6 +1062,17 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
         covered = {p["date"] for p in series["points"]
                    if p.get("y_idx_bps") is not None or p.get("dm_bps") is not None}
         n += drop_untrusted(isin, untrusted - covered)
+    # ПРОГОН БЫЛ ЗДОРОВЫМ (точки пришли) — остатки старого движка, до которых
+    # движок не дотянулся, это дыры MOEX, а не сбой сети: сносим, иначе старые
+    # числа живут вечно. Пустая серия остатки НЕ трогает — в этом весь смысл
+    # переноса: сбой ISS больше не стирает историю.
+    if stale and series["points"]:
+        # ТОЛЬКО В ПРЕДЕЛАХ ПОСЧИТАННОГО ОКНА: read_history тянет строк больше,
+        # чем календарных дней окна, и стейл-даты за пределами [lo, hi] остались
+        # бы без замены — дыра до следующего прогона с бо́льшим окном.
+        _lo = min(p["date"] for p in series["points"])
+        _hi = max(p["date"] for p in series["points"])
+        dropped = drop_honest_dates(isin, {d for d in stale if _lo <= d <= _hi})
     _backfill_done[(isin, board)] = (_date.today(), days)
     return n + dropped
 

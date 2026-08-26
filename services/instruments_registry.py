@@ -26,9 +26,15 @@ DB_PATH = Path(os.environ.get("INSTRUMENTS_DB", _ROOT / "data" / "instruments.db
 _lock = threading.Lock()
 
 # Поля, которые sync НЕ трогает у записи с manual_locked=1 (ручной приоритет).
+# face_value СЮДА НЕ ВХОДИТ СОЗНАТЕЛЬНО: у амортизируемых бумаг текущий номинал
+# меняется по графику, MOEX отдаёт его в листинге живьём, а залоченный ручной
+# снапшот застывал на дне импорта xlsx и врал в PV/НКД пропорционально
+# пропущенным траншам (27 строк на снимке БД: Саммит 1P3 292.8 против 251.2 у
+# MOEX, СНХТ БО-02 714.4 против 571.6, sЛЕГЕНД2P1 1000 против 750).
+# Обнулить номинал синк не может — upsert пропускает None.
 _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
-                  "face_value", "fixing_lag", "fixing_lag_unit", "coupon_mode",
+                  "fixing_lag", "fixing_lag_unit", "coupon_mode",
                   "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text",
                   "avg_window_days", "compounded")
 
@@ -63,7 +69,7 @@ CREATE TABLE IF NOT EXISTS instruments(
   -- ФЛАГ НИЧЕГО НЕ МЕНЯЕТ В РАСЧЁТЕ: только поднимает бумагу в ревью.
   offer_reset_bps   REAL,
   offer_reset_date  TEXT,                         -- дата той оферты
-  next_offer_date   TEXT                          -- ближайшая будущая (для отбора в ревью)
+  next_offer_date   TEXT,                         -- ближайшая будущая (для отбора в ревью)
   cap_pct           REAL,                         -- потолок ставки купона, % годовых (MIN/«не более»)
   floor_pct         REAL,                         -- пол ставки купона, % годовых (MAX/«не менее»)
   coupon_text       TEXT                          -- текст формулы купона (парсится → база/маржа/режим/кэп/флор)

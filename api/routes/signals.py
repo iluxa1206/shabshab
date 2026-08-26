@@ -3,7 +3,7 @@ Identity — cookie-сессия (require_user). Доставка срабаты
 а WS-каналом 'signals' (см. services/signals.run_cycle)."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
 
 from api.routes.auth import require_user
@@ -130,9 +130,13 @@ async def list_targets(user: dict = Depends(require_user)):
 
 
 @router.get("/events", tags=["Signals"])
-async def list_events(limit: int = signals.EVENTS_LIMIT, user: dict = Depends(require_user)):
-    """Лента срабатываний + счётчик непрочитанных (для колокольчика)."""
-    return {"events": signals.events_for_user(user["email"], limit=min(int(limit), 500)),
+async def list_events(limit: int = Query(signals.EVENTS_LIMIT, ge=1, le=500),
+                      user: dict = Depends(require_user)):
+    """Лента срабатываний + счётчик непрочитанных (для колокольчика).
+
+    Границы limit ЖЁСТКИЕ: отрицательное значение SQLite трактует как «без
+    лимита» (LIMIT -1), и ?limit=-1 вытягивал всю ленту разом мимо min(...)."""
+    return {"events": signals.events_for_user(user["email"], limit=limit),
             "unseen": signals.unseen_count(user["email"])}
 
 

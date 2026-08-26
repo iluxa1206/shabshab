@@ -213,7 +213,12 @@ export default function Catalog({ user }) {
       {importMsg && (
         <div className={"admin-msg " + (importMsg.ok ? "admin-ok" : "admin-err")}>
           {importMsg.ok
-            ? `Импорт: обновлено ${importMsg.updated}, пропущено ${importMsg.skipped}` +
+            ? `Импорт: обновлено ${importMsg.updated}` +
+              // «без изменений» показываем явно: импорт пишет ТОЛЬКО реально
+              // изменённые поля, поэтому после round-trip экспорта тут будет
+              // «обновлено 0» — без этой цифры выглядит как будто не сработало
+              (importMsg.unchanged != null ? `, без изменений ${importMsg.unchanged}` : "") +
+              `, пропущено ${importMsg.skipped}` +
               (importMsg.error_count ? `, ошибок ${importMsg.error_count}` : "")
             : importMsg.error}
           {importMsg.errors?.length > 0 && (

@@ -74,8 +74,13 @@ async def sync_instruments() -> dict:
     # MATDATE — закрывает главный пробел «нет maturity» без per-bond вызовов)
     for isin in known & set(listing):
         mo = listing[isin]
+        # FACEVALUE замещающих/юаневых бумаг — В ВАЛЮТЕ (FACEUNIT), а расчёты у
+        # нас рублёвые. Такой номинал в реестре победил бы isins_cache в
+        # BondRefData (services/bonds.py:46) и испортил PV/НКД в 12-83 раза.
+        _unit = (mo.get("face_unit") or "").upper()
+        _face = mo.get("face") if _unit in ("", "SUR", "RUB", "RUR") else None
         upd = {"isin": isin, "maturity_date": mo.get("maturity"),
-               "short_name": mo.get("short_name"), "face_value": mo.get("face")}
+               "short_name": mo.get("short_name"), "face_value": _face}
         if any(v is not None for k, v in upd.items() if k != "isin"):
             # keep_source: дневной рефреш maturity/name НЕ провенанс параметров —
             # иначе все cbonds-строки за день «становились» moex

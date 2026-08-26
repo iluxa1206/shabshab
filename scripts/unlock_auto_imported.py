@@ -77,15 +77,31 @@ def main() -> int:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        """SELECT isin, short_name, base, margin_bps FROM instruments
-           WHERE manual_locked=1"""
+        """SELECT isin, short_name, base, margin_bps, coupon_mode, fixing_lag,
+                  cap_pct, floor_pct
+           FROM instruments WHERE manual_locked=1"""
     ).fetchall()
 
-    unlock, keep, unknown = [], [], []
+    unlock, keep, unknown, spec = [], [], [], []
     for r in rows:
         src = bs.get(r["isin"])
         if not src or src["base"] is None:
             unknown.append(r)          # нет в выгрузке — сверить не с чем
+            continue
+        # СПЕКА ФИКСИНГА — ОТДЕЛЬНЫЙ СЛУЧАЙ. Сверяем мы только base/margin_bps,
+        # а lock защищает весь _MANUAL_FIELDS, включая coupon_mode/fixing_lag.
+        # Разлочив такую строку, мы открываем её для apply_authoritative:
+        # corpbonds ПЕРЕЗАПИШЕТ режим купона (он игнорирует locked, но пишет
+        # поверх разлоченного). Спека могла быть выставлена руками или
+        # заморожена старым парсером — решать это должен человек, а не сверка
+        # по двум полям. Разморозку спеки делает scripts/unfreeze_fixing_spec.py.
+        # cap_pct/floor_pct — тоже ручной слой: apply_authoritative пишет любые
+        # переданные поля. var_type СЮДА НЕ ВХОДИТ — он авто-проставлен почти
+        # всем строкам и признаком ручной правки не является.
+        if not os.getenv("UNLOCK_WITH_SPEC") and (
+                r["coupon_mode"] is not None or r["cap_pct"] is not None
+                or r["floor_pct"] is not None):
+            spec.append((r, src))
             continue
         same_base = (r["base"] == src["base"])
         same_margin = (src["margin_bps"] is None or r["margin_bps"] == src["margin_bps"])
@@ -95,6 +111,11 @@ def main() -> int:
     print(f"  совпадает с Cbonds → СНЯТЬ: {len(unlock)}")
     print(f"  расходится → ОСТАВИТЬ     : {len(keep)}")
     print(f"  нет в выгрузке → ОСТАВИТЬ : {len(unknown)}")
+    print(f"  своя спека → ОСТАВИТЬ     : {len(spec)}"
+          f"{'  (UNLOCK_WITH_SPEC=1 чтобы снять)' if spec else ''}")
+    for r, _src in spec[:25]:
+        print(f"    СО СПЕКОЙ {r['isin']} {str(r['short_name'])[:18]:20} "
+              f"{r['coupon_mode']}/{r['fixing_lag']}")
     for r, src in keep[:25]:
         print(f"    ОСТАВЛЕНА {r['isin']} {str(r['short_name'])[:18]:20} "
               f"БД={r['base']}/{r['margin_bps']}  Cbonds={src['base']}/{src['margin_bps']}")

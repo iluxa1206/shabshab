@@ -112,6 +112,27 @@ def drop_stale_honest(isin: str, engine_ver: int) -> int:
         return cur.rowcount or 0
 
 
+def drop_honest_dates(isin: str, dates: set) -> int:
+    """Сносит honest-строки бумаги ЗА ПЕРЕЧИСЛЕННЫЕ ДАТЫ.
+
+    Нужен пересчёту после бампа версии: drop_stale_honest сносил весь стейл
+    АВАНСОМ, и при сбое MOEX (honest_spread_series кидает «история за окно
+    пуста») первый же заход на график стирал год истории, не записав ничего
+    взамен. Здесь удаляем ровно те даты, для которых замена УЖЕ посчитана —
+    непосредственно перед вставкой (см. backdate.ensure_honest_backfill).
+    Просто «перенести снос в конец» нельзя: upsert_honest для существующих дат
+    делает UPDATE ... WHERE y_idx IS NULL, поэтому стейл-строку с непустым
+    y_idx он бы не обновил и не вставил."""
+    if not dates:
+        return 0
+    n = 0
+    with _lock, _connect() as c:
+        for d in dates:
+            n += c.execute("DELETE FROM spread_daily WHERE isin=? AND date=? "
+                           "AND src='honest'", (isin, d)).rowcount or 0
+    return n
+
+
 def drop_untrusted(isin: str, dates: set) -> int:
     """Удаляет легаси-строки БЕЗ src за перечисленные даты. Нужно для дат, по
     которым честный движок посчитать не смог (выходные сессии: свеча есть, а

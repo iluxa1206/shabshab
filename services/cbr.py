@@ -14,6 +14,7 @@ RUONIA (текущая с cbr.ru + историческая база из сид
 from __future__ import annotations
 import os
 import json
+import time
 import glob
 import threading
 import datetime as _dt
@@ -172,7 +173,9 @@ def _save_cache(ks: List[Tuple[date, float]], ruonia_live: List[Tuple[date, floa
         pass
 
 
-_mem = {"date": None, "ks": None, "ruonia": None}
+_mem = {"date": None, "ks": None, "ruonia": None, "ts": 0.0}
+# Пустой фетч КС перепробуем не чаще этого — см. _mem_fresh.
+_RETRY_SEC = 900
 _refresh_lock = threading.Lock()
 
 
@@ -216,15 +219,31 @@ def _refresh() -> None:
     без лока конкурентные вызовы при протухшем кэше дублировали фетч ЦБ и
     гонялись за _mem."""
     today = date.today().isoformat()
-    if _mem["date"] == today and _mem["ks"] is not None:
+    if _mem_fresh(today):
         return
     with _refresh_lock:
+        if _mem_fresh(today):          # re-check под локом
+            return
         _refresh_locked(today)
 
 
+def _mem_fresh(today: str) -> bool:
+    """Память годна на сегодня.
+
+    ПУСТАЯ история КС — транзиентный сбой ЦБ, а не «ставок нет». Проверка
+    `is not None` пиннила `[]` до полуночи: ks_rate_at() отдавал None для ВСЕХ
+    фиксингов KEYRATE весь день. Перепробуем — но НЕ на каждый вызов: _refresh()
+    зовётся из _index_provider на каждую бумагу и из ks_rate_at на каждый купон,
+    голый ретрай = тысячи requests(timeout=20) под глобальным локом (фриз расчёта
+    + бан на cbr.ru). Тот же приём, что market_data.py:258."""
+    if _mem["date"] != today or _mem["ks"] is None:
+        return False
+    if _mem["ks"]:
+        return True
+    return (time.time() - (_mem.get("ts") or 0.0)) < _RETRY_SEC
+
+
 def _refresh_locked(today: str) -> None:
-    if _mem["date"] == today and _mem["ks"] is not None:   # re-check под локом
-        return
     cache = _load_cache()
     seed = _load_seed()
     ks: List[Tuple[date, float]] = []
@@ -253,7 +272,28 @@ def _refresh_locked(today: str) -> None:
         ruonia_live = [(date.fromisoformat(d), v) for d, v in cache["ruonia_live"]]
         logger.warning("WARNING: CBR RUONIA stale cache fallback")
 
+    # НЕ ЗАТИРАТЬ НЕПУСТОЙ КЭШ КУЦЫМ ФЕТЧЕМ. _save_cache пишет файл целиком, и
+    # фолбэк _fetch_ruonia_current_live (~2 точки вместо сотен) сносил историю
+    # НАСОВСЕМ: после этого даже перезапуск не помогал, а в мёрже появлялась
+    # многомесячная дыра seed_end↔live — ровно то, от чего защищает grace.
+    # У КС порог len(ks) < 100 выше по коду, у RUONIA его не было.
     if ks or ruonia_live:
+        _cached_ruonia = cache.get("ruonia_live") or []
+        if len(ruonia_live) < len(_cached_ruonia):
+            logger.warning("CBR RUONIA: фетч куцый (%d точек против %d в кэше) — "
+                           "подмешиваем кэш", len(ruonia_live), len(_cached_ruonia))
+            try:
+                _cached_pts = [(date.fromisoformat(d), v) for d, v in _cached_ruonia]
+            except (TypeError, ValueError):
+                logger.warning("CBR RUONIA: кэш битый — игнорируем")
+                _cached_pts = []
+            # ПОДМЕШИВАЕМ, а не выбираем: кэш едет и в файл, и в мёрж ниже.
+            # Сохранить кэш, но считать на куцем ruonia_live — значит оставить
+            # дыру seed_end↔live в ПАМЯТИ на весь день, а она травит окна
+            # фиксинга всех RUONIA-флоатеров стейл-ставкой. Свежая точка бьёт
+            # кэшевую при совпадении даты.
+            if _cached_pts:
+                ruonia_live = sorted({**dict(_cached_pts), **dict(ruonia_live)}.items())
         _save_cache(ks, ruonia_live)
 
     # RUONIA = сид (2010→) + выгрузка ЦБ RC_F (2024→, авторитетно) + live current,
@@ -266,7 +306,7 @@ def _refresh_locked(today: str) -> None:
     ruonia = sorted(merged.items())
     _warn_on_gap(ruonia)
 
-    _mem.update({"date": today, "ks": ks, "ruonia": ruonia})
+    _mem.update({"date": today, "ks": ks, "ruonia": ruonia, "ts": time.time()})
 
 
 def ks_history() -> List[Tuple[date, float]]:

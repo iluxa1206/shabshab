@@ -188,11 +188,62 @@ def _coerce(field: str, val):
     return str(val).strip()
 
 
+def _validate_ranges(params: dict) -> None:
+    """Диапазоны полей для xlsx-пути. Бросает ValueError с внятным текстом.
+
+    Ручной POST гоняет параметры через InstrumentParams, а импорт шёл мимо неё:
+    ячейка «2,5» (проценты вместо базисных пунктов) писалась как 2 bps и лочилась,
+    а maturity_date в прошлом заставляла следующий синк деактивировать бумагу
+    навсегда. Границы берём из самой модели, чтобы источник истины был один."""
+    from datetime import date as _date
+    from pydantic import ValidationError
+    try:
+        InstrumentParams(**params)
+    except ValidationError as e:
+        bad = "; ".join(f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}"
+                        for err in e.errors())
+        raise ValueError(bad)
+    # Модель диапазон дат не знает: погашение в прошлом — это retire_matured
+    # на следующем синке, то есть тихое исчезновение бумаги из универса.
+    mat = params.get("maturity_date")
+    if mat and mat <= _date.today().isoformat():
+        raise ValueError(f"maturity_date {mat} не в будущем — бумага будет "
+                         "деактивирована следующим синком")
+    # margin_bps в модели не ограничена; ловим типовую ошибку «проценты вместо bps»
+    mb = params.get("margin_bps")
+    if mb is not None and not (-5000 <= int(mb) <= 20000):
+        raise ValueError(f"margin_bps {mb} вне −5000..20000 (это базисные пункты, не %)")
+
+
+def _same_as_registry(cur: dict, field: str, new) -> bool:
+    """Значение из xlsx совпадает с тем, что уже лежит в реестре.
+
+    Нужно, чтобы round-trip «выгрузил → поправил одну ячейку → залил» НЕ звал
+    set_manual на каждую строку. set_manual — это не «записать значение», а
+    «объявить строку ручной»: он ставит manual_locked=1, source='manual' и
+    reviewed=1. Экспорт заполняет все поля, поэтому один такой round-trip
+    заморозил 538 строк из 1162 — sync перестал обновлять у них номинал,
+    погашение и маржу, а очередь ревью вычистилась молча.
+
+    Пустая ячейка сюда не доходит: _coerce отдаёт None, и поле в params не
+    попадает. Намеренную очистку мы этим не теряем — импорт её и не умел,
+    для этого есть reset_manual."""
+    old = cur.get(field)
+    if old is None:
+        return False                      # заполнение пропуска — это правка
+    if field in _XLSX_INT or field in _XLSX_FLOAT:
+        try:
+            return abs(float(old) - float(new)) <= 1e-9
+        except (TypeError, ValueError):
+            return False
+    return str(old).strip() == str(new).strip()
+
+
 @router.post("/catalog/import", tags=["Instruments"])
 async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(require_admin)):
-    """Импорт параметров из xlsx (шаблон из /catalog/export). Для каждой строки с
-    ISIN пишем непустые редактируемые поля через ручной слой (lock — sync не затрёт).
-    Возвращает сводку {updated, skipped, errors}."""
+    """Импорт параметров из xlsx (шаблон из /catalog/export). Пишем через ручной
+    слой (lock — sync не затрёт) ТОЛЬКО РЕАЛЬНО ИЗМЕНЁННЫЕ поля: см. _same_as_registry.
+    Возвращает сводку {updated, unchanged, skipped, errors}."""
     import openpyxl
     raw = await file.read()
     try:
@@ -209,7 +260,7 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
     if "isin" not in idx:
         raise HTTPException(status_code=422, detail="Нет колонки ISIN")
 
-    updated, skipped, errors = 0, 0, []
+    updated, skipped, unchanged, errors = 0, 0, 0, []
     for rn, row in enumerate(rows, start=2):
         raw_isin = row[idx["isin"]] if idx["isin"] < len(row) else None
         isin = (str(raw_isin).strip().upper() if raw_isin else "")
@@ -230,8 +281,12 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
             errors.append(f"строка {rn} ({isin}): числовое поле не распознано")
             continue
         # валидация enum-полей (как в ручном POST)
-        if params.get("base") and params["base"] not in ("KEYRATE", "RUONIA", "FIXED"):
-            errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED")
+        # EXOTIC — легальное значение реестра (_FLOAT_BASES_REG), и экспорт его
+        # выгружает. Без него round-trip отбрасывал такую строку ЦЕЛИКОМ вместе
+        # с правками cap/floor, а errors[:50] прятал хвост списка.
+        if params.get("base") and params["base"] not in ("KEYRATE", "RUONIA",
+                                                         "FIXED", "EXOTIC"):
+            errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED|EXOTIC")
             continue
         if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev", "month_start"):
             errors.append(f"строка {rn} ({isin}): coupon_mode ∈ average|month_start "
@@ -261,13 +316,31 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
         if not params:
             skipped += 1
             continue
+        # ТОЛЬКО РАЗЛИЧАЮЩИЕСЯ ПОЛЯ — иначе заморозим строку, где юзер ничего
+        # не менял (см. _same_as_registry). Сравниваем ПОСЛЕ нормализации
+        # легаси выше, иначе старый шаблон вечно «различается».
+        cur = reg.get(isin)
+        if cur is not None:
+            params = {k: v for k, v in params.items()
+                      if not _same_as_registry(cur, k, v)}
+            if not params:
+                unchanged += 1
+                continue
+        # ДИАПАЗОНЫ. Ручной POST гоняет их через InstrumentParams, а xlsx-путь
+        # шёл мимо: ячейка «2,5» (проценты вместо bps) писалась как 2 bps и
+        # лочилась, а maturity_date в прошлом убивала бумагу следующим синком.
+        try:
+            _validate_ranges(params)
+        except ValueError as e:
+            errors.append(f"строка {rn} ({isin}): {e}")
+            continue
         try:
             reg.set_manual(isin, params, lock=True)
             updated += 1
         except Exception as e:
             errors.append(f"строка {rn} ({isin}): {e}")
-    return {"updated": updated, "skipped": skipped, "errors": errors[:50],
-            "error_count": len(errors)}
+    return {"updated": updated, "unchanged": unchanged, "skipped": skipped,
+            "errors": errors[:50], "error_count": len(errors)}
 
 
 class FormulaIn(BaseModel):

@@ -247,6 +247,9 @@ def _with_maturity(rows: List[dict]) -> List[dict]:
 
 
 def events_for_user(user_email: str, limit: int = EVENTS_LIMIT) -> List[dict]:
+    # Зовётся и мимо роута (бот, api/routes/tg.py), поэтому границы дублируем:
+    # отрицательный limit в SQLite снимает лимит целиком.
+    limit = max(1, min(int(limit or EVENTS_LIMIT), 500))
     with _connect() as c:
         rows = c.execute(
             "SELECT e.*, f.name AS filter_name, f.kind AS filter_kind, "

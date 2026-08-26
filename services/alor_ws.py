@@ -170,6 +170,7 @@ async def alor_orderbook_ws():
                     last_reconcile = 0.0
                     last_trade_push: dict[str, float] = {}
                     _unknown = [0]      # счётчик данных с чужим guid (см. ниже)
+                    _bad = [0]          # счётчик битых сообщений (троттл лога)
 
                     async def _sub(op: str, isin: str, prefix: str, extra: dict) -> str:
                         nonlocal seq
@@ -267,56 +268,75 @@ async def alor_orderbook_ws():
                             continue
                         chan, isin = guid_map[guid]
 
-                        if chan == "ob":
-                            sub = subs.get(isin)
-                            if not sub:
-                                continue
-                            if not manager.orderbook_subscriptions.get(isin):
-                                continue
-                            await _ensure_ctx(sub, isin)
-                            out = {
-                                "orderbook": {"bids": _levels(sub, data.get("bids")),
-                                              "asks": _levels(sub, data.get("asks"))},
-                                # лестница едет рядом: режим «все уровни» в карточке
-                                # раньше гасил подписку и падал на поллинг 3 с
-                                "ladder": _ladder(sub, data.get("bids"), data.get("asks")),
-                                "pricing_status": "SUCCESS", "warnings": [], "src": "ws",
-                            }
-                            await manager.broadcast_orderbook(isin, out)
-                            # первый пуш по бумаге — в лог: дальше молчим, иначе
-                            # при троттле 800 мс лог зальёт всё
-                            if not getattr(sub, "_logged", False):
-                                sub._logged = True
-                                logger.info("alor_ws: стакан %s пошёл в эфир "
-                                            "(уровней %d, лестница %s)", isin,
-                                            len(out["orderbook"]["asks"] or []),
-                                            "есть" if out.get("ladder") else "нет")
-                        elif chan == "t":
-                            _seed_price(isin, data.get("price"))
-                            # рублёвый объём считаем и здесь: тик избранной бумаги
-                            # приходит и на этот сокет, и на сокет trades_stream —
-                            # кто первый, того и агрегат (второй уйдёт как дубль по
-                            # trade_id). Без value оборот бы терялся на этой ветке.
-                            from services.trades_stream import _tick_value
-                            live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
-                                                  tid=data.get("id"),
-                                                  ts=str(data.get("time") or "") or None,
-                                                  value=_tick_value(isin, data.get("price"),
-                                                                    data.get("qty")))
-                            # сделка двигает и цену, и средневзвес; при подписке Alor
-                            # отдаёт пачку исторических сделок — троттл не даёт ей
-                            # превратиться в череду пушей
-                            if now - last_trade_push.get(isin, 0.0) >= 1.0:
-                                last_trade_push[isin] = now
-                                out = {"src": "ws"}
-                                if data.get("price") is not None:
-                                    out["last_price_pct"] = data["price"]
-                                v = live_quotes.get(isin)
-                                if v:
-                                    out["vwap_pct"] = v["vwap_pct"]
-                                    out["vwap_volume"] = v["volume"]
-                                    out["val_today"] = v["val_today"]
-                                await manager.broadcast_market_data(isin, out)
+                        try:
+                            if chan == "ob":
+                                sub = subs.get(isin)
+                                if not sub:
+                                    continue
+                                if not manager.orderbook_subscriptions.get(isin):
+                                    continue
+                                await _ensure_ctx(sub, isin)
+                                out = {
+                                    "orderbook": {"bids": _levels(sub, data.get("bids")),
+                                                  "asks": _levels(sub, data.get("asks"))},
+                                    # лестница едет рядом: режим «все уровни» в карточке
+                                    # раньше гасил подписку и падал на поллинг 3 с
+                                    "ladder": _ladder(sub, data.get("bids"), data.get("asks")),
+                                    "pricing_status": "SUCCESS", "warnings": [], "src": "ws",
+                                }
+                                await manager.broadcast_orderbook(isin, out)
+                                # первый пуш по бумаге — в лог: дальше молчим, иначе
+                                # при троттле 800 мс лог зальёт всё
+                                if not getattr(sub, "_logged", False):
+                                    sub._logged = True
+                                    logger.info("alor_ws: стакан %s пошёл в эфир "
+                                                "(уровней %d, лестница %s)", isin,
+                                                len(out["orderbook"]["asks"] or []),
+                                                "есть" if out.get("ladder") else "нет")
+                            elif chan == "t":
+                                _seed_price(isin, data.get("price"))
+                                # рублёвый объём считаем и здесь: тик избранной бумаги
+                                # приходит и на этот сокет, и на сокет trades_stream —
+                                # кто первый, того и агрегат (второй уйдёт как дубль по
+                                # trade_id). Без value оборот бы терялся на этой ветке.
+                                from services.trades_stream import _tick_value
+                                # _tick_value отдаёт КОРТЕЖ (объём ₽, курс известен).
+                                # Флаг нужен только очереди звонков (_alert_rows):
+                                # в дневной агрегат объём кладём безусловно — ровно
+                                # так же делает trades_stream._on_trade.
+                                val, _fx_ok = _tick_value(isin, data.get("price"),
+                                                          data.get("qty"))
+                                live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
+                                                      tid=data.get("id"),
+                                                      ts=str(data.get("time") or "") or None,
+                                                      value=val)
+                                # сделка двигает и цену, и средневзвес; при подписке Alor
+                                # отдаёт пачку исторических сделок — троттл не даёт ей
+                                # превратиться в череду пушей
+                                if now - last_trade_push.get(isin, 0.0) >= 1.0:
+                                    last_trade_push[isin] = now
+                                    out = {"src": "ws"}
+                                    if data.get("price") is not None:
+                                        out["last_price_pct"] = data["price"]
+                                    v = live_quotes.get(isin)
+                                    if v:
+                                        out["vwap_pct"] = v["vwap_pct"]
+                                        out["vwap_volume"] = v["volume"]
+                                        out["val_today"] = v["val_today"]
+                                    await manager.broadcast_market_data(isin, out)
+                        except Exception as e:
+                            # ОДНО БИТОЕ СООБЩЕНИЕ НЕ РВЁТ СЕАНС. Внешний except
+                            # накрывает весь while, поэтому ошибка в ветке сделок
+                            # уносила и подписки на СТАКАНЫ, а backoff при входе
+                            # сбрасывается в 1 — выходил шторм реконнектов на
+                            # КАЖДОМ тике (так жил баг с кортежем _tick_value).
+                            # Логируем ПО СЧЁТЧИКУ (как _unknown): системная
+                            # ошибка бьёт на каждом тике, и шторм реконнектов
+                            # сменился бы штормом в логе.
+                            _bad[0] += 1
+                            if _bad[0] in (1, 10, 100) or _bad[0] % 1000 == 0:
+                                logger.warning("alor_ws: сообщение %s %s: %s "
+                                               "(всего сбоев %d)", chan, isin, e, _bad[0])
         except Exception as e:
             logger.warning(f"alor_ws error: {e}")
         await asyncio.sleep(backoff)
