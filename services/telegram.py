@@ -145,6 +145,37 @@ async def send_photo(chat_id: int, png: bytes, caption: str = "", *,
                       files={"photo": ("orderbook.png", png, "image/png")})
 
 
+async def send_media_group(chat_id: int, items: list, *,
+                           parse_mode: Optional[str] = "HTML",
+                           disable_notification: bool = False) -> Optional[dict]:
+    """Альбом картинок одним сообщением. items: [(имя_файла, png, подпись)].
+
+    Подпись живёт у ПЕРВОГО элемента — Telegram показывает её под альбомом как
+    текст сообщения; подписи у остальных видны только при открытии картинки,
+    поэтому туда идут короткие заголовки сюжетов.
+
+    Файлы уходят multipart и цепляются к описанию через attach://<имя> — иначе
+    Bot API принимает в media только уже загруженные file_id или URL."""
+    media, files = [], {}
+    for i, (name, png, caption) in enumerate(items[:10]):   # лимит альбома
+        key = f"f{i}"
+        entry = {"type": "photo", "media": f"attach://{key}"}
+        if caption:
+            entry["caption"] = caption
+            if parse_mode:
+                entry["parse_mode"] = parse_mode
+        media.append(entry)
+        files[key] = (name, png, "image/png")
+    if not media:
+        return None
+    import json
+    payload = {"chat_id": chat_id, "media": json.dumps(media, ensure_ascii=False),
+               "disable_notification": str(bool(disable_notification)).lower()}
+    # альбом из четырёх картинок собирается дольше одного сообщения — таймаут
+    # шире дефолтного, иначе ретрай шлёт второй такой же альбом
+    return await call("sendMediaGroup", payload, files=files, timeout=90.0)
+
+
 async def set_webhook(url: str, secret_token: str) -> Optional[dict]:
     return await call("setWebhook", {
         "url": url, "secret_token": secret_token,

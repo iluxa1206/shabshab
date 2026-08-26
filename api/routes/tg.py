@@ -5,8 +5,10 @@
 секрет-заголовок X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) плюс
 статус привязки в tg_users. Команды бота — только чтение и пауза доставки:
   /start — заявка на доступ, /signals — последние события,
+  /digest — разбор дня альбомом картинок,
   /mute, /unmute, /status, /custom, /help
 """
+import asyncio
 import hmac
 import html
 import logging
@@ -25,10 +27,14 @@ router = APIRouter()
 
 _SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/")
 
+# Фоновые задачи команд (см. /digest): держим ссылки, иначе GC убьёт их молча.
+_bg_tasks: set = set()
+
 _HELP = (
     "<b>Что умеет бот</b>\n"
     "Сигналы рынка настраиваются на сайте — сюда приходят их копии.\n\n"
     "/signals — последние сигналы\n"
+    "/digest — разбор дня: движения, обороты, кривая, выплаты\n"
     "/custom — свои эмодзи для маркеров\n"
     "/chats — каналы для доставки (перешлите сюда пост из канала)\n"
     "/mute, /unmute — пауза доставки\n"
@@ -194,6 +200,18 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
             return ("Адресат снят — фильтры на нём вернутся в личку."
                     if ok else "Такого адресата нет.")
         return _targets_text(email)
+
+    if text.startswith("/digest"):
+        # Ручной вызов вечернего альбома: тем же составом, что уходит в 19:30,
+        # но ТОЛЬКО в свой чат — команда для «посмотреть сейчас», а не рассылка.
+        from services import tg_digest
+        # Альбом собирается секунды (четыре рендера + календарь), а ответить
+        # на команду надо сразу — поэтому фоном. Ссылку держим в множестве:
+        # без неё сборщик мусора вправе убить задачу на полпути.
+        t = asyncio.create_task(tg_digest.send_digest([chat_id]))
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
+        return "📊 Собираю разбор дня — альбом придёт следом."
 
     if text.startswith("/status"):
         u = tg_users.get(uid) or {}

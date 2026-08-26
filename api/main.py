@@ -993,6 +993,9 @@ async def lifespan(app: FastAPI):
     depth_task = asyncio.create_task(depth_poller())
     archive_task = asyncio.create_task(archive_maintenance())
     blocks_task = asyncio.create_task(block_trades_worker())
+    # вечерний «разбор дня» альбомом картинок (services/tg_digest)
+    from services.tg_digest import digest_worker
+    digest_task = asyncio.create_task(digest_worker())
     quotes_task = asyncio.create_task(quotes_poller())
     from services.universe_stream import universe_stream_pool, metrics_worker
     from services.trades_stream import trades_stream_pool
@@ -1041,6 +1044,7 @@ async def lifespan(app: FastAPI):
     depth_task.cancel()
     archive_task.cancel()
     blocks_task.cancel()
+    digest_task.cancel()
     from services import telegram as _tg
     await _tg.aclose()          # keepalive-пул Bot API живёт между вызовами
 

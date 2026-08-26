@@ -13,6 +13,10 @@ requests~=2.32.3
 pandas
 beautifulsoup4
 openpyxl
+# Картинки «разбора дня» в Telegram (services/charts_png): рисуем сами
+# примитивами. matplotlib не берём — на проде уже ловили OOM на 768 МиБ,
+# а его импорт стоит десятки мегабайт RSS ради тех же четырёх сюжетов.
+Pillow~=11.0
 pytest
 # без него @pytest.mark.asyncio-тесты не запускаются вовсе (pytest валит их как
 # «async def not natively supported») — 6 тестов has_call молча не выполнялись

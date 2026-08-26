@@ -236,6 +236,11 @@ cd frontend-react && npm install && npm run dev
   как канал доставки: клиент Bot API, привязка чата к веб-аккаунту (заявка на `/start` →
   одобрение админом на сайте), очередь алертов + буфер сигналов, PNG-рендер стакана (Pillow).
   Своей настройки у бота нет — алерты и фильтры заводятся на сайте.
+* `tg_digest.py` / `charts_png.py` — вечерний «разбор дня» (19:30 МСК, `DIGEST_AT`):
+  альбом из четырёх PNG (движения премии, обороты, своп-кривая КС, выплаты вперёд)
+  одним `sendMediaGroup`. Картинки рисуются примитивами Pillow (`Canvas`, `movers`,
+  `turnover`, `curve`, `payments`) — без matplotlib и браузера; в контейнере нужен
+  `fonts-dejavu-core`. Ручной вызов — команда бота `/digest` (только в свой чат).
 * `progress.py` — реестр фоновых задач для страницы СТАТУС: `start/advance/finish/snapshot`.
 * `portfolio_db.init_db()` — схема `data/portfolio.db` (идемпотентно + аддитивные миграции).
 * `paths.py` — `cache_path(name)`, `atomic_write_json(path, obj)`.

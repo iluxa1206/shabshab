@@ -19,8 +19,11 @@ WORKDIR /app
 # фикс не зависел от того, что окажется в базовом образе.
 # Знак по POSIX инвертирован: Etc/GMT-3 == UTC+3 == МСК.
 ENV TZ=Etc/GMT-3
+# fonts-dejavu-core — шрифт для картинок Telegram-дайджеста (кириллица + знак
+# рубля). Без него Pillow отдаёт встроенный битмап, и подписи становятся
+# квадратами; см. services/charts_png.fonts_ok.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata \
+    && apt-get install -y --no-install-recommends tzdata fonts-dejavu-core \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*

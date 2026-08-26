@@ -301,6 +301,94 @@ def _formula(m: dict) -> str:
     return out
 
 
+# ── Спарклайн истории Y-IDX ────────────────────────────────────────────────
+# Сигнал говорит, ГДЕ спред сейчас, но не говорит, откуда он пришёл: «180 бп»
+# у бумаги, простоявшей неделю на 178, и у той, что за день уехала со 120, —
+# разные новости. Восемь юникод-блоков дают траекторию прямо в строке: без
+# картинки (рендер плюс отдельное сообщение) и без задержки на её сборку.
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+# Точек в спарклайне. Восемь часов — рабочий день: видно, что бумага делала с
+# утра, а хвост остаётся короче имени выпуска. Многострочный график по тем же
+# данным пробовали и сняли: он грузит сообщение, ради которого открывают чат.
+SPARK_POINTS = int(os.getenv("TG_SPARK_POINTS", "8"))
+SPARK_DAYS = int(os.getenv("TG_SPARK_DAYS", "10"))
+SPARK_MIN_POINTS = 3          # по двум точкам рисовать нечего — это стрелка
+SPARK_CACHE_SEC = float(os.getenv("TG_SPARK_CACHE_SEC", "300"))
+# isin → (монотонное время, (точки, подпись окна)). Часовой бар обновляется раз
+# в час (см. hourly_bars_worker), поэтому пять минут кэша не старят историю, но
+# снимают запрос к SQLite с каждого сообщения серии.
+_spark_cache: dict = {}
+
+
+def _spark(values: List[float]) -> str:
+    """Ряд чисел → восемь уровней блоков. Шкала СВОЯ на каждый ряд (min…max):
+    сигнал про движение конкретной бумаги, и общая шкала на весь рынок
+    расплющила бы её колебания в прямую."""
+    if len(values) < SPARK_MIN_POINTS:
+        return ""
+    lo, hi = min(values), max(values)
+    rng = hi - lo
+    # Ряд «стоял на месте» рисуем ровной серединой, а не мусором от деления
+    # на ноль: плоская линия — это тоже ответ.
+    if rng < 1.0:
+        return _SPARK_BLOCKS[len(_SPARK_BLOCKS) // 2] * len(values)
+    step = len(_SPARK_BLOCKS) - 1
+    return "".join(_SPARK_BLOCKS[int(round((v - lo) / rng * step))] for v in values)
+
+
+def _spark_points(isin: str) -> tuple:
+    """([(подпись точки, Y-IDX)], единица окна). Сначала часы: сигнал сработал
+    внутри сессии, и час — её собственный масштаб. Если часов мало (утро,
+    редкая бумага), отступаем на дни, чтобы вместо пустоты дать хоть какой-то
+    контекст."""
+    from services import bars as bars_svc
+    frm = (datetime.now(_MSK) - timedelta(days=5)).strftime("%Y-%m-%d")
+    rows = bars_svc.read_bars(isin, frm=frm, limit=300)
+    pts = [(str(r["ts"])[11:16], r["y_close_bps"]) for r in rows
+           if r.get("y_close_bps") is not None]
+    if len(pts) >= SPARK_MIN_POINTS:
+        return pts[-SPARK_POINTS:], "ч"
+    frm_d = (datetime.now(_MSK) - timedelta(days=SPARK_DAYS * 3)).strftime("%Y-%m-%d")
+    drows = bars_svc.read_daily(isin, frm=frm_d)
+    dpts = [(str(r["date"])[8:10] + "." + str(r["date"])[5:7], r["y_idx_close_bps"])
+            for r in drows if r.get("y_idx_close_bps") is not None]
+    return dpts[-SPARK_POINTS:], "д"
+
+
+def _history(m: dict) -> tuple:
+    """Кэшированная история бумаги: (точки, единица окна). Пусто — истории нет
+    (новый выпуск, бумага без сделок) или база недоступна: рисовать шум хуже,
+    чем промолчать, и сигнал уходит без графика."""
+    isin = m.get("isin")
+    if not isin:
+        return [], ""
+    now = time.monotonic()
+    hit = _spark_cache.get(isin)
+    if hit and now - hit[0] < SPARK_CACHE_SEC:
+        return hit[1]
+    out: tuple = ([], "")
+    try:
+        out = _spark_points(str(isin))
+    except Exception as e:
+        # История — украшение сообщения, а не его смысл
+        logger.debug("tg_notify history error (%s): %s", isin, e)
+    _spark_cache[isin] = (now, out)
+    return out
+
+
+def _spark_line(m: dict) -> str:
+    """Кусок строки шапки: «▁▂▄▆█ +22 8ч» — траектория, сдвиг от её начала и
+    длина окна. Дельта числом, потому что блоки дают форму, но не масштаб:
+    одинаковая лесенка бывает и на пяти бп, и на пятидесяти."""
+    pts, unit = _history(m)
+    vals = [v for _t, v in pts]
+    bars = _spark(vals)
+    if not bars:
+        return ""
+    return (f"<code>{bars}</code> {vals[-1] - vals[0]:+.0f} "
+            f"<i>{len(vals)}{unit}</i>")
+
+
 def _fmt_threshold(v: Optional[float]) -> str:
     """Порог объёма из настроек фильтра: «>1м». Он в строке нужен, чтобы
     сравнивать фактический объём с тем, на что подписан — без него «8,2м» не
@@ -323,8 +411,12 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
     # Порядок шапки: спред → выпуск со сроком. Спред первым, потому что по
     # нему решают, стоит ли читать дальше; срок в скобках при имени, потому
     # что «180 бп» у годовой бумаги и у пятилетней — разные новости.
+    # Спарклайн приклеен К САМОМУ спреду, без точки-разделителя: это не
+    # отдельный параметр строки, а его собственный хвост истории.
+    spark = _spark_line(m)
     if m.get("val_bps") is not None:
-        head.append(f"<b>{m['val_bps']:.0f} бп</b>")
+        head.append(f"<b>{m['val_bps']:.0f} бп</b>" + (f" {spark}" if spark else ""))
+        spark = ""
     years = _fmt_years(m.get("years"))
     head.append(_issue_link(m) + (f" ({years})" if years else ""))
 
@@ -368,6 +460,11 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
         want = _fmt_threshold(m.get("want_money_rub"))
         if want:
             foot.append(want)
+
+    # У сделки спреда в шапке может не быть (лента идёт по всему рынку, а не
+    # только по юниверсу) — тогда история встаёт в детали, к формуле купона
+    if spark:
+        sub.insert(0, spark)
 
     # ISIN замыкает детали: его копируют целиком, и в конце строки тап по нему
     # не спорит с соседними числами
@@ -510,6 +607,8 @@ def _signal_text(buf: dict) -> str:
         # цены отбита пустой строкой — иначе спред, выпуск и цифры сливаются
         # в одну простыню, и глазу негде остановиться.
         top = "\n\n".join(p for p in (head, px) if p)
+        # график динамики — ПОСЛЕДНИМ блоком тела: под стаканом и под строкой
+        # параметров, перед подписью алерта
         body = "\n".join(p for p in (top, book, details) if p)
     else:
         # набор одинаковых сделок (см. _group и _trade_key) — одна карточка с
