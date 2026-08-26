@@ -187,6 +187,14 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const fillFor = (side, price) => sigFill[`${side}:${price}`]
     || (volFill[`${side}:${price}`] ? { ...volFill[`${side}:${price}`], vol: true } : null);
 
+  // Легенда подсветки: рисуем только те строки, которые реально сейчас видны в
+  // стакане — иначе стол читает про режимы, которых на экране нет.
+  const hasSig = Object.keys(sigFill).length > 0;
+  // сигнал перебивает фильтр на общем уровне → зелёная строка легенды нужна,
+  // только если хоть один уровень фильтра остался неперекрытым
+  const hasVol = Object.keys(volFill).some((k) => !sigFill[k]);
+  const hasPart = [...Object.values(sigFill), ...Object.values(volFill)].some((f) => f.partial);
+
   return (
     <div className="ob-panel-inner">
       <div className="ob-head">
@@ -245,6 +253,32 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
         )}
       </div>
 
+      {(hasSig || hasVol) && (
+        <div className="ob-legend">
+          {hasSig && (
+            <span className="ob-lg-item">
+              <i className="ob-lg-sw ob-lg-sig" />
+              набор сигнала{sigPx > 0 ? " (крупная заявка)" : sigVol > 0 ? ` — ${fmt.mln(sigVol)} млн ₽` : ""}
+            </span>
+          )}
+          {hasVol && (
+            <span className="ob-lg-item">
+              <i className="ob-lg-sw ob-lg-vol" />
+              набор фильтра по объёму{volBid > 0 || volAsk > 0
+                ? ` — ${[volBid > 0 ? `бид ${fmt.mln(volBid)}` : null,
+                         volAsk > 0 ? `оффер ${fmt.mln(volAsk)}` : null]
+                        .filter(Boolean).join(" · ")} млн ₽`
+                : ""}
+            </span>
+          )}
+          {hasPart && (
+            <span className="ob-lg-item">
+              <i className="ob-lg-sw ob-lg-part" />
+              уровень взят частично (тикет добран не весь объём уровня)
+            </span>
+          )}
+        </div>
+      )}
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
       <div className="ob-note">{isFixed ? "YTM/G-спред" : "R-spread/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
     </div>
