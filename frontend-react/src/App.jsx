@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
+import { mergeStreamedQuote } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume, yIdxAt } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
@@ -498,9 +499,17 @@ function Dashboard() {
     setBonds((prev) => {
       let touched = false;
       const next = prev.map((b) => {
-        if (streamed.has(b.isin)) return b;
         const q = byIsin.get(b.isin);
         if (!q) return b;
+        // Бумага на стриме: цены у неё свои (снапшот MOEX откатил бы их назад),
+        // но РАСЧЁТНЫЕ метрики приходят только этим путём — см. quotesMerge.js.
+        // Раньше строка отсекалась целиком, и у ликвидной бумаги без сделок
+        // R-spread застревал на значении, приехавшем при загрузке страницы.
+        if (streamed.has(b.isin)) {
+          const m = mergeStreamedQuote(b, q);
+          if (m !== b) touched = true;
+          return m;
+        }
         const same = (q.last == null || q.last === b.last_price_pct)
           && (q.bid == null || q.bid === b.bid_price_pct)
           && (q.ask == null || q.ask === b.ask_price_pct)
