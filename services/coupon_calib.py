@@ -523,27 +523,46 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
     if idx is None:
         idx = _index(base)
     spec = None
-    if len(rows) >= 2 and idx[0]:
-        best = None  # (err, mode, lag)
+    if len(rows) >= _CALIB_MIN_COUPONS and idx[0]:
+        best = None            # (err, mode, lag, span)
+        best_by_mode: dict = {}
         for lag in range(0, _MAX_LAG + 1):
             e_pt, e_av, n = 0.0, 0.0, 0
+            lo = hi = None
             for s, e, obs in rows:
                 kp = _rate_at(idx, s - timedelta(days=lag))
                 ka = _rate_avg(idx, s, e, lag)
                 if kp is None or ka is None:
                     continue
+                lo = kp if lo is None else min(lo, kp)
+                hi = kp if hi is None else max(hi, kp)
                 e_pt += abs(kp - obs)
                 e_av += abs(ka - obs)
                 n += 1
             if not n:
                 continue
+            span = (hi - lo) if (lo is not None and hi is not None) else 0.0
             for mode, err in (("point", e_pt / n), ("average", e_av / n)):
                 if mode not in modes:
                     continue
+                if mode not in best_by_mode or err < best_by_mode[mode][0]:
+                    best_by_mode[mode] = (err, lag, span)
                 if best is None or err < best[0]:
-                    best = (err, mode, lag)
+                    best = (err, mode, lag, span)
         if best and best[0] < _ERR_TOL_PP:
-            spec = {"mode": best[1], "lag": best[2], "err_pp": round(best[0], 4), "base": base}
+            rival = min((v[0] for k, v in best_by_mode.items() if k != best[1]),
+                        default=None)
+            if best[3] < _CALIB_MIN_SPAN_PP:
+                # ИНДЕКС НЕ ДВИГАЛСЯ за наблюдаемые периоды: err=0 означает не
+                # точность, а НЕРАЗЛИЧИМОСТЬ — любой лаг подойдёт одинаково.
+                # Тот же критерий, что у infer_base_margin (_INFER_MIN_SPAN_PP).
+                spec = None
+            elif (len(modes) > 1 and rival is not None
+                  and rival < best[0] * _CALIB_MODE_SEP):
+                spec = None      # режим неоднозначен
+            else:
+                spec = {"mode": best[1], "lag": best[2],
+                        "err_pp": round(best[0], 4), "base": base}
     _cache[ck] = spec
     return spec
 
@@ -662,7 +681,14 @@ def _last_obs_date(spec: dict, start: date, end: date) -> Optional[date]:
     w = spec.get("avg_window_days")
     mode = spec.get("mode")
     if w:                                   # окно [obs(start)−w, obs(start))
-        return _obs_date(start, lag, unit) - timedelta(days=1)
+        hi = _obs_date(start, lag, unit)
+        # W=1 ≡ ТОЧЕЧНЫЙ ФИКСИНГ: единственное наблюдение — САМ obs(start), а не
+        # obs−1. ref_data нормализует ВСЕ point-бумаги в average+W=1 (152 выпуска
+        # в универсе), поэтому голый `hi − 1` сдвигал определённость купона на
+        # день ВПЕРЁД: накануне фиксинга будущий купон объявлялся известным, и
+        # strip_undetermined_values не гасил его эхо-значение. Тот же гард, что
+        # в fixing_probe_date — эти две функции обязаны совпадать.
+        return hi if int(w) <= 1 else hi - timedelta(days=1)
     if mode == "point":
         return _obs_date(start, lag, unit)
     if mode == "month_start":
@@ -754,7 +780,17 @@ def strip_undetermined_values(isin: str, base: str, coupons: list,
         echo = (prev_val is not None and cur is not None
                 and abs(float(cur) - float(prev_val)) < 1e-9)
         future = s is None or s > calc_date
-        kill = (det is False and future) or (det is not True and echo)
+        # НАЧАВШИЙСЯ КУПОН ГАСИМ ПО ЭХУ ТОЛЬКО КОГДА СПЕКА ДОКАЗАЛА, что окно
+        # наблюдения ещё открыто (det is False). При неизвестной спеке
+        # (det is None) равные подряд ставки — норма, а не эхо MOEX: плоская
+        # КС; лесенка «ставка фиксируется на каждые 4 купона подряд» (АРАГОН
+        # об); fix-to-float прелюдия «КС+5% с 13-го купона», где первые 12
+        # купонов контрактно равны (ТАЛК002P04). Значение начавшегося купона
+        # кормит НКД — сносить его по ДОГАДКЕ нельзя.
+        # Для БУДУЩИХ купонов правило сохраняется полностью: там модельный
+        # купон безопаснее эха (у ОФЗ-ПК 29010 оно тянулось до 2034 года).
+        kill = ((det is False and future)
+                or (det is not True and echo and (future or det is False)))
         if kill:
             c = dict(c)
             c["value"] = None
@@ -853,7 +889,19 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
 # (RUONIA/КС держат ставку предыдущего рабочего дня). За порогом история СТЕЙЛ:
 # день с obs > last_hist больше НЕ считается «фактом» — уходит на форвард, иначе
 # стейл-ставка молча текла бы в купон начавшегося периода (аудит F1).
-_HIST_STALE_GRACE_DAYS = 4
+# ГЕЙТ КАЛИБРАТОРА: два купона фитят что угодно, а на плоском индексе «err=0»
+# значит «неразличимо», а не «верно».
+_CALIB_MIN_COUPONS = 3
+_CALIB_MIN_SPAN_PP = 1.0       # размах индекса (ср. _INFER_MIN_SPAN_PP)
+# Отрыв требуем ТОЛЬКО МЕЖДУ РЕЖИМАМИ. По лагам его требовать нельзя: на плоской
+# КС соседние лаги дают ТОЧНО равную ошибку (РОССИУМ3P2: point/2..6 = 0.0833
+# байт в байт), и порог снёс бы все point-бумаги разом.
+_CALIB_MODE_SEP = 3.0
+
+_HIST_STALE_GRACE_DAYS = 4     # ХВОСТ ряда: обычный лаг публикации фиксинга
+_HIST_HOLIDAY_GAP_DAYS = 14    # самая длинная легитимная пауза — новогодняя
+_HIST_HOLIDAY_WORKDAYS = 2     # рабочих дней внутри неё (производств. календарь)
+_GAP_KIND: dict = {}           # (prev, nxt) → праздничная ли пауза; см. _holiday_gap
 
 
 def _realized(idx, obs: date, calc_date: date) -> bool:
@@ -863,7 +911,19 @@ def _realized(idx, obs: date, calc_date: date) -> bool:
     иначе внутренняя ДЫРА в истории (напр. RC_F до 08.07, live с 21.07) была бы
     невидима: bisect тянул бы 08.07 вперёд, а last=21.07 говорил бы «факт».
     Выходной/праздник у края (obs−предыдущий фиксинг ≤ grace) остаётся фактом
-    (carry-forward корректен); настоящая дыра/застой уходит на форвард."""
+    (carry-forward корректен); настоящая дыра/застой уходит на форвард.
+
+    ВНУТРЕННЯЯ ДЫРА (ряд возобновился ПОСЛЕ obs) — это либо ПРАЗДНИК, либо сбой
+    источника, и ПО ДЛИНЕ ОНИ НЕ РАЗЛИЧАЮТСЯ: новогодняя пауза RUONIA 2025-12-29
+    → 2026-01-12 это 14 дней, дыра источника 08.07 → 21.07 — 13. Grace=4 отвергал
+    ОБЕ, и тогда прошлые дни уходили в fwd_pct, а core/forwards клампит
+    lo = max(d, calc_date) — прошлая дата получала СЕГОДНЯШНИЙ форвардный
+    сегмент. Замер: −28 bps купона, каждый Новый год, на всех RUONIA-флоатерах
+    (в бэктесте невидимо: там fwd_pct=None и дни просто выпадают из среднего).
+
+    Различаем по ПРОИЗВОДСТВЕННОМУ КАЛЕНДАРЮ: в праздничной паузе рабочих дней
+    почти нет, в дыре источника их большинство. Проверено на 45 легитимных
+    дырах RUONIA/КС — правило отвергает только COVID-неделю 2020-03-27→04-06."""
     if obs > calc_date:
         return False
     dts = idx[0] if idx else None
@@ -872,7 +932,32 @@ def _realized(idx, obs: date, calc_date: date) -> bool:
     i = bisect.bisect_right(dts, obs) - 1     # последняя дата истории ≤ obs
     if i < 0:
         return False
-    return (obs - dts[i]).days <= _HIST_STALE_GRACE_DAYS
+    if (obs - dts[i]).days <= _HIST_STALE_GRACE_DAYS:
+        return True
+    if i + 1 >= len(dts):
+        return False              # ХВОСТ: публикация встала → форвард
+    nxt = dts[i + 1]
+    if (nxt - dts[i]).days > _HIST_HOLIDAY_GAP_DAYS:
+        return False              # длиннее любой праздничной паузы
+    return _holiday_gap(dts[i], nxt)
+
+
+def _holiday_gap(prev: date, nxt: date) -> bool:
+    """Пауза (prev, nxt) — праздничная, а не сбой источника.
+
+    Классифицируем ОДИН РАЗ на пару дат: _realized зовётся по дню в горячих
+    циклах (_index_grow_cached), а обход календаря стоит заметно."""
+    key = (prev, nxt)
+    got = _GAP_KIND.get(key)
+    if got is None:
+        from core.valuation import _is_settlement_day_off as _off
+        d, work = prev + timedelta(days=1), 0
+        while d < nxt:
+            if not _off(d):
+                work += 1
+            d += timedelta(days=1)
+        got = _GAP_KIND[key] = work <= _HIST_HOLIDAY_WORKDAYS
+    return got
 
 
 def _index_grow(frm: date, to: date, calc_date: date, fwd_pct, idx) -> float:

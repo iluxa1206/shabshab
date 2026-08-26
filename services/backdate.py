@@ -1036,7 +1036,10 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #     Плюс номинал дня: строка MOEX без FACEVALUE оставляла номинал ПРЕДЫДУЩЕГО
 #     обработанного дня (порядок обхода зависит от режима — reversed при
 #     стриминге), теперь откат на график амортизаций. ~200 амортизируемых.
-HONEST_ENGINE_VERSION = 9
+# 10 — 2026-08-26: см. BARS_METRICS_VERSION=10 — праздничные дыры индекса,
+#      off-by-one точечного фиксинга, эхо начавшегося купона. Меняет купоны
+#      прошлых периодов, значит и всю as-of историю RUONIA-флоатеров.
+HONEST_ENGINE_VERSION = 10
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
