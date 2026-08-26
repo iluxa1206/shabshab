@@ -862,6 +862,31 @@ def list_incomplete() -> list[dict]:
             if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
 
 
+def isins_incomplete_newest_first() -> list[str]:
+    """Непрайсуемые флоатеры, СВЕЖИЕ ВПЕРЁД (по дате размещения, затем по дате
+    появления в реестре). Порядок важен: карточка биржи знает формулу купона
+    в основном у новых выпусков, а квота запросов на прогон конечна — старый
+    бэклог не должен вытеснять сегодняшнее размещение."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, base, margin_bps, maturity_date FROM instruments "
+            "WHERE active=1 AND (base IS NULL OR base IN ('KEYRATE','RUONIA')) "
+            "ORDER BY COALESCE(issue_date, '') DESC, first_seen DESC").fetchall()
+    return [r["isin"] for r in rows if not is_priceable(r)]
+
+
+def isins_missing_issue_date() -> list[str]:
+    """Активные бумаги без даты размещения. Нужна не расчёту, а перепопыткам
+    обогащения: без неё свежий выпуск неотличим от старого (см. _FRESH_ISSUE_DAYS).
+    Порядок — новые записи реестра первыми: у них шанс на добор выше всего."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute("SELECT isin FROM instruments WHERE active=1 AND "
+                         "issue_date IS NULL ORDER BY first_seen DESC").fetchall()
+    return [r["isin"] for r in rows]
+
+
 def list_no_spec() -> list[dict]:
     """Прайсуемые флоатеры БЕЗ источника спеки фиксинга: нет coupon_text (парсеру
     нечего парсить) и нет ручных coupon_mode/fixing_lag. Прайсинг сидит на
@@ -1287,6 +1312,18 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
 # парсера); filled — бумага уходит из очередей сама, короткий guard от зацикла.
 _ENRICH_TTL_DAYS = {"not_found": 14, "nodata": 14, "exotic": 30, "filled": 7}
 
+# СВЕЖИЙ ВЫПУСК — отдельный режим перепопытки. corpbonds доливает новые бумаги
+# с задержкой в недели, а TTL 14 дней всё это время держал флоатер НЕВИДИМЫМ:
+# без base/margin бумага непрайсуема, и universe_rows(only_priceable=True) её
+# выкидывает. Случай, на котором поймано: РЖД 1Р-54R размещена 13.08, вердикт
+# nodata в тот же день, следующая автопопытка пришлась бы на 27.08 — две недели
+# «бумаги нет», хотя реестр знал о ней с первого дня.
+_FRESH_ISSUE_DAYS = 45
+_FRESH_ISSUE_TTL_DAYS = 1
+# Ежедневный повтор осмыслен только там, где вердикт про ИСТОЧНИК («ещё не знает
+# бумагу»), а не про саму бумагу: exotic/filled от возраста выпуска не зависят.
+_FRESH_RETRY_RESULTS = ("not_found", "nodata")
+
 
 def mark_enrich_attempt(isin: str, result: str, parser_ver: int | None = None) -> None:
     """Записать исход corpbonds-попытки в negative-кэш enrich_seen. Без него
@@ -1326,22 +1363,41 @@ def enrich_pending(candidates: list[str], limit: int,
     now = datetime.now(timezone.utc)
     with _conn() as c:
         seen = {r["isin"]: r for r in c.execute("SELECT * FROM enrich_seen")}
+        # дата размещения отличает «свежий выпуск, источник его ещё не знает» от
+        # «старая бумага, которой на corpbonds нет вовсе». Неизвестная дата = НЕ
+        # свежий: у сидового импорта issue_date пуст, и без этой осторожности
+        # весь бэклог (500+) считался бы новым и топтал квоту каждый день.
+        issued = {r["isin"]: r["issue_date"] for r in c.execute(
+            "SELECT isin, issue_date FROM instruments WHERE issue_date IS NOT NULL")}
+    today = now.date()
 
-    def _fresh(r) -> bool:
+    def _fresh_issue(isin: str) -> bool:
+        try:
+            d = date.fromisoformat((issued.get(isin) or "")[:10])
+        except ValueError:
+            return False
+        return 0 <= (today - d).days <= _FRESH_ISSUE_DAYS
+
+    def _fresh(isin: str, r) -> bool:
         # вердикт устаревшего парсера — перечекнуть немедленно; только исходы,
         # где парсер решал (exotic/nodata): not_found/filled от версии не зависят
         if (parser_ver is not None and r["result"] in ("exotic", "nodata")
                 and (r["parser_ver"] or 0) < parser_ver):
             return False
         ttl = _ENRICH_TTL_DAYS.get(r["result"], 14)
+        if r["result"] in _FRESH_RETRY_RESULTS and _fresh_issue(isin):
+            ttl = min(ttl, _FRESH_ISSUE_TTL_DAYS)
         try:
             return (now - datetime.fromisoformat(r["attempted_at"])).days < ttl
         except (ValueError, TypeError):
             return False
 
     never = [i for i in candidates if i not in seen]
-    retry = sorted((i for i in candidates if i in seen and not _fresh(seen[i])),
-                   key=lambda i: seen[i]["attempted_at"])
+    # свежие выпуски вперёд остального хвоста: иначе ежедневная перепопытка
+    # ничего не даёт — квоту (30 incomplete за прогон) съедает ротация старого
+    # бэклога, и новая бумага снова ждёт.
+    retry = sorted((i for i in candidates if i in seen and not _fresh(i, seen[i])),
+                   key=lambda i: (not _fresh_issue(i), seen[i]["attempted_at"]))
     return (never + retry)[:limit]
 
 
@@ -1363,6 +1419,27 @@ def non_fixed_isins() -> set[str]:
     return a | b
 
 
+def _fresh_incomplete(rows) -> list[dict]:
+    """Непрайсуемые выпуски моложе _FRESH_ISSUE_DAYS — поимённо, новые первыми.
+    Возраст в днях от размещения: он и есть мера «сколько бумаги нет в универсе».
+    Бумаги без даты размещения сюда не попадают — их возраст неизвестен, и
+    сидовый бэклог (сотни строк) утопил бы список."""
+    today = datetime.now(timezone.utc).date()
+    out = []
+    for r in rows:
+        try:
+            d = date.fromisoformat((r["issue_date"] or "")[:10])
+        except (ValueError, TypeError):
+            continue
+        age = (today - d).days
+        if 0 <= age <= _FRESH_ISSUE_DAYS:
+            out.append({"isin": r["isin"], "name": r["short_name"] or r["isin"],
+                        "issue_date": r["issue_date"][:10], "age_days": age,
+                        "has_base": bool(r["base"]), "has_margin": r["margin_bps"] is not None})
+    out.sort(key=lambda x: x["age_days"])
+    return out
+
+
 def queue_stats() -> dict:
     """Размеры очередей обработки + возраст головы очереди (для /status).
     Видимость голодания: очередь, которая не сходится, копится и стареет —
@@ -1380,8 +1457,9 @@ def queue_stats() -> dict:
 
     with _conn() as c:
         rows = c.execute(
-            "SELECT isin, base, margin_bps, maturity_date, updated_at, reviewed, "
-            "margin_check_pp, manual_locked FROM instruments WHERE active=1").fetchall()
+            "SELECT isin, short_name, base, margin_bps, maturity_date, issue_date, "
+            "updated_at, reviewed, margin_check_pp, manual_locked "
+            "FROM instruments WHERE active=1").fetchall()
         enrich_seen = {r["isin"] for r in c.execute("SELECT isin FROM enrich_seen")}
     incomplete = [r for r in rows
                   if not is_priceable(r) and (r["base"] in ("KEYRATE", "RUONIA") or r["base"] is None)]
@@ -1398,7 +1476,13 @@ def queue_stats() -> dict:
         # never_tried: сколько из очереди ещё ни разу не ходило в corpbonds —
         # честный индикатор сходимости (updated_at бампается листинг-рефрешем)
         "incomplete": {"n": len(incomplete), "oldest_days": _oldest(incomplete),
-                       "never_tried": sum(1 for r in incomplete if r["isin"] not in enrich_seen)},
+                       "never_tried": sum(1 for r in incomplete if r["isin"] not in enrich_seen),
+                       # ПОИМЕННО свежие: счётчик не отвечает на вопрос «где моя
+                       # бумага?». Непрайсуемая = невидимая в универсе, и до
+                       # появления этого списка единственным признаком было
+                       # «я не вижу выпуск, который жду» (случай РЖД 1Р-54R:
+                       # размещена 13.08, замечена руками 25.08).
+                       "fresh": _fresh_incomplete(incomplete)},
         "suspect": {"n": len(suspect), "oldest_days": _oldest(suspect)},
         # ставка менялась на прошлой оферте, впереди ещё одна — горизонт оценки
         # под вопросом (см. list_offer_reset)

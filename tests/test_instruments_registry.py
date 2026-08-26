@@ -522,3 +522,112 @@ def test_offer_reset_quiet_without_both_sides(monkeypatch):
     assert v._offer_reset("RU1", coupons, [{"date": "2026-04-27"}], 1000,
                           [(date(2020, 1, 1), 14.0)], date(2026, 8, 21)) is False
     assert seen["delta"] is None
+
+
+def _age_attempt(reg, isin: str, days: float) -> None:
+    """Состарить попытку обогащения на N дней (доли — часами)."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with sqlite3.connect(str(reg.DB_PATH)) as c:
+        c.execute("UPDATE enrich_seen SET attempted_at=? WHERE isin=?", (ts, isin))
+
+
+def test_fresh_issue_retried_daily(reg):
+    """Свежий выпуск с вердиктом nodata перечекивается через сутки, а не через 14
+    дней: corpbonds доливает новые бумаги с задержкой, а без base/margin бумага
+    непрайсуема и не видна в универсе (случай РЖД 1Р-54R)."""
+    from datetime import date, timedelta
+    young = (date.today() - timedelta(days=5)).isoformat()
+    reg.upsert({"isin": "RU_NEW", "issue_date": young}, "moex")
+    reg.mark_enrich_attempt("RU_NEW", "nodata")
+    assert reg.enrich_pending(["RU_NEW"], 5) == []      # сутки не прошли
+    _age_attempt(reg, "RU_NEW", 1.5)
+    assert reg.enrich_pending(["RU_NEW"], 5) == ["RU_NEW"]
+
+
+def test_old_issue_keeps_long_ttl(reg):
+    """У старой бумаги отсутствие на corpbonds — устойчивый факт, а не задержка
+    публикации: TTL остаётся 14 дней, ежедневного долбления нет."""
+    from datetime import date, timedelta
+    old = (date.today() - timedelta(days=400)).isoformat()
+    reg.upsert({"isin": "RU_OLD", "issue_date": old}, "moex")
+    reg.mark_enrich_attempt("RU_OLD", "nodata")
+    _age_attempt(reg, "RU_OLD", 3)
+    assert reg.enrich_pending(["RU_OLD"], 5) == []
+
+
+def test_unknown_issue_date_is_not_fresh(reg):
+    """Пустая дата размещения (сидовый импорт) НЕ считается свежестью — иначе
+    весь бэклог непрайсуемых топтал бы квоту каждый прогон."""
+    reg.upsert({"isin": "RU_SEED", "base": "KEYRATE"}, "cbonds")
+    reg.mark_enrich_attempt("RU_SEED", "nodata")
+    _age_attempt(reg, "RU_SEED", 3)
+    assert reg.enrich_pending(["RU_SEED"], 5) == []
+
+
+def test_fresh_issue_jumps_the_queue(reg):
+    """Свежий выпуск идёт впереди протухшего хвоста: иначе ежедневная
+    перепопытка бесполезна — квоту съедает ротация старого бэклога."""
+    from datetime import date, timedelta
+    young = (date.today() - timedelta(days=3)).isoformat()
+    reg.upsert({"isin": "RU_NEW", "issue_date": young}, "moex")
+    reg.upsert({"isin": "RU_OLD", "issue_date": "2020-01-01"}, "moex")
+    reg.mark_enrich_attempt("RU_OLD", "nodata")
+    reg.mark_enrich_attempt("RU_NEW", "nodata")
+    _age_attempt(reg, "RU_OLD", 30)     # протухла давно
+    _age_attempt(reg, "RU_NEW", 2)      # протухла только что, но выпуск свежий
+    assert reg.enrich_pending(["RU_OLD", "RU_NEW"], 1) == ["RU_NEW"]
+
+
+def test_exotic_verdict_ignores_issue_age(reg):
+    """Вердикт про САМУ бумагу (exotic) не зависит от возраста выпуска —
+    ежедневная перепопытка к нему не применяется."""
+    from datetime import date, timedelta
+    young = (date.today() - timedelta(days=5)).isoformat()
+    reg.upsert({"isin": "RU_EX", "issue_date": young}, "moex")
+    reg.mark_enrich_attempt("RU_EX", "exotic", parser_ver=5)
+    _age_attempt(reg, "RU_EX", 3)
+    assert reg.enrich_pending(["RU_EX"], 5, parser_ver=5) == []
+
+
+# --- формула купона из карточки MOEX (COUPON_BENCHMARK) -----------------------
+
+def test_benchmark_params_maps_moex_codes():
+    """Коды биржи → наша база. RREFKEYR = ключевая ставка, RUONIA = RUONIA."""
+    from services.instruments_sync import _benchmark_params
+    assert _benchmark_params({"benchmark": "RREFKEYR", "benchmark_spread": 1.2}) == ("KEYRATE", 120, None)
+    assert _benchmark_params({"benchmark": "RUONIA", "benchmark_spread": 1.9}) == ("RUONIA", 190, None)
+    assert _benchmark_params({"benchmark": "ruonia", "benchmark_spread": 0.0}) == ("RUONIA", 0, None)
+
+
+def test_benchmark_gcurve_is_exotic_not_a_base():
+    """G-кривая линейной моделью «индекс + маржа» не считается. Завести такую
+    бумагу как КС-флоатер — тихая ошибка: попадёт в универс с неверным спредом."""
+    from services.instruments_sync import _benchmark_params
+    base, bps, note = _benchmark_params({"benchmark": "ZR_YLD_CRV", "benchmark_spread": 2.05})
+    assert base is None and bps is None and "ZR_YLD_CRV" in note
+
+
+def test_benchmark_unknown_and_empty_are_silent():
+    """Пустой или незнакомый код не трактуем: «не знаем» ≠ «фикс»/«КС»."""
+    from services.instruments_sync import _benchmark_params
+    assert _benchmark_params({}) == (None, None, None)
+    assert _benchmark_params({"benchmark": "  ", "benchmark_spread": 1.0}) == (None, None, None)
+    assert _benchmark_params({"benchmark": "XXX_NEW", "benchmark_spread": 1.0}) == (None, None, None)
+
+
+def test_incomplete_newest_first_puts_fresh_issue_ahead(reg):
+    """Свежие выпуски идут первыми: квота запросов в справочник конечна, и
+    старый бэклог не должен вытеснять сегодняшнее размещение."""
+    reg.upsert({"isin": "RU_OLD", "issue_date": "2020-01-01", "maturity_date": "2030-01-01"}, "moex")
+    reg.upsert({"isin": "RU_NEW", "issue_date": "2026-08-13", "maturity_date": "2036-01-01"}, "moex")
+    order = reg.isins_incomplete_newest_first()
+    assert order.index("RU_NEW") < order.index("RU_OLD")
+
+
+def test_priceable_bond_not_in_incomplete_queue(reg):
+    """Заполненная бумага уходит из очереди сама — запросы на неё не тратим."""
+    reg.upsert({"isin": "RU_OK", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "moex")
+    assert "RU_OK" not in reg.isins_incomplete_newest_first()

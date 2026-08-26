@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchStatus } from "../api.js";
 import { fmt } from "../format.js";
@@ -151,6 +152,39 @@ export default function StatusPage() {
               </tbody>
             </table>
             <div className="st-data-hint">Растущие n и возраст головы = обогащение не сходится (голодание очереди).</div>
+            {/* Поимённо, а не числом: непрайсуемая бумага не видна в универсе, и
+                без списка единственный признак — «я не вижу выпуск, который жду». */}
+            {!!(d.registry_queues.incomplete?.fresh || []).length && (
+              <>
+                <div className="st-title" style={{ marginTop: 10 }}>
+                  Свежие выпуски без параметров
+                  <span className="st-sub">не видны в универсе, пока не заполнены</span>
+                </div>
+                <table className="st-ts">
+                  <tbody>
+                    {d.registry_queues.incomplete.fresh.map((b) => (
+                      <tr key={b.isin}>
+                        <td>
+                          <Link to={`/reference?isin=${b.isin}`}>{b.name}</Link>
+                          <span className="st-data-hint"> · {b.isin}</span>
+                        </td>
+                        <td>
+                          размещён {b.issue_date} · <b>{b.age_days} дн</b>
+                          <span className="st-data-hint">
+                            {" "}· нет {[!b.has_base && "базы", !b.has_margin && "маржи"].filter(Boolean).join(" и ")}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="st-data-hint">
+                  Формула купона берётся из карточки MOEX сразу, из corpbonds — с задержкой
+                  в недели. Если бумага висит тут дольше нескольких дней, оба источника её
+                  не знают: заполнить руками в Справочнике.
+                </div>
+              </>
+            )}
           </div>
         )}
 

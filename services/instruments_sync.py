@@ -87,10 +87,20 @@ async def sync_instruments() -> dict:
     #    (fetch_security_master ловит maturity даже вне TQCB — покрытие шире, чем
     #    board-методы; у Cbonds-бумаг maturity нет вовсе). Заодно инференс базы для
     #    ОФЗ-ПК (RUONIA-флоатеры Минфина) по имени.
-    incomplete_rows = [r for r in reg.universe_rows(only_priceable=False, only_floaters=False)
-                       if not r.get("maturity_date")]
-    missing = [r["isin"] for r in incomplete_rows]
+    #    Добираем и ДАТУ РАЗМЕЩЕНИЯ: она нужна не для расчёта, а чтобы отличать
+    #    свежий выпуск от старого при перепопытках обогащения. Порядок — сначала
+    #    бумаги без maturity (без неё бумага не считается вовсе), затем без
+    #    issue_date; срез на прогон, потому что запрос идёт ПОШТУЧНО.
+    no_mat = [r["isin"] for r in reg.universe_rows(only_priceable=False, only_floaters=False)
+              if not r.get("maturity_date")]
+    # непрайсуемые — ради формулы купона из карточки биржи (COUPON_BENCHMARK);
+    # квота отдельная, иначе бэклог 400+ вытеснит добор issue_date насовсем
+    incompl = reg.isins_incomplete_newest_first()[:_MAX_SECMASTER_INCOMPLETE]
+    picked = set(no_mat) | set(incompl)
+    no_issue = [i for i in reg.isins_missing_issue_date() if i not in picked]
+    missing = (no_mat + incompl + no_issue)[:_MAX_SECMASTER_PER_RUN]
     enriched = 0
+    exotic: list[tuple[str, str]] = []
     if missing:
         try:
             secs = await MarketDataService.fetch_security_master(missing)
@@ -114,9 +124,25 @@ async def sync_instruments() -> dict:
             name = (mo.get("name") or "").upper()
             if _looks_ofz_pk(name, isin):
                 upd["base"] = "RUONIA"
+            # формула купона из карточки биржи — единственный источник, который
+            # знает СВЕЖИЙ выпуск в день размещения (corpbonds доливает неделями)
+            b_base, b_bps, b_exotic = _benchmark_params(mo)
+            if b_exotic:
+                exotic.append((isin, b_exotic))
+            elif b_base:
+                cur = reg.get(isin) or {}
+                if not cur.get("base"):
+                    upd["base"] = b_base
+                if cur.get("margin_bps") is None and b_bps is not None:
+                    upd["margin_bps"] = b_bps
             if any(v is not None for k, v in upd.items() if k != "isin"):
                 reg.upsert(upd, source="moex", mark_new=False)
                 enriched += 1
+        # G-кривая как бенчмарк — вне линейной модели «индекс + маржа»: помечаем
+        # экзотикой, а не заводим с ложной базой (ошибка была бы тихой: бумага
+        # попала бы в универс и считалась бы как КС-флоатер)
+        for isin, note in exotic:
+            reg.set_exotic(isin, note)
 
     # 3b. правило ОФЗ-ПК: margin=0/avg-RUONIA/Т-7 + Минфин/AAA для серии 29xxx
     #     (MOEX не отдаёт маржу ОФЗ-ПК → без правила бумаги непрайсуемы и невидимы)
@@ -261,6 +287,9 @@ async def sync_instruments() -> dict:
 _MAX_INFER_PER_RUN = 40       # калибровок базы/маржи по истории купонов за прогон
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
 _MAX_CORPBONDS_PER_RUN = 80   # запросов к corpbonds.ru за прогон (внешний сайт)
+_MAX_SECMASTER_PER_RUN = 150  # запросов в справочник MOEX за прогон (ПОШТУЧНО:
+                              # /iss/securities/{isin}.json, батча у ISS нет)
+_MAX_SECMASTER_INCOMPLETE = 60   # из них — на непрайсуемые (свежие выпуски вперёд)
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
 # большой incomplete не вытеснял остальные за срез
 _CORPBONDS_QUOTA_INCOMPLETE = 30
@@ -369,6 +398,30 @@ def _call_unknown_with_offer() -> list[str]:
     return out
 
 
+def _benchmark_params(mo: dict) -> tuple[str | None, int | None, str | None]:
+    """Разбор COUPON_BENCHMARK/COUPON_BENCHMARK_SPREAD из карточки MOEX →
+    (base, margin_bps, exotic_note).
+
+    Коды биржи: RREFKEYR — ключевая ставка ЦБ, RUONIA — RUONIA, ZR_YLD_CRV —
+    G-кривая ОФЗ. Последняя линейной моделью «индекс + маржа» не считается, и
+    завести её как КС-флоатер хуже, чем не заводить вовсе: бумага попала бы в
+    универс с молча неверным спредом. Неизвестный код тоже не трактуем.
+    """
+    b = (mo.get("benchmark") or "").strip().upper()
+    if not b:
+        return None, None, None
+    spread = mo.get("benchmark_spread")
+    bps = None if spread is None else int(round(float(spread) * 100))
+    if b in ("RREFKEYR", "KEYRATE", "KEY_RATE"):
+        return "KEYRATE", bps, None
+    if b == "RUONIA":
+        return "RUONIA", bps, None
+    if b == "ZR_YLD_CRV":
+        return None, None, f"MOEX benchmark {b} + {spread}"
+    logger.info("неизвестный COUPON_BENCHMARK %r — пропускаем", b)
+    return None, None, None
+
+
 def _looks_ofz_pk(name_upper: str, isin: str) -> bool:
     """ОФЗ-ПК (Минфин, купон плавает по RUONIA) — по имени/названию выпуска.
     SU29xxx — тикерный префикс серии ОФЗ-ПК на MOEX. Только имя: клауза по
@@ -433,6 +486,15 @@ async def discover_floaters(listing: dict | None = None,
                                              today=date.today())
             row = {"isin": isin, "short_name": mo.get("short_name"),
                    "maturity_date": mo.get("maturity"), "face_value": mo.get("face")}
+            # дата размещения — из САМОГО раннего купона графика. Листинг MOEX её
+            # не отдаёт (колонки ISIN/SHORTNAME/MATDATE/COUPONPERCENT/FACEVALUE),
+            # поэтому mo.get("issue") здесь всегда None, и у заведённых дискавери
+            # бумаг issue_date оставался пустым. Без него нечем отличить свежий
+            # выпуск от старого — а на этом стоит ежедневная перепопытка
+            # обогащения (registry._FRESH_ISSUE_DAYS).
+            starts = sorted(c.get("start") for c in coupons if c.get("start"))
+            if starts:
+                row["issue_date"] = starts[0]
             if cpd and cpd > 0:
                 row["coupon_period_days"] = cpd
                 row["coupons_per_year"] = max(1, round(365 / cpd))

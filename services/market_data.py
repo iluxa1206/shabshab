@@ -1226,7 +1226,8 @@ class MarketDataService:
 
     @classmethod
     async def fetch_security_master(cls, isins: List[str]) -> Dict[str, dict]:
-        """{isin: {maturity, issue, face, coupon_freq, coupon_percent, name}} из
+        """{isin: {maturity, issue, face, coupon_freq, coupon_percent, name,
+        benchmark, benchmark_spread}} из
         БОРД-НЕЗАВИСИМОГО справочника MOEX /iss/securities/{isin}.json (description).
         Ловит maturity даже для бумаг вне TQCB-борда (в отличие от board-методов),
         покрытие шире — для наполнения реестра параметрами (Ф3-энрич)."""
@@ -1253,6 +1254,12 @@ class MarketDataService:
                     "coupon_freq": _f(kv.get("COUPONFREQUENCY")),
                     "coupon_percent": _f(kv.get("COUPONPERCENT")),
                     "name": kv.get("SHORTNAME") or kv.get("NAME"),
+                    # ФОРМУЛА КУПОНА ОТ САМОЙ БИРЖИ. Заполнена не у всех (у СФО/
+                    # ВДО обычно пусто), но у свежих корпоративных выпусков есть
+                    # сразу — а corpbonds их не знает неделями. Коды бенчмарка:
+                    # RREFKEYR = ключевая ставка ЦБ, RUONIA, ZR_YLD_CRV = G-кривая.
+                    "benchmark": (kv.get("COUPON_BENCHMARK") or "").strip() or None,
+                    "benchmark_spread": _f(kv.get("COUPON_BENCHMARK_SPREAD")),
                 }
                 if any(v is not None for v in rec.values()):
                     out[isin] = rec
