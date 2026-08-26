@@ -46,8 +46,8 @@ def cmd_remove(args: argparse.Namespace) -> None:
     # тот же каскад, что у admin-ручки: иначе уволенному продолжают идти
     # сигналы и блок-алерты в телеграм (см. services/user_purge)
     from services.user_purge import purge_delivery
-    purged = purge_delivery(args.email)
     if auth_users.remove_user(args.email):
+        purged = purge_delivery(args.email)
         print(f"OK: {args.email} удалён; погашено: {purged}")
     else:
         sys.exit(f"Нет такого пользователя: {args.email}")

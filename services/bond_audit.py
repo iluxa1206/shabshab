@@ -507,10 +507,13 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     # Порядок поэтому изменён: сначала val_dict, потом поток по его горизонту.
     _hz = val_dict.get("preferred_horizon", "maturity")
     _cut = None
-    if _hz != "maturity":
-        _hd = (val_dict.get("horizons", {}).get(_hz) or {}).get("date")
-        if _hd:
-            _cut = _hd if isinstance(_hd, date) else date.fromisoformat(str(_hd))
+    try:
+        if _hz != "maturity":
+            _hd = (val_dict.get("horizons", {}).get(_hz) or {}).get("date")
+            if _hd:
+                _cut = _hd if isinstance(_hd, date) else date.fromisoformat(str(_hd))
+    except (TypeError, ValueError) as e:
+        warnings.append(f"горизонт потока: {e}")   # паспорт не роняем из-за даты
     try:
         cfs, _fv = build_cashflow_from_moex(
             ref_obj, curve, calc_date, coupons, amorts, formula, offers=offers,
@@ -519,7 +522,13 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
         warnings.append(f"cashflow: {e}")
 
     dirty = val_dict.get("dirty_price_rub")
-    y = val_dict.get("yield_xirr_pct")
+    # ДОХОДНОСТЬ ТОГО ЖЕ ГОРИЗОНТА, ЧТО И ПОТОК. Верхнеуровневый yield_xirr_pct —
+    # легаси-поле «к погашению», а поток теперь режется по preferred_horizon.
+    # Пара «резаный поток × maturity-доходность» даёт ЛОЖНЫЙ разрыв: у
+    # RU000A10DK98 pv_gap был +45.78 ₽ вместо +0.03 ₽, и чек pv_recon краснел
+    # ровно на тех бумагах с офертой, ради которых резка и делалась.
+    y = ((val_dict.get("horizons", {}).get(_hz) or {}).get("yield_xirr_pct")
+         if _hz != "maturity" else None) or val_dict.get("yield_xirr_pct")
     if cfs and dirty is not None and y is not None:
         pv_sum = 0.0
         rows = []

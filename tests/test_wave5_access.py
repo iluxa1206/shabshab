@@ -147,3 +147,82 @@ def test_depth_without_shards_returns_all():
                 market_cache.pop(k, None)
             else:
                 market_cache[k] = v
+
+
+def test_batch_poller_overrides_dead_shard():
+    """depth_stream_covers включает HTTP-фолбэк уже при потере 20% шардов, и он
+    честно обновляет ВЕСЬ юниверс. Выбрасывать эти бумаги по устаревшей
+    шардовой метке — значит терять свежие данные ровно тогда, когда стрим
+    деградировал."""
+    from services.market_data import market_cache
+    from services import depth
+    now = time.time()
+    keys = ("depth", "depth_ts", "depth_shard_ts", "depth_shard_isins", "depth_batch")
+    saved = {k: market_cache.get(k) for k in keys}
+    try:
+        market_cache["depth"] = {"RU1": {"b": [], "a": []}, "RU2": {"b": [], "a": []}}
+        market_cache["depth_ts"] = now
+        market_cache["depth_shard_isins"] = {0: ["RU1"], 1: ["RU2"]}
+        market_cache["depth_shard_ts"] = {0: now, 1: now - 3600}   # шард 1 мёртв
+        # ...но поллер только что обновил обе бумаги
+        market_cache["depth_batch"] = {"ts": now, "isins": {"RU1", "RU2"}}
+        got = depth.get_depth()
+        assert "RU1" in got and "RU2" in got, got
+
+        # протухший батч уже не спасает
+        market_cache["depth_batch"] = {"ts": now - 3600, "isins": {"RU1", "RU2"}}
+        got2 = depth.get_depth()
+        assert "RU2" not in got2
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                market_cache.pop(k, None)
+            else:
+                market_cache[k] = v
+
+
+def _depth_case(shard_isins, shard_ts, batch=None, depth_map=None):
+    """Прогон get_depth на подставленном состоянии кэша."""
+    from services.market_data import market_cache
+    from services import depth
+    now = time.time()
+    keys = ("depth", "depth_ts", "depth_shard_ts", "depth_shard_isins", "depth_batch")
+    saved = {k: market_cache.get(k) for k in keys}
+    try:
+        market_cache["depth"] = depth_map or {"RU1": {"b": [], "a": []}}
+        market_cache["depth_ts"] = now
+        market_cache["depth_shard_isins"] = shard_isins
+        market_cache["depth_shard_ts"] = {k: now - v for k, v in shard_ts.items()}
+        if batch is None:
+            market_cache.pop("depth_batch", None)
+        else:
+            market_cache["depth_batch"] = batch
+        return depth.get_depth()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                market_cache.pop(k, None)
+            else:
+                market_cache[k] = v
+
+
+def test_live_shard_beats_retired_list():
+    """depth_shard_isins не снимается ни при смерти сокета, ни при пересборке
+    пула, а shard_id переиспользуются: без вычитания «жив у соседа» бумага,
+    которую ведёт ЖИВОЙ шард, выбрасывалась по списку шарда, которого нет."""
+    got = _depth_case({0: ["RU1"], 8: ["RU1"]}, {0: 0})     # шард 8 без метки
+    assert "RU1" in got, "живую бумагу выбросил отставной список"
+
+
+def test_all_shards_dead_is_not_no_stream():
+    """Смерть ВСЕХ шардов (реконнект-шторм, протухший токен) — не то же самое,
+    что «стрима нет». Проверка по пустому shard_ts отдавала бы весь протухший
+    стакан как свежий — исходный баг в максимальном масштабе."""
+    got = _depth_case({0: ["RU1"]}, {})       # списки есть, меток нет
+    assert "RU1" not in got, "протухший стакан отдан как свежий"
+
+
+def test_no_stream_at_all_returns_everything():
+    """А вот когда стрим не поднимался вовсе — списков нет, работает батч-поллер."""
+    got = _depth_case({}, {})
+    assert "RU1" in got

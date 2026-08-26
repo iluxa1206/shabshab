@@ -39,11 +39,31 @@ def get_depth() -> Dict[str, dict]:
         return {}
     shard_ts = market_cache.get("depth_shard_ts") or {}
     shard_isins = market_cache.get("depth_shard_isins") or {}
-    if not shard_ts or not shard_isins:
-        return d          # батч-поллер без стрима: шардов нет, метка одна
+    if not shard_isins:
+        # СТРИМ ВООБЩЕ НЕ ПОДНИМАЛСЯ — работает батч-поллер, метка одна на всех.
+        # Проверять тут пустоту shard_ts НЕЛЬЗЯ: когда стрим был и умер ЦЕЛИКОМ
+        # (реконнект-шторм, протухший токен), метки исчезают, а списки бумаг
+        # остаются — и мы бы отдали весь протухший стакан как свежий, то есть
+        # исходный баг в максимальном масштабе.
+        return d
     now = time.time()
     dead = {i for sid, isins in shard_isins.items()
             for i in isins if now - (shard_ts.get(sid) or 0.0) > _STALE_SEC}
+    if dead:
+        # ЖИВОЙ ШАРД ПОБЕЖДАЕТ ОТСТАВНОЙ СПИСОК. depth_shard_isins не снимается
+        # ни при смерти сокета, ни при пересборке пула, а shard_id
+        # переиспользуются — без этого вычитания бумага, которую прямо сейчас
+        # ведёт живой шард, выбрасывалась по списку шарда, которого уже нет.
+        dead -= {i for sid, isins in shard_isins.items()
+                 if now - (shard_ts.get(sid) or 0.0) <= _STALE_SEC for i in isins}
+    if dead:
+        # БАТЧ-ПОЛЛЕР ПЕРЕБИВАЕТ МЁРТВЫЙ ШАРД. depth_stream_covers включает
+        # HTTP-фолбэк уже при потере 20% шардов, и он честно обновляет ВЕСЬ
+        # юниверс — выбрасывать эти бумаги по устаревшей шардовой метке значит
+        # терять свежие данные ровно тогда, когда стрим деградировал.
+        batch = market_cache.get("depth_batch") or {}
+        if now - (batch.get("ts") or 0.0) <= _STALE_SEC:
+            dead -= (batch.get("isins") or set())
     return {k: v for k, v in d.items() if k not in dead} if dead else d
 
 
@@ -75,5 +95,9 @@ async def refresh_depth(isins: List[str], chunk: int = 150) -> int:
     cur = dict(market_cache.get("depth") or {})
     cur.update(fresh)
     market_cache["depth"] = cur
-    market_cache["depth_ts"] = time.time()
+    now = time.time()
+    market_cache["depth_ts"] = now
+    # отметка батча: get_depth() не должен выбрасывать бумаги, которые поллер
+    # только что обновил, из-за метки шарда, чей сокет умер
+    market_cache["depth_batch"] = {"ts": now, "isins": set(fresh)}
     return len(fresh)

@@ -143,6 +143,10 @@ class CashflowItem(BaseModel):
     coupon_rate_pct: float
     amount_rub: float
     type: str
+    # платёж ЗА горизонтом расчёта метрик (см. cashflow_horizon): таблицу не
+    # режем — горизонт это предположение правила цены с порогом 10 bps, а
+    # график факт эмитента; хвост помечаем, фронт приглушает
+    beyond_horizon: bool = False
 
 # --- 5.7 FloaterRisk (специфика бумаг с плавающим купоном) ---
 class FloaterRisk(BaseModel):
@@ -161,6 +165,10 @@ class BondDetailsResponse(BaseModel):
     reference: BondReference
     market: BondMarketData
     valuation: BondValuation
+    # {date, kind} горизонта, к которому посчитаны метрики: таблица потоков идёт
+    # ДО ПОГАШЕНИЯ (график — факт эмитента, резать его под предположение правила
+    # цены нельзя), а строки за горизонтом помечены beyond_horizon
+    cashflow_horizon: Optional[Dict[str, Any]] = None
     cashflow: List[CashflowItem]
     floater: Optional[FloaterRisk] = None
     sources: Dict[str, Any]
