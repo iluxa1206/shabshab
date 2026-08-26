@@ -23,6 +23,7 @@ def _d(s):
 def build_cashflow_from_moex(
     ref, curve, calc_date: date, coupons: list, amorts: list, formula: str,
     offers: Optional[list] = None, warnings_out: Optional[list] = None,
+    cut_date: Optional[date] = None,
 ) -> Tuple[List[dict], float]:
     """Cashflow-таблица карточки. ФОРМАТТЕР, не самостоятельный расчёт:
 
@@ -100,7 +101,7 @@ def build_cashflow_from_moex(
         cfs = build_cashflows_with_spread(
             ref, curve, calc_date, ref.spread_issue_bps or 0,
             explicit_periods=periods or None, amorts=amorts, offers=offers,
-            index_pct_fn=index_pct_fn,
+            index_pct_fn=index_pct_fn, cut_date=cut_date,
         )
     except Exception as e:
         if warnings_out is not None:

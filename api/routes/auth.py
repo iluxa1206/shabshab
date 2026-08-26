@@ -302,5 +302,10 @@ async def delete_user(email: str, admin: dict = Depends(require_admin)):
     if (auth_users.get_user(email)["role"] == "admin"
             and auth_users.count_admins() <= 1):
         raise HTTPException(status_code=400, detail="Нельзя удалить последнего администратора")
+    # СНАЧАЛА ГАСИМ ДОСТАВКУ, потом аккаунт: упасть на полпути и оставить
+    # аккаунт живым безопаснее, чем оставить осиротевшие фильтры, которые
+    # уже некому выключить (см. services/user_purge).
+    from services.user_purge import purge_delivery
+    purged = purge_delivery(email)
     auth_users.remove_user(email)
-    return {"ok": True}
+    return {"ok": True, "purged": purged}

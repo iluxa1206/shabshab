@@ -22,12 +22,29 @@ _STALE_SEC = 900        # снимок старше 15 мин наружу не 
 
 def get_depth() -> Dict[str, dict]:
     """{isin: {"b": [[px, qty], ...], "a": [...]}} — последний снимок. Пусто, если
-    поллер ещё не отработал или снимок протух."""
+    поллер ещё не отработал или снимок протух.
+
+    СВЕЖЕСТЬ ПО ШАРДАМ, а не по рынку целиком. Стрим держит по сокету на 150
+    бумаг, и глобальный depth_ts обновлял ЛЮБОЙ живой шард: смерть одного
+    сокета пряталась за соседями, а скринер сигналил «5 млн на офере» по
+    заявке, снятой утром. stream_watchdog это не ловит — он смотрит на
+    непустоту кэша.
+
+    Протухшие ISIN ИЗЫМАЮТСЯ из словаря, а не отдаются пустой лестницей:
+    {"b": [], "a": []} прочиталось бы потребителем как «в стакане ничего нет»
+    и дало бы честный на вид ноль объёма вместо «данных нет»."""
     d = market_cache.get("depth") or {}
     ts = market_cache.get("depth_ts") or 0.0
     if not d or time.time() - ts > _STALE_SEC:
         return {}
-    return d
+    shard_ts = market_cache.get("depth_shard_ts") or {}
+    shard_isins = market_cache.get("depth_shard_isins") or {}
+    if not shard_ts or not shard_isins:
+        return d          # батч-поллер без стрима: шардов нет, метка одна
+    now = time.time()
+    dead = {i for sid, isins in shard_isins.items()
+            for i in isins if now - (shard_ts.get(sid) or 0.0) > _STALE_SEC}
+    return {k: v for k, v in d.items() if k not in dead} if dead else d
 
 
 def depth_ts() -> float:

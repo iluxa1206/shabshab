@@ -491,12 +491,6 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
     val_dict = {}
     waterfall = {"rows": [], "pv_sum_rub": None, "pv_gap_rub": None}
     cfs = []
-    try:
-        cfs, _fv = build_cashflow_from_moex(
-            ref_obj, curve, calc_date, coupons, amorts, formula, offers=offers)
-    except Exception as e:
-        warnings.append(f"cashflow: {e}")
-
     if px is not None and curve and base in ("RUONIA", "KEYRATE"):
         try:
             val_dict = calculate_valuation_metrics(
@@ -505,6 +499,24 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
                 amorts=amorts, offers=offers)
         except Exception as e:
             warnings.append(f"оценка: {e}")
+
+    # ЗДЕСЬ РЕЗАТЬ НУЖНО (в отличие от таблицы карточки): waterfall сверяет
+    # Σ PV потоков с dirty из val_dict, а тот посчитан К ГОРИЗОНТУ. Поток до
+    # погашения против метрик к оферте — это разные вселенные, и pv_gap_rub
+    # заведомо огромен: у 25 бумаг с офертой паспорт показывал ложный разрыв.
+    # Порядок поэтому изменён: сначала val_dict, потом поток по его горизонту.
+    _hz = val_dict.get("preferred_horizon", "maturity")
+    _cut = None
+    if _hz != "maturity":
+        _hd = (val_dict.get("horizons", {}).get(_hz) or {}).get("date")
+        if _hd:
+            _cut = _hd if isinstance(_hd, date) else date.fromisoformat(str(_hd))
+    try:
+        cfs, _fv = build_cashflow_from_moex(
+            ref_obj, curve, calc_date, coupons, amorts, formula, offers=offers,
+            cut_date=_cut)
+    except Exception as e:
+        warnings.append(f"cashflow: {e}")
 
     dirty = val_dict.get("dirty_price_rub")
     y = val_dict.get("yield_xirr_pct")

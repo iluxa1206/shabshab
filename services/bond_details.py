@@ -254,11 +254,25 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
     if next_offer:
         _kind = "Call-оферта" if next_offer[2] == "call" else "Пут-оферта"
         warnings.append(f"{_kind} {next_offer[0].isoformat()}, расчёт к {_to}")
+    # ТАБЛИЦУ ПОТОКОВ НЕ РЕЖЕМ, а размечаем. Карточка пишет «расчёт к ОФЕРТЕ», а
+    # поток шёл до погашения — у 25 бумаг из 111 с офертой это сотня лишних
+    # строк (RU000A10DK98: горизонт 25.11.2026, таблица до 2035). Но резать
+    # нельзя: горизонт — это ПРЕДПОЛОЖЕНИЕ правила цены с порогом 10 bps, а
+    # график — ФАКТ эмитента; при резке сотня строк мигала бы от одного тика
+    # цены, и пут — это право держателя, а не расписание. Помечаем хвост, фронт
+    # рисует разделитель и приглушает.
+    _hz_date = (val_dict.get("horizons", {}).get(_hz) or {}).get("date")
+    if _hz_date and cfs:
+        for _it in cfs:
+            _pd = _it.get("payment_date") if isinstance(_it, dict) else None
+            if _pd:
+                _it["beyond_horizon"] = str(_pd) > str(_hz_date)
 
     return {
         "reference": ref_dict,
         "market": market_data,
         "valuation": val_dict,
+        "cashflow_horizon": {"date": _hz_date, "kind": _hz},
         "cashflow": cfs,
         "floater": floater_block,
         "sources": {"details": "MOEX", "market": "Alor"},

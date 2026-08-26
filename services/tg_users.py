@@ -124,6 +124,22 @@ def chats_for_email(user_email: str) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def email_exists_approved(user_email: str) -> bool:
+    """Есть ли у аккаунта ЖИВАЯ привязка — БЕЗ учёта mute.
+
+    Отличается от has_chats() ровно этим. Право доставки в КАНАЛ определяется
+    существованием привязки владельца, а не тем, поставил ли он паузу личке:
+    /mute — это «не пиши мне в личку», а не «отключи мои каналы». А revoke и
+    удаление аккаунта канал гасить обязаны."""
+    email = (user_email or "").strip().lower()
+    if not email:
+        return False
+    with _connect() as c:
+        return c.execute(
+            "SELECT 1 FROM tg_users WHERE email=? AND status='approved' LIMIT 1",
+            (email,)).fetchone() is not None
+
+
 def has_chats(user_email: str) -> bool:
     """Есть ли смысл вообще класть событие в очередь доставки."""
     email = (user_email or "").strip().lower()

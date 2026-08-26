@@ -128,7 +128,13 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
     try:
         chats = tg_users.chats_for_email(user_email)
         target_chat = None
-        if target_id:
+        # КАНАЛ — ЭТО АДРЕС, А НЕ ПРАВО НА ДОСТАВКУ. Право живёт в привязке
+        # владельца: tg_targets.chat_id_for проверяет только владение строкой и
+        # про статус привязки не знает. Без этой проверки revoke и удаление
+        # аккаунта гасили личку, а канал продолжал звонить уволенному.
+        # Проверяем БЕЗ учёта mute: /mute — «не пиши мне в личку», каналы он
+        # глушить не должен.
+        if target_id and tg_users.email_exists_approved(user_email):
             from services import tg_targets
             target_chat = tg_targets.chat_id_for(target_id, user_email)
         if target_chat is not None:

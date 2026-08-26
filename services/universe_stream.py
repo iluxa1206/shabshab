@@ -248,6 +248,12 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                         if n % 50 == 49:
                             await asyncio.sleep(0.2)
                     _depth_streamed.update(isins)
+                    # СОСТАВ ШАРДА И ЕГО МЕТКА СВЕЖЕСТИ: глобальный depth_ts
+                    # обновляет ЛЮБОЙ живой шард, поэтому смерть одного сокета
+                    # (150 бумаг) пряталась за соседями — get_depth() отдавал
+                    # получасовые лестницы как свежие. См. services/depth.
+                    market_cache.setdefault("depth_shard_isins", {})[shard_id] = list(isins)
+                    market_cache.setdefault("depth_shard_ts", {})[shard_id] = time.time()
                     while not stop.is_set():
                         try:
                             msg = await ws.receive(timeout=5.0)
@@ -274,7 +280,9 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                                   for e in (data.get("bids") or []) if e.get("price") is not None],
                             "a": [[float(e["price"]), float(e["volume"])]
                                   for e in (data.get("asks") or []) if e.get("price") is not None]}
-                        market_cache["depth_ts"] = time.time()
+                        _now_ts = time.time()
+                        market_cache["depth_ts"] = _now_ts
+                        market_cache.setdefault("depth_shard_ts", {})[shard_id] = _now_ts
                         _depth_msgs += 1
         except asyncio.CancelledError:
             raise
@@ -282,6 +290,9 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
             logger.warning("depth stream shard %d: %s", shard_id, e)
         finally:
             _depth_streamed.difference_update(isins)
+            # метку снимаем: пока сокет мёртв, его бумаги обязаны считаться
+            # протухшими, а не жить на метке соседних шардов
+            market_cache.get("depth_shard_ts", {}).pop(shard_id, None)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
 
