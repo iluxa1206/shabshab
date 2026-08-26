@@ -762,7 +762,14 @@ def build_cashflows_to_maturity(
             if explicit_periods:
                 margin_steps = _sp.get("margin_schedule")
                 ref_margin_bps = _sp.get("margin_bps")
-        except Exception:
+        except Exception as e:
+            # Тот же класс, что потеря спеки фиксинга: молчаливый откат МЕНЯЕТ
+            # МЕТОДИКУ, а не точность. Без кэпа/флора прогнозный купон не
+            # клэмпится (DM/SM/YTM завышаются), без лесенки маржи все купоны
+            # считаются скаляром реестра — на «S 1-7=2.5%, S8-21=4.6%» это сотни
+            # bps. Раньше и то и другое пропадало без единой строчки в логе.
+            logger.warning("%s: кэп/флор и лесенка маржи не резолвятся (%s) — "
+                           "купоны проецируются без ограничения ставки", bond.isin, e)
             cap_pct = floor_pct = None
 
     cfs = []

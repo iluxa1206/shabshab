@@ -766,6 +766,23 @@ def strip_undetermined_values(isin: str, base: str, coupons: list,
     return (out, dropped) if dropped else (coupons, [])
 
 
+# Пропажа спеки фиксинга — не рядовой мисс, а расхождение методик расчёта, и
+# логировать её на каждую бумагу каждого пересчёта нельзя (универс ~600 бумаг,
+# несколько пересчётов в минуту). Дедуп по (isin, причина): первый раз громко,
+# дальше молча до сброса кэша реестра.
+_SPEC_LOST_SEEN: set = set()
+
+
+def _spec_lost(isin: str, base: str, why: str) -> None:
+    key = (isin, why)
+    if key in _SPEC_LOST_SEEN:
+        return
+    _SPEC_LOST_SEEN.add(key)
+    logger.warning("спека фиксинга потеряна: %s (%s) — %s; купон считается "
+                   "легаси форвард-проекцией кривой, метрики разойдутся с паспортом",
+                   isin, base, why)
+
+
 def period_index_pct(isin: str, base: str, coupons: list, face: float,
                      start: date, end: date, calc_date: date,
                      fwd_pct: Callable[[date], float],
@@ -798,7 +815,14 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
                     "lag_unit": s.get("fixing_lag_unit") or "cal", "base": base,
                     "avg_window_days": s.get("avg_window_days"),
                     "compounded": s.get("compounded")}
-    except Exception:
+        elif base in ("KEYRATE", "RUONIA"):
+            # Спека не резолвится — купон уйдёт на легаси форвард-проекцию кривой.
+            # Это ДРУГАЯ цифра, а не «чуть менее точная»: на ВЭБ2Р-50 разница
+            # 9 bps R-spread. Раньше расхождение было невидимым, и один и тот же
+            # выпуск по одной цене показывал разные метрики до/после рестарта.
+            _spec_lost(isin, base, "coupon_mode/avg_window_days не резолвятся")
+    except Exception as e:
+        _spec_lost(isin, base, f"coupon_formula упал: {e}")
         spec = None
     if start > calc_date:
         # БУДУЩИЕ периоды (обе базы): спека выпуска — окно наблюдения со

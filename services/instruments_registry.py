@@ -1121,6 +1121,41 @@ def coupon_overrides_all() -> dict:
     return out
 
 
+# Поля, отсутствие которых ПЕРЕКЛЮЧАЕТ МЕТОДИКУ расчёта, а не просто снижает
+# точность. Реестр отдаёт их как фолбэк для ВСЕХ бумаг (не только locked):
+#   coupon_text — первоисточник спеки фиксинга; без него parse_prospectus_formula
+#                 не зовётся, coupon_mode остаётся None и projected_ks_pct молча
+#                 уходит на легаси форвард-проекцию (ВЭБ2Р-50: ±9 bps R-spread на
+#                 одной и той же цене того же дня);
+#   var_type    — признак «купон после оферты пересматривает эмитент»
+#                 (ref_data.cut_at_offer); без него поток считается к погашению
+#                 вместо оферты, и спред занижается почти вдвое (24 бумаги);
+#   base, margin_bps — без них выпуск вообще непрайсуем.
+# Все они раньше приходили ТОЛЬКО из bondsearch-xlsx, который лежит вне git и вне
+# тома данных: файл приезжает лишь rsync'ом деплоя.
+_PRICING_FALLBACK_COLS = ("coupon_text", "var_type", "base", "margin_bps")
+
+
+def pricing_fallback_all() -> dict:
+    """{isin: {поле: значение}} — реестровый ФОЛБЭК параметров прайсинга по всем
+    бумагам, независимо от manual_locked. Только непустые поля.
+
+    Отдельно от coupon_overrides_all: тот отдаёт ручные правки, которые ПЕРЕБИВАЮТ
+    остальные слои (только locked). Здесь наоборот — самый НИЗКИЙ приоритет,
+    закрытие дыры, когда источника выше нет вовсе."""
+    _ensure()
+    cols = ",".join(_PRICING_FALLBACK_COLS)
+    with _conn() as c:
+        rows = c.execute(f"SELECT isin,{cols} FROM instruments").fetchall()
+    out = {}
+    for r in rows:
+        v = {k: r[k] for k in _PRICING_FALLBACK_COLS
+             if r[k] is not None and r[k] != ""}
+        if v:
+            out[r["isin"]] = v
+    return out
+
+
 def list_catalog(only_active: bool = True, floaters_only: bool = False) -> list[dict]:
     """Полный справочник бумаг со ВСЕМИ параметрами (спарсенные + пропуски=None).
     Непрайсуемые (нет base/margin/maturity) идут первыми — их надо дозаполнить.

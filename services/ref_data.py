@@ -17,7 +17,11 @@ import glob
 import re
 from typing import Dict, Optional
 
+import logging
+
 import openpyxl
+
+logger = logging.getLogger(__name__)
 
 _DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MANUAL_FILE = os.path.join(_DIR, "bond_params_manual.json")
@@ -114,10 +118,20 @@ def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
     if not path or not os.path.exists(path):
         _cbonds_cache = out
         return out
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb[wb.sheetnames[0]]
-    it = ws.iter_rows(values_only=True)
-    headers = [str(h) if h is not None else "" for h in next(it)]
+    # Файл может быть недочитан (rsync деплоя переписывает его на месте, битая
+    # выгрузка, нехватка памяти на воркере): раньше исключение улетало наверх, и
+    # coupon_formula отдавал спеку без coupon_mode — прайсинг тихо съезжал на
+    # легаси-проекцию. Теперь провал логируется и НЕ кэшируется (следующий вызов
+    # пробует снова), а текст формулы подхватывается из реестра (см. params).
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        it = ws.iter_rows(values_only=True)
+        headers = [str(h) if h is not None else "" for h in next(it)]
+    except Exception as e:
+        logger.error("bondsearch-выгрузка %s не читается: %s — параметры выпусков "
+                     "берутся только из реестра/manual", path, e)
+        return out
     ix = _hdr_index(headers)
     if "isin" not in ix:
         _cbonds_cache = out
@@ -169,6 +183,9 @@ _reg_ov_cache = {"ts": 0.0, "map": None}
 _br_cache = {"ts": 0.0, "map": None}
 
 
+_txt_cache = {"ts": 0.0, "map": None}
+
+
 def invalidate_registry_cache() -> None:
     """Сброс кэшей реестровых слоёв — зовётся из instruments_registry при
     ручной правке/импорте, чтобы спека фиксинга применялась сразу, а не через TTL."""
@@ -176,6 +193,31 @@ def invalidate_registry_cache() -> None:
     _reg_ov_cache["ts"] = 0.0
     _br_cache["map"] = None
     _br_cache["ts"] = 0.0
+    _txt_cache["map"] = None
+    _txt_cache["ts"] = 0.0
+
+
+def _registry_fallback() -> dict:
+    """{isin: {coupon_text, var_type, base, margin_bps}} из реестра (все бумаги,
+    не только locked) — кэш 30с. САМЫЙ НИЗКИЙ приоритет в params().
+
+    Второй источник параметров, переключающих методику, помимо bondsearch-xlsx.
+    Файл xlsx не в git, не в томе данных и приезжает только rsync'ом деплоя: его
+    отсутствие раньше тихо обнуляло coupon_mode всему универсу флоатеров и
+    признак пересмотра купона у бумаг с офертой (см. pricing_fallback_all)."""
+    import time
+    now = time.monotonic()
+    if _txt_cache["map"] is not None and now - _txt_cache["ts"] < 30:
+        return _txt_cache["map"]
+    try:
+        from services import instruments_registry as reg
+        m = reg.pricing_fallback_all()
+    except Exception as e:
+        logger.warning("реестровый фолбэк параметров недоступен: %s", e)
+        m = {}
+    _txt_cache["map"] = m
+    _txt_cache["ts"] = now
+    return m
 
 
 def _br_specs() -> dict:
@@ -219,6 +261,15 @@ def params(isin: str) -> dict:
     p = dict(load_cbonds().get(isin) or {})
     p.update({k: v for k, v in (load_manual().get(isin) or {}).items() if v is not None})
     p.update(_registry_overrides().get(isin) or {})
+    # РЕЕСТРОВЫЙ ФОЛБЭК — последним и только в ПУСТЫЕ поля: свой источник он не
+    # затирает (иначе это был бы оверрайд и freeze-trap импорта xlsx). Закрывает
+    # дыру, когда bondsearch-выгрузки нет: без coupon_text молча исчезает спека
+    # фиксинга, без var_type — обрезка потока по оферте.
+    fb = _registry_fallback().get(isin)
+    if fb:
+        for k, v in fb.items():
+            if p.get(k) in (None, ""):
+                p[k] = v
     return p
 
 

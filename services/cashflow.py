@@ -1,5 +1,8 @@
+import logging
 from datetime import date
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Сервис отдаёт plain dicts (ключи = поля api.schemas.CashflowItem) — Pydantic
 # коэрсит их на route-слое. Раньше сервис импортировал api.schemas: домен
@@ -42,7 +45,13 @@ def build_cashflow_from_moex(
             from functools import partial
             from services.coupon_calib import period_index_pct as _pip, index_history
             index_pct_fn = partial(_pip, idx=index_history(ref.base))
-        except Exception:
+        except Exception as e:
+            # Витрина потоков (карточка, waterfall паспорта) обязана считать купон
+            # ТЕМ ЖЕ провайдером, что прайсинг. Молчаливый None разводит их на
+            # разные методики: в таблице одна ставка купона, в метриках другая.
+            logger.warning("%s: провайдер индекса для витрины потоков недоступен "
+                           "(%s) — купоны начавшихся периодов разойдутся с прайсингом",
+                           ref.isin, e)
             index_pct_fn = None
 
     _am_all = sorted(
