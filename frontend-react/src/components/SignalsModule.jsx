@@ -7,7 +7,7 @@ import {
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt } from "../format.js";
-import { bookMode, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
+import { bookMode, eventTag, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 
 const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 // Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
@@ -15,8 +15,7 @@ const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
 const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];
 // block — не срабатывание фильтра, а рыночное событие (filter_id=0), поэтому
 // filter_name у него пустой: подпись собираем сами, см. sig-hit-meta ниже.
-const REASON = { new: "заявка", price: "цена", spread: "спред", money: "объём",
-                 block: "блок" };
+// текст плашки — общий с колокольчиком (signalFormat.eventTag)
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
 const money = (v) => (v == null ? "—" : fmt.mln(v));
@@ -639,7 +638,7 @@ function FilterRow({ f, onToggle, onDelete, onEdit, editing }) {
         <div className="sig-rc-main">
           <div className="sig-rc-title">
             {f.name}
-            <span className="sb-tag sb-block">блок</span>
+            <span className="sb-tag sb-block">сделки</span>
             <span className={"sig-state " + (f.enabled ? "on" : "off")}>
               {f.enabled ? "включён" : "выключен"}</span>
           </div>
@@ -849,10 +848,11 @@ export default function SignalsModule() {
           : feed.map((h) => (
               <div key={h.id}
                 className={"sig-hit " + (h.reason === "block" ? "hit-block" : "hit-book")
-                  + (REPEAT[h.reason] ? " hit-repeat" : "")}>
+                  + (REPEAT[h.reason] ? " hit-repeat" : "")
+                  + (tradeTone(h) ? " sb-t-" + tradeTone(h) : "")}>
                 <div className="sig-hit-top">
                   <span className="sig-hit-name">{h.name || h.isin}</span>
-                  <span className={"sb-tag sb-" + h.reason}>{REASON[h.reason] || h.reason}</span>
+                  <span className={"sb-tag sb-" + h.reason}>{eventTag(h)}</span>
                   <span className="sig-hit-time num">{timeOf(h.fired_at)}</span>
                 </div>
                 <div className="sig-hit-body num">

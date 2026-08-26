@@ -1885,6 +1885,20 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sb-money { color: var(--mut); }
 /* рыночное событие, а не фильтр — отдельный цвет, чтобы не путать с сигналами */
 .sb-block { color: var(--accent); }
+/* ЗАЛИВКА СТРОКИ СДЕЛКИ: покупка / продажа / адресная (РПС). Цвет несёт ту же
+   новость, что и плашка, но доходит раньше — глазу не нужно читать. Красим
+   ТОЛЬКО сделки: у события стакана сторона значит другое (очередь, а не
+   агрессор), и общий цвет смешал бы два разных смысла.
+   Проценты малые: строка остаётся читаемой, а подсветка сработавшего алерта
+   (насыщенный красный) не путается с «продажей». */
+.sb-row.sb-t-buy,  .sig-hit.sb-t-buy  { background: color-mix(in srgb, var(--up) 10%, transparent); }
+.sb-row.sb-t-sell, .sig-hit.sb-t-sell { background: color-mix(in srgb, var(--down) 10%, transparent); }
+.sb-row.sb-t-rps,  .sig-hit.sb-t-rps  { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* ховер обязан оставаться заметным поверх заливки — иначе строка «залипает» */
+.sb-row.sb-t-buy:hover  { background: color-mix(in srgb, var(--up) 22%, var(--hover)); }
+.sb-row.sb-t-sell:hover { background: color-mix(in srgb, var(--down) 22%, var(--hover)); }
+.sb-row.sb-t-rps:hover  { background: color-mix(in srgb, var(--accent) 22%, var(--hover)); }
+
 .sb-delta { font-family: var(--mono); font-size: 10.5px; }
 
 /* уровни стакана, из которых собран объём сигнала */

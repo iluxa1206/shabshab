@@ -3,23 +3,25 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clearSignalEvents, fetchSignalEvents, markSignalEventsSeen } from "../api.js";
 import { fmt } from "../format.js";
-import { bookMode, eventMoney, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode } from "../signalFormat.js";
+import { bookMode, eventMoney, eventTag, maturityTxt, reasonDelta, reasonTitle,
+         sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 import { IconBell, IconAlert } from "./icons.jsx";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
 const money = (v) => (v == null ? "—" : fmt.mln(v));
 
-const REASON = {
-  // «заявка» — бумага пришла в набор фильтра (её не видели там ≥30 минут)
-  new: ["заявка", "бумага попала под условия"],
+// Текст плашки живёт в signalFormat.eventTag (общий с вкладкой СИГНАЛЫ);
+// здесь — только подсказка, объясняющая, откуда событие взялось.
+const REASON_TITLE = {
+  new: "бумага попала под условия",
   // цена больше НЕ повод для сигнала (спред уже несёт её движение), ярлык
   // оставлен для старых строк ленты
-  price: ["цена", "цена сдвинулась"],
-  spread: ["спред", "спред ушёл на 5 бп"],
-  money: ["объём", "объём по нашим условиям изменился"],
+  price: "цена сдвинулась",
+  spread: "спред ушёл на 5 бп",
+  money: "объём по нашим условиям изменился",
   // не фильтр скринера, а рыночное событие: сделка крупнее порога уведомления
   // (в т.ч. адресная — РПС/размещение, которой в стакане не видно вообще)
-  block: ["блок", "крупная сделка по рынку"],
+  block: "крупная сделка по рынку",
 };
 
 const timeOf = (iso) => {
@@ -153,13 +155,19 @@ export default function SignalsBell() {
           ) : (
             <div className="sb-list">
               {events.map((e) => {
-                const [tag, title] = REASON[e.reason] || [e.reason, e.reason];
+                const title = REASON_TITLE[e.reason] || e.reason;
+                // заливка фона — только у сделок: покупка зелёная, продажа
+                // красная, адресная голубая. Читается боковым зрением, до того
+                // как глаз дошёл до плашки
+                const tone = tradeTone(e);
                 return (
-                  <button type="button" key={e.id} className="sb-row" onClick={() => openBond(e)}
+                  <button type="button" key={e.id}
+                    className={"sb-row" + (tone ? " sb-t-" + tone : "")}
+                    onClick={() => openBond(e)}
                     title="Открыть карточку и стакан с подсветкой объёма">
                     <span className="sb-row-1">
                       <span className="sb-name">{e.name || e.isin}</span>
-                      <span className={"sb-tag sb-" + e.reason} title={title}>{tag}</span>
+                      <span className={"sb-tag sb-" + e.reason} title={title}>{eventTag(e)}</span>
                       <span className="sb-time num">{timeOf(e.fired_at)}</span>
                     </span>
                     {e.reason === "block" ? (
