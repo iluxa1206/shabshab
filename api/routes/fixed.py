@@ -18,7 +18,10 @@ _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 # поля метрик, доливаемые в строку из market_cache['fixed_metrics']
 _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
-                "dv01", "put_date")
+                "dv01", "put_date",
+                # средневзвес дня и g-спред по нему — база графиков аналитики
+                # (last price в неликвиде это один случайный принт)
+                "wap_pct", "g_spread_wap_bps", "ytm_wap")
 
 
 @router.get("", tags=["Fixed"])
@@ -103,10 +106,12 @@ async def get_fixed_details(isin: str = Path(...)):
             "last_price_pct": m.get("last"), "prev_close_pct": row.get("prev"),
             "price_stale": m.get("price_stale", False), "dirty_rub": m.get("dirty"),
             "accrued_rub": row.get("accrued"), "val_today": row.get("val_today"),
+            "wap_price_pct": m.get("wap_pct"),
         },
         "metrics": {
             "ytm_pct": m.get("ytm"), "cur_yield_pct": m.get("cur_yield"),
             "g_spread_bps": m.get("g_spread_bps"), "z_spread_bps": m.get("z_spread_bps"),
+            "g_spread_wap_bps": m.get("g_spread_wap_bps"), "ytm_wap_pct": m.get("ytm_wap"),
             "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
             "convexity": m.get("convexity"), "dv01": m.get("dv01"),
             "put_date": m.get("put_date"),

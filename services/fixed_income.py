@@ -212,6 +212,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
     mg = lambda row, n: row[mcols.index(n)] if n in mcols else None
     last_by: Dict[str, float] = {}
     val_by: Dict[str, float] = {}
+    wap_by: Dict[str, float] = {}
     for mr in mrows:
         sid = mg(mr, "SECID")
         if sid:
@@ -219,6 +220,9 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             if px is not None:
                 last_by[sid] = _numf(px)
             val_by[sid] = _numf(mg(mr, "VALTODAY")) or 0.0
+            # средневзвешенная цена дня — отдельным полем, а не только фолбэком
+            # для last: на ней стоит аналитика (см. compute_fixed_row)
+            wap_by[sid] = _numf(mg(mr, "WAPRICE"))
     out = []
     for row in rows:
         isin = g(row, "ISIN")
@@ -242,6 +246,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             "accrued": _numf(g(row, "ACCRUEDINT")) or 0.0,
             "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
             "last": last_by.get(g(row, "SECID")),
+            "wap": wap_by.get(g(row, "SECID")),
             "val_today": val_by.get(g(row, "SECID")) or 0.0, "board": board,
         })
     return out
@@ -345,6 +350,27 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
         "put_date": m.get("put_date"),
     })
+    # G-СПРЕД ПО СРЕДНЕВЗВЕСУ ДНЯ — метрика аналитики. last price это ОДНА
+    # сделка: в неликвиде случайный тонкий принт, часто на закрытии, и облако
+    # точек от него дрожит сильнее, чем двигался рынок. Средневзвес взвешен
+    # оборотом. Считаем ПРЯМЫМ пересчётом на этой цене, а не линеаризацией от
+    # last: у флоатеров наклон нужен ради стакана (спред по каждому уровню), а
+    # здесь число одно — второй проход дешевле двухточечной пробы и точен.
+    # Свой тиковый средневзвес впереди биржевого: WAPRICE из ISS отстаёт.
+    if price_override is None:
+        from services import live_quotes
+        lv = live_quotes.get(row.get("isin")) or {}
+        wap = lv.get("vwap_pct") or row.get("wap")
+        out["wap_pct"] = wap
+        if wap is not None and wap > 0:
+            if abs(wap - px) < 1e-9:
+                out["g_spread_wap_bps"] = out.get("g_spread_bps")
+            else:
+                mw = fixed_metrics_from_schedule(full, wap, row.get("accrued") or 0.0,
+                                                 calc_date, g_curve)
+                out["g_spread_wap_bps"] = mw.get("g_spread_bps")
+                out["ytm_wap"] = mw.get("ytm_pct")
+
     # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
         try:

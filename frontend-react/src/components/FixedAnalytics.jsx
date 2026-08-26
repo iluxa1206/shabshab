@@ -20,11 +20,13 @@ const plu = (n) => {
   return "бумаг";
 };
 
-// g-спред для аналитики — бэнд отсекает мусор от стейл/тонких цен неликвида.
-const gval = (b) => {
-  const v = b.g_spread_bps;
-  return v != null && v < 3000 && v > -500 ? v : null;
-};
+// G-спред для аналитики — по СРЕДНЕВЗВЕСУ дня, как и на вкладке флоатеров:
+// last price это одна сделка (в неликвиде случайный тонкий принт, часто на
+// закрытии), а средневзвес взвешен оборотом. Фолбэк на спред по last — для
+// бумаг, которые сегодня не торговались (средневзвеса нет вовсе).
+// Бэнд отсекает мусор от стейл/тонких цен неликвида.
+const inBand = (v) => (v != null && v < 3000 && v > -500 ? v : null);
+const gval = (b) => inBand(b.g_spread_wap_bps) ?? inBand(b.g_spread_bps);
 
 const emKey = (b) => b.issuer || b.name || null;
 const byIssuer = (rows) => {
@@ -283,7 +285,7 @@ export default function FixedAnalytics({ rows }) {
     <section className="analytics">
       <div className="an-card">
         <div className="an-title">G-СПРЕД vs ДЮРАЦИЯ
-          <span className="an-hint">{byIss ? "точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
+          <span className="an-hint">{byIss ? "спред по средневзвесу дня · точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "спред по средневзвесу дня · точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         {byIss ? <ScatterIssuer rows={rows} /> : <ScatterGDur rows={rows} />}
@@ -291,7 +293,7 @@ export default function FixedAnalytics({ rows }) {
       </div>
       <div className="an-card">
         <div className="an-title">{byIss ? "G-СПРЕД по ЭМИТЕНТАМ" : "G-СПРЕД по РЕЙТИНГ-БАКЕТАМ"}
-          <span className="an-hint">линия p25–p75 · точка = медиана · (n)</span>
+          <span className="an-hint">спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n)</span>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         {byIss ? <IssuerDist rows={rows} /> : <RatingDist rows={rows} />}
