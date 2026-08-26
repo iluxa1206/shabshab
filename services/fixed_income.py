@@ -43,7 +43,8 @@ def _d(s) -> Optional[date]:
         return None
 
 
-def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple], float, Optional[date]]:
+def build_fixed_cashflows(schedule: dict, calc_date: date,
+                          exchange_face=None) -> Tuple[List[tuple], float, Optional[date]]:
     """Будущие кэшфлоу (pay_date, amount) из bondization + остаточный номинал на calc_date.
 
     Будущие купоны без value (после оферты купон не определён) → поток обрезается
@@ -81,6 +82,17 @@ def build_fixed_cashflows(schedule: dict, calc_date: date) -> Tuple[List[tuple],
     # используем его только как фолбэк при пустом графике амортизаций.
     if future_am:
         face = sum(v for _, v in future_am)
+        # ПОЛНОТА ГРАФИКА — страховка на будущие обрезы. Корень (пагинация
+        # amortizations читалась только с первой страницы) закрыт в
+        # market_data.fetch_bond_schedule_full, но если график снова придёт
+        # обрезанным, Σ будущих траншей превратится в копейки (sИАДОМ1P19:
+        # 8.78 ₽ против биржевых 577.64), а цена котируется в % от БИРЖЕВОГО
+        # номинала — купонная доходность раздувается в 1/k раз (до тысяч bps).
+        # Тот же guard, что во флоатерах (services/bonds.py:201). НЕ достраиваем
+        # residual: put_date у таких бумаг — ближайший НЕОПРЕДЕЛЁННЫЙ купон, а не
+        # оферта, и выкуп всего номинала на эту дату дал бы 33-143% годовых.
+        if exchange_face and face < float(exchange_face) * 0.95:
+            return [], None, None
     else:
         face = None
         for c in schedule.get("coupons", []):
@@ -113,6 +125,7 @@ def fixed_metrics_from_schedule(
     accrued: float,
     calc_date: date,
     g_curve=None,
+    exchange_face=None,
 ) -> dict:
     """{'ytm_pct','mod_dur','dv01','g_spread_bps','dirty','face_current','complete'}.
 
@@ -122,7 +135,11 @@ def fixed_metrics_from_schedule(
     out = {"ytm_pct": None, "mod_dur": None, "mac_dur": None, "convexity": None,
            "dv01": None, "g_spread_bps": None, "dirty": None, "face_current": None,
            "put_date": None}
-    cfs, face, put_date = build_fixed_cashflows(schedule, calc_date)
+    cfs, face, put_date = build_fixed_cashflows(schedule, calc_date, exchange_face)
+    if face is None:
+        # график амортизаций пришёл обрезанным — метрики считать не на чем
+        out["incomplete_schedule"] = True
+        return out
     out["face_current"] = face
     out["put_date"] = put_date.isoformat() if put_date else None
     if not cfs:
@@ -343,7 +360,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
                "price_stale": row.get("last") is None and row.get("prev") is not None}
     if px is None or not full.get("coupons"):
         return out
-    m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date, g_curve)
+    m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date,
+                                    g_curve, exchange_face=row.get("face"))
     out.update({
         "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
@@ -367,7 +385,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
                 out["g_spread_wap_bps"] = out.get("g_spread_bps")
             else:
                 mw = fixed_metrics_from_schedule(full, wap, row.get("accrued") or 0.0,
-                                                 calc_date, g_curve)
+                                                 calc_date, g_curve,
+                                                 exchange_face=row.get("face"))
                 out["g_spread_wap_bps"] = mw.get("g_spread_bps")
                 out["ytm_wap"] = mw.get("ytm_pct")
 
@@ -375,7 +394,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
         try:
             from services.zspread import solve_z_discrete
-            cfs, _face, _put = build_fixed_cashflows(full, calc_date)
+            cfs, _face, _put = build_fixed_cashflows(full, calc_date,
+                                                     row.get("face"))
             if cfs:
                 out["z_spread_bps"] = solve_z_discrete(g_curve, cfs, calc_date, m["dirty"])
         except Exception as e:

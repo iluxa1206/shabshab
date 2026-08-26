@@ -232,7 +232,10 @@ def next_coupon_after(ref_obj: BondRefData, today: date) -> Optional[date]:
     d = ref_obj.first_coupon_date
     if not d:
         return ref_obj.maturity_date
-    step = 12 // (ref_obj.coupons_per_year or 4)
+    # см. core/valuation.generate_coupon_dates: при cpy>12 шаг 0 не двигает
+    # дату, и цикл ниже крутится до guard'а, возвращая дату погашения
+    # вместо ближайшего купона (ВЭБP-46 с 14-дневным купоном)
+    step = max(1, 12 // (ref_obj.coupons_per_year or 4))
     guard = 0
     while d < today and guard < 600:
         if ref_obj.maturity_date and d >= ref_obj.maturity_date:
@@ -288,7 +291,7 @@ def create_bond_ref_data(data: dict, isin: str) -> BondRefData:
     # База/маржа из реестра приходят ниже через apply_registry_params (батч).
 
     # Exact fallback from CLI for first coupon mapping
-    step_months = 12 // (frequency or 4)
+    step_months = max(1, 12 // (frequency or 4))   # MOEX FREQUENCY>12 → шаг 0
     from core.forwards import add_months
     first_coupon = None
     if start_date:

@@ -225,12 +225,29 @@ def upsert(row: dict, source: str, mark_new: bool = True,
         return "updated"
 
 
+def _period_days_of(isin: str):
+    """coupon_period_days из уже сохранённой строки (для валидации частоты)."""
+    row = get(isin)
+    return (row or {}).get("coupon_period_days")
+
+
 def set_manual(isin: str, params: dict, lock: bool = True) -> None:
     """Ручной ввод/правка параметров бумаги (admin). lock=True → sync не затрёт."""
     _ensure()
     isin = (isin or "").strip()
     if not isin:
         raise ValueError("isin обязателен")
+    # ВАЛИДАЦИЯ ЗДЕСЬ, а не в модели роута: set_manual — единственная точка, через
+    # которую проходит и ручной POST, и xlsx-импорт. coupons_per_year > 12 с пустым
+    # coupon_period_days вешает generate_coupon_dates намертво (шаг add_months=0).
+    cpy = params.get("coupons_per_year")
+    if cpy is not None:
+        if not (1 <= int(cpy) <= 366):
+            raise ValueError("coupons_per_year вне 1..366")
+        if int(cpy) > 12 and not (params.get("coupon_period_days")
+                                  or _period_days_of(isin)):
+            raise ValueError("coupons_per_year > 12 требует coupon_period_days: "
+                             "месячная сетка такую частоту не выражает")
     with _lock, _conn() as c:
         exists = c.execute("SELECT 1 FROM instruments WHERE isin=?", (isin,)).fetchone()
         now = _now()

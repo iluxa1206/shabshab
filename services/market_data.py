@@ -663,23 +663,33 @@ class MarketDataService:
                             "value": cg(row, "value"), "valueprc": cg(row, "valueprc"),
                             "face": cg(row, "facevalue"),
                         })
-                    if start == 0:  # amorts/offers — только с первой страницы
-                        am = j.get("amortizations", {})
-                        acols = am.get("columns", [])
-                        ag = lambda row, n: row[acols.index(n)] if n in acols else None
-                        for row in am.get("data", []):
-                            d, val = ag(row, "amortdate"), ag(row, "value")
-                            if d and val is not None:
-                                out["amorts"].append({"date": d, "value": val})
-                        off = j.get("offers", {})
-                        ocols = off.get("columns", [])
-                        og = lambda row, n: row[ocols.index(n)] if n in ocols else None
-                        for row in off.get("data", []):
-                            d = og(row, "offerdate") or og(row, "offerdateend")
-                            if d:
-                                out["offers"].append({"date": d, "type": og(row, "offertype"),
-                                                      "price": og(row, "price")})
-                    if len(crows) < PAGE:  # последняя страница
+                    # AMORTS/OFFERS ЧИТАЕМ С КАЖДОЙ СТРАНИЦЫ. ISS пагинирует ВСЕ
+                    # блоки одним start/limit, а не только купоны: у ИА РТБ-1
+                    # start=0 отдаёт 100 амортизаций, start=100 — ещё 30. Стояло
+                    # `if start == 0`, и хвост графика терялся молча. Именно
+                    # отсюда брался «остаток номинала» в 8.78 ₽ при биржевых
+                    # 577.64 у ежемесячно амортизируемых ABS: Σ будущих траншей
+                    # считалась по обрезку, а цена котируется в % от БИРЖЕВОГО
+                    # номинала → YTM/DV01/g-спред улетали в тысячи bps.
+                    am = j.get("amortizations", {})
+                    acols = am.get("columns", [])
+                    ag = lambda row, n: row[acols.index(n)] if n in acols else None
+                    arows = am.get("data", [])
+                    for row in arows:
+                        d, val = ag(row, "amortdate"), ag(row, "value")
+                        if d and val is not None:
+                            out["amorts"].append({"date": d, "value": val})
+                    off = j.get("offers", {})
+                    ocols = off.get("columns", [])
+                    og = lambda row, n: row[ocols.index(n)] if n in ocols else None
+                    for row in off.get("data", []):
+                        d = og(row, "offerdate") or og(row, "offerdateend")
+                        if d:
+                            out["offers"].append({"date": d, "type": og(row, "offertype"),
+                                                  "price": og(row, "price")})
+                    # последняя страница — когда КАЖДЫЙ блок исчерпан: у бумаги
+                    # амортизаций может быть больше, чем купонов на странице
+                    if len(crows) < PAGE and len(arows) < PAGE:
                         break
                     start += PAGE
             return out
@@ -1303,8 +1313,12 @@ class MarketDataService:
         (bondization) с руб. суммой зафиксированных купонов (value; None если купон
         ещё не определён). Кэш память + диск schedule_cache.json с TTL на день:
         value текущего купона фиксируется со временем, вечный кэш давал бы
-        перепрогноз уже известного купона."""
-        today = date.today().isoformat()
+        перепрогноз уже известного купона.
+
+        Ключ кэша — _trading_day(), как у fetch_bond_schedule_full. На date.today()
+        два кэша расписаний жили по РАЗНЫМ суткам: с полуночи до 09:00 МСК карточка
+        собирала метрики и таблицу потоков из разных источников."""
+        today = _trading_day()
         if cls._schedule_mem_date != today:
             cls._schedule_mem = {}
             cls._schedule_mem_date = today
@@ -1340,6 +1354,14 @@ class MarketDataService:
                         params={"iss.only": "coupons", "limit": PAGE, "start": start_pg},
                         timeout=8)
                     if resp is None or resp.status_code != 200:
+                        # ОБРЫВ ПАГИНАЦИИ, а не конец данных — та же семантика,
+                        # что в fetch_bond_schedule_full. Молчаливый break отдавал
+                        # ОБРЕЗОК и кэшировал его на сутки: метрики считались по
+                        # куску графика (хвост достраивался прогнозом вместо
+                        # известных value), а таблица карточки — по полному.
+                        if start_pg > 0 or sched:
+                            raise RuntimeError(
+                                f"bondization coupons {sec}: обрыв на start={start_pg}")
                         break
                     cp = (await asyncio.to_thread(resp.json)).get("coupons", {})
                     cols = cp.get("columns", [])
@@ -1368,8 +1390,10 @@ class MarketDataService:
                         cls._schedule_mem[isin] = [(date.fromisoformat(a), date.fromisoformat(b), v)
                                                    for a, b, v in sched]
                         result[isin] = cls._schedule_mem[isin]
-                except Exception:
-                    pass
+                except Exception as e:
+                    # раньше молчали: бумага просто отсутствовала в результате,
+                    # и понять, что график недокачан, было неоткуда
+                    logger.warning("fetch_coupon_schedules %s: %s — не кэшируем", isin, e)
 
             async with httpx.AsyncClient() as client:
                 await asyncio.gather(*(fetch_one(client, i) for i in missing))

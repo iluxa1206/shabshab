@@ -104,7 +104,13 @@ def generate_coupon_dates(first_coupon_date: date, maturity_date: date, coupons_
     """
     if maturity_date is None:
         return []
-    step_months = 12 // coupons_per_year
+    # 12 // 13 == 0 → add_months(d, 0) не двигает дату → БЕСКОНЕЧНЫЙ while ниже
+    # с append в список (процесс съедает память и не возвращается), а
+    # coupons_per_year=0 давал ZeroDivisionError. Бумаги чаще месячной реально
+    # существуют (ВЭБP-46: 14-дневный купон, coupons_per_year=26 в реестре), но
+    # МЕСЯЧНОЙ СЕТКОЙ невыразимы — их считает generate_coupon_dates_by_period по
+    # дням. Здесь только клэмп, чтобы не повесить процесс.
+    step_months = max(1, 12 // max(1, coupons_per_year))
     if first_coupon_date is None:
         back = []
         current = maturity_date

@@ -139,11 +139,18 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
             out.append({**base, "date": d, "type": "REDEMPTION",
                         "amount_rub": round(float(a["value"]), 2),
                         "rate_pct": None, "projected": False})
-    # финальное погашение, если его нет в amorts
+    # ОСТАТОК номинала, а не полный: транши выше уже в потоке. Проверка «нет
+    # транша ровно на maturity» не работала — у ABS последний транш вообще за
+    # пределами 100 строк пагинации ISS, и номинал уходил в календарь ВТОРЫМ
+    # разом (в total_rub — умноженный на объём выпуска).
     mat = ref.maturity_date
-    if mat and mat > settle and not any(_d(a.get("date")) == mat for a in amorts):
+    _future_am = sum(float(a["value"]) for a in amorts
+                     if a.get("value") is not None
+                     and (_d(a.get("date")) or settle) > settle)
+    residual = (rem or 0.0) - _future_am
+    if mat and mat > settle and residual > 1e-9:
         out.append({**base, "date": mat, "type": "REDEMPTION",
-                    "amount_rub": round(rem, 2), "rate_pct": None, "projected": False})
+                    "amount_rub": round(residual, 2), "rate_pct": None, "projected": False})
     return out
 
 
@@ -171,7 +178,10 @@ async def build_payments_calendar() -> dict:
             MarketDataService.fetch_moex_shortnames(),
             MarketDataService.fetch_moex_securities(external) if external else _aempty(),
             MarketDataService.fetch_issue_sizes(),
-            asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids)),
+            # return_exceptions: одна бумага с обрывом пагинации ISS не должна
+            # валить сборку ВСЕГО календаря (см. fetch_bond_schedule_full)
+            asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids),
+                           return_exceptions=True),
         )
         await asyncio.to_thread(MarketDataService.flush_schedule_cache)
         full_by = dict(zip(ids, fulls))
