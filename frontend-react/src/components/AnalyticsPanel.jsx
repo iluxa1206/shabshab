@@ -92,10 +92,28 @@ const padDomain = (vals, frac = 0.06) => {
 // ── Общие поля scatter-графиков ──
 const SC_PAD = { l: 46, r: 14, t: 12, b: 30 };
 
+// В полный экран график растёт, а текст — нет: viewBox равен пикселям 1:1
+// (charts/useChartSize), поэтому ось остаётся 9,5 px на экране любой величины и
+// на большом мониторе читается плохо. Шрифт поднимает CSS (.an-card.an-full), а
+// поля под подписи обязаны вырасти вместе с ним — иначе крупное «−1500» уезжает
+// за левый край, а подпись оси X налезает на цифры.
+// Шаг между тиками оси X: не константа, а функция кегля. В полный экран
+// подпись «1,0г» занимает ~30 px вместо ~22, а ширина графика утраивается —
+// формула ширина/80 давала 20+ тиков, и они наезжали друг на друга.
+const tickGap = (full) => (full ? 110 : 80);
+const padFull = (pad, full) => (full ? {
+  ...pad,
+  l: Math.round(pad.l * 1.35),
+  // справа множитель больше: крайняя подпись оси X центрирована по тику, и её
+  // половина при 13 px (~19 px) шире исходного поля 14 px — «26.08» подрезалось
+  r: Math.max(Math.round(pad.r * 1.8), 26),
+  b: pad.b == null ? pad.b : Math.round(pad.b * 1.25),
+} : pad);
+
 // ── Scatter: Y-IDX vs spread duration, цвет = рейтинг ──
 // focus: активный фильтр {type,key} — попавшие под него точки ярче, прочие гаснут;
 // клик по точке ставит/снимает фильтр по эмитенту
-function ScatterYidx({ rows, focus, onPick, height }) {
+function ScatterYidx({ rows, focus, onPick, height, full }) {
   const pts = rows
     .map((b) => ({ b, z: yval(b) }))
     .filter(({ b, z }) => b.spread_dur_yrs != null && z != null)
@@ -108,15 +126,16 @@ function ScatterYidx({ rows, focus, onPick, height }) {
   return (
     <MeasuredSvg height={height} label="R-spread vs spread duration">
       {({ W, H, bind }) => {
-        const sx = linearScale([xmin, xmax], [SC_PAD.l, W - SC_PAD.r]);
-        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
-        const nx = Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 80));
+        const P = padFull(SC_PAD, full);
+        const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
+        const sy = linearScale([ymin, ymax], [H - P.b, P.t]);
+        const nx = Math.max(3, Math.round((W - P.l - P.r) / tickGap(full)));
         return (
           <>
-            <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+            <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={P.l} x2={W - P.r}
               lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
             <XTicks ticks={niceTicks(xmin, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - SC_PAD.b + 14} textClass="an-axis" />
+              y={H - P.b + 14} textClass="an-axis" />
             {pts.map((p) => {
               const on = hit(p);
               return (
@@ -128,9 +147,9 @@ function ScatterYidx({ rows, focus, onPick, height }) {
                     `${p.name}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.r}`)} />
               );
             })}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
-            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>R-spread, bps</text>
+            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
           </>
         );
       }}
@@ -140,7 +159,7 @@ function ScatterYidx({ rows, focus, onPick, height }) {
 
 // ── Scatter агрегированный по эмитенту: точка = (медиана spread dur, медиана
 //    Y-IDX), размер = число бумаг, цвет = доминирующий рейтинг эмитента ──
-function ScatterIssuer({ rows, focus, onPick, height }) {
+function ScatterIssuer({ rows, focus, onPick, height, full }) {
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const zs = bonds.map(yval).filter((v) => v != null);
@@ -156,15 +175,16 @@ function ScatterIssuer({ rows, focus, onPick, height }) {
   return (
     <MeasuredSvg height={height} label="R-spread vs spread duration по эмитентам">
       {({ W, H, bind }) => {
-        const sx = linearScale([xmin, xmax], [SC_PAD.l, W - SC_PAD.r]);
-        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
-        const nx = Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 80));
+        const P = padFull(SC_PAD, full);
+        const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
+        const sy = linearScale([ymin, ymax], [H - P.b, P.t]);
+        const nx = Math.max(3, Math.round((W - P.l - P.r) / tickGap(full)));
         return (
           <>
-            <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
+            <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={P.l} x2={W - P.r}
               lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
             <XTicks ticks={niceTicks(xmin, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - SC_PAD.b + 14} textClass="an-axis" />
+              y={H - P.b + 14} textClass="an-axis" />
             {pts.map((p) => {
               const on = hit(p);
               return (
@@ -176,9 +196,9 @@ function ScatterIssuer({ rows, focus, onPick, height }) {
                     `${trunc(p.name, 22)}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.n} шт`)} />
               );
             })}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
-            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>R-spread, bps</text>
+            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
+              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
           </>
         );
       }}
@@ -189,9 +209,9 @@ function ScatterIssuer({ rows, focus, onPick, height }) {
 // ── Общий рендер box-строк (p25–медиана–p75) для рейтингов/эмитентов ──
 // kind — измерение строк ("issuer"/"rating"): гасим только когда активный фильтр
 // того же измерения, иначе фильтр по эмитенту гасил бы весь рейтинг-график.
-function BoxRows({ entries, note, label, kind, focus, onPick, rowH: rowHIn }) {
+function BoxRows({ entries, note, label, kind, focus, onPick, rowH: rowHIn, full }) {
   // pad.l 140: подпись «Балтийский лизинг…» (18 симв.) не влезает в 100px
-  const PAD = { l: 140, r: 44, t: 6 };
+  const PAD = padFull({ l: 140, r: 44, t: 6 }, full);
   const rowH = rowHIn || (entries.length > 8 ? 22 : 30);
   const H = entries.length * rowH + PAD.t + 8 + (note ? 14 : 0);
   if (!entries.length) return <div className="an-empty">нет данных</div>;
@@ -263,7 +283,7 @@ function IssuerDetail({ rows, issuer, onClear }) {
 }
 
 // ── Распределение Y-IDX по рейтинг-бакетам (p25–медиана–p75) ──
-function RatingDist({ rows, focus, onPick, rowH }) {
+function RatingDist({ rows, focus, onPick, rowH, full }) {
   const entries = useMemo(() => {
     const g = {};
     for (const b of rows) {
@@ -274,12 +294,12 @@ function RatingDist({ rows, focus, onPick, rowH }) {
     return BUCKETS.filter((k) => g[k]?.length).map((k) => ({ key: k, label: k, arr: g[k], color: BCOLOR[k] }));
   }, [rows]);
   return <BoxRows entries={entries} label="распределение R-spread по рейтингам"
-    kind="rating" focus={focus} onPick={onPick} rowH={rowH} />;
+    kind="rating" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
 }
 
 // ── Распределение Y-IDX по эмитентам (сорт по медиане, топ-N) ──
 const ISSUER_CAP = 22;
-function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH }) {
+function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH, full }) {
   const { entries, note } = useMemo(() => {
     // одиночные эмитенты тоже в списке: точка-медиана без полосы p25–p75
     // (раньше скрывались правилом ≥2 бумаг — watchlist из одиночек давал пустую панель)
@@ -295,7 +315,7 @@ function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH }) {
   }, [rows, cap]);
   if (!entries.length) return <div className="an-empty">нет эмитентов с валидным R-spread</div>;
   return <BoxRows entries={entries} note={note} label="распределение R-spread по эмитентам"
-    kind="issuer" focus={focus} onPick={onPick} rowH={rowH} />;
+    kind="issuer" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
 }
 
 // ── История медианного Y-IDX по рейтингам/эмитентам (точные дневные снапшоты) ──
@@ -343,7 +363,7 @@ function withToday(data, rows, byIss) {
   return { dates: [...dates, today], series: nextSeries };
 }
 
-function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
+function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
   const byIss = groupBy === "issuer";
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -382,7 +402,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
     const [ymin, ymax] = padDomain(vals);
     const sx = linearScale([0, Math.max(dates.length - 1, 1)], [g.x0, g.x1]);
     const sy = linearScale([ymin, ymax], [g.y0, g.y1]);
-    const nx = Math.max(3, Math.min(8, Math.round(g.iw / 80)));
+    const nx = Math.max(3, Math.min(8, Math.round(g.iw / tickGap(full))));
     return {
       sx, sy,
       yTicks: niceTicks(ymin, ymax, 5),
@@ -394,7 +414,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height }) {
   return (
     <>
       <ChartFrame
-        height={height} pad={YH_PAD} label="динамика R-spread"
+        height={height} pad={padFull(YH_PAD, full)} label="динамика R-spread"
         data={idxPts} build={build} px={(p, s) => s.sx(p.i)}
         tooltip={(p) => {
           // компактный тултип: при активном фильтре — только его линия,
@@ -578,8 +598,8 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
       <AnCard title="R-spread vs SPREAD DURATION" ctl={aggCtl} {...fullBtn("scatter")}
         hint={byIss ? "спред по средневзвесу дня · точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
                     : "спред по средневзвесу дня · точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
-        {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} />
-               : <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} />}
+        {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />
+               : <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />}
         {focus?.type === "issuer" && <IssuerDetail rows={rows} issuer={focus.key} onClear={() => set(null)} />}
         <RatingLegend />
       </AnCard>
@@ -587,8 +607,10 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
       <AnCard title={byIss ? "R-spread по ЭМИТЕНТАМ" : "R-spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
         hint="спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n) · клик = фильтр">
         {byIss
-          ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH} />
-          : <RatingDist rows={rows} focus={focus} onPick={pickRating} rowH={distRowH} />}
+          ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH}
+              full={full === "dist"} />
+          : <RatingDist rows={rows} focus={focus} onPick={pickRating} rowH={distRowH}
+              full={full === "dist"} />}
         <RatingLegend />
       </AnCard>
 
@@ -596,7 +618,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
         hint={byIss ? "медиана по топ-эмитентам · сегодня — по средневзвесу · пунктир = рынок · клик по линии = фильтр"
                     : "медиана по рейтинг-бакетам · сегодня — по средневзвесу · клик по линии = фильтр"}>
         <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}
-          focus={focus} onPick={byIss ? pickIssuer : pickRating} />
+          focus={focus} onPick={byIss ? pickIssuer : pickRating} full={full === "hist"} />
       </AnCard>
     </section>
   );

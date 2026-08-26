@@ -60,7 +60,7 @@ function valueOf(p, metric, base0) {
   return base0 ? (p.price / base0 - 1) * 100 : null;
 }
 
-const axisLabel = (m) => (m === "spread" ? "Y-IDX, bps"
+const axisLabel = (m) => (m === "spread" ? "R-spread, bps"
   : m === "price" ? "цена, % номинала" : "Δ цены, %");
 const fmtVal = (v, m) => (v == null ? "—"
   : m === "spread" ? String(Math.round(v))
@@ -383,7 +383,7 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
           </span>
         </div>
         <div className="an-hint an-sub">
-          {metric === "spread" ? "Y-IDX по цене дня — линия на выпуск"
+          {metric === "spread" ? "R-spread по цене дня — линия на выпуск"
             : metric === "price" ? "чистая цена, % номинала"
             : "изменение цены от первого дня окна, %"}
           {base === "vwap" ? " · средневзвешенная цена дня (архив часовых баров)"

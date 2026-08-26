@@ -176,7 +176,7 @@ export default function SignalsBell() {
                       <span className="sb-row-2 num">
                         <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
                         {e.val_bps != null && (
-                          <b><span className="sb-k">Y-IDX</span> {fmt.num(e.val_bps, 0)} бп</b>
+                          <b><span className="sb-k">R-spread</span> {fmt.num(e.val_bps, 0)} бп</b>
                         )}
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         <span className="sb-vol">{money(eventMoney(e))} млн</span>
@@ -184,7 +184,7 @@ export default function SignalsBell() {
                     ) : (
                       <span className="sb-row-2 num">
                         <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
-                        <b><span className="sb-k">Y-IDX</span> {fmt.num(e.val_bps, 0)} бп</b>
+                        <b><span className="sb-k">R-spread</span> {fmt.num(e.val_bps, 0)} бп</b>
                         <Delta prev={e.prev_val_bps} cur={e.val_bps} suffix=" бп" />
                         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
                         <Delta prev={e.prev_price} cur={e.price} digits={2} suffix="%" />

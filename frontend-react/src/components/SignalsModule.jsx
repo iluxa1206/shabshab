@@ -860,7 +860,7 @@ export default function SignalsModule() {
                       стакана; у адресной её нет вообще */}
                   <span className={sideInfo(h).cls}>{sideInfo(h).text}</span>
                   {h.val_bps != null && (
-                    <> · <span className="sig-hit-k">Y-IDX</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
+                    <> · <span className="sig-hit-k">R-spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
                   )}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}

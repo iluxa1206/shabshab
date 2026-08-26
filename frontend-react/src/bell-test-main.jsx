@@ -29,7 +29,7 @@ function Row({ e }) {
       </span>
       <span className="sb-row-2 num">
         <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
-        <b><span className="sb-k">Y-IDX</span> {e.val_bps} бп</b>
+        <b><span className="sb-k">R-spread</span> {e.val_bps} бп</b>
         <span className="sb-px">{e.price}%</span>
         <span className="sb-vol">62,4 млн</span>
       </span>

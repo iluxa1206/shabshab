@@ -1068,7 +1068,13 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .analytics.has-full { display: block; padding: 0; }
 .analytics.has-full > .an-card:not(.an-full) { display: none; }
 .an-card.an-full { position: fixed; inset: 8px; z-index: 60; overflow: auto;
-  box-shadow: 0 8px 40px rgba(0,0,0,.28); }
+  box-shadow: 0 8px 40px rgba(0,0,0,.28);
+  /* график вырос, а текст — нет: viewBox графиков равен пикселям 1:1, поэтому
+     ось так и осталась бы 9,5 px на весь монитор. Поля под подписи растут в JS
+     (padFull в AnalyticsPanel) — эти два места менять вместе. */
+  --an-fs-axis: 13px; --an-fs-axis-lbl: 12px; --an-fs-legend: 12.5px; --an-fs-note: 11.5px; }
+.an-card.an-full .an-title { font-size: 13px; }
+.an-card.an-full .an-hint { font-size: 12px; }
 .an-svg { width: 100%; height: auto; display: block; touch-action: none; }
 /* графики на ChartFrame: размер задаётся атрибутами (реальные px, viewBox 1:1),
    поэтому width:100% сюда НЕ применяем — иначе текст осей снова поплывёт */
@@ -1076,15 +1082,19 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .cf-svg { display: block; touch-action: none; cursor: crosshair; }
 .cf-cross { stroke: var(--mut-2); stroke-width: 1; stroke-dasharray: 3 3; }
 .an-grid { stroke: var(--line); stroke-width: 1; }
-.an-axis { fill: var(--mut); font-size: 9.5px; font-family: var(--mono); }
-.an-axis-lbl { fill: var(--mut-2); font-size: 9px; font-family: var(--mono); }
+/* Размеры текста графиков — переменными: в полный экран они растут одним
+   местом (.an-card.an-full ниже). Прямые значения тут оставлять нельзя —
+   разъедутся при следующей правке. */
+.an-card { --an-fs-axis: 9.5px; --an-fs-axis-lbl: 9px; --an-fs-legend: 10px; --an-fs-note: 9.5px; }
+.an-axis { fill: var(--mut); font-size: var(--an-fs-axis); font-family: var(--mono); }
+.an-axis-lbl { fill: var(--mut-2); font-size: var(--an-fs-axis-lbl); font-family: var(--mono); }
 .an-mut { fill: var(--mut-2); }
 .an-bar { fill: var(--mut); }
 .an-empty { font-size: 12px; color: var(--mut-2); padding: 24px 8px; text-align: center; }
 /* элементы графиков с тултипом (<title>) — курсор-подсказка */
 .an-svg circle, .an-svg rect.an-bar, .an-svg line[stroke] { cursor: help; }
 /* легенда цветов-рейтингов */
-.an-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: 10px; color: var(--mut); font-family: var(--mono); }
+.an-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; font-size: var(--an-fs-legend); color: var(--mut); font-family: var(--mono); }
 .an-leg-lbl { color: var(--mut-2); }
 .an-leg-item { display: inline-flex; align-items: center; gap: 4px; }
 /* кликабельная легенда: скрыть/показать серию */
@@ -1101,7 +1111,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-tt-n { opacity: .55; }
 .an-leg-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .an-leg-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
-.an-note { font-size: 9.5px; color: var(--mut-2); margin-top: 4px; font-family: var(--mono); }
+.an-note { font-size: var(--an-fs-note); color: var(--mut-2); margin-top: 4px; font-family: var(--mono); }
 .an-mut2 { color: var(--mut-2); }
 /* клик-фильтр по эмитенту (курсор и на детях строки — иначе .an-svg circle
    с cursor:help перебивал pointer на кликабельной медиане) */

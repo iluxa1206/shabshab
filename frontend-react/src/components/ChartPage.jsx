@@ -1413,7 +1413,7 @@ export default function ChartPage() {
             осталось два состояния, и группа из двух кнопок была лишней рамкой */}
         <button type="button" className={"cp-btn cp-spread-btn" + (smode !== "off" ? " on" : "")}
           aria-pressed={smode !== "off"}
-          title="Панель спреда под ценой (Y-IDX по средневзвешенной цене)"
+          title="Панель спреда под ценой (R-spread по средневзвешенной цене)"
           onClick={() => setParam({ sm: smode === "off" ? "line" : "off" })}>СПРЕД</button>
         <span className="cp-hint">колесо — зум · драг — сдвиг · двойной клик по оси — сброс</span>
       </div>
