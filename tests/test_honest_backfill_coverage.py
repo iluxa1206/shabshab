@@ -51,9 +51,9 @@ def calls(bd, monkeypatch):
     seen = []
 
     async def fake_series(isin, days=180, board=None, price_overrides=None, till=None,
-                          on_chunk=None):
+                          on_chunk=None, hz_keys=None):
         seen.append({"days": days, "till": till, "overrides": bool(price_overrides),
-                     "streamed": on_chunk is not None})
+                     "streamed": on_chunk is not None, "hz_keys": hz_keys})
         return {"isin": isin, "points": [], "warnings": []}
 
     monkeypatch.setattr(backdate, "honest_spread_series", fake_series)

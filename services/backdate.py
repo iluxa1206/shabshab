@@ -157,6 +157,7 @@ class SplicedAsofCurve(DiscountCurve):
         return 365.0 * (math.exp(ln / n) - 1.0)
 
 
+_MISS = object()      # сентинел промаха мемо (None — валидный результат)
 _ru_index_memo: dict = {}     # день → {дата: уровень}; история прошлого не меняется
 
 
@@ -692,6 +693,39 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
 
     dates = [r["date"] for r in rows]
     curve_memo: dict = {}
+    from services.bonds import amort_remaining_face as _amort_face
+    base_face = float(ref.face_value)
+    # ОФЕРТЫ НА ДЕНЬ ТОЧКИ, а не на правый край окна. ctx собран на d_till, и
+    # синтетическая call-запись corpbonds в нём — ближайший колл ПОСЛЕ d_till,
+    # то есть будущее относительно прошлого дня серии: у RU000A103QN7 на
+    # 2026-02-27 ближайшим был колл 2026-03-24 (0,07 года), а из ctx приезжал
+    # 2031-03-18 (5 лет) — график расходился с /history/{isin}/reprice на ту же
+    # дату. Ключ мемо — САМ ближайший колл, а не день: между двумя колл-датами
+    # список не меняется, а кэш на 400 дней × 120 фабрик _asof_memo дал бы +55 МБ
+    # при контейнере 768 МиБ (история OOM).
+    from services.market_data import (call_offers_asof as _co_asof,
+                                      _call_dates_cached as _cd_cached,
+                                      CALL_OFFER_SOURCE as _CALL_SRC)
+    _offers_src = [o for o in (offers or []) if o.get("source") != _CALL_SRC] or None
+    _calls = sorted(_cd_cached().get(isin) or [])
+    _offers_memo: dict = {}
+
+    def _offers_at(day_iso: str):
+        if not _calls:
+            # _offers_src, а НЕ исходный список: _call_dates_cached при сбое
+            # реестра кэширует {} на 10 минут (market_data.py:66), и если ctx
+            # успел подмешать синтетику, мы бы тихо вернули колл с правого края
+            # окна — ровно тот look-ahead, от которого весь фикс.
+            return _offers_src
+        nearest = next((c for c in _calls if c > day_iso), "")
+        got = _offers_memo.get(nearest, _MISS)
+        if got is _MISS:
+            # СЕНТИНЕЛ, а не None: call_offers_asof отдаёт None, когда своих
+            # оферт нет и будущих коллов тоже — на .get(nearest) мемо тогда
+            # промахивалось КАЖДЫЙ день (11 пересборок на 12 дней).
+            got = _offers_memo[nearest] = _co_asof(
+                isin, _offers_src, _date.fromisoformat(day_iso))
+        return got
     # ГОРИЗОНТ ФИКСИРУЕМ НА ВСЮ СЕРИЮ, по последней цене окна. Пересчитывать
     # правило цены на каждый день нельзя: у бумаги с офертой около номинала
     # горизонт скакал бы put↔maturity от дня ко дню, а это разные метрики
@@ -710,7 +744,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
             _m = calculate_valuation_metrics(
                 ref, float(_last["close"]), _c, _date.fromisoformat(_last["date"]),
                 accrued_override=(float(_last["accint"]) if _last.get("accint") is not None else None),
-                periods=periods, amorts=amorts, offers=offers,
+                periods=periods, amorts=amorts, offers=_offers_at(_last["date"]),
                 ruonia_curve=_ru, accrued_basis="calc")
             hz_key = _m.get("preferred_horizon") or "maturity"
             alt_key = _alt_horizon(hz_key, _m.get("horizons") or {})
@@ -721,6 +755,17 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
         d = _date.fromisoformat(day_iso)
         i = bisect_right(dates, day_iso) - 1
         row = rows[i] if i >= 0 else None
+        # НОМИНАЛ ПЕРВЫМ: ниже он идёт в _accrue_to_date/_accrued_from_periods,
+        # а стоял ПОСЛЕ них — НКД считался по номиналу ПРЕДЫДУЩЕГО дня.
+        # Плюс без отката на график амортизаций ref.face_value (общий мутируемый
+        # объект) оставался от прошлого вызова, а fn живёт в _asof_memo между
+        # запросами: одна и та же дата давала разные числа в зависимости от
+        # порядка обращений баров/сделок/стакана. Зеркало защиты в
+        # load_backdate_ctx (см. «номинал на D: факт биржи…»).
+        _face = row.get("facevalue") if row else None
+        if _face is None or (row and row["date"] != day_iso):
+            _face = _amort_face(amorts, d, base_face) or _face
+        ref.face_value = float(_face) if _face is not None else base_face
         accint = row.get("accint") if row else None
         if accint is not None and row["date"] != day_iso:
             # день без строки history (выходная сессия) — доначисляем от факта
@@ -730,8 +775,6 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
             accint = _accrued_from_periods(periods, d, ref.face_value)
         if accint is None:
             return {}
-        if row and row.get("facevalue"):
-            ref.face_value = float(row["facevalue"])
         cm = curve_memo.get(day_iso)
         if cm is None:
             curve, _mode = curve_asof(ref.base, d, today_curve, hist_pairs)
@@ -742,7 +785,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
         curve, ru = cm
         m = calculate_valuation_metrics(
             ref, price, curve, d, accrued_override=float(accint),
-            periods=periods, amorts=amorts, offers=offers,
+            periods=periods, amorts=amorts, offers=_offers_at(day_iso),
             ruonia_curve=ru, accrued_basis="calc")
         # ГОРИЗОНТ — по правилу цены, как в карточке, стакане и ленте сделок.
         # Верхнеуровневые поля ответа всегда к погашению: у бумаги с офертой
@@ -797,7 +840,8 @@ _HONEST_CHUNK = 20
 
 async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] = None,
                                price_overrides: Optional[dict] = None,
-                               till: Optional["date"] = None, on_chunk=None) -> dict:
+                               till: Optional["date"] = None, on_chunk=None,
+                               hz_keys: Optional[tuple] = None) -> dict:
     """Честная динамика спредов: для КАЖДОГО торгового дня — свой calc_date,
     своя as-of кривая, фактические НКД/номинал/close того дня → SM/DM/y-idx.
     В отличие от candle-оценки (историч. цена × сегодняшняя модель) серия не
@@ -809,7 +853,7 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     # till — правая граница окна (по умолчанию вчера). Задаётся при досчёте
     # ЛЕВОГО куска расширенного окна: ensure_honest_backfill не пересчитывает
     # то, что уже лежит в базе.
-    key = (isin, days, board, till.isoformat() if till else None)
+    key = (isin, days, board, till.isoformat() if till else None, hz_keys)
     flushed = [0]                       # сколько точек уже отдано через on_chunk
     hit = None if price_overrides else _honest_memo.get(key)
     if hit and hit[0] == _date.today():
@@ -839,11 +883,39 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
     # прошлую дату (сегодняшняя дала бы завтрашние ожидания во вчерашней цифре)
     ru_hist = hist_pairs if ref.base == "RUONIA" else _index_provider("RUONIA", warnings, None)[1]
 
+    from services.bonds import amort_remaining_face as _amort_face
+    base_face = float(ref.face_value)
+    # ОФЕРТЫ НА ДЕНЬ ТОЧКИ — см. asof_bar_metrics. ctx собран на d_till, и
+    # синтетическая call-запись corpbonds там всегда «ближайший колл после
+    # d_till»: на прошлой точке серии это ДАТА ИЗ БУДУЩЕГО. Мемо по ближайшему
+    # коллу, а не по дню: список между двумя колл-датами не меняется.
+    from services.market_data import (call_offers_asof as _co_asof,
+                                      _call_dates_cached as _cd_cached,
+                                      CALL_OFFER_SOURCE as _CALL_SRC)
+    _offers_src = [o for o in (ctx["offers"] or [])
+                   if o.get("source") != _CALL_SRC] or None
+    _calls = sorted(_cd_cached().get(isin) or [])
+    _offers_memo: dict = {}
+
+    def _offers_at(day_iso: str):
+        if not _calls:
+            return _offers_src          # см. asof_bar_metrics: без синтетики
+        nearest = next((c for c in _calls if c > day_iso), "")
+        got = _offers_memo.get(nearest, _MISS)
+        if got is _MISS:
+            got = _offers_memo[nearest] = _co_asof(
+                isin, _offers_src, _date.fromisoformat(day_iso))
+        return got
+
     # Горизонт — один на всю серию, по последней цене окна (см. asof_bar_metrics):
     # правило цены, пересчитанное на каждый день, ломало бы линию ступенями у
     # бумаг с офертой около номинала.
-    hz_key, alt_key = "maturity", None
-    if rows:
+    # hz_keys — горизонт, посчитанный ВЫЗЫВАЮЩИМ по правому краю ПОЛНОГО окна.
+    # Без него левый досчёт (ensure_honest_backfill с till=earliest-1) выводил
+    # свой hz_key из СВОЕЙ последней строки, и линия склеивалась из двух
+    # горизонтов — шов на границе двух прогонов.
+    hz_key, alt_key = (hz_keys if hz_keys else ("maturity", None))
+    if rows and not hz_keys:
         try:
             _d = _date.fromisoformat(rows[-1]["date"])
             _c, _mode = curve_asof(ref.base, _d, today_curve, hist_pairs)
@@ -853,7 +925,8 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
                 _acc = _accrued_from_periods(ctx["periods"], _d, ref.face_value)
             _m = calculate_valuation_metrics(
                 ref, rows[-1]["close"], _c, _d, accrued_override=_acc,
-                periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
+                periods=ctx["periods"], amorts=ctx["amorts"],
+                offers=_offers_at(rows[-1]["date"]),
                 ruonia_curve=_ru, accrued_basis="calc")
             hz_key = _m.get("preferred_horizon") or "maturity"
             alt_key = _alt_horizon(hz_key, _m.get("horizons") or {})
@@ -871,8 +944,12 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
         try:
             curve, mode = curve_asof(ref.base, d, today_curve, hist_pairs)
             ru_curve = curve if ref.base == "RUONIA" else curve_asof("RUONIA", d, _r, ru_hist)[0]
-            if r.get("facevalue"):
-                ref.face_value = float(r["facevalue"])
+            # НОМИНАЛ ДНЯ с откатом на график амортизаций: без него ref (общий
+            # мутируемый объект) сохранял номинал ПРЕДЫДУЩЕГО обработанного дня,
+            # а порядок обхода зависит от режима (reversed при on_chunk) — одна
+            # и та же дата давала разные числа у бэкфилла и у /spread_honest.
+            _face = r.get("facevalue") or _amort_face(ctx["amorts"], d, base_face)
+            ref.face_value = float(_face) if _face is not None else base_face
             accint = r.get("accint")
             if accint is None:
                 accint = _accrued_from_periods(ctx["periods"], d, ref.face_value)
@@ -884,7 +961,8 @@ async def honest_spread_series(isin: str, days: int = 180, board: Optional[str] 
             px = (price_overrides or {}).get(r["date"], r["close"])
             m = calculate_valuation_metrics(
                 ref, px, curve, d, accrued_override=accint,
-                periods=ctx["periods"], amorts=ctx["amorts"], offers=ctx["offers"],
+                periods=ctx["periods"], amorts=ctx["amorts"],
+                offers=_offers_at(r["date"]),
                 ruonia_curve=ru_curve, accrued_basis="calc")
             hz = pick_horizon(m, hz_key)     # см. asof_bar_metrics: один горизонт на серию
             alt = pick_horizon(m, alt_key) if alt_key else {}
@@ -948,7 +1026,17 @@ _backfill_done: dict = {}   # (isin, board) → (msk_day, days) — бэкфил
 #     ушла ставка. МБЭС 2P-02 @2025-08-20: база 18.01% вместо 16.10%, Y-IDX 48
 #     вместо 239 bps при марже выпуска 250. Затронуты ВСЕ realized-даты (до
 #     начала архива своп-котировок 2026-07-30); market-даты не менялись.
-HONEST_ENGINE_VERSION = 8
+# 9 — 2026-08-26: оферты пересобираются НА ДЕНЬ ТОЧКИ. ctx собирался на правом
+#     краю окна, и синтетическая call-запись corpbonds («ближайший колл после
+#     d_till») оказывалась датой ИЗ БУДУЩЕГО для прошлых дней серии: у
+#     RU000A103QN7 точка за 2026-02-27 считалась к коллу 2031-03-18 (5 лет)
+#     вместо реального 2026-03-24 (0,07 года). График расходился с
+#     /history/{isin}/reprice на ту же дату — калькулятор и линия давали разные
+#     числа. Затронуты 48 бумаг с колл-датами, у них меняется и колонка horizon.
+#     Плюс номинал дня: строка MOEX без FACEVALUE оставляла номинал ПРЕДЫДУЩЕГО
+#     обработанного дня (порядок обхода зависит от режима — reversed при
+#     стриминге), теперь откат на график амортизаций. ~200 амортизируемых.
+HONEST_ENGINE_VERSION = 9
 
 
 async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = None) -> int:
@@ -1035,9 +1123,22 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
             written[0] += upsert_honest(isin, fresh, ex_dates, HONEST_ENGINE_VERSION,
                                         retrust_dates=untrusted)
 
+    # ГОРИЗОНТ ОДИН НА ВСЮ ИСТОРИЮ БУМАГИ, а не на кусок. Левый досчёт
+    # (till=earliest-1) выводил hz_key из СВОЕЙ последней строки и получал
+    # другой горизонт: линия шла швом на границе двух прогонов. Считаем по
+    # правому краю ПОЛНОГО окна один раз и передаём в оба прогона.
+    # Считать заново не надо: правая часть окна уже посчитана и лежит в базе со
+    # своим горизонтом — берём последнюю известную строку (ровно та логика, что
+    # у _one_horizon на чтении: «последний известный горизонт бумаги»).
+    hz_keys = None
+    if till is not None:
+        _hz_rows = [r for r in rows_all if r.get("horizon")]
+        if _hz_rows:
+            _r = max(_hz_rows, key=lambda r: r["date"])
+            hz_keys = (_r["horizon"], _r.get("alt_horizon"))
     series = await honest_spread_series(isin, span, board,
                                         price_overrides=overrides or None,
-                                        till=till, on_chunk=_flush)
+                                        till=till, on_chunk=_flush, hz_keys=hz_keys)
     n = written[0]
     if not n and series["points"]:
         # серия пришла из memo (её уже считали сегодня) — порций не было,

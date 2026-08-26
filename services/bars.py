@@ -385,7 +385,13 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
 #          на уровне первого дня факт-сегмента гибрида as-of — см.
 #          HONEST_ENGINE_VERSION=8. Спред баров тем сильнее занижен, чем дальше
 #          дата: МБЭС 2P-02 год назад 48 bps вместо 239.
-BARS_METRICS_VERSION = 8
+#   9    — 2026-08-26: НКД считался ПО НОМИНАЛУ ПРЕДЫДУЩЕГО ДНЯ. Блок номинала
+#          в asof_bar_metrics.fn стоял НИЖЕ _accrue_to_date/_accrued_from_periods,
+#          а fn живёт в _asof_memo между запросами — результат зависел от того,
+#          какие даты спросили раньше (бары/сделки/стакан ходят в произвольном
+#          порядке). Затронуты все амортизируемые. Плюс оферты на день точки —
+#          см. HONEST_ENGINE_VERSION=9.
+BARS_METRICS_VERSION = 9
 
 _COLS = ("isin", "ts", "kind", "open", "high", "low", "close", "vwap_pct",
          "volume", "value", "face", "y_idx_bps", "dm_bps", "g_spread_bps", "ytm",

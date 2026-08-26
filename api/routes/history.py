@@ -377,11 +377,17 @@ def _one_horizon(rows, lo: float, hi: float) -> list[dict]:
             elif r["alt_horizon"] == hz and r["y_idx_alt"] is not None:
                 v = r["y_idx_alt"]
             else:
-                continue
-        if v is None or not (lo < v < hi):
+                # ЧУЖОЙ ГОРИЗОНТ ГАСИТ СПРЕД, А НЕ ТОЧКУ. Цена к горизонту
+                # отношения не имеет, а во вкладке СРАВНЕНИЕ по этим же точкам
+                # строятся линии «цена» и «изменение»: выбрасывая точку целиком,
+                # мы стирали ценовую историю левее переключения горизонта.
+                v = None
+        if v is not None and not (lo < v < hi):
+            v = None          # бэнд гасит мусор стейл-цен, а не саму точку
+        price = r["price_pct"] if "price_pct" in r.keys() else None
+        if v is None and price is None:
             continue
-        out.append({"isin": r["isin"], "date": r["date"], "y_idx": v,
-                    "price": r["price_pct"] if "price_pct" in r.keys() else None})
+        out.append({"isin": r["isin"], "date": r["date"], "y_idx": v, "price": price})
     return out
 
 
@@ -457,8 +463,8 @@ async def yidx_aggregate(body: YidxAggBody):
     acc: dict = {}
     for r in rows:
         k = key_of(r["isin"])
-        if k is None:
-            continue
+        if k is None or r["y_idx"] is None:
+            continue      # спред погашен чужим горизонтом — в медиану не идёт
         acc.setdefault(k, {}).setdefault(r["date"], []).append(r["y_idx"])
 
     if by == "issuer":
@@ -552,8 +558,11 @@ async def multi_spread(body: MultiSpreadBody):
 
         rows = await asyncio.to_thread(_read)
         for r in _one_horizon(rows, lo, hi):
-            acc[r["isin"]].append({"date": r["date"], "y_idx": round(r["y_idx"], 1),
-                                   "price": r["price"]})
+            # y_idx может быть None (спред погашен чужим горизонтом), цена — нет
+            acc[r["isin"]].append(
+                {"date": r["date"],
+                 "y_idx": None if r["y_idx"] is None else round(r["y_idx"], 1),
+                 "price": r["price"]})
     else:
         # ДЕНЬ ИЗ АРХИВА, БЕЗ ПЕРЕСЧЁТА: bar_daily — готовая свёртка часов
         # (средневзвешенная цена дня и спред по ней либо закрытие дня и спред по
@@ -561,22 +570,26 @@ async def multi_spread(body: MultiSpreadBody):
         # витрина только читает.
         pcol = "wap_pct" if body.base == "vwap" else "close_pct"
         ycol = "y_idx_wap_bps" if body.base == "vwap" else "y_idx_close_bps"
+        # ГОРИЗОНТ тянем вместе со спредом: без него линия склеивала спред к
+        # оферте и спред к погашению в одну (обвал на 220 б.п. без движения
+        # цены — ровно то, от чего защищает _one_horizon). Ветка base=close
+        # выше его уже применяла, а эта — нет. Альтернативная ветка спреда в
+        # bar_daily есть только для vwap; на close точка с чужим горизонтом
+        # просто отбрасывается, и линия рвётся вместо обвала.
+        acol = "y_idx_alt_wap_bps" if body.base == "vwap" else "NULL"
 
         def _read_daily():
             with _connect() as c:
                 return c.execute(
-                    f"SELECT isin, date, {pcol} AS price, {ycol} AS y_idx FROM bar_daily "
+                    f"SELECT isin, date, {pcol} AS price_pct, {ycol} AS y_idx, "
+                    f"horizon, alt_horizon, {acol} AS y_idx_alt FROM bar_daily "
                     f"WHERE kind='floater' AND date >= ? AND isin IN ({ph}) "
                     "ORDER BY date", (cutoff, *isins)).fetchall()
 
         rows = await asyncio.to_thread(_read_daily)
-        for r in rows:
-            if r["price"] is None and r["y_idx"] is None:
-                continue
-            y = r["y_idx"]
-            if y is not None and not (lo < y < hi):
-                y = None      # бэнд тот же, что у снапшотов: мусор стейл-цен
-            acc[r["isin"]].append({"date": r["date"], "y_idx": y, "price": r["price"]})
+        for r in _one_horizon(rows, lo, hi):
+            acc[r["isin"]].append({"date": r["date"], "y_idx": r["y_idx"],
+                                   "price": r["price"]})
 
     # порядок серий — как прислал клиент: цвет линии закреплён за позицией выбора
     series = [{"isin": i, "points": acc[i]} for i in isins if acc[i]]
