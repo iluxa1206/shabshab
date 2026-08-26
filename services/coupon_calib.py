@@ -528,7 +528,7 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
         best_by_mode: dict = {}
         for lag in range(0, _MAX_LAG + 1):
             e_pt, e_av, n = 0.0, 0.0, 0
-            lo = hi = None
+            lo = hi = lo_a = hi_a = None
             for s, e, obs in rows:
                 kp = _rate_at(idx, s - timedelta(days=lag))
                 ka = _rate_avg(idx, s, e, lag)
@@ -536,13 +536,21 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
                     continue
                 lo = kp if lo is None else min(lo, kp)
                 hi = kp if hi is None else max(hi, kp)
+                lo_a = ka if lo_a is None else min(lo_a, ka)
+                hi_a = ka if hi_a is None else max(hi_a, ka)
                 e_pt += abs(kp - obs)
                 e_av += abs(ka - obs)
                 n += 1
             if not n:
                 continue
-            span = (hi - lo) if (lo is not None and hi is not None) else 0.0
-            for mode, err in (("point", e_pt / n), ("average", e_av / n)):
+            # РАЗМАХ МЕРИМ ТЕМ ЖЕ, ЧЕМ ФИТИМ: у average идентифицируемость даёт
+            # разброс СРЕДНЕЙ ka, а не точечной kp. КС может стоять на каждой
+            # дате старта купона и ходить между ними — размах ka 9.9 пп при
+            # размахе kp = 0, и общий span выбросил бы идеальный фит.
+            span_pt = (hi - lo) if lo is not None else 0.0
+            span_av = (hi_a - lo_a) if lo_a is not None else 0.0
+            for mode, err, span in (("point", e_pt / n, span_pt),
+                                    ("average", e_av / n, span_av)):
                 if mode not in modes:
                     continue
                 if mode not in best_by_mode or err < best_by_mode[mode][0]:
@@ -558,7 +566,8 @@ def calibrate(isin: str, coupons: list, margin_pct: float, face: float,
                 # Тот же критерий, что у infer_base_margin (_INFER_MIN_SPAN_PP).
                 spec = None
             elif (len(modes) > 1 and rival is not None
-                  and rival < best[0] * _CALIB_MODE_SEP):
+                  and rival < max(best[0] * _CALIB_MODE_SEP,
+                                  _CALIB_MODE_MIN_SEP_PP)):
                 spec = None      # режим неоднозначен
             else:
                 spec = {"mode": best[1], "lag": best[2],
@@ -687,7 +696,9 @@ def _last_obs_date(spec: dict, start: date, end: date) -> Optional[date]:
         # в универсе), поэтому голый `hi − 1` сдвигал определённость купона на
         # день ВПЕРЁД: накануне фиксинга будущий купон объявлялся известным, и
         # strip_undetermined_values не гасил его эхо-значение. Тот же гард, что
-        # в fixing_probe_date — эти две функции обязаны совпадать.
+        # в fixing_probe_date — НА ВЕТКЕ ОКНА эти две функции обязаны совпадать
+        # (на avg_prev расхождение в день сохраняется: там прав _last_obs_date,
+        # окно [obs−W, obs), а fixing_probe_date вычитания не делает — w пуст).
         return hi if int(w) <= 1 else hi - timedelta(days=1)
     if mode == "point":
         return _obs_date(start, lag, unit)
@@ -897,6 +908,10 @@ _CALIB_MIN_SPAN_PP = 1.0       # размах индекса (ср. _INFER_MIN_S
 # КС соседние лаги дают ТОЧНО равную ошибку (РОССИУМ3P2: point/2..6 = 0.0833
 # байт в байт), и порог снёс бы все point-бумаги разом.
 _CALIB_MODE_SEP = 3.0
+# Мультипликативный отрыв ВЫРОЖДАЕТСЯ на точном фите: при best=0.0 условие
+# `rival < 0` ложно всегда, и неразличимый режим проходил бы гейт, а выбирался
+# порядком кортежа (point первым) — хотя на будущих периодах режимы расходятся.
+_CALIB_MODE_MIN_SEP_PP = 0.01
 
 _HIST_STALE_GRACE_DAYS = 4     # ХВОСТ ряда: обычный лаг публикации фиксинга
 _HIST_HOLIDAY_GAP_DAYS = 14    # самая длинная легитимная пауза — новогодняя
@@ -950,7 +965,18 @@ def _holiday_gap(prev: date, nxt: date) -> bool:
     key = (prev, nxt)
     got = _GAP_KIND.get(key)
     if got is None:
-        from core.valuation import _is_settlement_day_off as _off
+        # ПРОИЗВОДСТВЕННЫЙ календарь, НЕ ТОРГОВЫЙ. RUONIA/КС не публикуются в
+        # нерабочие дни ТК РФ (1-8 января — федеральные праздники), а MOEX часть
+        # из них ТОРГУЕТ. Брать _is_settlement_day_off нельзя: он уважает
+        # trading_dates из core/data/moex_holidays.json, и появление этого файла
+        # (штатный способ починить ТОРГОВЫЙ календарь) дало бы в новогодней
+        # паузе 3 рабочих дня вместо 0 — пауза снова уехала бы в форвард,
+        # то есть −28 bps на купон вернулись бы молча, при зелёных тестах.
+        from core.valuation import _MOEX_HOLIDAYS_MD, _HOLIDAY_EXTRA
+
+        def _off(d):
+            return (d in _HOLIDAY_EXTRA or d.weekday() >= 5
+                    or (d.month, d.day) in _MOEX_HOLIDAYS_MD)
         d, work = prev + timedelta(days=1), 0
         while d < nxt:
             if not _off(d):

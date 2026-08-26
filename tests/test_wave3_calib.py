@@ -76,7 +76,8 @@ def test_projection_equals_calibrator_on_past_window():
 def test_last_obs_date_matches_probe():
     """ref_data нормализует ВСЕ point-бумаги в average+W=1 (152 выпуска), и
     голый `hi − 1` объявлял купон определённым за день до фиксинга.
-    _last_obs_date и fixing_probe_date обязаны совпадать."""
+    _last_obs_date и fixing_probe_date обязаны совпадать НА ВЕТКЕ ОКНА.
+    (avg_prev расходится на день осознанно: там прав _last_obs_date.)"""
     from services.coupon_calib import _last_obs_date, fixing_probe_date
     start = date(2026, 9, 1)
     for w in (1, 2, 30):
@@ -168,3 +169,102 @@ def test_calibrate_rejects_two_coupons():
     got = calibrate("RU000TWO00001", cps, 1.0, 1000.0, date(2026, 1, 15),
                     base="KEYRATE", idx=idx)
     assert got is None, f"два купона дали спеку: {got}"
+
+
+# ─── мина: торговый календарь MOEX не должен ломать производственный ────────
+
+def test_holiday_gap_ignores_moex_trading_override(monkeypatch):
+    """RUONIA/КС следуют ПРОИЗВОДСТВЕННОМУ календарю, MOEX — торговому.
+
+    core/data/moex_holidays.json (штатный способ починить ТОРГОВЫЙ календарь,
+    его же предлагает аудит) объявляет 3-6 и 8 января торговыми. Если брать
+    _is_settlement_day_off, в новогодней паузе станет 3 рабочих дня вместо 0,
+    и пауза снова уедет в форвард — фикс на −28 bps откатится МОЛЧА, при
+    зелёных тестах. Этот тест — пин против такого отката."""
+    import core.valuation as V
+    import services.coupon_calib as C
+    C._GAP_KIND.clear()
+    assert C._holiday_gap(date(2024, 12, 30), date(2025, 1, 9)) is True
+    monkeypatch.setattr(V, "_HOLIDAY_TRADING",
+                        {date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 8)},
+                        raising=False)
+    C._GAP_KIND.clear()
+    assert C._holiday_gap(date(2024, 12, 30), date(2025, 1, 9)) is True, \
+        "торговый оверрайд MOEX откатил фикс новогодней паузы"
+    C._GAP_KIND.clear()
+
+
+# ─── гейт: размах меряем тем же, чем фитим ──────────────────────────────────
+
+def test_gate_measures_span_of_fitted_mode():
+    """У average идентифицируемость даёт разброс СРЕДНЕЙ ka, а не точечной kp.
+
+    КС может стоять ровно на каждой дате старта купона и ходить между ними:
+    размах kp = 0 при размахе ka = 11 пп. Общий span выбрасывал идеальный фит."""
+    from services.coupon_calib import calibrate, _rate_at, _rate_avg
+    dts = [date(2025, 1, 1) + timedelta(days=i) for i in range(760)]
+    per = [(date(2025, 1, 1), date(2025, 4, 1)), (date(2025, 4, 1), date(2025, 7, 1)),
+           (date(2025, 7, 1), date(2025, 10, 1)), (date(2025, 10, 1), date(2026, 1, 1))]
+    starts = {s for s, _ in per}
+
+    def rate(d):
+        if d in starts:
+            return 16.0                      # на СТАРТАХ ставка неподвижна
+        if d < date(2025, 2, 15):
+            return 16.0
+        if d < date(2025, 5, 15):
+            return 22.0
+        if d < date(2025, 8, 15):
+            return 27.0
+        return 30.0
+
+    idx = (dts, [rate(d) for d in dts])
+    assert len({_rate_at(idx, s) for s, _ in per}) == 1        # kp плоская
+    ka = [round(_rate_avg(idx, s, e, 0), 2) for s, e in per]
+    assert max(ka) - min(ka) > 10.0                            # ka ходит
+    cps = [{"start": s.isoformat(), "end": e.isoformat(),
+            "value": round(1000.0 * (a + 1.0) / 100.0 * (e - s).days / 365.0, 2)}
+           for (s, e), a in zip(per, ka)]
+    got = calibrate("RU000AVGSPAN1", cps, 1.0, 1000.0, date(2026, 6, 1),
+                    base="KEYRATE", idx=idx)
+    assert got and got["mode"] == "average", f"идеальный фит выброшен: {got}"
+
+
+def test_gate_rejects_tie_between_modes():
+    """Мультипликативный отрыв ВЫРОЖДАЕТСЯ на точном фите: при best=0.0 условие
+    `rival < 0` ложно всегда, и неразличимый режим проходил бы гейт, а режим
+    выбирался порядком кортежа. Нужен аддитивный пол."""
+    from services.coupon_calib import calibrate
+    dts = [date(2025, 1, 1) + timedelta(days=i) for i in range(760)]
+    per = [(date(2025, 1, 1), date(2025, 4, 1)), (date(2025, 4, 1), date(2025, 7, 1)),
+           (date(2025, 7, 1), date(2025, 10, 1)), (date(2025, 10, 1), date(2026, 1, 1))]
+    # ставка меняется РОВНО на границах периодов → point и average совпадают
+    def rate(d):
+        for i, (s, e) in enumerate(per):
+            if s <= d < e:
+                return [16.0, 22.0, 27.0, 30.0][i]
+        return 30.0
+    idx = (dts, [rate(d) for d in dts])
+    cps = [{"start": s.isoformat(), "end": e.isoformat(),
+            "value": round(1000.0 * (rate(s) + 1.0) / 100.0 * (e - s).days / 365.0, 2)}
+           for s, e in per]
+    got = calibrate("RU000TIE00001", cps, 1.0, 1000.0, date(2026, 6, 1),
+                    base="KEYRATE", idx=idx)
+    assert got is None, f"неразличимые режимы прошли гейт: {got}"
+
+
+# ─── непокрытая ветка эхо-правила ───────────────────────────────────────────
+
+def test_started_echo_dropped_when_window_proven_open():
+    """Ветка `or det is False`: окно наблюдения ДОКАЗАНО открыто → эхо
+    начавшегося купона гасим. Единственная строка, отличающая «гасим по факту»
+    от «не гасим никогда», и она была без теста."""
+    from services.coupon_calib import strip_undetermined_values
+    today = date.today()
+    # average БЕЗ окна: наблюдение скользит до end−lag, то есть окно
+    # начавшегося периода заведомо ещё открыто → det is False
+    spec = {"mode": "average", "lag": 0, "lag_unit": "cal"}
+    out, dropped = strip_undetermined_values(
+        "RU000ECHO0003", "KEYRATE", _sched(today, 24.0, 24.0), today, spec)
+    assert today + timedelta(days=60) in dropped, \
+        "доказанно открытое окно — эхо начавшегося купона обязано гаситься"
