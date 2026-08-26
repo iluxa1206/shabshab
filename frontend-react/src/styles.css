@@ -1669,6 +1669,25 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sig-head-sub { font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0;
                 color: var(--mut); }
 .sig-clear { margin-left: auto; padding: 4px 8px; font-size: 9px; }
+/* пикер фильтров ленты: прижат вправо, «Очистить» встаёт следом за ним */
+.sig-feed-pick { margin-left: auto; }
+.sig-head .sig-feed-pick + .sig-clear { margin-left: 8px; }
+.sig-feed-pick .btn { font-size: 9px; padding: 4px 8px; text-transform: uppercase;
+                      letter-spacing: .1em; }
+.sig-feed-pick .btn.on { border-color: var(--fg); color: var(--fg); }
+.sig-feed-pick .colmenu-pop { right: 0; left: auto; width: 340px; max-height: 60vh;
+                              overflow-y: auto; }
+/* заголовок вида сигналов внутри списка: стакан и сделки — разные новости */
+.sig-pick-group { font-family: var(--mono); font-size: 8.5px; letter-spacing: .12em;
+                  text-transform: uppercase; color: var(--mut-2); padding: 7px 10px 3px; }
+.sig-pick-item { align-items: flex-start; gap: 8px; }
+.sig-pick-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;
+                text-transform: none; letter-spacing: 0; }
+/* расшифровка условий — в одну строку с многоточием: список не должен ехать
+   в высоту от фильтра с десятком эмитентов */
+.sig-pick-note { font-size: 10px; color: var(--mut-2); white-space: nowrap;
+                 overflow: hidden; text-overflow: ellipsis; }
+.sig-pick-n { font-family: var(--mono); font-size: 9.5px; color: var(--mut-2); flex: none; }
 .sig-empty { border: 1px dashed var(--line-2); padding: 20px; color: var(--mut); font-size: 12px;
              line-height: 1.5; }
 

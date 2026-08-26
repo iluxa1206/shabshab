@@ -745,6 +745,93 @@ function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loadin
   );
 }
 
+
+/** Условия книжного фильтра одной строкой — для списка выбора в ленте. */
+function bookNote(p) {
+  const d = describe(p);
+  return [d.scope, d.range ? `R-spread ${d.range}` : null,
+          d.years ? `срок ${d.years}` : null, d.moneyTxt].filter(Boolean).join(" · ");
+}
+
+/** Ключ, под которым выбор фильтров ленты переживает перезагрузку страницы. */
+const FEED_SEL_LS = "sigFeedFilters";
+
+/**
+ * Выпадающий список фильтров с галочками — чем сузить ленту срабатываний.
+ *
+ * ПУСТОЙ ВЫБОР = ПОКАЗЫВАТЬ ВСЁ, а не «ничего». Фильтр, который по умолчанию
+ * прячет ленту целиком, читается как поломка; к тому же снять последнюю галочку
+ * проще, чем догадаться поставить все.
+ *
+ * Рядом с названием — расшифровка условий (та же, что в карточке фильтра): по
+ * одному имени вроде «Р5» вспомнить, что внутри, нельзя.
+ */
+export function FeedPicker({ options, sel, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  if (!options.length) return null;
+  const toggle = (id) => {
+    const next = new Set(sel);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    onChange(next);
+  };
+  const label = sel.size ? `фильтры: ${sel.size} из ${options.length}` : "фильтры: все";
+  const groups = [["book", "Сигналы стакана"], ["block", "Крупные сделки"]];
+
+  return (
+    <div className="colmenu sig-feed-pick" ref={ref}>
+      <button className={"btn" + (sel.size ? " on" : "")} onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true" aria-expanded={open}
+        title="Показывать в ленте только выбранные фильтры">{label}</button>
+      {open && (
+        <div className="colmenu-pop" role="menu">
+          <div className="colmenu-head">
+            <span>ФИЛЬТРЫ ЛЕНТЫ</span>
+            {sel.size > 0 && (
+              <button className="colmenu-reset" onClick={() => onChange(new Set())}>все</button>
+            )}
+          </div>
+          <div className="colmenu-hint">без галочек лента показывает все срабатывания</div>
+          <div className="colmenu-list">
+            {groups.map(([kind, title]) => {
+              const items = options.filter((o) => o.kind === kind);
+              if (!items.length) return null;
+              return (
+                <div key={kind}>
+                  <div className="sig-pick-group">{title}</div>
+                  {items.map((o) => (
+                    <label key={o.id} className="colmenu-item sig-pick-item">
+                      <input type="checkbox" checked={sel.has(o.id)} onChange={() => toggle(o.id)} />
+                      <span className="sig-pick-txt">
+                        <b>{o.name}</b>
+                        {o.note && <span className="sig-pick-note">{o.note}</span>}
+                      </span>
+                      <span className="sig-pick-n">{o.n || ""}</span>
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SignalsModule() {
   const qc = useQueryClient();
   const [editId, setEditId] = useState(null);
@@ -797,7 +884,43 @@ export default function SignalsModule() {
   }, [events.data, qc]);
 
   const rows = filters.data?.filters || [];
-  const feed = events.data?.events || [];
+  const allFeed = events.data?.events || [];
+
+  // выбор фильтров ленты живёт между заходами: набор фильтров у человека
+  // устойчивый, и переставлять галочки каждое утро — работа на ровном месте
+  const [feedSel, setFeedSel] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(FEED_SEL_LS) || "[]");
+      return new Set(Array.isArray(raw) ? raw.map(Number) : []);
+    } catch { return new Set(); }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(FEED_SEL_LS, JSON.stringify([...feedSel])); } catch { /* приватный режим */ }
+  }, [feedSel]);
+
+  // Список для пикера: заведённые фильтры + УМОЛЧАНИЕ (filter_id=0, звонок по
+  // env-порогу крупных сделок) — оно не фильтр в базе, но события даёт, и без
+  // строки в списке их нечем ни выбрать, ни спрятать.
+  const feedOptions = useMemo(() => {
+    const cnt = new Map();
+    for (const h of allFeed) cnt.set(h.filter_id ?? 0, (cnt.get(h.filter_id ?? 0) || 0) + 1);
+    const opts = rows.map((f) => ({
+      id: f.id, kind: f.kind === "block" ? "block" : "book", name: f.name,
+      note: f.kind === "block" ? describeBlock(f.params) : bookNote(f.params),
+      n: cnt.get(f.id) || 0,
+    }));
+    if (cnt.get(0)) {
+      opts.push({ id: 0, kind: "block", name: "умолчание",
+                  note: "звонок по порогу без заведённого фильтра", n: cnt.get(0) });
+    }
+    return opts;
+  }, [rows, allFeed]);
+
+  // Выбор сузил ленту — но только тем, что в ней реально есть: галочка на
+  // фильтре без событий не должна выглядеть как «лента сломалась».
+  const feed = feedSel.size
+    ? allFeed.filter((h) => feedSel.has(h.filter_id ?? 0))
+    : allFeed;
   const editing = rows.find((f) => f.id === editId) || null;
   // два вида сигналов — две колонки; правка живёт в колонке своего вида
   const bookRows = rows.filter((f) => f.kind !== "block");
@@ -839,12 +962,20 @@ export default function SignalsModule() {
       <div className="sig-col sig-feed-col">
         <div className="sig-head">
           Лента срабатываний
-          {feed.length > 0 && (
+          {feedSel.size > 0 && (
+            <span className="sig-head-sub">{feed.length} из {allFeed.length}</span>
+          )}
+          <FeedPicker options={feedOptions} sel={feedSel} onChange={setFeedSel} />
+          {allFeed.length > 0 && (
             <button className="btn sig-clear" onClick={() => clear.mutate()}>Очистить</button>
           )}
         </div>
         {feed.length === 0
-          ? <div className="sig-empty">Пока пусто.</div>
+          ? <div className="sig-empty">
+              {allFeed.length
+                ? "По выбранным фильтрам срабатываний пока нет."
+                : "Пока пусто."}
+            </div>
           : feed.map((h) => (
               <div key={h.id}
                 className={"sig-hit " + (h.reason === "block" ? "hit-block" : "hit-book")
