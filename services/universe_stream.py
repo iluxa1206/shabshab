@@ -78,19 +78,26 @@ _sides_dirty: set = set()
 # их число ограничено — каждый размер это ещё одна цена в батче (~1,5 мс).
 _VOL_TTL_SEC = float(os.getenv("UNIVERSE_VOL_TTL_SEC", "600"))
 _VOL_MAX_SIZES = int(os.getenv("UNIVERSE_VOL_MAX", "4"))
+# потолок размера тикета: 100 млрд ₽ — заведомо больше любого реального объёма
+# рынка флоатеров, но конечен (вход приходит от клиента)
+_VOL_SIZE_MAX_RUB = 1e11
 _vol_sizes: Dict[float, float] = {}     # размер, ₽ → monotonic последнего спроса
 
 
 def register_vol_sizes(sizes) -> None:
     """Клиент смотрит таблицу с фильтром по объёму — запоминаем размеры тикета,
-    чтобы движок считал по ним Y-IDX в своём такте."""
+    чтобы движок считал по ним Y-IDX в своём такте.
+
+    Приходит от клиента (WS-сообщение / параметр ручки), поэтому вход режем:
+    столько же размеров, сколько движок готов считать, и в пределах разумной
+    суммы. Иначе одна кривая вкладка растит словарь без края."""
     now = time.monotonic()
-    for v in sizes or []:
+    for v in list(sizes or [])[:_VOL_MAX_SIZES]:
         try:
             v = float(v)
         except (TypeError, ValueError):
             continue
-        if v > 0:
+        if 0 < v <= _VOL_SIZE_MAX_RUB:
             _vol_sizes[round(v, 2)] = now
     for k in [k for k, t in _vol_sizes.items() if now - t > _VOL_TTL_SEC]:
         _vol_sizes.pop(k, None)
@@ -150,6 +157,10 @@ _METRIC_FIELDS = {
     "yoi_bid": "y_idx_bid_bps", "yoi_ask": "y_idx_ask_bps",
     # спред по средневзвесу дня (аналитика считает по нему, не по last price)
     "yoi_wap": "y_idx_wap_bps",
+    # фильтр по объёму: цены VWAP-наборов активных размеров тикета и их Y-IDX.
+    # Едут СЛОВАРЯМИ {"ask:5000000": …}, потому что размеры выбирает клиент, а
+    # знать их в схеме строки незачем — фронт берёт свой ключ.
+    "vol_px": "vol_px", "yoi_vol": "y_idx_vol",
     # горизонт прайсинга: он цено-зависим (правило цены vs цена выкупа), поэтому
     # едет в патче вместе с метриками — иначе маркер оферты в таблице остался бы
     # от прошлой цены и врал, к чему посчитан спред строки
@@ -159,14 +170,21 @@ _METRIC_FIELDS = {
 
 def _metrics_patch(row: dict) -> dict:
     """Патч производных метрик для WS-пуша: фронт мерджит и НЕ зовёт /reprice —
-    пересчёт уже сделан здесь, вторая ходка за тем же числом не нужна."""
-    out = {_METRIC_FIELDS[k]: row[k] for k in _METRIC_FIELDS if row.get(k) is not None}
+    пересчёт уже сделан здесь, вторая ходка за тем же числом не нужна.
+
+    ЧИСЛО, КОТОРОГО БОЛЬШЕ НЕТ, УЕЗЖАЕТ ЯВНЫМ null. Раньше None-поля из патча
+    выбрасывались, и фронт держал прежнее значение: у бумаги, чей оффер ушёл из
+    книги или чей контекст расчёта остыл, в строке оставался спред от прошлой
+    цены — ровно тот рассинхрон «свежая цена, старое число», от которого
+    уходили 27.08.2026. Ключи, которых в строке НЕТ вовсе (пересчёт их не
+    касался), в патч не попадают и на фронте не трогаются."""
+    out = {_METRIC_FIELDS[k]: row[k] for k in _METRIC_FIELDS if k in row}
     if out:
         out["metrics"] = True     # маркер «производные посчитаны» для фронта
         # цены сторон — из ЭТОГО же расчёта, иначе спред стороны лёг бы на цену
         # из другого тика (рассинхрон «цена 99,00 / Y-IDX от 99,28»)
         for k in ("bid", "ask"):
-            if row.get(k) is not None:
+            if k in row:
                 out[k] = row[k]
     return out
 
@@ -178,19 +196,24 @@ async def _broadcast_quote(isin: str, data: dict) -> None:
     from services import live_quotes
     if not wsmod.manager.has_market_audience(isin):
         return
+    # Котировка — ПОЛНЫЙ снимок верха стакана, поэтому None здесь значит
+    # «стороны в книге нет», и это надо показать, а не умолчать: раньше такие
+    # поля вырезались, и в строке оставалась цена ушедшей заявки.
     out = {
         "last_price_pct": data.get("last_price"),
         "bid": data.get("bid"), "ask": data.get("ask"),
         "bid_qty": data.get("bid_vol"), "ask_qty": data.get("ask_vol"),
         "src": "ws",
     }
+    # оборот и средневзвес — наоборот, добавка: их нет, пока по бумаге не
+    # прошло сделок, и слать по ним null значило бы стирать живое число
     v = live_quotes.get(isin)
     if v:
-        out["vwap_pct"] = v["vwap_pct"]
-        out["vwap_volume"] = v["volume"]
-        out["val_today"] = v["val_today"]
-    await wsmod.manager.broadcast_market_data(
-        isin, {k: v for k, v in out.items() if v is not None})
+        for k, val in (("vwap_pct", v["vwap_pct"]), ("vwap_volume", v["volume"]),
+                       ("val_today", v["val_today"])):
+            if val is not None:
+                out[k] = val
+    await wsmod.manager.broadcast_market_data(isin, out)
 
 
 async def _on_quote(isin: str, data: dict) -> None:
@@ -651,21 +674,34 @@ async def metrics_worker() -> None:
     await asyncio.sleep(40)
     done_since_log = 0
     sides_since_log = 0
+    # ЦЕНА ТАКТА в миллисекундах: без неё «стало тяжелее» — спор, а не факт.
+    # Полный пересчёт и пересчёт сторон меряются отдельно: у них разная природа
+    # (сборка потока против переоценки готового) и разные рычаги настройки.
+    full_ms = sides_ms = 0.0
     last_log = time.time()
     while True:
         await asyncio.sleep(_BATCH_SEC)
         try:
             # минутная сводка — живой ли конвейер и каков хит-рейт кэша уровней
-            if done_since_log and time.time() - last_log >= 60:
+            # печатаем, если была ЛЮБАЯ работа: в тихом рынке полных пересчётов
+            # нет вовсе, и по прежнему условию сводка молчала — как раз в том
+            # режиме, который и надо мерить
+            if (done_since_log or sides_since_log) and time.time() - last_log >= 60:
                 global _depth_msgs
-                logger.info("metrics engine: %d строк/мин · сторон %d/мин · "
+                logger.info("metrics engine: %d строк/мин (%.1fс, %.0fмс/шт) · "
+                            "сторон %d/мин (%.1fс, %.0fмс/шт) · "
                             "memo %d (hit %d / miss %d) · dirty %d (+%d сторон) · "
                             "depth-пушей %d/мин (%d бумаг)",
-                            done_since_log, sides_since_log, len(_level_memo),
-                            _memo_hits, _memo_misses, len(_dirty), len(_sides_dirty),
+                            done_since_log, full_ms / 1000.0,
+                            full_ms / max(1, done_since_log),
+                            sides_since_log, sides_ms / 1000.0,
+                            sides_ms / max(1, sides_since_log),
+                            len(_level_memo), _memo_hits, _memo_misses,
+                            len(_dirty), len(_sides_dirty),
                             _depth_msgs, len(_depth_streamed))
                 done_since_log = 0
                 sides_since_log = 0
+                full_ms = sides_ms = 0.0
                 _depth_msgs = 0
                 last_log = time.time()
             if not _dirty and not _sides_dirty:
@@ -687,7 +723,9 @@ async def metrics_worker() -> None:
                 ctx["full_by"] = {i: ({} if isinstance(f, Exception) else f or {})
                                   for i, f in zip(take, fulls)}
                 batch = [(i, _last_quote.get(i) or {}) for i in take]
+                _t0 = time.perf_counter()
                 rows = await run_heavy(_crunch, batch, ctx)
+                full_ms += (time.perf_counter() - _t0) * 1000.0
                 if rows:
                     um = market_cache.get("universe_metrics") or {}
                     um.update(rows)
@@ -701,7 +739,9 @@ async def metrics_worker() -> None:
             if _sides_dirty:
                 take_s = list(_sides_dirty)[:_MAX_SIDES_BATCH]
                 _sides_dirty.difference_update(take_s)
+                _t0 = time.perf_counter()
                 srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
+                sides_ms += (time.perf_counter() - _t0) * 1000.0
                 if srows:
                     um = market_cache.get("universe_metrics") or {}
                     um.update(srows)

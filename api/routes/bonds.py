@@ -90,7 +90,8 @@ def _horizon_dur(mx, mat_dur):
     return mat_dur
 
 
-def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
+def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None,
+              vol_bid=None, vol_ask=None):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond)
     + spread duration (кросс-секция)."""
     base = u.get("base_rate_type", "UNKNOWN")
@@ -111,6 +112,7 @@ def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
         y_idx_slope_bps_per_pct=mx.get("yoi_slope"),
         dirty_price_rub=mx.get("dirty"), dm_bps=mx.get("dm"),
         wap_price_pct=mx.get("wap"), y_idx_wap_bps=mx.get("yoi_wap"),
+        **_vol_fields(mx, vol_bid, vol_ask),
         val_today=mx.get("val_today"), adv_1m_rub=adv,
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
@@ -128,7 +130,8 @@ def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None):
     )
 
 
-async def _universe_bonds(extra_list, cache, limit, offset):
+async def _universe_bonds(extra_list, cache, limit, offset,
+                          vol_bid=None, vol_ask=None):
     """Весь рынок флоатеров из реестра инструментов. Аналитика по всем;
     live-метрики — только для watchlist (extra). Расчёты в services.universe."""
     from services import universe as universe_svc
@@ -168,8 +171,22 @@ async def _universe_bonds(extra_list, cache, limit, offset):
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
         items.append(_uni_item(u, name, mx, spread_dur.get(isin), adv.get(isin),
-                               avg7.get(isin)))
+                               avg7.get(isin), vol_bid, vol_ask))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
+
+
+def _vol_fields(mx: dict, vol_bid: Optional[float], vol_ask: Optional[float]) -> dict:
+    """Цена набора тикета и её Y-IDX — из чисел, посчитанных движком в его такте.
+    Здесь ничего не считается: своя арифметика в ручке разъехалась бы с движком."""
+    out: dict = {}
+    px_map, y_map = mx.get("vol_px") or {}, mx.get("yoi_vol") or {}
+    for side, size in (("bid", vol_bid), ("ask", vol_ask)):
+        if not size:
+            continue
+        key = f"{side}:{float(size):.0f}"
+        out[f"vol_{side}_price_pct"] = px_map.get(key)
+        out[f"y_idx_vol_{side}_bps"] = y_map.get(key)
+    return out
 
 
 @router.get("", response_model=BondListResponse, tags=["Bonds"])
@@ -180,7 +197,9 @@ async def get_bonds(
     with_valuation: bool = Query(False),
     universe: bool = Query(False, description="Весь юниверс флоатеров из реестра"),
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
-    fields: Optional[str] = Query(None)
+    fields: Optional[str] = Query(None),
+    vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
+    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽")
 ):
     base_dir = get_base_dir()
     isins_path = os.path.join(base_dir, "isins.txt")
@@ -196,7 +215,13 @@ async def get_bonds(
     cache = MarketDataService.get_local_bond_cache(cache_path)
 
     if universe:
-        return await _universe_bonds(extra_list, cache, limit, offset)
+        # размеры тикета регистрируем В ДВИЖКЕ: он посчитает Y-IDX цены набора в
+        # своём такте по методике, а ручка только выберет нужный размер. Считать
+        # здесь нельзя — это 13 мс на бумагу, то есть секунды на весь универс.
+        if vol_bid or vol_ask:
+            from services.universe_stream import register_vol_sizes
+            register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
+        return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask)
 
     # добавленные пользователем бумаги (watchlist) — в начало, чтобы были видны
     base_set = set(isins)

@@ -304,6 +304,14 @@ class BondListItem(BaseModel):
     # push'ем; у остальных — биржевой WAPRICE из board-снапшота MOEX.
     wap_price_pct: Optional[float] = None
     y_idx_wap_bps: Optional[int] = None   # спред по средневзвесу дня (аналитика)
+    # ФИЛЬТР ПО ОБЪЁМУ: цена набора запрошенного тикета и её Y-IDX — оба числа
+    # считает бэкенд по методике (браузер репрайсить не умеет, а линеаризация
+    # уводила спред вслед за якорем — 27.08.2026). Присылаются, только когда
+    # запрос назвал размер тикета (vol_bid/vol_ask).
+    vol_bid_price_pct: Optional[float] = None
+    vol_ask_price_pct: Optional[float] = None
+    y_idx_vol_bid_bps: Optional[int] = None
+    y_idx_vol_ask_bps: Optional[int] = None
     val_today: Optional[float] = None           # оборот сегодня, ₽ (MOEX VALTODAY)
     # средний ДНЕВНОЙ оборот за 30 дней, ₽ — из архива часовых баров (см.
     # services.bars.adv_map): Σ денег окна / число торговых дней рынка

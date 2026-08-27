@@ -176,12 +176,16 @@ export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?serie
 // и наш расчётный на тех же ставках — сверка нашей механики с эталоном.
 export const fetchRuoniaIndex = (days = 400) => request(`/api/curves/ruonia-index?days=${days}`);
 
-export function fetchBonds({ withVal, universe, extra, signal }) {
+export function fetchBonds({ withVal, universe, extra, volBid, volAsk, signal }) {
   let url;
   if (universe) {
     url = `/api/bonds?universe=true&limit=2000`;
     // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
+    // размеры тикета — чтобы бэк посчитал Y-IDX цены набора ПО МЕТОДИКЕ
+    // (в браузере это считалось наклоном от якоря, см. vwap.js)
+    if (volBid > 0) url += `&vol_bid=${volBid}`;
+    if (volAsk > 0) url += `&vol_ask=${volAsk}`;
   } else {
     url = `/api/bonds?with_market=true&with_valuation=${withVal}&limit=500`;
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
@@ -189,8 +193,9 @@ export function fetchBonds({ withVal, universe, extra, signal }) {
   return request(url, { signal });
 }
 
-// Лестницы стаканов по всему юниверсу (фоновый снимок Alor) — сырьё для фильтра
-// по объёму: VWAP на тикет считает фронт (src/vwap.js).
+// Лестницы стаканов по всему юниверсу (фоновый снимок Alor) — по ним фронт
+// решает, ИСПОЛНИМ ли тикет; сами цена набора и её спред приходят с бэка
+// посчитанными по методике (см. fetchBonds vol_bid/vol_ask).
 export const fetchDepth = () => request("/api/orderbook/depth/all");
 
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
@@ -452,13 +457,26 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
   };
 
+  // РАЗМЕРЫ ТИКЕТА фильтра по объёму. Движок считает Y-IDX VWAP-цены набора
+  // только по размерам, которые кто-то смотрит, и помнит их с TTL — поэтому их
+  // мало прислать один раз: держим регистрацию живой, пока открыта вкладка.
+  // Идут по этому же сокету: заставлять ради продления перезапрашивать всю
+  // таблицу (2000 строк) — платить страницей за одно число.
+  let volSizes = [];
+  let volTimer = null;
+  const pushVolSizes = () => {
+    if (volSizes.length) send({ action: "vol-sizes", sizes: volSizes });
+  };
+
   // Вся таблица живая: одна wildcard-подписка вместо диффа списка избранного —
   // бэк пушит патчи всех бумаг юниверса, фронт коалесцирует и мерджит.
   const sync = () => {
     if (!ws || ws.readyState !== 1 || subscribedAll) return;
     send({ action: "subscribe", channel: "market", isin: "*" });
     subscribedAll = true;
+    if (volSizes.length) send({ action: "vol-sizes", sizes: volSizes });
   };
+
 
   const scheduleReconnect = () => {
     if (closed || reconnectTimer) return;
@@ -489,9 +507,19 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
 
   return {
     resubscribe: sync,
+    /** Размеры тикета, по которым бэку считать Y-IDX набора (пусто = не нужно). */
+    setVolSizes(sizes) {
+      volSizes = (sizes || []).filter((v) => v > 0);
+      if (volTimer) { clearInterval(volTimer); volTimer = null; }
+      pushVolSizes();
+      // повтор раз в половину серверного TTL (600 с) — с запасом на пропущенный
+      // тик и на переподключение сокета
+      if (volSizes.length) volTimer = setInterval(pushVolSizes, 300000);
+    },
     close() {
       closed = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (volTimer) { clearInterval(volTimer); volTimer = null; }
       if (ws) ws.close();
     },
   };

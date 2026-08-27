@@ -187,6 +187,17 @@ async def websocket_market_endpoint(websocket: WebSocket):
                 isin = payload.get("isin")
                 
                 isin = (isin or "").strip().upper() if isinstance(isin, str) else None
+                # РАЗМЕРЫ ТИКЕТА фильтра по объёму. Движок считает Y-IDX
+                # VWAP-цены набора только по тем размерам, которые кто-то сейчас
+                # смотрит, и помнит их с TTL. Клиент шлёт их сюда — по сокету,
+                # который и так открыт, — при включении фильтра и раз в полTTL:
+                # регистрация через /api/bonds протухала бы у того, кто просто
+                # держит вкладку открытой.
+                if action == "vol-sizes":
+                    from services.universe_stream import register_vol_sizes
+                    sizes = payload.get("sizes")
+                    register_vol_sizes(sizes if isinstance(sizes, list) else [])
+                    continue
                 # сигналы адресуются аккаунтом (isin не нужен): адресат берётся
                 # из сессии хендшейка, из сообщения клиента — никогда
                 if channel == "signals":

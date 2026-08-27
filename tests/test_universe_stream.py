@@ -190,3 +190,89 @@ def test_wap_spread_comes_from_exact_batch():
     # наклон дал бы 100 + (97 − 100)·(−50) = 250; методика — 260
     assert r["RU000A100001"]["yoi_wap"] == 260
 
+
+
+def test_ticket_vwap_spread_computed_server_side(monkeypatch):
+    """Y-IDX цены набора (фильтр по объёму) считается ПО МЕТОДИКЕ на сервере.
+
+    Раньше браузер переводил VWAP тикета в спред наклоном dY/dP — та же линия
+    через якорь, что увела лестницу 27.08.2026. Теперь движок кладёт в строку
+    и цену набора, и её спред на запрошенный размер тикета."""
+    import services.yidx_exact as ye
+    import services.depth as depth_svc
+    import services.live_quotes as lq
+    from services.market_data import market_cache
+
+    isin = "RU000A100001"
+    us.register_vol_sizes([5_000_000])
+    assert us.active_vol_sizes() == [5_000_000.0]
+
+    # книга: оффер набирается двумя уровнями, бид — одним
+    monkeypatch.setattr(depth_svc, "get_depth", lambda: {
+        isin: {"a": [[100.0, 3000], [100.5, 5000]], "b": [[99.0, 9000]]}})
+    monkeypatch.setattr(lq, "get", lambda i: {})
+    market_cache["universe_metrics"] = {isin: {"face_px": 1000.0, "accrued_settle": 0.0}}
+    # точный расчёт отдаёт спред, привязанный к цене — линия таких чисел не даёт
+    monkeypatch.setattr(ye, "y_idx_many",
+                        lambda ctx, prices: {round(float(p), 4): int(round(p * 10))
+                                             for p in prices})
+
+    row = {}
+    us._eval_ctx[isin] = {"isin": isin}
+    try:
+        us._fill_side_metrics(row, isin, {"bid": None, "ask": None}, {})
+    finally:
+        us._eval_ctx.pop(isin, None)
+        us._vol_sizes.clear()
+        market_cache.pop("universe_metrics", None)
+
+    # 3,0 млн ₽ по 100,0 + 2,0 млн по 100,5 → взвешенная деньгами цена 100,2
+    assert row["vol_px"]["ask:5000000"] == pytest.approx(100.2, abs=0.001)
+    assert row["yoi_vol"]["ask:5000000"] == int(round(row["vol_px"]["ask:5000000"] * 10))
+    assert row["vol_px"]["bid:5000000"] == pytest.approx(99.0, abs=0.001)
+
+
+def test_patch_carries_explicit_null_when_number_is_gone():
+    """Число, которого больше нет, уезжает ЯВНЫМ null — иначе фронт держит старое.
+
+    У бумаги ушёл оффер (или остыл контекст расчёта): спред стороны посчитать
+    нечем. Раньше None-поля выбрасывались из патча, и в строке оставался спред,
+    посчитанный к прошлой цене — тот же рассинхрон «свежая цена, старое число»,
+    ради которого убирали наклон."""
+    row = {"yoi": 120, "yoi_bid": 130, "yoi_ask": None, "ask": None, "bid": 99.5,
+           "yoi_wap": None}
+    p = us._metrics_patch(row)
+    assert p["y_idx_ask_bps"] is None and "y_idx_ask_bps" in p, "потерянный спред не стёрт"
+    assert p["ask"] is None and "ask" in p, "ушедшая сторона не стёрта"
+    assert p["y_idx_wap_bps"] is None
+    assert p["y_idx_bid_bps"] == 130 and p["bid"] == 99.5
+    # ключей, которых в строке нет вовсе, в патче нет: их пересчёт не касался,
+    # и слать по ним null значило бы стирать чужое живое число
+    assert "dm_bps" not in p and "dirty_price_rub" not in p
+
+
+def test_vol_sizes_registration_is_bounded():
+    """Размеры тикета приходят от клиента — вход режется по числу и по сумме."""
+    us._vol_sizes.clear()
+    try:
+        us.register_vol_sizes([1e6, 2e6, 3e6, 4e6, 5e6, 6e6])
+        assert len(us._vol_sizes) <= us._VOL_MAX_SIZES, "нет потолка на число размеров"
+        us._vol_sizes.clear()
+        us.register_vol_sizes([-5, 0, "мусор", None, 1e15, 7e6])
+        assert list(us._vol_sizes) == [7e6], "пропущен неадекватный размер"
+    finally:
+        us._vol_sizes.clear()
+
+
+def test_vol_sizes_expire_by_ttl(monkeypatch):
+    """Регистрация живёт TTL: клиент, закрывший вкладку, не заставляет движок
+    считать цены вечно. Пока вкладка открыта, её продлевает WS (см. api.js)."""
+    us._vol_sizes.clear()
+    try:
+        us.register_vol_sizes([5e6])
+        assert us.active_vol_sizes() == [5e6]
+        # «прошло» больше TTL
+        us._vol_sizes[5e6] -= us._VOL_TTL_SEC + 1
+        assert us.active_vol_sizes() == []
+    finally:
+        us._vol_sizes.clear()

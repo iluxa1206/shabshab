@@ -39,24 +39,6 @@ export function vwapFor(levels, volRub, face, accrued) {
   return { px: cost / taken, money: taken, levels: used, partial: left > 1e-9 };
 }
 
-// Y-IDX по произвольной цене px: линейно от известного якоря (Y-IDX верха стакана
-// или последней сделки) через производную dY/dP (y_idx_slope_bps_per_pct с бэка).
-// На масштабе стакана (доли пп) Y-IDX(цена) практически прямая — ошибка
-// линеаризации заметно меньше bps. Без наклона или якоря — null, а не догадка.
-export function yIdxAt(b, px, side) {
-  const k = b.y_idx_slope_bps_per_pct;
-  if (px == null || k == null) return null;
-  const anchors = side === "ask"
-    ? [[b.ask_price_pct, b.y_idx_ask_bps], [b.bid_price_pct, b.y_idx_bid_bps],
-       [b.last_price_pct, b.yield_over_index_bps]]
-    : [[b.bid_price_pct, b.y_idx_bid_bps], [b.ask_price_pct, b.y_idx_ask_bps],
-       [b.last_price_pct, b.yield_over_index_bps]];
-  for (const [ap, ay] of anchors) {
-    if (ap != null && ay != null) return Math.round(ay + (px - ap) * k);
-  }
-  return null;
-}
-
 // Допуск по объёму: набранное принимается за требуемое, если добрали ≥90%
 // запрошенного. Заявка «100 000 бумаг по 98» даёт ~98 млн ₽ грязными и по
 // строгому порогу «100 млн» вылетала бы, хотя это ровно тот тикет, который
@@ -97,9 +79,15 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
     _vwap_ask: okAsk ? ask.money : null,
     _vwap_bid_levels: okBid ? bid.levels : null,
     _vwap_ask_levels: okAsk ? ask.levels : null,
-    bid_price_pct: wantBid ? (okBid ? Math.round(bid.px * 10000) / 10000 : null) : b.bid_price_pct,
-    ask_price_pct: wantAsk ? (okAsk ? Math.round(ask.px * 10000) / 10000 : null) : b.ask_price_pct,
-    y_idx_bid_bps: wantBid ? (okBid ? yIdxAt(b, bid.px, "bid") : null) : b.y_idx_bid_bps,
-    y_idx_ask_bps: wantAsk ? (okAsk ? yIdxAt(b, ask.px, "ask") : null) : b.y_idx_ask_bps,
+    // Цена набора и её Y-IDX — оба числа С БЭКЕНДА (vol_*_price_pct /
+    // y_idx_vol_*_bps): движок считает их по методике на размер тикета,
+    // который ручка получила в запросе. Здесь книга нужна только чтобы решить,
+    // ИСПОЛНИМ ли тикет (это арифметика стакана, не модель).
+    // Раньше спред набора выводился наклоном dY/dP прямо в браузере — линия
+    // уводила число вслед за уехавшим якорем (27.08.2026).
+    bid_price_pct: wantBid ? (okBid ? (b.vol_bid_price_pct ?? null) : null) : b.bid_price_pct,
+    ask_price_pct: wantAsk ? (okAsk ? (b.vol_ask_price_pct ?? null) : null) : b.ask_price_pct,
+    y_idx_bid_bps: wantBid ? (okBid ? (b.y_idx_vol_bid_bps ?? null) : null) : b.y_idx_bid_bps,
+    y_idx_ask_bps: wantAsk ? (okAsk ? (b.y_idx_vol_ask_bps ?? null) : null) : b.y_idx_ask_bps,
   };
 }

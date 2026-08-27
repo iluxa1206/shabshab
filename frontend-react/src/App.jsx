@@ -4,7 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } 
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { mergeStreamedQuote } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
-import { applyVolume, yIdxAt } from "./vwap.js";
+import { applyVolume } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
@@ -215,6 +215,14 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
+  // Размер тикета сменился → перезапрашиваем строки: цена набора и её спред
+  // считаются на бэке ИМЕННО под этот размер, старые числа относятся к прежнему.
+  const firstVol = useRef(true);
+  useEffect(() => {
+    if (firstVol.current) { firstVol.current = false; return; }
+    const t = setTimeout(() => loadBonds(), 400);   // дебаунс набора в поле
+    return () => clearTimeout(t);
+  }, [volBid, volAsk, loadBonds]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
   useEffect(() => { localStorage.setItem("matYrsFrom", matFrom); }, [matFrom]);
   useEffect(() => { localStorage.setItem("matYrsTo", matTo); }, [matTo]);
@@ -278,16 +286,19 @@ function Dashboard() {
   const abortRef = useRef(null);
   // весь рынок (universe); watchlist обогащается live-ценой + нашим DM
   const paramsRef = useRef({});
-  paramsRef.current = { watch };
+  paramsRef.current = { watch, volBid, volAsk };
 
   const loadBonds = useCallback(async () => {
-    const { watch } = paramsRef.current;
+    // размеры тикета едут в запрос: Y-IDX цены набора считает БЭКЕНД по
+    // методике (в браузере он выводился наклоном от якоря — убрано 27.08.2026)
+    const { watch, volBid, volAsk } = paramsRef.current;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setStatus("loading");
     try {
-      const r = await fetchBonds({ universe: true, extra: watch, signal: ctrl.signal });
+      const r = await fetchBonds({ universe: true, extra: watch, volBid, volAsk,
+                                  signal: ctrl.signal });
       const items = r.items || [];
       setBonds(items);
       bondsRef.current = items;
@@ -394,6 +405,18 @@ function Dashboard() {
     const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
       "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
       "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps"];
+    // Цена набора тикета и её Y-IDX едут словарями по размерам ("ask:5000000"),
+    // потому что размеры выбирает клиент. Раскладываем в те же плоские поля,
+    // которыми отвечает /api/bonds, — дальше по строке они неразличимы.
+    const applyVolPatch = (n, q) => {
+      const { volBid, volAsk } = paramsRef.current;
+      for (const [side, size] of [["bid", volBid], ["ask", volAsk]]) {
+        if (!(size > 0)) continue;
+        const key = `${side}:${Math.round(size)}`;
+        if (q.vol_px) n[`vol_${side}_price_pct`] = q.vol_px[key] ?? null;
+        if (q.y_idx_vol) n[`y_idx_vol_${side}_bps`] = q.y_idx_vol[key] ?? null;
+      }
+    };
     const flushId = setInterval(() => {
       const buf = patchBufRef.current;
       const isins = Object.keys(buf);
@@ -424,7 +447,11 @@ function Dashboard() {
           // прийти от сокета, чей агрегат ещё догоняется архивом.
           if (q.val_today != null && !(b.val_today > q.val_today)) n.val_today = q.val_today;
           if (q.metrics) {
-            for (const k of METRIC_KEYS) if (q[k] != null) n[k] = q[k];
+            // ЯВНЫЙ null СТИРАЕТ число: бэк присылает его, когда считать
+            // стало нечем (сторона ушла из книги, контекст остыл). Раньше
+            // такие поля пропускались, и в строке жил спред от прошлой цены.
+            for (const k of METRIC_KEYS) if (k in q) n[k] = q[k];
+            applyVolPatch(n, q);
             n._mstale = false;   // производные свежие — строка не dim
           }
           const price = priceNew[b.isin];
@@ -470,6 +497,17 @@ function Dashboard() {
       repriceFallback.current = {};
     };
   }, [scheduleReprice]);
+
+  // Размеры тикета — движку, по открытому сокету. Он считает Y-IDX VWAP-цены
+  // набора только по тем размерам, которые кто-то смотрит; регистрация живёт с
+  // TTL, поэтому connectMarketWs сам её повторяет, пока вкладка открыта.
+  // Дебаунс общий с перезагрузкой таблицы: пока в поле набирают число, каждый
+  // промежуточный размер заставлял бы движок считать цены, которых никто не ждёт.
+  useEffect(() => {
+    const t = setTimeout(
+      () => wsRef.current?.setVolSizes([volBid, volAsk].filter((v) => v > 0)), 400);
+    return () => clearTimeout(t);
+  }, [volBid, volAsk]);
 
   // Котировки всего рынка тактом 5с: цена, верх стакана, средневзвес дня,
   // оборот. Избранное сюда не мерджим — по нему те же поля приходят push'ем
