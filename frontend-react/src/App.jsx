@@ -61,15 +61,15 @@ const initialParams = () => new URLSearchParams(window.location.search);
 // Теперь спред стороны считает бэкенд по методике и присылает патчем: движок
 // будит отдельная очередь на движение bid/ask, такт ≤5 с. До прихода числа
 // ячейка спреда пуста — прочерк честнее правдоподобной прикидки.
-function applySideQuote(b, n, side, px) {
-  if (px == null || px === b[side === "bid" ? "bid_price_pct" : "ask_price_pct"]) return;
-  if (side === "bid") {
-    n.bid_price_pct = px;
-    n.y_idx_bid_bps = null;
-  } else {
-    n.ask_price_pct = px;
-    n.y_idx_ask_bps = null;
-  }
+//
+// px === null значит «стороны в книге НЕТ» (котировка — полный снимок верха
+// стакана): гасим и цену, и спред. Пропускать такой случай нельзя — в строке
+// осталась бы цена заявки, которой на рынке уже нет.
+function applySideQuote(b, n, side, px, hasKey) {
+  const pxField = side === "bid" ? "bid_price_pct" : "ask_price_pct";
+  if (px === undefined || (!hasKey && px == null) || px === b[pxField]) return;
+  n[pxField] = px ?? null;
+  n[side === "bid" ? "y_idx_bid_bps" : "y_idx_ask_bps"] = null;
 }
 
 function Dashboard() {
@@ -439,8 +439,8 @@ function Dashboard() {
           // цена стороны и её Y-IDX ходят ПАРОЙ: цена приезжает каждым тиком, а
           // спред считает бэк своим тактом — без сдвига наклоном строка показывала
           // бы свежую цену со спредом от прежнего верха стакана.
-          applySideQuote(b, n, "bid", q.bid);
-          applySideQuote(b, n, "ask", q.ask);
+          applySideQuote(b, n, "bid", q.bid, "bid" in q);
+          applySideQuote(b, n, "ask", q.ask, "ask" in q);
           if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
           // оборот дня по тикам: биржевой VALTODAY из снапшота отстаёт, а свой
           // счёт растёт сделка в сделку. Назад не откатываем — патч может

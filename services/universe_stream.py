@@ -92,13 +92,18 @@ def register_vol_sizes(sizes) -> None:
     столько же размеров, сколько движок готов считать, и в пределах разумной
     суммы. Иначе одна кривая вкладка растит словарь без края."""
     now = time.monotonic()
-    for v in list(sizes or [])[:_VOL_MAX_SIZES]:
+    ok = []
+    for v in sizes or []:
         try:
             v = float(v)
         except (TypeError, ValueError):
             continue
+        # потолок считаем ДО среза по количеству: иначе горсть мусора в начале
+        # списка съедала бы квоту, и живой размер до реестра не доезжал
         if 0 < v <= _VOL_SIZE_MAX_RUB:
-            _vol_sizes[round(v, 2)] = now
+            ok.append(round(v, 2))
+    for v in ok[:_VOL_MAX_SIZES]:
+        _vol_sizes[v] = now
     for k in [k for k, t in _vol_sizes.items() if now - t > _VOL_TTL_SEC]:
         _vol_sizes.pop(k, None)
 
