@@ -428,15 +428,22 @@ async def yidx_aggregate(body: YidxAggBody):
 
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
 
+    from services.bars import BARS_METRICS_VERSION as _BV
+
     def _read_daily():
         with _connect() as c:
+            # ТОЛЬКО АКТУАЛЬНЫЙ ДВИЖОК. Медиана по бумагам, посчитанным разными
+            # версиями, — это среднее по двум методикам: правки движка двигали
+            # спред на сотни bps (см. историю версий в services/bars.py), а
+            # график конкретной бумаги пересчитывается при открытии, агрегат же
+            # не пересчитывает НИЧЕГО и раньше молча брал что лежит.
             # имена колонок приводим к тем, что ждёт _one_horizon: у дневной
             # свёртки они свои (y_idx_wap_bps), а гард общий с /series
             return c.execute(
                 "SELECT isin, date, y_idx_wap_bps AS y_idx, "
                 "y_idx_alt_wap_bps AS y_idx_alt, horizon, alt_horizon FROM bar_daily "
                 "WHERE kind='floater' AND y_idx_wap_bps IS NOT NULL AND date >= ? "
-                "ORDER BY date", (cutoff,)).fetchall()
+                "AND metrics_ver = ? ORDER BY date", (cutoff, _BV)).fetchall()
 
     rows = await asyncio.to_thread(_read_daily)
     lo, hi = _YIDX_BAND
@@ -577,14 +584,21 @@ async def multi_spread(body: MultiSpreadBody):
         # bar_daily есть только для vwap; на close точка с чужим горизонтом
         # просто отбрасывается, и линия рвётся вместо обвала.
         acol = "y_idx_alt_wap_bps" if body.base == "vwap" else "NULL"
+        from services.bars import BARS_METRICS_VERSION as _BV2
 
         def _read_daily():
             with _connect() as c:
+                # спред — только актуального движка (см. yidx_aggregate); цена
+                # версией не помечена и остаётся при любой: линия цены во
+                # вкладке СРАВНЕНИЕ не должна рваться из-за пересчёта спреда
                 return c.execute(
-                    f"SELECT isin, date, {pcol} AS price_pct, {ycol} AS y_idx, "
-                    f"horizon, alt_horizon, {acol} AS y_idx_alt FROM bar_daily "
+                    f"SELECT isin, date, {pcol} AS price_pct, "
+                    f"CASE WHEN metrics_ver = ? THEN {ycol} END AS y_idx, "
+                    f"horizon, alt_horizon, "
+                    f"CASE WHEN metrics_ver = ? THEN {acol} END AS y_idx_alt "
+                    f"FROM bar_daily "
                     f"WHERE kind='floater' AND date >= ? AND isin IN ({ph}) "
-                    "ORDER BY date", (cutoff, *isins)).fetchall()
+                    "ORDER BY date", (_BV2, _BV2, cutoff, *isins)).fetchall()
 
         rows = await asyncio.to_thread(_read_daily)
         for r in _one_horizon(rows, lo, hi):

@@ -15,6 +15,8 @@ import importlib
 
 import pytest
 
+from services.bars import BARS_METRICS_VERSION as _BV
+
 
 @pytest.fixture
 def bars(tmp_path, monkeypatch):
@@ -99,8 +101,12 @@ def test_aggregate_reads_vwap_rollup(bars, monkeypatch):
     import services.portfolio_db as pdb
     with pdb._connect() as c:
         c.executemany(
+            # версия ТЕКУЩАЯ, а не зашитое число: агрегат отдаёт только строки
+            # актуального движка (медиана по разным версиям — среднее по двум
+            # методикам), и с константой тест ломался бы на каждом бампе
             "INSERT INTO bar_daily(isin,date,kind,wap_pct,y_idx_wap_bps,"
-            "y_idx_alt_wap_bps,horizon,alt_horizon,metrics_ver) VALUES(?,?,?,?,?,?,?,?,8)",
+            "y_idx_alt_wap_bps,horizon,alt_horizon,metrics_ver) "
+            f"VALUES(?,?,?,?,?,?,?,?,{_BV})",
             [("RU_A", d0, "floater", 100.0, 200.0, 340.0, "maturity", "put", ),
              ("RU_A", d1, "floater", 100.2, 210.0, 350.0, "maturity", "put"),
              # у второй бумаги день посчитан к ОФЕРТЕ, а последний известный
