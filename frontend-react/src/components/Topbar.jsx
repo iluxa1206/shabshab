@@ -5,6 +5,7 @@ import { NavLink, useLocation } from "react-router-dom";
 const TYPES = [
   { id: "floaters", label: "Флоатеры", home: "/floaters" },
   { id: "fixed", label: "Фиксы", home: "/fixed" },
+  { id: "portfolio", label: "Портфель", home: "/portfolio" },
   { id: "curves", label: "Кривые", home: "/curves" },
   // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
   { id: "reference", label: "Справочник", home: "/reference", admin: true },
@@ -15,12 +16,14 @@ const SUBNAV = {
              ["/trades", "Сделки"], ["/signals", "Сигналы"], ["/payments", "Выплаты"],
              ["/calc/float", "Калькулятор"]],
   fixed: [["/fixed", "Монитор"], ["/calc", "Калькулятор"]],
+  portfolio: [],
   curves: [],
   reference: [],
   status: [],
 };
 const currentType = (p) =>
-  p.startsWith("/calc/float") ? "floaters"
+  p.startsWith("/portfolio") ? "portfolio"
+    : p.startsWith("/calc/float") ? "floaters"
     : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed"
     : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
     : p.startsWith("/status") ? "status" : "floaters";

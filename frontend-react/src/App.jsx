@@ -24,6 +24,7 @@ import CalcModule from "./components/CalcModule.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
 import SignalsModule from "./components/SignalsModule.jsx";
+import PortfolioModule from "./components/PortfolioModule.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 import TradesTape from "./components/TradesTape.jsx";
@@ -823,6 +824,7 @@ function Dashboard() {
             путь тут же возвращается назад — страница остаётся пустой. */}
         <Route path="/blocks" element={<TradesTape />} />
         <Route path="/signals" element={<SignalsModule />} />
+        <Route path="/portfolio" element={<PortfolioModule />} />
         <Route path="/payments" element={<PaymentsCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />

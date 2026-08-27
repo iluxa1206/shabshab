@@ -535,6 +535,12 @@ export function connectOrderbookWs(isin, onData, onStatus) {
   };
 }
 
+// --- Портфель (вкладка ПОРТФЕЛЬ) ---
+// Конструктор stateless: ручные правки (exclude/pin/manual) едут в теле каждой
+// сборки, на сервере они не хранятся.
+export const buildPortfolio = (json) =>
+  request("/api/portfolio/build", { method: "POST", json });
+
 // --- Сигналы (вкладка СИГНАЛЫ) ---
 export const fetchSignalFilters = () => request("/api/signals");
 export const createSignalFilter = (json) =>

@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, history, trades, blocks, calc, tg, signals as signals_route
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, history, trades, blocks, calc, tg, portfolio, signals as signals_route
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -1126,6 +1126,7 @@ app.include_router(history.router, prefix="/api/history", dependencies=_gate)
 app.include_router(trades.router, prefix="/api/trades", dependencies=_gate)
 app.include_router(blocks.router, prefix="/api/blocks", dependencies=_gate)
 app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)
+app.include_router(portfolio.router, prefix="/api/portfolio", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 app.include_router(tg.router, prefix="/api/tg")  # webhook защищён secret-заголовком
 
