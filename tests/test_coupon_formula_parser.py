@@ -229,3 +229,40 @@ def test_average_window_income_days_convention():
                            fwd_pct=lambda d: None, idx=(idx_dates, idx_rates))
     # дни дохода 10-19 фев — ВСЕ по 20%; конвенция [s, e) включила бы 9 фев (10%)
     assert got == 20.0
+
+
+# ── parse_margin_schedule_field: РУЧНАЯ лесенка из Справочника ──────────────
+
+def test_margin_schedule_field_compact_and_json():
+    from services.coupon_calib import parse_margin_schedule_field as f
+    assert f("7-20=400") == [{"from": 7, "to": 20, "bps": 400}]
+    assert f("1-7=250; 8-21=460") == [{"from": 1, "to": 7, "bps": 250},
+                                      {"from": 8, "to": 21, "bps": 460}]
+    # одиночный купон и JSON-форма дают то же самое
+    assert f("9=0") == [{"from": 9, "to": 9, "bps": 0}]
+    assert f('[{"from":7,"to":20,"bps":400}]') == [{"from": 7, "to": 20, "bps": 400}]
+    assert f("") is None and f(None) is None
+
+
+def test_margin_schedule_field_rejects_garbage_and_overlap():
+    import pytest
+    from services.coupon_calib import parse_margin_schedule_field as f
+    with pytest.raises(ValueError):
+        f("8-21=460; 1-9=250")      # пересечение диапазонов
+    with pytest.raises(ValueError):
+        f("КС + 4%")               # не лесенка — молча проглотить нельзя
+    with pytest.raises(ValueError):
+        f("20-7=400")              # перевёрнутый диапазон
+
+
+def test_margin_schedule_manual_beats_parser_on_other_base_steps():
+    """Ситиматик RU000A0JU9K4: купоны 2-6 — MAX(инфляция+4%; ставка
+    рефинансирования+1%), т.е. НЕ КС. parse_margin_schedule сознательно молчит,
+    и КС-часть («7-20 купоны — КС + 4%») задаётся руками."""
+    from services.coupon_calib import (parse_margin_schedule,
+                                       parse_margin_schedule_field)
+    t = ("1 купон - 11% годовых, 2-6 купоны - большая из величин: инфляция плюс 4% "
+         "или ставка рефинансирования ЦБ плюс 1%, 7-20 купоны - Ключевая ставка "
+         "Банка России + 4%.")
+    assert parse_margin_schedule(t) is None
+    assert parse_margin_schedule_field("7-20=400") == [{"from": 7, "to": 20, "bps": 400}]

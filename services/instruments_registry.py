@@ -1203,9 +1203,14 @@ def coupon_overrides_all() -> dict:
 #                 (ref_data.cut_at_offer); без него поток считается к погашению
 #                 вместо оферты, и спред занижается почти вдвое (24 бумаги);
 #   base, margin_bps — без них выпуск вообще непрайсуем.
+#   margin_schedule — ручная лесенка маржи по номерам купонов. Конкурирующего
+#                 источника у неё нет (парсер читает только coupon_text), а
+#                 требовать ради неё manual_locked=1 значило бы ЗАМОРОЗИТЬ строку
+#                 целиком (freeze-trap импорта xlsx) ради одного поля.
 # Все они раньше приходили ТОЛЬКО из bondsearch-xlsx, который лежит вне git и вне
 # тома данных: файл приезжает лишь rsync'ом деплоя.
-_PRICING_FALLBACK_COLS = ("coupon_text", "var_type", "base", "margin_bps")
+_PRICING_FALLBACK_COLS = ("coupon_text", "var_type", "base", "margin_bps",
+                          "margin_schedule")
 
 
 def pricing_fallback_all() -> dict:

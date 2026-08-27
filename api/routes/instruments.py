@@ -26,11 +26,13 @@ _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
               "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
               "avg_window_days", "compounded", "br_coupon_mode", "br_fixing_lag", "spec_eff",
-              "cap_pct", "floor_pct", "var_type", "coupon_text", "rating", "source")
+              "cap_pct", "floor_pct", "var_type", "coupon_text", "margin_schedule",
+              "rating", "source")
 _XLSX_EDITABLE = ("short_name", "base", "margin_bps", "maturity_date",
                   "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
-                  "avg_window_days", "compounded", "cap_pct", "floor_pct", "var_type", "coupon_text")
+                  "avg_window_days", "compounded", "cap_pct", "floor_pct", "var_type",
+                  "coupon_text", "margin_schedule")
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
              "avg_window_days", "compounded"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
@@ -73,9 +75,25 @@ class InstrumentParams(BaseModel):
     cap_pct: Optional[float] = Field(None, ge=0, le=100, description="потолок ставки, % год.")
     floor_pct: Optional[float] = Field(None, ge=0, le=100, description="пол ставки, % год.")
     coupon_text: Optional[str] = Field(None, description="текст формулы купона")
+    margin_schedule: Optional[str] = Field(
+        None, max_length=512,
+        description="лесенка маржи по номерам купонов: «7-20=400; 21-24=550» (bps) "
+                    "или JSON [{\"from\":7,\"to\":20,\"bps\":400}]. Купоны вне "
+                    "диапазонов = не плавающие (скаляр margin_bps, бэктест их не судит)")
 
 
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _norm_margin_schedule(v):
+    """Ручная лесенка маржи → канонический «7-20=400; 21-24=550» (или "" для
+    очистки). Кидает ValueError с человеческим текстом — в БД не должна попасть
+    строка, которую прайсинг потом молча не разберёт."""
+    from services.coupon_calib import parse_margin_schedule_field
+    steps = parse_margin_schedule_field(v)
+    if not steps:
+        return ""
+    return "; ".join(f"{st['from']}-{st['to']}={st['bps']}" for st in steps)
 
 
 def _offers_no_spec() -> list:
@@ -308,6 +326,12 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
         if params.get("fixing_lag_unit") and params["fixing_lag_unit"] not in ("cal", "work"):
             errors.append(f"строка {rn} ({isin}): fixing_lag_unit ∈ cal|work")
             continue
+        if "margin_schedule" in params:
+            try:
+                params["margin_schedule"] = _norm_margin_schedule(params["margin_schedule"])
+            except ValueError as e:
+                errors.append(f"строка {rn} ({isin}): лесенка маржи — {e}")
+                continue
         for f in ("maturity_date", "issue_date"):
             if params.get(f) and not _ISO_RE.fullmatch(params[f]):
                 errors.append(f"строка {rn} ({isin}): {f} ждёт YYYY-MM-DD")
@@ -418,6 +442,11 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
         raise HTTPException(status_code=422, detail="fixing_lag_unit ∈ cal|work")
     if body.coupon_mode is not None and body.coupon_mode not in ("point", "average", "avg_prev", "month_start"):
         raise HTTPException(status_code=422, detail="coupon_mode ∈ point|average|avg_prev|month_start")
+    if body.margin_schedule is not None:
+        try:
+            params["margin_schedule"] = _norm_margin_schedule(body.margin_schedule)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=f"лесенка маржи: {e}")
     reg.set_manual(isin, params, lock=True)
     return {"ok": True, "instrument": reg.get(isin)}
 

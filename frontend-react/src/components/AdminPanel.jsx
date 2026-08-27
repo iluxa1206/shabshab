@@ -120,6 +120,7 @@ const _FIELDS = [
   ["day_count", "Day count", "text"],
   ["var_type", "Тип перем. ставки", "text"],
   ["face_value", "Номинал", "number"],
+  ["margin_schedule", "Лесенка маржи по купонам, bps («7-20=400; 21-24=550»)", "text"],
 ];
 
 export function InstrumentForm({ isin, onSaved }) {
