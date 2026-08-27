@@ -14,7 +14,7 @@ import os
 import re
 import time
 from datetime import date
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -447,31 +447,17 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     уведомление доедет до телефона, книга уже поменяется, а вопрос «что там
     вообще стояло» — первый после самого сигнала.
 
-    Y-IDX уровня считается ТЕМ ЖЕ путём, что число в шапке события —
-    exact_y_idx на тёплом контексте (десяток reprice без сети). Раньше здесь
-    стоял наклон y_idx_at, и лестница жила своей арифметикой: 21.08.2026
-    РусГид2Р01 приехал с 181 bps в шапке и 103 на том же уровне в стакане.
-    Наклон остаётся фолбэком для бумаг без контекста — лучше приблизительная
-    лестница, чем колонка прочерков."""
+    Y-IDX уровня считается ТЕМ ЖЕ путём, что число в шапке события — батчем по
+    методике на тёплом контексте. Раньше здесь стоял наклон y_idx_at, и
+    лестница жила своей арифметикой: 21.08.2026 РусГид2Р01 приехал с 181 bps в
+    шапке и 103 на том же уровне в стакане."""
     d = depth_side or {}
-
-    # ВСЕ уровни — одним расчётом по методике. Поштучный reprice стоил бы 85 мс
-    # на цену, батч через alt_prices — 1,5 мс (замер на проде 27.08.2026), так
-    # что «дорого» больше не аргумент в пользу наклона. Наклон уводил лестницу
-    # целиком вслед за уехавшим якорем — ровно это и произошло 27.08.
-    exact_map = {}
-    if isin:
-        rec = _exact_ctx.get(isin)
-        if _ctx_fresh(rec) and rec[1] is not None:
-            from services.yidx_exact import y_idx_many
-            _sync_ctx_curves(rec[1], rec[2])
-            pxs = [_px(l) for key in ("a", "b") for l in (d.get(key) or [])[:levels]]
-            exact_map = y_idx_many(rec[1], [p for p in pxs if p is not None])
+    pxs = [_px(l) for key in ("a", "b") for l in (d.get(key) or [])[:levels]]
+    exact_map = exact_y_idx_map(isin, pxs)
 
     def level_y(px: float, side: str) -> Optional[float]:
-        v = exact_map.get(round(float(px), 4))
         # без контекста/НКД числа нет — прочерк честнее наклона от чужого якоря
-        return v
+        return exact_map.get(round(float(px), _EXACT_PX_DIGITS))
 
     def side_rows(key: str, best_first: bool) -> list:
         out = []
@@ -489,7 +475,8 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
 
 def money_in_spread(levels, row: dict, side: str, lo: Optional[float],
                     hi: Optional[float], face: float,
-                    accrued: float = 0.0) -> Optional[float]:
+                    accrued: float = 0.0,
+                    isin: Optional[str] = None) -> Optional[float]:
     """Σ руб на стороне ПО НАШИМ УСЛОВИЯМ: только уровни, чей Y-IDX попадает в
     диапазон спреда фильтра.
 
@@ -504,10 +491,14 @@ def money_in_spread(levels, row: dict, side: str, lo: Optional[float],
     if lo is None and hi is None:
         total = sum(level_money(_px(l), _qty(l), face, accrued) for l in levels)
         return total or None
+    # Спред КАЖДОГО уровня — по методике, одним батчем (см. exact_y_idx_map).
+    # Наклон убран 27.08.2026: он отбирал уровни по числам, уехавшим вслед за
+    # якорем, и метрика повторного сигнала срабатывала не на том объёме.
+    exact_map = exact_y_idx_map(isin, [_px(l) for l in levels])
     total = 0.0
     for lvl in levels:
         px = _px(lvl)
-        val = y_idx_at(row, px, side)
+        val = None if px is None else exact_map.get(round(float(px), _EXACT_PX_DIGITS))
         if val is None:
             continue
         if lo is not None and val < lo:
@@ -669,6 +660,44 @@ def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
         val = None
     memo[key] = val
     return val
+
+
+def exact_y_idx_map(isin: Optional[str],
+                    prices: Iterable[Optional[float]]) -> Dict[float, Optional[float]]:
+    """{цена: Y-IDX} для НАБОРА цен одной бумаги — одним расчётом по методике.
+
+    Лестница стакана и отбор уровней по спреду просят десяток цен разом. Поштучный
+    exact_y_idx стоил бы 85 мс на цену, батч через alt_prices — 1,5 мс (замер на
+    проде 27.08.2026), поэтому цены считаются пачкой, а не по одной.
+
+    Контекст не прогрет, протух или без биржевого НКД — карта пустая: наклон от
+    чужого якоря увёл бы все уровни разом (ровно это и случилось 27.08).
+    Посчитанное кладём в тот же memo, что exact_y_idx, — один кэш на бумагу.
+    """
+    keys = []
+    for p in prices or []:
+        if p is None:
+            continue
+        k = round(float(p), _EXACT_PX_DIGITS)
+        if k > 0 and k not in keys:
+            keys.append(k)
+    if not keys or not isin:
+        return {}
+    rec = _exact_ctx.get(isin)
+    if not _ctx_fresh(rec) or rec[1] is None:
+        return {}
+    ctx, memo = rec[1], rec[2]
+    _sync_ctx_curves(ctx, memo)          # кривая сменилась → memo уже очищен
+    out = {k: memo[k] for k in keys if k in memo}
+    todo = [k for k in keys if k not in memo]
+    if todo:
+        from services.yidx_exact import y_idx_many
+        got = y_idx_many(ctx, todo)
+        for k in todo:
+            # цены, которых расчёт не дал, тоже запоминаем: повторять батч по
+            # ним в каждом такте — та же работа с тем же результатом
+            memo[k] = out[k] = got.get(k)
+    return out
 
 
 def drop_exact_cache(isin: Optional[str] = None) -> None:
@@ -863,7 +892,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                 continue
         # объём «по нашим условиям» — метрика повторного сигнала, не отбора:
         # на попадание бумаги в набор она не влияет (это делают spread/money выше)
-        money_ok = money_in_spread(ladder, row, side, lo, hi, face, accrued)
+        money_ok = money_in_spread(ladder, row, side, lo, hi, face, accrued, isin)
         out.append({"isin": isin, "name": u.get("name") or isin,
                     "money_ok_rub": money_ok,
                     # спред может быть неизвестен, если его границы не заданы

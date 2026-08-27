@@ -305,8 +305,19 @@ def test_events_new_then_silence_then_change():
     signals.delete(USER, f["id"])
 
 
-def test_events_money_change_and_leaving_set():
+def _stub_exact_map(monkeypatch, metrics, side="ask"):
+    """Юниты про ЛОГИКУ событий, а не про расчёт: контекста пересчёта у фиктивных
+    бумаг нет, поэтому точную карту спредов подменяем наклоном по тем же
+    метрикам. Без подмены money_in_spread молчит и «объём изменился» не ловится."""
+    monkeypatch.setattr(core, "exact_y_idx_map",
+                        lambda isin, pxs: {round(float(p), core._EXACT_PX_DIGITS):
+                                           core.y_idx_at(metrics.get(isin) or {}, p, side)
+                                           for p in pxs if p is not None})
+
+
+def test_events_money_change_and_leaving_set(monkeypatch):
     uni, metrics, depth = _market()
+    _stub_exact_map(monkeypatch, metrics)
     f = signals.create(USER, "объём", {"spread_min": 100, "isins": ["RU000A0000A1"]},
                        change_pct=10)
     p = f["params"]
@@ -350,6 +361,7 @@ def test_return_after_grace_is_new_again(monkeypatch):
 def test_cooldown_mutes_same_reason_only(monkeypatch):
     """Повтор ТОЙ ЖЕ причины в пределах кулдауна молчит, другая причина проходит."""
     uni, metrics, depth = _market()
+    _stub_exact_map(monkeypatch, metrics)
     f = signals.create(USER, "кулдаун", {"spread_min": 100, "isins": ["RU000A0000A1"]},
                        change_pct=10)
     p = f["params"]
@@ -1095,3 +1107,28 @@ def test_tg_book_marks_levels_eaten_by_the_set():
     # порядок биржевой (худший оффер сверху), набор съел два ЛУЧШИХ уровня
     assert "←" in ask_rows[1] and "←" in ask_rows[2], "взятые уровни не помечены"
     assert "←" not in ask_rows[0], "нетронутый уровень помечен как взятый"
+
+
+def test_money_in_spread_uses_methodology_not_slope(monkeypatch):
+    """Объём «по нашим условиям» отбирает уровни по ТОЧНОМУ спреду уровня.
+
+    Наклон убран 27.08.2026: он мерил уровни числами, уехавшими вслед за
+    якорем, и метрика повторного сигнала срабатывала не на том объёме. Здесь
+    якорь заведомо протухший — если бы отбор шёл наклоном, в диапазон попали бы
+    другие уровни (или ни одного)."""
+    ladder = [[100.10, 1000], [100.20, 2000], [100.30, 3000]]
+    row = {"ask": 99.00, "yoi_ask": 900.0, "yoi_slope": -450.0}   # якорь уехал
+    exact = {100.10: 180.0, 100.20: 160.0, 100.30: 140.0}
+    monkeypatch.setattr(core, "exact_y_idx_map",
+                        lambda isin, pxs: {round(float(p), core._EXACT_PX_DIGITS):
+                                           exact.get(round(float(p), 2))
+                                           for p in pxs if p is not None})
+
+    # диапазон 150–200 бп накрывает два верхних уровня
+    got = core.money_in_spread(ladder, row, "ask", 150, 200, 1000.0, 0.0, "RU000TESTMIS1")
+    want = sum(core.level_money(px, qty, 1000.0, 0.0) for px, qty in ladder[:2])
+    assert got == pytest.approx(want), "отобраны не те уровни"
+
+    # без контекста числа нет — метрика молчит, а не считает наклоном
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    assert core.money_in_spread(ladder, row, "ask", 150, 200, 1000.0, 0.0, "X") is None
