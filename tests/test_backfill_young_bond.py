@@ -56,13 +56,8 @@ def test_left_extension_stops_at_issue_date(bd, monkeypatch):
     monkeypatch.setattr(backdate, "honest_spread_series", boom)
     monkeypatch.setattr(backdate, "_backfill_done", {})
 
-    class _Reg:
-        @staticmethod
-        def get(_isin):
-            return {"issue_date": issue}
-
-    monkeypatch.setitem(__import__("sys").modules,
-                        "services.instruments_registry", _Reg)
+    from services import instruments_registry as _reg
+    monkeypatch.setattr(_reg, "get", lambda _i: {"issue_date": issue})
 
     n = asyncio.run(backdate.ensure_honest_backfill(isin, days=400))
     assert n == 0
@@ -86,13 +81,8 @@ def test_left_extension_runs_when_room_exists(bd, monkeypatch):
     monkeypatch.setattr(backdate, "honest_spread_series", fake)
     monkeypatch.setattr(backdate, "_backfill_done", {})
 
-    class _Reg:
-        @staticmethod
-        def get(_isin):
-            return {"issue_date": issue}
-
-    monkeypatch.setitem(__import__("sys").modules,
-                        "services.instruments_registry", _Reg)
+    from services import instruments_registry as _reg
+    monkeypatch.setattr(_reg, "get", lambda _i: {"issue_date": issue})
 
     asyncio.run(backdate.ensure_honest_backfill(isin, days=200))
     assert seen and seen[0] is not None, "левый досчёт не запустился"
@@ -113,13 +103,8 @@ def test_no_issue_date_keeps_old_behaviour(bd, monkeypatch):
     monkeypatch.setattr(backdate, "honest_spread_series", fake)
     monkeypatch.setattr(backdate, "_backfill_done", {})
 
-    class _Reg:
-        @staticmethod
-        def get(_isin):
-            return {}
-
-    monkeypatch.setitem(__import__("sys").modules,
-                        "services.instruments_registry", _Reg)
+    from services import instruments_registry as _reg
+    monkeypatch.setattr(_reg, "get", lambda _i: {})
 
     asyncio.run(backdate.ensure_honest_backfill(isin, days=400))
     assert seen, "без issue_date поведение не должно меняться"
