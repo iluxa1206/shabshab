@@ -648,30 +648,60 @@ def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
     от четверти пункта цены. Сравнение доходностей чинит оба — в точке
     безразличия доходности равны, поэтому переключение непрерывно.
 
-    Буфер остаётся, но в БАЗИСНЫХ ПУНКТАХ доходности (_HORIZON_BUFFER_BPS):
-    без него горизонт дребезжал бы внутри одного спреда bid/ask.
+    МЕРИМ СПРЕДОМ (Y-IDX), А НЕ ДОХОДНОСТЬЮ — правка 2026-08-27. Сравнение YTM
+    верно для бумаги с ФИКСИРОВАННЫМ купоном, но у флоатера YTM — это IRR
+    СПРОЕЦИРОВАННОГО потока, и на длинном горизонте он определяется формой
+    форвардной кривой, а не ценностью опциона: до 2036 года форвард проецирует
+    ставки выше, YTM к погашению механически больше, и правило видело «держать
+    выгоднее» там, где опцион ни при чём.
+
+    Экономика держателя другая: он получит номинал на оферте или будет держать
+    дальше, и его выгода — СПРЕД НАД ИНДЕКСОМ. РЖД 1Р-54R при цене 99.45: YTM
+    17.21 к погашению против 16.84 к оферте (правило выбирало погашение), а
+    Y-IDX 206 против 229 — дисконт к номиналу реализуется в 2029-м, а не в
+    2036-м, и держатель предъявит пут. Рынок так и прайсит.
+    На проде расходились 26 бумаг из 114 с будущей офертой, 24 из них — этот же
+    случай «правило говорит погашение, спред говорит оферта».
+
+    Y-IDX выбран как ПЕРВИЧНАЯ метрика проекта (стакан/график/таблица/алерты):
+    горизонт выбирается тем же числом, которое человек видит на экране.
+    Фолбэк на YTM оставлен: у экзотики Y-IDX может не посчитаться.
+
+    Буфер остаётся, но в БАЗИСНЫХ ПУНКТАХ (_HORIZON_BUFFER_BPS): без него
+    горизонт дребезжал бы внутри одного спреда bid/ask.
 
     Оба опциона сработали (редкая конфигурация put+call) → ближайшее по дате
     событие. Доходности неизвестны (солвер не сошёлся) → откат на правило цены,
     оно грубее, но лучше, чем ничего.
     """
     mat = horizons.get("maturity") or {}
-    y_mat = mat.get("yield_xirr_pct")
     put, call = horizons.get("put") or {}, horizons.get("call") or {}
-    buf = _HORIZON_BUFFER_BPS / 100.0          # bps → проценты годовых
 
-    if y_mat is not None:
+    def _measure(h):
+        """Спред над индексом (bps) — чем меряем выгоду опциона. Фолбэк на YTM
+        в тех же единицах: у экзотики Y-IDX бывает None."""
+        v = h.get("yield_over_index_bps")
+        if v is not None:
+            return float(v), True
+        y = h.get("yield_xirr_pct")
+        return (float(y) * 100.0, False) if y is not None else (None, False)
+
+    m_mat, _exact = _measure(mat)
+    buf = _HORIZON_BUFFER_BPS                  # обе метрики приведены к bps
+
+    if m_mat is not None:
         cands = []
-        y_put, y_call = put.get("yield_xirr_pct"), call.get("yield_xirr_pct")
-        if put.get("date") and y_put is not None and y_put > y_mat + buf:
+        m_put, _ = _measure(put)
+        m_call, _ = _measure(call)
+        if put.get("date") and m_put is not None and m_put > m_mat + buf:
             cands.append(("put", put["date"]))
-        if call.get("date") and y_call is not None and y_call < y_mat - buf:
+        if call.get("date") and m_call is not None and m_call < m_mat - buf:
             cands.append(("call", call["date"]))
         if cands:
             return min(cands, key=lambda c: c[1])[0]
-        # доходность хотя бы одного опциона не посчиталась — дорешаем ценой
-        if not ((put.get("date") and y_put is None)
-                or (call.get("date") and y_call is None)):
+        # метрика хотя бы одного опциона не посчиталась — дорешаем ценой
+        if not ((put.get("date") and m_put is None)
+                or (call.get("date") and m_call is None)):
             return "maturity"
 
     if price is None:
