@@ -355,6 +355,67 @@ def parse_margin_schedule(text: str) -> Optional[list]:
             for k, v in sorted(steps.items())]
 
 
+# Ручная лесенка Справочника: «7-20=400» / «7=400» (номера купонов = bps).
+_MS_MANUAL_RE = re.compile(r"(\d+)\s*(?:[-–—]\s*(\d+))?\s*=\s*(-?\d+(?:[.,]\d+)?)")
+
+
+def parse_margin_schedule_field(value) -> Optional[list]:
+    """Ручная лесенка маржи (поле margin_schedule реестра) → [{'from','to','bps'}].
+
+    Форматы: компактный «7-20=400; 21-24=550» (номера купонов = маржа в bps) и
+    JSON-массив [{"from":7,"to":20,"bps":400}]. Пусто → None.
+
+    Нужна там, где парсер проспекта молчит СОЗНАТЕЛЬНО: у выпусков, где ранние
+    ступени стоят на другой базе («MAX(инфляция+4%; ставка рефинансирования+1%)»
+    у Ситиматика RU000A0JU9K4, купоны 2-6), лесенка из текста была бы ложной —
+    та надбавка не к КС. Руками заводится только КС-часть («7-20=400»), а
+    купоны вне диапазонов трактуются как не плавающие: прайсинг берёт по ним
+    скаляр margin_bps, бэктест спеки их не судит.
+
+    Кидает ValueError на кривом вводе — вызывающий решает, ругаться или молчать.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        raw = list(value)
+    else:
+        txt = str(value).strip()
+        if not txt:
+            return None
+        if txt[0] in "[{":
+            import json
+            raw = json.loads(txt)
+            if isinstance(raw, dict):
+                raw = [raw]
+        else:
+            raw = []
+            for m in _MS_MANUAL_RE.finditer(txt.replace("\xa0", " ")):
+                a = int(m.group(1))
+                b = int(m.group(2)) if m.group(2) else a
+                raw.append({"from": a, "to": b,
+                            "bps": float(m.group(3).replace(",", "."))})
+            if not raw:
+                raise ValueError("лесенка не разобрана: ждём «7-20=400; 21-24=550» "
+                                 "или JSON [{\"from\":7,\"to\":20,\"bps\":400}]")
+    steps = []
+    for it in raw:
+        if not isinstance(it, dict):
+            raise ValueError(f"ступень не объект: {it!r}")
+        try:
+            a, b, bps = int(it["from"]), int(it["to"]), round(float(it["bps"]))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"ступень без from/to/bps: {it!r}")
+        if a < 1 or b < a:
+            raise ValueError(f"пустой диапазон купонов: {a}-{b}")
+        steps.append({"from": a, "to": b, "bps": bps})
+    steps.sort(key=lambda st: (st["from"], st["to"]))
+    for prev, cur in zip(steps, steps[1:]):
+        if cur["from"] <= prev["to"]:
+            raise ValueError(f"диапазоны пересекаются: {prev['from']}-{prev['to']} "
+                             f"и {cur['from']}-{cur['to']}")
+    return steps or None
+
+
 def _obs_date(d: date, lag: int, unit: str) -> date:
     """Дата наблюдения индекса: d − lag календарных или РАБОЧИХ дней."""
     if unit != "work" or lag <= 0:

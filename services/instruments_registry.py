@@ -36,7 +36,7 @@ _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
                   "fixing_lag", "fixing_lag_unit", "coupon_mode",
                   "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text",
-                  "avg_window_days", "compounded")
+                  "avg_window_days", "compounded", "margin_schedule")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instruments(
@@ -99,6 +99,11 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN cap_pct REAL",         # потолок ставки купона, %
     "ALTER TABLE instruments ADD COLUMN floor_pct REAL",       # пол ставки купона, %
     "ALTER TABLE instruments ADD COLUMN coupon_text TEXT",     # текст формулы купона
+    # ДОЛГОВЕЧНАЯ отметка проверки рейтинга. Дедуп в ratings.refresh стоял на
+    # факте «рейтинг записан», из-за чего бумага исчезала из очереди НАВСЕГДА и
+    # понижение AAA→A не доезжало никогда. Отметка нужна durable (json-кэш
+    # гибнет с рестартом, и без неё todo = весь универс каждый рестарт).
+    "ALTER TABLE instruments ADD COLUMN rating_checked_at TEXT",
     "ALTER TABLE enrich_seen ADD COLUMN parser_ver INTEGER",   # версия парсера corpbonds
     # Слой bondresearch.ru (index_floaters): наблюдаемые рынком лаг/метод фиксинга.
     # Отдельные колонки (не fixing_lag/coupon_mode) — провенанс: приоритет спеки
@@ -140,6 +145,15 @@ _MIGRATIONS = [
     "ALTER TABLE instruments ADD COLUMN sl_type TEXT",
     "ALTER TABLE instruments ADD COLUMN sl_checked_at TEXT",
     "ALTER TABLE instruments ADD COLUMN sl_mismatch INTEGER",   # 1 — расходится с нашим base
+    # РУЧНАЯ лесенка маржи по номерам купонов: «7-20=400; 21-24=550» (bps) или
+    # JSON [{"from":7,"to":20,"bps":400}]. Парсер проспекта (coupon_calib.
+    # parse_margin_schedule) читает лесенку сам, но сознательно молчит там, где
+    # ступень стоит на ДРУГОЙ базе — «MAX(инфляция+4%; ставка рефинансирования
+    # +1%)» у Ситиматика: та «маржа» не про КС, и лесенка из неё была бы ложной.
+    # Тогда лесенку заводят руками, и она бьёт парсер (ref_data.coupon_formula).
+    # Купоны вне диапазонов лесенки считаются НЕ плавающими: прайсинг берёт по
+    # ним скаляр margin_bps, бэктест спеки их не судит (bond_audit._backtest).
+    "ALTER TABLE instruments ADD COLUMN margin_schedule TEXT",
 ]
 
 
@@ -177,7 +191,7 @@ _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
          "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
          "cap_pct", "floor_pct", "coupon_text", "avg_window_days", "compounded",
-         "has_call")
+         "has_call", "margin_schedule")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True,
@@ -348,7 +362,7 @@ def calc_params_map() -> Dict[str, dict]:
 # (маржа/даты/номинал) НЕ трогаем — значения остаются, но со снятым lock их
 # при следующем проходе освежит sync из источников.
 _RESET_SPEC_FIELDS = ("coupon_mode", "fixing_lag", "fixing_lag_unit",
-                      "avg_window_days", "compounded")
+                      "avg_window_days", "compounded", "margin_schedule")
 
 
 def reset_manual(isin: str) -> Optional[dict]:
@@ -478,13 +492,36 @@ def set_emitter(isin: str, emitter_id, emitter_name: str) -> None:
 
 
 def set_rating(isin: str, rating: str) -> None:
-    """Записать рейтинг-бакет (AAA…B/NR) из corpbonds. Обновляется раз в день."""
+    """Записать рейтинг-бакет (AAA…B/NR) из corpbonds.
+
+    Штампуем rating_checked_at: очередь дозагрузки (services.ratings.refresh)
+    отсеивает по НЕЙ, а не по факту наличия рейтинга — иначе бумага выпадала
+    из очереди навсегда и понижение рейтинга не доезжало."""
     if not rating:
         return
     _ensure()
     with _lock, _conn() as c:
-        c.execute("UPDATE instruments SET rating=?, updated_at=? WHERE isin=?",
-                  (rating, _now(), isin))
+        c.execute("UPDATE instruments SET rating=?, rating_checked_at=?, "
+                  "updated_at=? WHERE isin=?", (rating, _now(), _now(), isin))
+
+
+def rating_checked_map(isins) -> Dict[str, str]:
+    """{isin: rating_checked_at} — для TTL-очереди дозагрузки рейтингов."""
+    _ensure()
+    want = [i for i in (isins or []) if i]
+    if not want:
+        return {}
+    out: Dict[str, str] = {}
+    with _conn() as c:
+        for i in range(0, len(want), 400):
+            part = want[i:i + 400]
+            ph = ",".join("?" * len(part))
+            for r in c.execute(
+                    f"SELECT isin, rating_checked_at FROM instruments "
+                    f"WHERE isin IN ({ph})", part):
+                if r["rating_checked_at"]:
+                    out[r["isin"]] = r["rating_checked_at"]
+    return out
 
 
 # Синтетический эмитент Минфина: MOEX EMITTER_ID у ОФЗ нет, а группа нужна.
@@ -556,6 +593,9 @@ def normalize_ofz_pk() -> int:
              "AND (emitter_id IS NULL OR emitter_id=0)", (now,)),
         ):
             n = max(n, c.execute(sql, args).rowcount)
+    if n:
+        # массовая правка (база/маржа/лаг целой серии) — сбрасываем кэш целиком
+        invalidate_params_cache()
     return n
 
 
@@ -712,6 +752,10 @@ def apply_authoritative(isin: str, fields: dict, source: str) -> bool:
         sets = [f"{k}=?" for k in upd] + ["source=?", "updated_at=?", "margin_check_pp=NULL", "reviewed=1"]
         vals = list(upd.values()) + [source, _now(), isin]
         c.execute(f"UPDATE instruments SET {','.join(sets)} WHERE isin=?", vals)
+    # БЕЗ СБРОСА КЭША правка не доезжает до витрины: memo уровней завязан на
+    # (calc_date, curves_ts) и пересчёт заказывается только сменой ЦЕНЫ, поэтому
+    # в неликвиде исправленная маржа ждала бы до следующего дня.
+    invalidate_params_cache(isin)
     return True
 
 
@@ -728,6 +772,8 @@ def set_exotic(isin: str, note: str = "") -> None:
         c.execute("UPDATE instruments SET base='EXOTIC', reviewed=1, margin_check_pp=NULL, "
                   "coupon_text=COALESCE(NULLIF(?, ''), coupon_text), "
                   "updated_at=? WHERE isin=?", (note or "", _now(), isin))
+    # смена базы выкидывает бумагу из универса — витрина обязана узнать сразу
+    invalidate_params_cache(isin)
 
 
 def reclassify_fixed(isin: str) -> None:
@@ -746,6 +792,8 @@ def reclassify_fixed(isin: str) -> None:
             return
         c.execute("UPDATE instruments SET base='FIXED', reviewed=0, updated_at=? "
                   "WHERE isin=? AND manual_locked=0", (_now(), isin))
+    # бумага уходит из флоатер-универса — витрина и стрим должны узнать сразу
+    invalidate_params_cache(isin)
 
 
 def set_has_call(isin: str, value: Optional[bool]) -> None:
@@ -974,7 +1022,8 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
                  "face_value", "var_type", "fixing_lag", "fixing_lag_unit",
                  "coupon_mode", "avg_window_days", "compounded",
                  "br_fixing_lag", "br_coupon_mode",
-                 "cap_pct", "floor_pct", "coupon_text", "rating", "has_call",
+                 "cap_pct", "floor_pct", "coupon_text", "margin_schedule",
+                 "rating", "has_call",
                  "source", "reviewed", "manual_locked", "margin_check_pp",
                  "emitter_name", "active",
                  "spec_err_pp", "spec_verdict", "spec_n_coupons", "spec_checked_at",
@@ -985,7 +1034,7 @@ _CATALOG_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
 # ref_data.coupon_formula). Только эти + только manual_locked=1 (явная правка).
 _COUPON_OVERRIDE_COLS = ("base", "margin_bps", "fixing_lag", "fixing_lag_unit",
                          "coupon_mode", "cap_pct", "floor_pct", "coupon_text",
-                         "avg_window_days", "compounded")
+                         "avg_window_days", "compounded", "margin_schedule")
 
 
 def set_br_spec(isin: str, fixing_lag, coupon_mode) -> None:

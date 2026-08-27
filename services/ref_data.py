@@ -296,10 +296,22 @@ def coupon_formula(isin: str, coupons: list = None, margin_pct: float = None,
         "floor_pct": p.get("floor_pct"),  # пол ставки купона, % годовых (MAX/«не менее»)
         "margin_schedule": None,          # лесенка маржи [{'from','to','bps'}] по № купонов
     }
-    # маржа-лесенка из текста формулы: диапазоны купонов со своей надбавкой
-    # («S 1-7 = 2.5%, S8-21 = 4.6%»). Скаляр margin_bps остаётся фолбэком для
-    # купонов вне распарсенных диапазонов.
-    if p.get("coupon_text"):
+    # маржа-лесенка: диапазоны купонов со своей надбавкой («S 1-7 = 2.5%,
+    # S8-21 = 4.6%»). Скаляр margin_bps остаётся фолбэком для купонов вне
+    # распарсенных диапазонов.
+    # РУЧНОЕ поле Справочника — ПЕРВЫМ: парсер проспекта молчит там, где ранние
+    # ступени стоят на другой базе (Ситиматик: «MAX(инфляция+4%; ставка
+    # рефинансирования+1%)» на купонах 2-6), и КС-часть лесенки заводится руками.
+    if p.get("margin_schedule"):
+        try:
+            from services.coupon_calib import parse_margin_schedule_field
+            out["margin_schedule"] = parse_margin_schedule_field(p["margin_schedule"])
+        except Exception as e:
+            # молчаливый откат тут МЕНЯЕТ МЕТОДИКУ (все купоны считаются скаляром
+            # реестра), а не точность — тот же класс, что потеря спеки фиксинга
+            logger.warning("%s: ручная лесенка маржи не разбирается (%s) — "
+                           "надбавка берётся скаляром реестра", isin, e)
+    if out["margin_schedule"] is None and p.get("coupon_text"):
         try:
             from services.coupon_calib import parse_margin_schedule
             out["margin_schedule"] = parse_margin_schedule(p["coupon_text"])

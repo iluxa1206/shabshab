@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import json
+import datetime as _dt
 import time
 import asyncio
 import logging
@@ -134,9 +135,27 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
         reg = None
     # Дедуп по РЕЕСТРУ (durable): json-кэш живёт в памяти и теряется при рестарте
     # → без этого todo = весь универс каждый рестарт = вечный передрайн corpbonds.
-    # Реестр хранит рейтинг постоянно (set_rating), поэтому уже-рейтингованные
-    # бумаги пропускаем (ратинги меняются редко; corpbonds часто 404).
+    # НО отсеиваем ПО ВРЕМЕНИ ПРОВЕРКИ, а не по факту наличия рейтинга: раньше
+    # условие было `not rated.get(i)`, и бумага, которой рейтинг однажды
+    # записали, исчезала из очереди НАВСЕГДА — понижение AAA→A не доезжало ни
+    # через неделю, ни через год, а json-TTL до неё просто не доходил.
+    checked = reg.rating_checked_map(isins) if reg is not None else {}
     rated = reg.ratings_map(isins) if reg is not None else {}
+
+    def _reg_fresh(isin: str) -> bool:
+        """Рейтинг проверялся недавно (durable отметка реестра)."""
+        ts = checked.get(isin)
+        if not ts:
+            # отметки нет — легаси-строка: рейтинг есть, а когда проверяли,
+            # неизвестно. Ставим в очередь, но с низким приоритетом (в хвост),
+            # чтобы разовый прогон не выгреб весь универс за один цикл.
+            return False
+        try:
+            age = (_dt.datetime.now(_dt.timezone.utc)
+                   - _dt.datetime.fromisoformat(ts)).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        return age <= _TTL
 
     def _fresh(entry) -> bool:
         # запись свежа (пропускаем): рейтинг — _TTL, промах (miss) — короткий _NEG_TTL
@@ -145,7 +164,14 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
         ttl = _NEG_TTL if entry.get("miss") else _TTL
         return now - entry.get("ts", 0) <= ttl
 
-    todo = [i for i in isins if not rated.get(i) and not _fresh(cache.get(i))][:cap]
+    # ХВОСТ ОЧЕРЕДИ — легаси-строки с рейтингом, но без отметки времени: их
+    # много (разовая миграция), и вперёд должны идти те, у кого рейтинга нет
+    # вовсе или отметка реально протухла.
+    _stale = [i for i in isins
+              if not _reg_fresh(i) and not _fresh(cache.get(i))]
+    _head = [i for i in _stale if not rated.get(i) or checked.get(i)]
+    _tail = [i for i in _stale if i not in set(_head)]
+    todo = (_head + _tail)[:cap]
     if not todo:
         return 0
     n = 0
@@ -153,7 +179,7 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
     # дрейн идёт порциями по cap за цикл поллера — на странице СТАТУС видно,
     # что рейтинги прямо сейчас доезжают, и сколько бумаг осталось в очереди
     from services import progress
-    left = sum(1 for i in isins if not rated.get(i) and not _fresh(cache.get(i)))
+    left = len(_stale)
     progress.start("ratings_drain", "Дозагрузка рейтингов (corpbonds/smart-lab)",
                    total=len(todo), detail=f"в очереди всего {left}")
     async with httpx.AsyncClient(headers=_UA, timeout=15) as client:
