@@ -2,7 +2,10 @@
 # Stage 1: сборка React-фронта (Vite) → dist/. Stage 2: Python-рантайм с uvicorn.
 
 # --- Stage 1: frontend build ---
-FROM node:20-alpine AS frontend
+# node:24 (npm 11) — тем же npm, каким сгенерён package-lock.json. На node:20
+# (npm 10) `npm ci` падал EUSAGE «Missing: esbuild@0.28.2 from lock file»:
+# vitest 4 тянет собственный vite, и npm 10 разрешает это дерево иначе.
+FROM node:24-alpine AS frontend
 WORKDIR /build
 COPY frontend-react/package.json frontend-react/package-lock.json ./
 RUN npm ci
