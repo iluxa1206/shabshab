@@ -215,14 +215,6 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
-  // Размер тикета сменился → перезапрашиваем строки: цена набора и её спред
-  // считаются на бэке ИМЕННО под этот размер, старые числа относятся к прежнему.
-  const firstVol = useRef(true);
-  useEffect(() => {
-    if (firstVol.current) { firstVol.current = false; return; }
-    const t = setTimeout(() => loadBonds(), 400);   // дебаунс набора в поле
-    return () => clearTimeout(t);
-  }, [volBid, volAsk, loadBonds]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
   useEffect(() => { localStorage.setItem("matYrsFrom", matFrom); }, [matFrom]);
   useEffect(() => { localStorage.setItem("matYrsTo", matTo); }, [matTo]);
@@ -330,6 +322,20 @@ function Dashboard() {
     if (firstWatch.current) { firstWatch.current = false; return; }
     loadBonds();
   }, [watch, loadBonds]);
+
+  // Размер тикета сменился → перезапрашиваем строки: цена набора и её спред
+  // считаются на бэке ИМЕННО под этот размер, старые числа относятся к прежнему.
+  //
+  // СТОИТ ПОСЛЕ loadBonds НЕ СЛУЧАЙНО: массив зависимостей вычисляется в момент
+  // вызова useEffect, то есть на каждом рендере. Выше по файлу loadBonds ещё в
+  // мёртвой зоне const, и первый же рендер падал с ReferenceError — белая
+  // страница вместо монитора (прод 27.08.2026).
+  const firstVol = useRef(true);
+  useEffect(() => {
+    if (firstVol.current) { firstVol.current = false; return; }
+    const t = setTimeout(() => loadBonds(), 400);   // дебаунс набора в поле
+    return () => clearTimeout(t);
+  }, [volBid, volAsk, loadBonds]);
 
   // Цена, под которую строка уже посчитана (из /api/bonds или прошлого reprice).
   // Гвард против шторма: WS присылает last-price тактом, а не по изменению, и
