@@ -35,6 +35,7 @@ cd frontend-react && npm install && npm run dev
 
 ```bash
 .venv/bin/python -m pytest
+npm --prefix frontend-react test
 ```
 
 Прод-сборка и деплой:
@@ -497,6 +498,20 @@ cd frontend-react && npm install && npm run dev
 кривые (`test_curves`), сигналы и бот (`test_signals`, `test_tg_bot`), горизонты (`test_pricing_horizon`,
 `test_next_offer_info`), регрессии аудита (`test_audit_fixes`, `test_alt_price_yidx`,
 `test_index_grow_cache`).
+
+**Фронт: smoke-проверка монтирования** (`npm --prefix frontend-react test`, vitest + jsdom,
+`frontend-react/src/App.test.jsx`). Рендерит приложение целиком — гостем (форма входа) и с
+сессией (монитор со строкой таблицы). Сеть заглушена на уровне `fetch`/`WebSocket`, а не
+подменой `api.js`: так проверяется настоящий клиентский слой, и тест не надо править при
+каждом новом вызове.
+
+Зачем он есть: `vite build` проверяет, что код СОБИРАЕТСЯ, и молчит про ошибки, которые
+случаются только при рендере. 27.08.2026 монитор ушёл в белый экран — массив зависимостей
+хука обращался к `const loadBonds` выше его объявления (мёртвая зона, `ReferenceError` на
+первом рендере). Сборка была зелёной, `pytest` тоже, поймал пользователь. Признак в логах
+бэка — ни одного запроса `/api/bonds?universe=true`; тест проверяет ровно это плюс саму
+отрисовку строки. Стартовый URL окружения — `/app/floaters`: с «/» роутер с `basename="/app"`
+молча рендерит пустоту (та же ловушка, что у дев-сервера).
 
 ---
 

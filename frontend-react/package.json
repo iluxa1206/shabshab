@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "dev:cal": "VITE_API_PROXY_TARGET=http://127.0.0.1:8020 vite",
     "dev:tape": "VITE_API_PROXY_TARGET=http://127.0.0.1:8030 vite",
-    "dev:blocks": "VITE_API_PROXY_TARGET=http://127.0.0.1:8040 vite"
+    "dev:blocks": "VITE_API_PROXY_TARGET=http://127.0.0.1:8040 vite",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
@@ -21,7 +23,10 @@
     "react-router-dom": "^7.18.1"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.0"
+    "jsdom": "^30.0.1",
+    "vite": "^5.4.0",
+    "vitest": "^4.1.11"
   }
 }
