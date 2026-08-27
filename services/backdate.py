@@ -1108,6 +1108,21 @@ async def ensure_honest_backfill(isin: str, days: int, board: Optional[str] = No
     span = days
     if not overrides and earliest and earliest > frm_iso:
         till = _date.fromisoformat(earliest) - _td2(days=1)
+        # ЛЕВЕЕ РАЗМЕЩЕНИЯ СЧИТАТЬ НЕЧЕГО. Без этой проверки у бумаги моложе
+        # окна графика ВТОРОЙ и каждый следующий заход падал: earliest ≈ дата
+        # размещения, till = earliest−1 уходит до неё, и load_backdate_ctx
+        # честно кидает «размещена после». Первый заход проходил (existing
+        # пуст → earliest None → полное окно), поэтому баг был не виден сразу.
+        # Воспроизведено на проде: 3 из 4 бумаг, размещённых за неделю до
+        # проверки, падали со второго захода.
+        try:
+            from services import instruments_registry as _reg
+            _iss = (_reg.get(isin) or {}).get("issue_date")
+        except Exception:
+            _iss = None
+        if _iss and till < _date.fromisoformat(_iss):
+            _backfill_done[(isin, board)] = (_date.today(), days)
+            return dropped
         span = (till - (_date.today() - _td2(days=days))).days + 1
     if span < 1:
         _backfill_done[(isin, board)] = (_date.today(), days)
