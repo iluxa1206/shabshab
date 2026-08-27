@@ -634,17 +634,21 @@ def test_book_volume_in_lots_not_rubles():
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_book_match()]})
     body = txt[txt.index("<blockquote"):txt.index("</blockquote>")]
-    assert "ШТ" in body and "ОБЪЁМ" not in body
-    assert "1 200" in body and "3 000" in body      # точное число бумаг
-    assert "913" not in body and "1215" not in body  # рублёвых сумм нет
+    from services.tg_notify import _FIG
+    # строки заголовка нет (буквы не выравниваются по колонкам обычным шрифтом),
+    # поэтому смысл колонки проверяем самими числами
+    assert f"1{_FIG}200" in body and f"3{_FIG}000" in body   # точное число бумаг
+    assert "913" not in body and "1215" not in body          # рублёвых сумм нет
 
 
 def test_book_volume_small_and_large():
     """До сотни тысяч — точное число, крупнее — порядок: «0к» вместо 38 бумаг
     бесполезно, а миллион цифрами не влезает в колонку телефона."""
-    from services.tg_notify import _book_qty
+    from services.tg_notify import _FIG, _book_qty
+    # разряды разделяет FIGURE SPACE, а не обычный пробел: он шириной в цифру,
+    # иначе «24 950» и «120к» встают в колонке на разную ширину
     assert _book_qty({"qty": 38}).strip() == "38"
-    assert _book_qty({"qty": 24_950}).strip() == "24 950"
+    assert _book_qty({"qty": 24_950}).strip() == f"24{_FIG}950"
     assert _book_qty({"qty": 120_000}).strip() == "120к"
     assert _book_qty({"qty": None}).strip() == ""
 

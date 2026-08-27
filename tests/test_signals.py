@@ -1155,3 +1155,35 @@ def test_years_filter_uses_pricing_horizon():
     metrics[isin] = dict(metrics[isin], horizon="maturity", offer_date=None)
     got = core.evaluate_candidates(p, cands, metrics, depth)
     assert isin not in [m["isin"] for m in got]
+
+
+def test_book_columns_aligned_without_monospace():
+    """Лестница набрана ОБЫЧНЫМ шрифтом, а колонки всё равно ровные.
+
+    Держится это на U+2007 (figure space) — пробеле шириной ровно в цифру:
+    обычный пробел ýже, и колонки разъезжались тем сильнее, чем разнее длина
+    чисел. Проверяем инвариант: в каждой строке колонки одной ширины, и ни
+    одного моноширинного тега.
+    """
+    from services import tg_notify
+    from services.tg_notify import _FIG, _GAP
+
+    ev = {
+        "price": 100.10, "levels": 1,
+        "book": {
+            "asks": [{"price": 100.43, "qty": 334, "y_idx": 166},
+                     {"price": 100.20, "qty": 67892, "y_idx": 181},
+                     {"price": 100.10, "qty": 120000, "y_idx": 188}],
+            "bids": [{"price": 99.85, "qty": 3400, "y_idx": 205}],
+        },
+    }
+    out = tg_notify._book_pre(ev, "ask")
+    assert "<code>" not in out, "моноширинный шрифт вернулся"
+    inner = out.replace("<blockquote expandable>", "").replace("</blockquote>", "")
+    rows = [ln for ln in inner.split("\n") if "," in ln]
+    assert len(rows) == 4, f"ожидались четыре уровня, вышло {len(rows)}: {rows}"
+    # каждая строка — фиксированные колонки 6+7+4 и два промежутка по три:
+    # ширина в «цифрах» одна на всех, потому и стоят ровно
+    widths = {len(ln.replace(" ←", "")) for ln in rows}
+    assert widths == {6 + len(_GAP) + 7 + len(_GAP) + 4}, f"строки разной ширины: {widths}"
+    assert f"67{_FIG}892" in rows[1], "разряды количества разделены не figure space"
