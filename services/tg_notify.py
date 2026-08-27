@@ -434,15 +434,37 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
         return ""
     px = m.get("single_px") if m.get("single_px") is not None else m.get("price")
 
+    # Сколько уровней СЪЕЛ набор: спред в шапке посчитан по их средневзвесу, и
+    # такой цены в книге нет ни одной строкой. Без пометки сообщение читается
+    # как «в шапке 162, а в стакане 172» — то самое расхождение, из-за которого
+    # цифрам перестают верить (жалоба 27.08.2026).
+    taken = m.get("levels") if m.get("single_px") is None else None
+
+    # Цены, ПО КОТОРЫМ посчитан сигнал: у одиночной заявки — своя, у набора —
+    # первые taken уровней стороны сигнала, считая ОТ ЛУЧШЕГО. Помечаем по
+    # цене, а не по номеру строки: порядок сторон в лестнице биржевой, и
+    # индекс в ней не совпадает с порядком набора.
+    near_best = list(bids) if side == "bid" else list(reversed(asks))
+    if taken:
+        hit_px = [l["price"] for l in near_best[:taken] if l.get("price") is not None]
+    else:
+        hit_px = [px] if px is not None else []
+
     def row(lvl: dict) -> str:
         y = lvl.get("y_idx")
         y_txt = f"{y:.0f}".rjust(5) if y is not None else "    —"
         # своя цена — стрелкой; эмодзи внутри моноширинного блока нельзя,
         # они двойной ширины и рвут колонки
-        hit = " ←" if (px is not None and lvl.get("price") is not None
-                       and abs(lvl["price"] - px) < 0.005) else ""
+        p = lvl.get("price")
+        hit = " ←" if (p is not None
+                       and any(abs(p - h) < 0.005 for h in hit_px)) else ""
         return f"{_num(lvl['price']).rjust(7)} {_book_qty(lvl)} {y_txt}{hit}"
 
+    # ПОРЯДОК — биржевой, как в любом терминале: офферы сверху вниз до лучшего,
+    # под чертой биды от лучшего вниз, цена по столбцу монотонно падает. Ставили
+    # «сторона сигнала первой» ради двух строк, видимых под свёрнутой цитатой,
+    # но перевёрнутая лестница читается неверно вся целиком, а цена и спред
+    # сигнала и так стоят в шапке сообщения — над цитатой.
     lines = [f"{'ЦЕНА':>7} {'ШТ':>6} {'RS':>5}"]
     lines += [row(l) for l in asks]
     lines.append("─" * 20)          # выше разделителя оффера, ниже биды

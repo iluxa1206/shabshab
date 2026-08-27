@@ -971,3 +971,127 @@ def test_single_mode_order_has_tolerance():
     p2 = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 7e6,
                                 "money_mode": "single"})
     assert core.evaluate(p2, uni, metrics, big) == []
+
+
+def test_tg_book_keeps_exchange_order():
+    """Лестница — как в терминале: офферы сверху вниз до лучшего, под чертой
+    биды от лучшего вниз, цена по столбцу монотонно падает.
+
+    Пробовали ставить сторону сигнала первой (ради двух строк, видимых под
+    свёрнутой цитатой) — перевёрнутый стакан читается неверно целиком, а цена
+    и спред события и так стоят в шапке сообщения, НАД цитатой."""
+    from services import tg_notify
+
+    ev = {
+        "price": 100.10,
+        "book": {
+            # как отдаёт book_snapshot: офферы худшим-первым, биды лучшим-первым
+            "asks": [{"price": 100.43, "qty": 334, "y_idx": 166},
+                     {"price": 100.20, "qty": 67892, "y_idx": 181},
+                     {"price": 100.10, "qty": 50000, "y_idx": 188}],
+            "bids": [{"price": 100.00, "qty": 1000, "y_idx": 195}],
+        },
+    }
+    lines = [ln for ln in tg_notify._book_pre(ev, "ask").split("\n")
+             if "ЦЕНА" not in ln]
+    order = [ln for ln in lines if "100," in ln]
+    idx = lambda p: next(i for i, l in enumerate(order) if p in l)
+    assert idx("100,43") < idx("100,20") < idx("100,10") < idx("100,00"), \
+        f"порядок не биржевой: {order}"
+    assert "←" in order[idx("100,10")], "уровень события не помечен стрелкой"
+    assert "←" not in order[idx("100,20")], "чужой уровень помечен"
+
+
+def test_ctx_takes_accrued_from_board_when_snapshot_misses(monkeypatch):
+    """Персональный снимок MOEX без НКД → берём его из борд-снимка.
+
+    Прод 27.08.2026: у контекста НКД оказался None, расчёт начислил своё, и
+    точный путь разошёлся с таблицей (РЕСОЛизБО5 368 против 382; ВЭБ2Р-53 166
+    против 188 — там же уехала вся лестница стакана в телеграме). Начисление в
+    десятые доли рубля стоит десятков б.п. спреда, поэтому НКД обязан
+    приезжать из того же источника, которым считает витрина."""
+    import asyncio
+    from services import bond_details as bd
+
+    isin = "RU000TESTACC1"
+
+    async def _snap(ids):                    # персональный снимок без НКД
+        return {isin: {"prev": 99.0}}
+
+    async def _board():                      # борд-снимок — с НКД
+        return {isin: {"prev": 99.0, "accrued": 7.77, "accrued_date": "2026-08-28"}}
+
+    async def _sched(ids):
+        return {}
+
+    async def _full(i):
+        return {"coupons": [], "amorts": [], "offers": []}
+
+    class _Curve:
+        rate_convention = "daily_comp"
+
+    async def _curves():
+        from datetime import date
+        return _Curve(), _Curve(), date(2026, 8, 27), date(2026, 8, 26)
+
+    async def _z():
+        return None, None, None
+
+    monkeypatch.setattr(bd.MarketDataService, "fetch_moex_snapshot", staticmethod(_snap))
+    monkeypatch.setattr(bd.MarketDataService, "fetch_board_snapshot", staticmethod(_board))
+    monkeypatch.setattr(bd.MarketDataService, "fetch_coupon_schedules", staticmethod(_sched))
+    monkeypatch.setattr(bd.MarketDataService, "fetch_bond_schedule_full", staticmethod(_full))
+    monkeypatch.setattr(bd.MarketDataService, "get_curves", staticmethod(_curves))
+    monkeypatch.setattr(bd.MarketDataService, "get_zspread_ctx", staticmethod(_z))
+    monkeypatch.setattr(bd, "reconcile_face", lambda *a, **k: None)
+    monkeypatch.setattr(bd, "amort_remaining_face", lambda *a, **k: None)
+
+    class _Ref:
+        base = "RUONIA"
+        face_value = 1000.0
+        accrued_rub = None
+
+    _Ref.isin = isin
+
+    monkeypatch.setattr(bd, "create_bond_ref_data", lambda data, i: _Ref())
+    # непустая строка кэша: пустой dict falsy и увёл бы во внешний путь MOEX
+    ctx = asyncio.run(bd.load_reprice_ctx(isin, {isin: {"isin": isin}}))
+    assert ctx["accrued_live"] == 7.77, "НКД не добрался из борд-снимка"
+    assert str(ctx["accrued_date"]) == "2026-08-28", "дата НКД должна ехать из того же источника"
+    assert ctx["accrued_missing"] is False
+
+
+def test_exact_y_idx_silent_without_accrued(monkeypatch):
+    """Без НКД точного числа не бывает — молчим, а не показываем сдвинутое."""
+    import time
+    from services import screener_core as core
+
+    isin = "RU000TESTACC2"
+    core._exact_ctx[isin] = (time.monotonic(), {"accrued_missing": True,
+                                                "ref_obj": None}, {})
+    try:
+        assert core.exact_y_idx(isin, 100.0) is None
+    finally:
+        core._exact_ctx.pop(isin, None)
+
+
+def test_tg_book_marks_levels_eaten_by_the_set():
+    """Спред шапки считается по средневзвесу набора, и такой цены в книге нет.
+    Значит помечены должны быть ВСЕ съеденные уровни — иначе читатель видит
+    «в шапке 162, а в стакане 172» и перестаёт верить цифрам."""
+    from services import tg_notify
+
+    ev = {
+        "price": 99.9993, "levels": 2,      # набор лёг в два верхних уровня
+        "book": {
+            "asks": [{"price": 100.10, "qty": 50, "y_idx": 154},
+                     {"price": 99.98, "qty": 122, "y_idx": 164},
+                     {"price": 99.89, "qty": 89, "y_idx": 172}],
+            "bids": [{"price": 99.50, "qty": 10, "y_idx": 205}],
+        },
+    }
+    rows = [ln for ln in tg_notify._book_pre(ev, "ask").split("\n") if "ЦЕНА" not in ln]
+    ask_rows = [ln for ln in rows if "99,89" in ln or "99,98" in ln or "100,10" in ln]
+    # порядок биржевой (худший оффер сверху), набор съел два ЛУЧШИХ уровня
+    assert "←" in ask_rows[1] and "←" in ask_rows[2], "взятые уровни не помечены"
+    assert "←" not in ask_rows[0], "нетронутый уровень помечен как взятый"
