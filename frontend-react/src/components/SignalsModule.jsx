@@ -6,10 +6,11 @@ import {
   markSignalEventsSeen,
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
-import { fmt } from "../format.js";
+import { fmt, RT_FILTER } from "../format.js";
 import { bookMode, eventTag, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 
-const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
+// значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
+const RATINGS = RT_FILTER;
 // Порог «шевеления»: насколько должна сдвинуться цена, спред или объём, чтобы
 // прилетело повторное уведомление по уже найденной бумаге.
 const CHANGES = [[5, "5 %"], [10, "10 %"], [20, "20 %"], [50, "50 %"]];

@@ -11,9 +11,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { buildPortfolio, fetchSignalEmitters, searchInstruments } from "../api.js";
 import { copyText } from "../clipboard.js";
-import { DASH, baseLabel, fmt, orDash, ratingColor } from "../format.js";
+import { DASH, baseLabel, fmt, orDash, ratingColor, RT_FILTER } from "../format.js";
 
-const RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"];
+// значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
+const RATINGS = RT_FILTER;
 const ISSUERS = [["ofz", "ОФЗ"], ["corp", "Корп"]];
 const BASES = [["KEYRATE", "КС"], ["RUONIA", "RUONIA"]];
 const MODES = [["spread", "Спред"], ["ladder", "Лесенка"]];

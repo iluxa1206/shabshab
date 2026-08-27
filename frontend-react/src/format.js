@@ -94,6 +94,10 @@ export const RT_COLOR = {
 // их считаем B. Пустое/нераспознанное — NR.
 export const RT_BUCKETS = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
 
+// Селектор рейтингов фильтров СИГНАЛОВ/ПОРТФЕЛЯ — ровно те значения, которые
+// принимает бэкенд (screener_core.RATINGS): без NR, «нет рейтинга» там не выбор.
+export const RT_FILTER = ["AAA", "AA", "A", "BBB", "BB", "B"];
+
 // Палитра бакетов для ГРАФИКОВ (семь цветов). Таблицы и фильтр схлопывают
 // BB/B в один чип «BB↓» — их цвет берётся из RT_COLOR.BELOW.
 export const RT_BUCKET_COLOR = {

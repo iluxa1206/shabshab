@@ -1,15 +1,13 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchFixed } from "../api.js";
-import { fmt, dmColor } from "../format.js";
+import { fmt, dmColor, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import IssuerFilter from "./IssuerFilter.jsx";
 import FixedAnalytics from "./FixedAnalytics.jsx";
 
-const RT = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
-const RTCOLOR = {
-  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
-  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
-};
+// бакеты/палитра/правило — из format.js (одно на фронт)
+const RT = RT_BUCKETS;
+const RTCOLOR = RT_BUCKET_COLOR;
 const D = () => <span className="dash">—</span>;
 const median = (a) => {
   if (!a.length) return null;
@@ -52,7 +50,7 @@ const COLS = [
   { key: "rating", label: "РЕЙТИНГ", sub: "", align: "num", w: 8,
     get: (b) => (b.rating ? RT.indexOf(b.rating) : 99),
     cell: (b) => <td className="num" key="r">{b.rating
-      ? <span className="fx-rt" style={{ color: RTCOLOR[b.rating] }}>{b.rating}</span> : <D />}</td> },
+      ? <span className="fx-rt" style={{ color: RTCOLOR[ratingBucket(b.rating)] }}>{b.rating}</span> : <D />}</td> },
   { key: "coupon_pct", label: "COUPON", sub: "%", align: "num", w: 7,
     get: (b) => b.coupon_pct, cell: (b) => <td className="num" key="c">{b.coupon_pct == null ? <D /> : fmt.pct(b.coupon_pct)}</td> },
   { key: "maturity_date", label: "MATURITY", sub: "", align: "num", w: 10,
@@ -89,7 +87,9 @@ export default function FixedModule({ onOpen }) {
   const rows = useMemo(() => {
     let r = all;
     if (clsF !== "all") r = r.filter((b) => b.cls === clsF);
-    if (ratingsSel.length) { const set = new Set(ratingsSel); r = r.filter((b) => set.has(b.rating || "NR")); }
+    // чипы рейтинга сравниваем по БАКЕТУ: сырой рейтинг мимо списка (CCC, D)
+    // не попадал ни в один чип и бумага исчезала из любого выбора
+    if (ratingsSel.length) { const set = new Set(ratingsSel); r = r.filter((b) => set.has(ratingBucket(b.rating))); }
     if (emittersSel.length) { const set = new Set(emittersSel); r = r.filter((b) => set.has(b.issuer || b.name)); }
     if (query.trim()) {
       const s = query.trim().toLowerCase();
