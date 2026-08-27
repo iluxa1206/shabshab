@@ -112,6 +112,17 @@ cd frontend-react && npm install && npm run dev
 * `CurveBootstrapper.bootstrap_ruonia(...)` (OIS, фикс-нога ≤1Y single / годовая),
   `.bootstrap_keyrate(...)` (IRS, фикс-нога квартальная).
 
+> **ДВЕ КОНВЕНЦИИ KEYRATE — ЭТО НАМЕРЕННО** (решение 2026-08-26).
+> `SheetForwardCurve` трактует фикс-ногу как **годовую** (`4·((1+par)^¼−1)`),
+> `bootstrap_keyrate` — как **квартальную** (`months=3`, конвенция СПФИ МБ).
+> Задачи разные: бутстрап даёт безарбитражные DF, лист воспроизводит
+> утверждённую методику вкладки КРИВЫЕ, на которой и прайсятся купоны.
+> На длинных тенорах кривые расходятся на 70-90 bps — это ожидаемо.
+> Приведение sheet к квартальной ноге сдвинуло бы **Y-IDX всех KEYRATE-бумаг
+> на +73…+91 bps** (SM/DM почти не двигаются, RUONIA не двигается вовсе) и
+> потребовало бы пересчёта истории. Формула продублирована в
+> `api/routes/curves.py::_avg_pct` — править только синхронно.
+
 ### `core/rates.py`, `core/cashflow.py`, `core/last_prices.py`, `core/orderbooks.py`
 
 * `get_rates_curves()` — OIS RUONIA + IRS KEYRATE с Cbonds, кэш на день, `load_cache(allow_stale=True)`
