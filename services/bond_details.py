@@ -15,7 +15,7 @@ from services.bonds import (
 )
 from services.valuation import calculate_valuation_metrics, pick_horizon
 from services.cashflow import build_cashflow_from_moex
-from services.zspread import project_cfs, solve_flat_y
+from services.zspread import project_cfs
 from services.exceptions import NotFoundException, CalculationException
 
 logger = logging.getLogger(__name__)
@@ -207,21 +207,15 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             exp = exp_ru if ref_obj.base == "RUONIA" else exp_ks
             coupons = sched_full.get("coupons", [])
             px = last_price or prev_close_pct
-            spread_dur = None
-            mod_dur = convexity = pvbp = None
-            if exp and px:
-                # те же потоки и цена, что в z-модели: face_for_pricing (T+1
-                # ex-амортизация) и offers (обрезка по оферте при пересмотре купона)
-                from core.valuation import face_for_pricing
-                dirty = (face_for_pricing(ref_obj.face_value, sched_full.get("amorts"), calc_date)
-                         * px / 100.0 + (accrued_live or ref_obj.accrued_rub or 0.0))
-                zcfs = project_cfs(ref_obj, exp, calc_date, coupons,
-                                   sched_full.get("amorts"), sched_full.get("offers"))
-                y = solve_flat_y(zcfs, calc_date, dirty)
-                if y is not None:
-                    spread_dur = metrics.macaulay_years(zcfs, calc_date, y)
-                    # mod dur / convexity / PVBP — наш расчёт (НРД-доступ отключён)
-                    mod_dur, convexity, pvbp = metrics.duration_metrics(zcfs, calc_date, y, dirty)
+            # Дюрации — ИЗ ВЫБРАННОГО ГОРИЗОНТА val_dict (единственный расчёт,
+            # services.valuation._dur_block). Своей копии тут больше нет: она
+            # считалась всегда к погашению, и карточка расходилась с витриной
+            # у бумаги, чьи спреды посчитаны к оферте.
+            _hz_sel = pick_horizon(val_dict)
+            spread_dur = _hz_sel.get("dur_yrs")
+            mod_dur = _hz_sel.get("mod_duration")
+            convexity = _hz_sel.get("convexity")
+            pvbp = _hz_sel.get("pvbp")
             # ставка начавшегося периода из модельного cashflow — фолбэк текущего
             # купона для RUONIA-average (MOEX не даёт valueprc/value до конца периода)
             cur_cpn_model = None
@@ -236,7 +230,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
                                            current_coupon_override=cur_cpn_model)
             refix = cb["days_to_refix"]
             floater_block = {
-                "spread_duration_yrs": round(spread_dur, 3) if spread_dur is not None else None,
+                "spread_duration_yrs": spread_dur,
                 "rate_duration_yrs": round(refix / 365.0, 3) if refix is not None else None,
                 "days_to_refix": refix, "current_coupon_pct": cb["current_coupon_pct"],
                 "base_rate_pct": cb["base_rate_pct"],

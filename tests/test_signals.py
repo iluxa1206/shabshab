@@ -1132,3 +1132,26 @@ def test_money_in_spread_uses_methodology_not_slope(monkeypatch):
     # без контекста числа нет — метрика молчит, а не считает наклоном
     monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
     assert core.money_in_spread(ladder, row, "ask", 150, 200, 1000.0, 0.0, "X") is None
+
+
+def test_years_filter_uses_pricing_horizon():
+    """Окно срока — до ГОРИЗОНТА ПРАЙСИНГА, как в мониторе (App.jsx hzDate).
+
+    Регресс: скринер/портфель/бот мерили срок только до погашения, и бумага с
+    путом через полгода (спред у неё посчитан к этому путу) не попадала в
+    фильтр «до 2 лет», хотя в таблице под ним стояла."""
+    from datetime import date
+    uni, metrics, depth = _market()
+    today = date(2026, 8, 21)
+    isin = "RU000A0000A1"                       # погашение 2029-08-11
+    metrics[isin] = dict(metrics[isin], horizon="put", offer_date="2027-02-11")
+    p = core.normalize_params({"years_max": 2, "spread_min": -1000, "spread_max": 1000})
+
+    cands = core.static_candidates(p, uni, today, metrics)
+    assert isin in [c["isin"] for c in cands], "бумага с путом через 0.5г попадает в окно 2г"
+
+    # горизонт снялся (цена ушла выше цены выкупа) → срок снова до погашения,
+    # и свежая проверка в рыночной стадии убирает бумагу даже из кеша кандидатов
+    metrics[isin] = dict(metrics[isin], horizon="maturity", offer_date=None)
+    got = core.evaluate_candidates(p, cands, metrics, depth)
+    assert isin not in [m["isin"] for m in got]

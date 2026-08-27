@@ -917,8 +917,12 @@ async def _notify_blocks() -> int:
 
     # (user, filter_id, filter_name, sound, desktop) → сделки
     routed: dict[tuple, list[dict]] = {}
+    # горизонт прайсинга к справочной метке: срок в фильтре и в уведомлении
+    # считается той же методикой, что окно срока в мониторе
+    from services.market_data import MarketDataService
+    _mx = MarketDataService.universe_metrics() or {}
     for r in rows:
-        meta = labels.get(r["isin"]) or {}
+        meta = signals.block_meta(labels, r["isin"], _mx)
         for u in legacy_users:
             if _legacy_ok(r):
                 routed.setdefault((u, 0, "Крупная сделка", True, True), []).append(r)
@@ -952,20 +956,13 @@ async def _notify_blocks() -> int:
         from services import trade_yidx
         await trade_yidx.for_rows(todo)
 
-    def _years(mat: Optional[str]) -> Optional[float]:
-        """Срок до погашения — в уведомление: «блок на 600 млн» читается
-        по-разному для годовой бумаги и для десятилетней."""
-        if not mat:
-            return None
-        try:
-            return max(0.0, (date.fromisoformat(mat) - today).days / 365.25)
-        except ValueError:
-            return None
-
     def _match(r: dict) -> dict:
-        lb = labels.get(r["isin"]) or {}
+        lb = signals.block_meta(labels, r["isin"], _mx)
         return {
-            "maturity": lb.get("maturity"), "years": _years(lb.get("maturity")),
+            # срок — до ГОРИЗОНТА ПРАЙСИНГА: «блок на 600 млн» читается
+            # по-разному для годовой бумаги и для десятилетней, и та же
+            # методика стоит в фильтре и в мониторе
+            "maturity": lb.get("maturity"), "years": signals.meta_years(lb, today),
             # id сделки едет в уведомление: по нему телеграм отличает соседние
             # принты друг от друга (одно сообщение на сделку, см. tg_notify._group)
             "trade_id": r.get("trade_id"), "isin": r["isin"],

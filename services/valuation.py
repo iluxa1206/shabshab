@@ -379,6 +379,29 @@ def calculate_valuation_metrics(
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
 
+    def _dur_block(cfs_list, dirty) -> Dict[str, Any]:
+        """Блок дюраций ИМЕННО ТОГО потока, из которого посчитан спред горизонта:
+        спред-дюрация (Macaulay), mod duration, выпуклость, PVBP.
+
+        ЕДИНСТВЕННЫЙ расчёт дюрации в проекте: витрина и карточка берут числа
+        отсюда. Раньше витрина брала дюрацию из z-модели (всегда к погашению),
+        карточка считала свою третью копию по тем же потокам, а Y-IDX везде был
+        к ВЫБРАННОМУ горизонту: бумага с путом через 0.2 года стояла на графике
+        аналитики на 4.6 годах со спредом к оферте (БалтЛизП14 27.08)."""
+        empty = {"dur_yrs": None, "mod_duration": None, "convexity": None, "pvbp": None}
+        if not cfs_list or dirty is None or dirty <= 0:
+            return empty
+        from services.zspread import solve_flat_y
+        from services.metrics import macaulay_years, duration_metrics
+        pairs = [(cf.pay_date, cf.amount_rub) for cf in cfs_list]
+        y = solve_flat_y(pairs, calc_date, dirty)
+        if y is None:
+            return empty
+        d = macaulay_years(pairs, calc_date, y)
+        mod, convex, pvbp = duration_metrics(pairs, calc_date, y, dirty)
+        return {"dur_yrs": round(d, 3) if d is not None else None,
+                "mod_duration": mod, "convexity": convex, "pvbp": pvbp}
+
     def _metrics_at(cut: date) -> Optional[dict]:
         """Полный набор метрик к произвольному горизонту cut (дата оферты):
         поток режется к cut с выкупом остатка по цене оферты, база Y-IDX
@@ -431,6 +454,7 @@ def calculate_valuation_metrics(
         return {
             "y_idx_by_price": y_idx_alt_h,
             "date": cut,
+            **_dur_block(cfs_h, dirty_rub),
             "price_pct": _opp(offers, cut),
             "sm_bps": _sane_bps(sm_h, warnings, "sm_horizon"),
             "disc_margin_bps": _sane_bps(dm_h, warnings, "disc_margin_horizon"),
@@ -447,6 +471,7 @@ def calculate_valuation_metrics(
         # дата ФАКТИЧЕСКОГО конца потока: у бумаги с обрезкой по оферте метка
         # «до погашения» обещала 2038 год, а число относилось к 2028-му
         "date": _mat_end, "price_pct": 100.0,
+        **_dur_block(cfs, dirty_rub),
         "y_idx_by_price": y_idx_by_price,
         "sm_bps": sm_bps, "disc_margin_bps": disc_margin_bps,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,

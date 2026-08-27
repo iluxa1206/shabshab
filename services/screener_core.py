@@ -269,13 +269,10 @@ def block_matches(trade: dict, meta: dict, params: dict,
             return False
         if (lo is not None and val < lo) or (hi is not None and val > hi):
             return False
-    ylo, yhi = params.get("years_min"), params.get("years_max")
-    if ylo is not None or yhi is not None:
-        yrs = years_left(meta.get("maturity"), today or date.today())
-        if yrs is None:      # без даты погашения срок не проверить — не пускаем
-            return False
-        if (ylo is not None and yrs < ylo) or (yhi is not None and yrs > yhi):
-            return False
+    # срок — до горизонта прайсинга сделки, если он известен ленте, иначе до
+    # погашения (у ленты есть только справочная метка бумаги)
+    if not years_ok(meta_years(meta, today or date.today()), params):
+        return False
     return selected(u, params)
 
 
@@ -288,6 +285,53 @@ def years_left(maturity_iso: Optional[str], today: date) -> Optional[float]:
         return (date.fromisoformat(maturity_iso) - today).days / 365.25
     except (TypeError, ValueError):
         return None
+
+
+def horizon_years(u: dict, row: Optional[dict], today: date) -> Optional[float]:
+    """Срок бумаги в годах до ГОРИЗОНТА ПРАЙСИНГА — той даты, к которой посчитан
+    её спред (оферта/колл по правилу цены, иначе погашение).
+
+    Одна методика срока на весь проект: витрина фильтрует окно срока ровно так
+    (App.jsx, hzDate). Пока скринер, портфель и лента считали срок только до
+    ПОГАШЕНИЯ, один и тот же фильтр «до 2 лет» в МОНИТОРЕ и в СИГНАЛАХ давал
+    разные множества: бумага с путом через полгода и спредом к этому путу в
+    сигналы не попадала.
+
+    row — строка live-метрик (universe.enrich_bond) или None: горизонт зависит
+    от цены, статически он неизвестен, и тогда остаётся погашение."""
+    d = None
+    if row and (row.get("horizon") in ("put", "call")) and row.get("offer_date"):
+        d = row["offer_date"]
+        d = d.isoformat() if hasattr(d, "isoformat") else str(d)
+    return years_left(d or u.get("maturity_date"), today)
+
+
+def block_meta(labels: dict, isin: str, metrics: Optional[dict] = None) -> dict:
+    """Справочная метка бумаги для ленты сделок + ГОРИЗОНТ ПРАЙСИНГА из живых
+    метрик. Без горизонта фильтр ленты мерил срок только до погашения, а тот же
+    фильтр в мониторе — до оферты: одна бумага, два разных «срока»."""
+    meta = dict(labels.get(isin) or {})
+    row = (metrics or {}).get(isin) or {}
+    if row:
+        meta["horizon"] = row.get("horizon")
+        meta["offer_date"] = row.get("offer_date")
+    return meta
+
+
+def meta_years(meta: dict, today: date) -> Optional[float]:
+    """Срок бумаги ленты до её горизонта прайсинга (одна методика с монитором)."""
+    return horizon_years({"maturity_date": meta.get("maturity")}, meta, today)
+
+
+def years_ok(yrs: Optional[float], params: dict) -> bool:
+    """Окно срока фильтра. Без даты (перп/дыра в справочнике) при заданной
+    границе — не пускаем: иначе «до 2 лет» молча притащит бессрочную."""
+    ylo, yhi = params.get("years_min"), params.get("years_max")
+    if ylo is None and yhi is None:
+        return True
+    if yrs is None:
+        return False
+    return not ((ylo is not None and yrs < ylo) or (yhi is not None and yrs > yhi))
 
 
 def selected(u: dict, params: dict) -> bool:
@@ -768,12 +812,16 @@ def y_idx_diag(isin: str, px: Optional[float], row: dict, side: str) -> dict:
 
 
 def static_candidates(params: dict, uni: List[dict],
-                      today: Optional[date] = None) -> List[dict]:
+                      today: Optional[date] = None,
+                      metrics: Optional[dict] = None) -> List[dict]:
     """Отбор по НЕподвижным признакам: рейтинг/эмитент/ISIN, ОФЗ/корп, срок, суборд.
     Считается редко — множество меняется только с реестром, а не с рынком.
-    Дальше мониторится только глубина этих бумаг (см. evaluate_candidates)."""
+    Дальше мониторится только глубина этих бумаг (см. evaluate_candidates).
+
+    metrics — снимок live-метрик: из него берётся горизонт прайсинга для срока
+    (см. horizon_years). Без него срок считается до погашения, а окончательную
+    проверку сроком делает evaluate_candidates уже по свежей строке."""
     today = today or date.today()
-    ylo, yhi = params.get("years_min"), params.get("years_max")
     hide_sub = params.get("hide_subord")
     out = []
     for u in uni:
@@ -781,16 +829,9 @@ def static_candidates(params: dict, uni: List[dict],
             continue
         if not issuer_ok(u, params):
             continue
-        yrs = years_left(u.get("maturity_date"), today)
-        if ylo is not None or yhi is not None:
-            # без даты погашения срок не проверить — такую бумагу не пускаем,
-            # иначе фильтр «до 2 лет» молча притащит бессрочную
-            if yrs is None:
-                continue
-            if ylo is not None and yrs < ylo:
-                continue
-            if yhi is not None and yrs > yhi:
-                continue
+        yrs = horizon_years(u, (metrics or {}).get(u.get("isin")), today)
+        if not years_ok(yrs, params):
+            continue
         if not selected(u, params):
             continue
         out.append(dict(u, _years=round(yrs, 2) if yrs is not None else None))
@@ -832,6 +873,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         if not row:
             continue
         if row.get("implausible") or row.get("price_stale") or row.get("price_thin"):
+            continue
+        # СРОК — по свежей строке: горизонт прайсинга зависит от цены и может
+        # смениться внутри дня, а множество кандидатов кешируется на фильтр
+        # (signals._candidates) и такую смену не увидит до обновления универса.
+        if not years_ok(horizon_years(u, row, date.today()), params):
             continue
         face = row.get("face_px") or 1000.0
         accrued = row.get("accrued_settle") or 0.0
@@ -921,7 +967,7 @@ def evaluate(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
              today: Optional[date] = None) -> List[dict]:
     """Полный прогон (статика + рынок) — для разовых вызовов: превью формы,
     телеграм-скринер. Постоянный мониторинг держит статику отдельно."""
-    return evaluate_candidates(params, static_candidates(params, uni, today),
+    return evaluate_candidates(params, static_candidates(params, uni, today, metrics),
                                metrics, depth_map)
 
 

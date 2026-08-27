@@ -41,7 +41,10 @@ const AXES = {
     },
   },
   float: {
-    x: (b) => yrsTo(b.maturity_date), xLabel: "лет до погашения →",
+    // спред-дюрация ВЫБРАННОГО горизонта — та же ось, что во вкладке АНАЛИТИКА.
+    // Раньше тут стоял срок до ПОГАШЕНИЯ, а Y (R-spread/SM) считался к оферте:
+    // бумага с путом через полгода стояла на пяти годах со спредом к оферте.
+    x: (b) => b.spread_dur_yrs, xLabel: "спред-дюрация →",
     modes: {
       yidx: { label: "R-spread", axis: "R-spread, bps", val: (b) => (okG(b.yield_over_index_bps) ? b.yield_over_index_bps : null),
               custom: (m) => m?.y_idx_bps, fmt: (v) => "R-spread: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
@@ -202,7 +205,7 @@ export default function CalcModule({ initialKind = "fixed" }) {
   // метрики показываем только если посчитаны для ТЕКУЩЕГО типа
   const m = res?.kind === kind ? res.metrics : null;
   // точка «своей» бумаги на скэттере: x-координата по типу
-  const customPt = m ? { ...m, _x: isFloat ? yrsTo(form.maturity) : m.mod_dur } : null;
+  const customPt = m ? { ...m, _x: isFloat ? (m.spread_dur_yrs ?? yrsTo(form.maturity)) : m.mod_dur } : null;
   const modes = AXES[kind].modes;
   return (
     <div className="calc-page">

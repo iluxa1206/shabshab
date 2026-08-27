@@ -612,7 +612,7 @@ def build(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
     p = params
     ticket = p["amount_rub"] / p["n"]
 
-    cands = sc.static_candidates(p, uni, today)
+    cands = sc.static_candidates(p, uni, today, metrics)
     rejected_pre: List[dict] = []
     forced = set(p["pin"]) | set(p["manual"])
     have = {u.get("isin") for u in cands}
@@ -624,7 +624,7 @@ def build(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
             if not u:
                 rejected_pre.append(_rej(isin, isin, "not_in_universe"))
                 continue
-            yrs = sc.years_left(u.get("maturity_date"), today)
+            yrs = sc.horizon_years(u, metrics.get(isin), today)   # та же методика срока, что в отборе
             cands.append(dict(u, _years=round(yrs, 2) if yrs is not None else None))
 
     excluded = set(p["exclude"])

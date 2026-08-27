@@ -20,11 +20,11 @@ from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
 from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
-                                    block_matches, evaluate,
+                                    block_matches, block_meta, evaluate,
                                     evaluate_candidates, market_snapshot,
-                                    money_floor,
+                                    meta_years, money_floor,
                                     normalize_block_params, normalize_params,
-                                    static_candidates, warm_exact_ctx, years_left)
+                                    static_candidates, warm_exact_ctx)
 
 logger = logging.getLogger(__name__)
 
@@ -513,16 +513,19 @@ def preview_block(params: dict, limit: int = 20) -> dict:
             (day, money_floor(p["min_value_rub"]))).fetchall()]
     labels = reg.labels_map()
     today = date.today()
-    hits = [r for r in rows
-            if block_matches(r, labels.get(r["isin"]) or {}, p, today)]
+    # горизонт прайсинга — из живых метрик: срок ленты считается по той же
+    # методике, что окно срока в мониторе (screener_core.block_meta)
+    from services.market_data import MarketDataService
+    _mx = MarketDataService.universe_metrics() or {}
+    metas = {r["isin"]: block_meta(labels, r["isin"], _mx) for r in rows}
+    hits = [r for r in rows if block_matches(r, metas[r["isin"]], p, today)]
     return {"ready": True, "total": len(hits), "capped": len(rows) >= 500,
             # срок до погашения — как в превью book-фильтра: «блок на 600 млн»
             # читается по-разному для годовой бумаги и для десятилетней
             "matches": [{"isin": h["isin"],
                          "name": (labels.get(h["isin"]) or {}).get("name") or h["isin"],
-                         "maturity": (labels.get(h["isin"]) or {}).get("maturity"),
-                         "years": years_left((labels.get(h["isin"]) or {}).get("maturity"),
-                                             today),
+                         "maturity": metas[h["isin"]].get("maturity"),
+                         "years": meta_years(metas[h["isin"]], today),
                          "money_rub": h["value"], "ts": h["ts"]}
                         for h in hits[:limit]]}
 
@@ -536,7 +539,7 @@ async def preview(user_email: str, params: dict, limit: int = 20) -> dict:
         return {"ready": False, "total": 0, "matches": []}
     # превью считает тем же верифицированным путём, что лента: иначе форма
     # обещала бы один спред, а событие приносило другой
-    cands = static_candidates(p, uni)
+    cands = static_candidates(p, uni, metrics=metrics)
     await warm_exact_ctx([c.get("isin") for c in cands])
     ms = evaluate_candidates(p, cands, metrics, depth_map, exact=True)
     return {"ready": True, "total": len(ms), "matches": ms[:limit]}
@@ -547,7 +550,7 @@ async def preview(user_email: str, params: dict, limit: int = 20) -> dict:
 _candidates_cache: dict = {}      # fid → (params_json, [строки универса])
 
 
-def _candidates(f: dict, uni: List[dict]) -> List[dict]:
+def _candidates(f: dict, uni: List[dict], metrics: dict) -> List[dict]:
     """Статический отбор кешируется на фильтр: рейтинг/эмитент/срок/суборд не
     меняются от тика к тику, а перебор 577 бумаг каждые пару секунд — пустая
     работа. Кэш сбрасывается сменой условий или обновлением универса."""
@@ -555,7 +558,7 @@ def _candidates(f: dict, uni: List[dict]) -> List[dict]:
     hit = _candidates_cache.get(f["id"])
     if hit and hit[0] == key:
         return hit[1]
-    cands = static_candidates(f["params"], uni)
+    cands = static_candidates(f["params"], uni, metrics=metrics)
     _candidates_cache[f["id"]] = (key, cands)
     return cands
 
@@ -575,7 +578,7 @@ async def run_cycle() -> int:
     fired = 0
     for f in filters:
         try:
-            cands = _candidates(f, uni)
+            cands = _candidates(f, uni, metrics)
             # контексты пересчёта для кандидатов фильтра: Y-IDX события считается
             # верифицированным путём (как уровень стакана), а не наклоном от
             # якоря — наклон врал сотнями bps, когда котировка и снимок глубины

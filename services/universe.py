@@ -98,7 +98,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
-    spread_dur = None      # Macaulay прогнозных потоков — та же, что в карточке
+    dur_hz = None          # спред-дюрация ВЫБРАННОГО горизонта (единственный
+                           # расчёт — services.valuation._dur_block)
     yoi_bid = yoi_ask = None
     face_px = accrued_settle = yoi_slope = None
     implausible = False
@@ -156,6 +157,9 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             dm = _hzm.get("sm_bps", m.get("dm_bps"))
             disc_dm = _hzm.get("disc_margin_bps", m.get("disc_margin_bps"))
             yoi = _hzm.get("yield_over_index_bps", m.get("yield_over_index_bps"))
+            # Дюрация — ИЗ ТОГО ЖЕ горизонта, что и спред: иначе точка на графике
+            # аналитики стоит на сроке до погашения, а её Y-IDX посчитан к оферте.
+            dur_hz = _hzm.get("dur_yrs")
             # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
             _alt = _hzm.get("y_idx_by_price") or m.get("y_idx_by_price") or {}
             yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
@@ -197,7 +201,9 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                        if coupons_full else
                        [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
                         for (s, e, v) in periods])
-            z_model, spread_dur = compute_z_bps(
+            # дюрацию z-модели не берём: она всегда к погашению, а строка
+            # витрины живёт в СВОЁМ горизонте (dur_hz выше)
+            z_model, _z_dur = compute_z_bps(
                 ref, exp, g_curve, calc_date, price_calc,
                 accrued if accrued is not None else ref.accrued_rub,
                 coupons, amorts, offers)
@@ -233,7 +239,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,
             "yoi_wap": yoi_wap,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
-            "next_coupon": next_cpn, "z_model": z_model, "spread_dur": spread_dur,
+            "next_coupon": next_cpn, "z_model": z_model,
+            "spread_dur": dur_hz,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
             "price_thin": price_thin,
             # has_call сюда НЕ кладём: он статичный факт строки реестра, его
@@ -377,20 +384,3 @@ async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
             exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
     return out
 
-
-_cross_cache = {"date": None, "map": {}}
-
-
-def cross_section_map(uni: list) -> dict:
-    """{isin: spread_dur_yrs} по всему рынку, раз в день (кэш на дату)."""
-    today = date.today().isoformat()
-    if _cross_cache["date"] == today and _cross_cache["map"]:
-        return _cross_cache["map"]
-    today0 = date.today()
-    out: dict = {}
-    for u in uni:
-        mat = u.get("maturity_date")
-        out[u.get("isin")] = metrics.years_to(date.fromisoformat(mat), today0) if mat else None
-    _cross_cache["date"] = today
-    _cross_cache["map"] = out
-    return out

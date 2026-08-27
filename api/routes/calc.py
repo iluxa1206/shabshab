@@ -142,6 +142,10 @@ async def calc_custom_floater(
         "metrics": {
             "y_idx_bps": m.get("yield_over_index_bps"),
             "sm_bps": m.get("sm_bps"), "dm_bps": m.get("disc_margin_bps"),
+            # спред-дюрация того же потока (единственный расчёт —
+            # services.valuation._dur_block): ею калькулятор ставит точку
+            # «вашей бумаги» на ту же ось, что и рынок
+            "spread_dur_yrs": ((m.get("horizons") or {}).get("maturity") or {}).get("dur_yrs"),
             "yield_xirr_pct": m.get("yield_xirr_pct"),
             "index_yield_pct": m.get("index_yield_pct"),
             "accrued_rub": round(accrued, 2),

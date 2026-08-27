@@ -150,7 +150,7 @@ class CashflowItem(BaseModel):
 
 # --- 5.7 FloaterRisk (специфика бумаг с плавающим купоном) ---
 class FloaterRisk(BaseModel):
-    spread_duration_yrs: Optional[float] = None   # Macaulay потоков ≈ чувствительность к ΔDM/Δz
+    spread_duration_yrs: Optional[float] = None   # Macaulay потока горизонта ≈ чувствительность к ΔDM/Δz
     rate_duration_yrs: Optional[float] = None      # ≈ дни до рефиксинга/365 — риск параллельного сдвига
     days_to_refix: Optional[int] = None            # дней до следующей переустановки ставки
     current_coupon_pct: Optional[float] = None     # зафикс. ставка текущего купона, %
@@ -330,7 +330,7 @@ class BondListItem(BaseModel):
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ
     rating: Optional[str] = None
     # флоатер-метрики (кросс-секция — по всему юниверсу; refix — только watch)
-    spread_dur_yrs: Optional[float] = None     # ≈ срок до погашения (лет) = spread duration
+    spread_dur_yrs: Optional[float] = None     # Macaulay потока ВЫБРАННОГО горизонта (лет)
     days_to_refix: Optional[int] = None        # дни до следующего рефиксинга (watch)
     current_coupon_pct: Optional[float] = None # зафикс. ставка текущего купона, % (watch)
     # ГОРИЗОНТ ПРАЙСИНГА по правилу цены: "put" (цена ниже цены пут-выкупа),

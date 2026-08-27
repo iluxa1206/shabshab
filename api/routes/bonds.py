@@ -63,37 +63,15 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
     return await _cum(uni, isins, _cache_path("isins_cache.json"))
 
 
-def _horizon_dur(mx, mat_dur):
-    """Спред-дюрация строки витрины.
-
-    ПЕРВЫМ — настоящая Macaulay прогнозных потоков (universe.enrich_bond берёт
-    её из z-модели, где эти потоки и так строятся): ровно то же число, что
-    показывает карточка. Раньше здесь всегда стоял СРОК в годах, и у
-    амортизируемых бумаг витрина расходилась с карточкой на два года
-    (sИАДОМ1P19 25.08: 5,85 против 3,85).
-
-    Если дюрации нет (z не посчитался), остаётся прежний суррогат — срок до
-    ГОРИЗОНТА ОЦЕНКИ, а не до погашения: бумага с путом считается к оферте, и
-    точка на графике аналитики должна стоять там же. Иначе Сибур с путом через
-    0.9 года висел на 5.6 лет, хотя спред посчитан к оферте."""
-    dur = mx.get("spread_dur")
-    if dur is not None:
-        return round(dur, 3)
-    from services.metrics import years_to
-    hz, off = mx.get("horizon"), mx.get("offer_date")
-    if hz in ("put", "call") and off is not None:
-        try:
-            d = off if isinstance(off, date) else date.fromisoformat(str(off))
-            return years_to(d, date.today())
-        except (ValueError, TypeError):
-            pass
-    return mat_dur
-
-
-def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None,
+def _uni_item(u, name, mx, adv=None, avg7=None,
               vol_bid=None, vol_ask=None):
-    """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond)
-    + spread duration (кросс-секция)."""
+    """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond).
+
+    Спред-дюрация приходит ТОЛЬКО из движка (mx["spread_dur"] — Macaulay потока
+    выбранного горизонта, services.valuation._dur_block). Суррогат «нет дюрации →
+    подставим срок до погашения» убран: на оси графика аналитики он смешивал две
+    разные метрики, и точка бумаги с офертой стояла на сроке погашения рядом со
+    своим спредом к оферте.""" 
     base = u.get("base_rate_type", "UNKNOWN")
     spread = u.get("spread_issue_bps") or 0
     label = _BASE_LABEL.get(base, base)
@@ -121,7 +99,7 @@ def _uni_item(u, name, mx, spread_dur, adv=None, avg7=None,
         price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
         rating=u.get("rating"),
-        z_model_bps=mx.get("z_model"), spread_dur_yrs=_horizon_dur(mx, spread_dur),
+        z_model_bps=mx.get("z_model"), spread_dur_yrs=mx.get("spread_dur"),
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
         offer_kind=mx.get("offer_kind"), has_call=u.get("has_call"),
@@ -143,7 +121,6 @@ async def _universe_bonds(extra_list, cache, limit, offset,
     uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
     shortnames = await MarketDataService.fetch_moex_shortnames()
     watch = set(extra_list)
-    spread_dur = universe_svc.cross_section_map(uni)
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
     watch_metrics = await universe_svc.compute_watch_metrics(watch_rows, cache) if watch_rows else {}
@@ -170,7 +147,7 @@ async def _universe_bonds(extra_list, cache, limit, offset,
         mx = watch_metrics.get(isin) or uni_metrics.get(isin)
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
-        items.append(_uni_item(u, name, mx, spread_dur.get(isin), adv.get(isin),
+        items.append(_uni_item(u, name, mx, adv.get(isin),
                                avg7.get(isin), vol_bid, vol_ask))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 

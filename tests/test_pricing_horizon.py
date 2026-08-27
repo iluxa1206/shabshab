@@ -149,6 +149,20 @@ def test_metrics_below_par_price_to_put(keyrate_curve, ruonia_curve, calc_date,
     assert m["sm_to_offer_bps"] == put["sm_bps"]
 
 
+def test_horizon_duration_matches_horizon(keyrate_curve, ruonia_curve, calc_date,
+                                          monkeypatch, flat_index_15):
+    """Дюрация горизонта посчитана по ЕГО потоку: к оферте она короче срока до
+    оферты и заметно короче дюрации к погашению. Иначе точка на графике
+    аналитики стоит на сроке погашения, а её Y-IDX — спред к оферте."""
+    m = _metrics(97.0, _offers("put", PUT_DATE), keyrate_curve, ruonia_curve,
+                 calc_date, monkeypatch, flat_index_15)
+    put, mat = m["horizons"]["put"], m["horizons"]["maturity"]
+    assert put["dur_yrs"] is not None and mat["dur_yrs"] is not None
+    yrs_to_put = (PUT_DATE - calc_date).days / 365.0
+    assert 0 < put["dur_yrs"] <= yrs_to_put, "дюрация к оферте не длиннее срока до оферты"
+    assert put["dur_yrs"] < mat["dur_yrs"], "к оферте поток короче, чем к погашению"
+
+
 def test_metrics_above_par_price_to_maturity(keyrate_curve, ruonia_curve, calc_date,
                                              monkeypatch, flat_index_15):
     """Цена выше цены выкупа → пут не форсируется, горизонт = погашение, но
