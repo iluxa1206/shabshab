@@ -402,6 +402,13 @@ def calculate_valuation_metrics(
         return {"dur_yrs": round(d, 3) if d is not None else None,
                 "mod_duration": mod, "convexity": convex, "pvbp": pvbp}
 
+    def _clear_dur(h: dict) -> None:
+        """Снять дюрации горизонта вместе со спред-метриками. Дюрация выведена из
+        ТОЙ ЖЕ цены (dirty идёт в solve_flat_y): если цена признана битой и
+        SM/DM/Y-IDX сняты, оставленный PVBP на 8 % от номинала — такое же враньё,
+        просто в другой колонке."""
+        h["dur_yrs"] = h["mod_duration"] = h["convexity"] = h["pvbp"] = None
+
     def _metrics_at(cut: date) -> Optional[dict]:
         """Полный набор метрик к произвольному горизонту cut (дата оферты):
         поток режется к cut с выкупом остатка по цене оферты, база Y-IDX
@@ -528,6 +535,7 @@ def calculate_valuation_metrics(
         sm_to_offer = dm_to_offer = None
         for _h in horizons.values():
             _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
+            _clear_dur(_h)
 
     # САНИТИ — ВСЕЙ СТРОКОЙ, А НЕ ПОМЕТРИЧНО. Пороги ловят метрики по одной, и
     # строка выходила противоречивой: Y-IDX скрыт как безумный, а DM из того же
@@ -541,6 +549,7 @@ def calculate_valuation_metrics(
         y_idx_by_price = {}
         for _h in horizons.values():
             _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
+            _clear_dur(_h)
 
     # Y-IDX пуст, а статус «успех» — противоречие: так выглядела недоступная
     # RUONIA-кривая (база сравнения), и потребитель считал число просто

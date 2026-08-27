@@ -249,13 +249,14 @@ def current_period_len(coupons: list, calc_date: date) -> float:
 
 def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
                   price_pct: float, accrued_rub: float, coupons: list,
-                  amorts: list = None, offers: list = None) -> tuple:
+                  amorts: list = None, offers: list = None,
+                  need_dur: bool = True) -> tuple:
     """Высокоуровнево: (z-спред флоатера в bps, спред-дюрация в годах).
 
-    Дюрация возвращается ВМЕСТЕ с z, потому что считается из тех же прогнозных
-    потоков: витрина раньше подставляла вместо неё срок до погашения, и у
-    амортизируемых бумаг расхождение с карточкой доходило до 2 лет
-    (sИАДОМ1P19 25.08: 3,85 против 5,85).
+    need_dur=False — второй элемент всегда None, и лишний решатель не гоняется.
+    ПРОДУ дюрация отсюда больше не нужна: её считает services.valuation._dur_block
+    по потоку ВЫБРАННОГО горизонта (эта — всегда к погашению). Флаг оставлен
+    для скриптов сверки, которые исторически читают пару.
     RUONIA — п.4.9 (z по кривой КБД); KEYRATE — (e^y − 1) − G(τ_reset), см. докстринг модуля.
     Для амортизируемых бумаг ref.face_value = остаточный номинал на calc_date
     (цена в % котируется от него), amorts — график погашения принципала."""
@@ -291,13 +292,15 @@ def compute_z_bps(ref, exp: ExpCurve, g: GCurve, calc_date: date,
     except Exception:
         index_pct_fn = lambda *a, **k: None   # деградация: начавшийся период → форвард
     cfs = project_cfs(ref, exp, calc_date, coupons, amorts, offers, index_pct_fn=index_pct_fn)
-    # Macaulay тех же прогнозных потоков — это и есть спред-дюрация выпуска.
-    # Отдаём рядом с z, потому что потоки уже построены: считать их второй раз
-    # ради витрины значило бы дублировать самый дорогой шаг.
+    # Macaulay тех же прогнозных потоков — спред-дюрация К ПОГАШЕНИЮ. Считаем
+    # только по запросу: KEYRATE-ветке ниже плоская доходность нужна для самого
+    # z, а RUONIA без need_dur обходится вовсе без этого решателя.
     dur = None
-    from services.metrics import macaulay_years
-    y_for_dur = solve_flat_y(cfs, calc_date, dirty)
-    if y_for_dur is not None:
+    y_for_dur = None
+    if need_dur or ref.base == "KEYRATE":
+        y_for_dur = solve_flat_y(cfs, calc_date, dirty)
+    if need_dur and y_for_dur is not None:
+        from services.metrics import macaulay_years
         dur = macaulay_years(cfs, calc_date, y_for_dur)
     if ref.base == "KEYRATE":
         if not g.ok():

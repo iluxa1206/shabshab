@@ -201,12 +201,12 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                        if coupons_full else
                        [{"start": s.isoformat(), "end": e.isoformat(), "value": v}
                         for (s, e, v) in periods])
-            # дюрацию z-модели не берём: она всегда к погашению, а строка
-            # витрины живёт в СВОЁМ горизонте (dur_hz выше)
-            z_model, _z_dur = compute_z_bps(
+            # дюрацию z-модели не берём (need_dur=False): она всегда к
+            # погашению, а строка витрины живёт в СВОЁМ горизонте (dur_hz выше)
+            z_model, _ = compute_z_bps(
                 ref, exp, g_curve, calc_date, price_calc,
                 accrued if accrued is not None else ref.accrued_rub,
-                coupons, amorts, offers)
+                coupons, amorts, offers, need_dur=False)
         except Exception as e:
             logger.warning(f"z_model error {isin}: {e}")
 

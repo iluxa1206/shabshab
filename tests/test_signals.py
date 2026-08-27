@@ -1202,3 +1202,37 @@ def test_ofz_rule_is_single():
     assert _is_ofz({}, "SU26248RMFS3"), "серии не только SU2 — критерий по SU+цифра"
     assert not _is_ofz({"emitter_name": "Минфин Амурской области"}, "Амур 24001")
     assert not _is_ofz({"emitter_name": "РЖД"}, "РЖД 1Р-52R")
+
+
+def test_years_filter_respects_passed_today():
+    """Окно срока меряется на ПЕРЕДАННУЮ дату на обеих стадиях отбора.
+
+    Регресс ревью: рыночная стадия брала date.today() жёстко, и прогон «на
+    дату» (тест, разбор истории) отбирал статикой по одной дате, а сроком —
+    по другой."""
+    from datetime import date, timedelta
+    uni, metrics, depth = _market()
+    isin = "RU000A0000A1"                       # погашение 2029-08-11
+    p = core.normalize_params({"years_max": 2, "spread_min": -1000, "spread_max": 1000})
+
+    # за два года ДО погашения бумага в окно «до 2 лет» попадает
+    near = date(2029, 8, 11) - timedelta(days=180)
+    cands = core.static_candidates(p, uni, near, metrics)
+    got = core.evaluate_candidates(p, cands, metrics, depth, today=near)
+    assert isin in [m["isin"] for m in got]
+
+    # на сегодня (2026) до погашения больше двух лет — не попадает
+    today = date(2026, 8, 21)
+    cands_now = core.static_candidates(p, uni, today, metrics)
+    assert isin not in [c["isin"] for c in cands_now]
+
+
+def test_years_left_accepts_datetime_string():
+    """Дата со временем из внешнего справочника не должна ронять срок в None:
+    иначе бумага молча выпадает из окна срока (регресс переноса фильтра из
+    api/routes/trades, где стоял срез str(md)[:10])."""
+    from datetime import date
+    today = date(2026, 8, 27)
+    assert core.years_left("2027-04-08 00:00:00", today) == core.years_left("2027-04-08", today)
+    assert core.years_left("2027-04-08T00:00:00", today) is not None
+    assert core.years_left(None, today) is None

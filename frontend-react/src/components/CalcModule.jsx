@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { calcCustomBond, calcCustomFloater, fetchBonds, fetchFixed } from "../api.js";
-import { fmt, dmColor, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket, yearsToNum } from "../format.js";
+import { fmt, dmColor, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
 
 // КАЛЬКУЛЯТОР кастомной облигации: юзер вводит параметры выпуска + эмитента и
@@ -199,9 +199,12 @@ export default function CalcModule({ initialKind = "fixed" }) {
 
   // метрики показываем только если посчитаны для ТЕКУЩЕГО типа
   const m = res?.kind === kind ? res.metrics : null;
-  // точка «своей» бумаги на скэттере: x — спред-дюрация от движка, а пока её
-  // нет — срок до погашения (общий yearsToNum, своей копии арифметики нет)
-  const customPt = m ? { ...m, _x: isFloat ? (m.spread_dur_yrs ?? yearsToNum(form.maturity)) : m.mod_dur } : null;
+  // Точка «своей» бумаги на скэттере: x — ТОЛЬКО дюрация от движка (спред-дюрация
+  // у флоатера, мод.дюрация у фикса). Фолбэка на срок до погашения нет: на оси
+  // дюраций 0,2–5 лет восьмилетняя бумага встала бы по СРОКУ и сравнивалась бы
+  // с рынком по другой шкале — тот же суррогат, что убран из витрины. Нет
+  // числа — точки нет.
+  const customPt = m ? { ...m, _x: isFloat ? m.spread_dur_yrs : m.mod_dur } : null;
   const modes = AXES[kind].modes;
   return (
     <div className="calc-page">

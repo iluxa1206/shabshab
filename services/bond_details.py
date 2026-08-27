@@ -187,6 +187,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             val_dict["pricing_status"] = "CALCULATION_ERROR"
             val_dict["warnings"] = [str(e)]
 
+    prev_metrics: dict = {}
     if prev_close_pct is not None and curve:
         try:
             prev_metrics = calculate_valuation_metrics(
@@ -207,11 +208,16 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             exp = exp_ru if ref_obj.base == "RUONIA" else exp_ks
             coupons = sched_full.get("coupons", [])
             px = last_price or prev_close_pct
-            # Дюрации — ИЗ ВЫБРАННОГО ГОРИЗОНТА val_dict (единственный расчёт,
+            # Дюрации — ИЗ ВЫБРАННОГО ГОРИЗОНТА (единственный расчёт,
             # services.valuation._dur_block). Своей копии тут больше нет: она
             # считалась всегда к погашению, и карточка расходилась с витриной
             # у бумаги, чьи спреды посчитаны к оферте.
-            _hz_sel = pick_horizon(val_dict)
+            #
+            # Нет цены сделки — берём расчёт по PREV-CLOSE: у неликвида (и у
+            # всего рынка в выходные, когда кэш цен старше 12ч) last_price=None,
+            # и без этого отката карточка теряла дюрацию/выпуклость/PVBP
+            # целиком, хотя раньше считала их по цене закрытия.
+            _hz_sel = pick_horizon(val_dict if val_dict.get("horizons") else prev_metrics)
             spread_dur = _hz_sel.get("dur_yrs")
             mod_dur = _hz_sel.get("mod_duration")
             convexity = _hz_sel.get("convexity")
@@ -431,10 +437,12 @@ def _reprice_z(ctx: dict, price: float) -> dict:
             from services.zspread import compute_z_bps
             cpn_dicts = [{"start": c.get("start"), "end": c.get("end"), "value": c.get("value")}
                          for c in coupons]
-            z_model, _dur = compute_z_bps(
+            # need_dur=False: дюрацию даёт _dur_block по потоку выбранного
+            # горизонта, лишний решатель здесь не нужен
+            z_model, _ = compute_z_bps(
                 ref_obj, exp, g_curve, calc_date, price,
                 accrued_live if accrued_live is not None else ref_obj.accrued_rub,
-                cpn_dicts, amorts, offers)
+                cpn_dicts, amorts, offers, need_dur=False)
         except Exception as e:
             logger.warning(f"reprice z_model error {isin}: {e}")
     return {"z_model_bps": z_model}

@@ -27,7 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
 
 from api.routes.auth import require_user
-from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _scope_isins,
+from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _moex_secids,
+                              _scope_isins,
                                _win, board_short)
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,8 @@ def _ttm_isins(labels: dict, isins: Optional[list[str]],
 
 def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[str]],
                 hide_subord: bool, hide_amort: bool,
-                cls: Optional[list[str]]) -> Optional[list[str]]:
+                cls: Optional[list[str]],
+                secids: Optional[dict] = None) -> Optional[list[str]]:
     """Сузить охват признаками выпуска: база купона, суборд, амортизация, класс.
 
     Суборд определяется по имени (как в скринере), класс — по эмитенту/имени.
@@ -107,8 +109,10 @@ def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[s
         if hide_amort and (um.get(i) or {}).get("has_amort"):
             continue
         if want_cls:
+            # SECID — из справочника ISS: в метках реестра его нет, а без него
+            # улика «SU…» правила ОФЗ была мертва
             ofz = is_ofz({"name": name, "emitter_name": lb.get("emitter"),
-                          "secid": lb.get("secid")})
+                          "secid": (secids or {}).get(i)})
             if ("OFZ" if ofz else "CORP") not in want_cls:
                 continue
         keep.append(i)
@@ -303,7 +307,8 @@ async def tape(
         isins = _flag_isins(
             labels,
             _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max, um), rating),
-            base, hide_subord, hide_amort, cls)
+            base, hide_subord, hide_amort, cls,
+            _moex_secids() if cls else None)
         if isins is not None and not isins:
             return {"from": None, "trades": [], "scope": scope,
                     "summary": {"n": 0, "value": 0, "buy_value": 0, "sell_value": 0,

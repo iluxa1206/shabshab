@@ -281,8 +281,13 @@ def is_subord(u: dict) -> bool:
 
 
 def years_left(maturity_iso: Optional[str], today: date) -> Optional[float]:
+    """Лет до даты, ACT/365.25 (календарные годы — это СРОК, не duration).
+
+    Берём первые 10 символов: часть источников отдаёт дату со временем
+    («2027-04-08 00:00:00»), а date.fromisoformat такую строку не принимает —
+    без среза бумага молча выпадала бы из окна срока."""
     try:
-        return (date.fromisoformat(maturity_iso) - today).days / 365.25
+        return (date.fromisoformat(str(maturity_iso)[:10]) - today).days / 365.25
     except (TypeError, ValueError):
         return None
 
@@ -855,7 +860,8 @@ def _price_y_idx(isin: str, row: dict, px: Optional[float], side: str,
 
 
 def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
-                        depth_map: dict, exact: bool = False) -> List[dict]:
+                        depth_map: dict, exact: bool = False,
+                        today: Optional[date] = None) -> List[dict]:
     """Рыночная часть: по уже отобранным бумагам считает цену/спред/деньги и
     отсеивает по диапазону спреда и объёму.
 
@@ -866,6 +872,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
     side = params["side"]
     lo, hi = params["spread_min"], params["spread_max"]
     want = params.get("min_money_rub")
+    today = today or date.today()
     out = []
     for u in candidates:
         isin = u.get("isin")
@@ -877,7 +884,7 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         # СРОК — по свежей строке: горизонт прайсинга зависит от цены и может
         # смениться внутри дня, а множество кандидатов кешируется на фильтр
         # (signals._candidates) и такую смену не увидит до обновления универса.
-        if not years_ok(horizon_years(u, row, date.today()), params):
+        if not years_ok(horizon_years(u, row, today), params):
             continue
         face = row.get("face_px") or 1000.0
         accrued = row.get("accrued_settle") or 0.0
@@ -968,7 +975,7 @@ def evaluate(params: dict, uni: List[dict], metrics: dict, depth_map: dict,
     """Полный прогон (статика + рынок) — для разовых вызовов: превью формы,
     телеграм-скринер. Постоянный мониторинг держит статику отдельно."""
     return evaluate_candidates(params, static_candidates(params, uni, today, metrics),
-                               metrics, depth_map)
+                               metrics, depth_map, today=today)
 
 
 async def market_snapshot():

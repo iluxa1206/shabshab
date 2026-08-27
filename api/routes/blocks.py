@@ -122,6 +122,14 @@ def _moex_names() -> dict:
     return {v["isin"]: v.get("name") for v in bt._secmap["map"].values() if v.get("isin")}
 
 
+def _moex_secids() -> dict:
+    """isin → SECID из того же суточного справочника ISS. Нужен правилу ОФЗ:
+    у суверена SECID начинается на SU…, и это самая надёжная улика — реестр
+    может не знать эмитента, а имя выпуска приходить как угодно."""
+    from services import block_trades as bt
+    return {v["isin"]: sec for sec, v in bt._secmap["map"].items() if v.get("isin")}
+
+
 def _decorate(rows: list[dict], labels: dict, moex: dict) -> None:
     for r in rows:
         lb = labels.get(r["isin"]) or {}

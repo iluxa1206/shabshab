@@ -387,6 +387,11 @@ def test_sanity_hides_all_spread_metrics_together(keyrate_curve, calc_date,
     assert m["dm_bps"] is None and m["sm_bps"] is None
     assert m["yield_over_index_bps"] is None
     assert m["dirty_price_rub"] is not None, "факт от цены остаётся"
+    # дюрации выведены из ТОЙ ЖЕ цены — гаснут вместе со спредами, иначе
+    # карточка показывала бы PVBP, посчитанный по забракованному dirty
+    for _h in (m.get("horizons") or {}).values():
+        assert _h.get("dur_yrs") is None and _h.get("pvbp") is None
+        assert _h.get("mod_duration") is None and _h.get("convexity") is None
 
 
 def test_zero_accrued_without_schedule_is_computed_from_issue_terms(
