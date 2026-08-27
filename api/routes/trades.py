@@ -64,30 +64,19 @@ def _ttm_isins(labels: dict, isins: Optional[list[str]],
     «любой»; при scope=market это отсекает всё, чего нет в наших справочниках."""
     if ttm_min is None and ttm_max is None:
         return isins
+    from services.screener_core import block_meta, meta_years, years_ok
     today = date.today()
+    params = {"years_min": ttm_min, "years_max": ttm_max}
     keep = []
     pool = isins if isins is not None else labels.keys()
     for i in pool:
-        mx = (uni or {}).get(i) or {}
-        md = (mx.get("offer_date") if mx.get("horizon") in ("put", "call") else None) \
-            or (labels.get(i) or {}).get("maturity")
-        if not md:
-            continue
-        try:
-            yrs = (date.fromisoformat(str(md)[:10]) - today).days / 365.25
-        except ValueError:
-            continue
-        if ttm_min is not None and yrs < ttm_min:
-            continue
-        if ttm_max is not None and yrs > ttm_max:
+        # срок и его окно — общие с монитором/скринером (screener_core), своей
+        # арифметики срока в ручке нет
+        meta = block_meta(labels, i, uni or {})
+        if not years_ok(meta_years(meta, today), params):
             continue
         keep.append(i)
     return keep
-
-
-# ОФЗ: суверен Минфина. Тот же критерий, что в /api/bonds (_is_ofz) — иначе
-# «ОФЗ» в ленте и в СПИСКЕ означали бы разное.
-_OFZ_NAME_RE = re.compile(r"^ОФЗ\s", re.I)
 
 
 def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[str]],
@@ -103,7 +92,7 @@ def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[s
     want_cls = {c.strip().upper() for c in (cls or []) if c and c.strip()}
     if not (want_base or want_cls or hide_subord or hide_amort):
         return isins
-    from services.screener_core import is_subord
+    from services.screener_core import is_ofz, is_subord
     from services.market_data import MarketDataService
     um = MarketDataService.universe_metrics() or {} if hide_amort else {}
     pool = isins if isins is not None else labels.keys()
@@ -118,8 +107,8 @@ def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[s
         if hide_amort and (um.get(i) or {}).get("has_amort"):
             continue
         if want_cls:
-            ofz = (lb.get("emitter") or "").strip() == "Минфин России" \
-                or bool(_OFZ_NAME_RE.match(name))
+            ofz = is_ofz({"name": name, "emitter_name": lb.get("emitter"),
+                          "secid": lb.get("secid")})
             if ("OFZ" if ofz else "CORP") not in want_cls:
                 continue
         keep.append(i)

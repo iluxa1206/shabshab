@@ -6,6 +6,7 @@ import { mergeStreamedQuote } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
+import { ratingMatches, yearsToIso } from "./format.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
@@ -606,14 +607,12 @@ function Dashboard() {
   const depth = depthQ.data?.items;
 
   const filtered = useMemo(() => {
-    const ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"];
-    const ratingMatch = (r) => ratingsSel.some((k) =>
-      k === "NR" ? !r : k === "BELOW" ? (r && ORDER.indexOf(r) > ORDER.indexOf("BBB")) : k === r
-    );
     let rows = bonds.slice();
     if (onlyWatch) rows = rows.filter((b) => watch.includes(b.isin));
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
-    if (ratingsSel.length) rows = rows.filter((b) => ratingMatch(b.rating));
+    // правило бакетов — общее (format.ratingMatches): чип «BB↓» и корзины
+    // графиков должны понимать CCC/CC/C/D одинаково
+    if (ratingsSel.length) rows = rows.filter((b) => ratingMatches(b.rating, ratingsSel));
     if (emittersSel.length) rows = rows.filter((b) => emittersSel.includes(b.emitter_name));
     // суборды/перпы вон — распознаём по имени выпуска (см. SUBORD_RE)
     if (hideSub) rows = rows.filter((b) => !SUBORD_RE.test(b.short_name || ""));
@@ -630,7 +629,6 @@ function Dashboard() {
     // Границы переводим в даты-отсечки и сравниваем ISO-строки. Строки без даты
     // (перп/дыра в справочнике) при заданной границе прячем — иначе они молча
     // пролезают в любой срок.
-    const yearsToIso = (y) => new Date(Date.now() + y * 365.25 * 86400e3).toISOString().slice(0, 10);
     const hzDate = (b) => ((b.preferred_horizon === "put" || b.preferred_horizon === "call")
       && b.offer_date) || b.maturity_date;
     const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);

@@ -1,23 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { fmt } from "../format.js";
+import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { fetchYidxHistory } from "../api.js";
 import {
   linearScale, niceTicks, linePath, GridY, XTicks,
   MeasuredSvg, ChartFrame, dateTickIdx, tickLabel, spanDays,
 } from "../charts/index.js";
 
-// рейтинг-бакеты и их цвет (градация риска) — CSS-переменные, тема-aware
-const BUCKETS = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
-const norm = (r) => {
-  if (!r) return "NR";
-  if (["AAA", "AA", "A", "BBB"].includes(r)) return r;
-  if (["BB", "B", "CCC", "CC", "C", "D"].includes(r)) return r === "BB" || r === "B" ? r : "B";
-  return "NR";
-};
-const BCOLOR = {
-  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
-  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
-};
+// рейтинг-бакеты и палитра — общие для всего фронта (format.js), своей копии
+// правила «куда падает CCC» тут быть не должно
+const BUCKETS = RT_BUCKETS;
+const norm = ratingBucket;
+const BCOLOR = RT_BUCKET_COLOR;
 
 // Y-IDX (доходность над индексом, bps) — первичная метрика панели: та же, что в
 // таблице, в стакане и в истории снапшотов. Бэнд отсекает мусор от стейл/тонких

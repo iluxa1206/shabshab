@@ -1187,3 +1187,18 @@ def test_book_columns_aligned_without_monospace():
     widths = {len(ln.replace(" ←", "")) for ln in rows}
     assert widths == {6 + len(_GAP) + 7 + len(_GAP) + 4}, f"строки разной ширины: {widths}"
     assert f"67{_FIG}892" in rows[1], "разряды количества разделены не figure space"
+
+
+def test_ofz_rule_is_single():
+    """«Это ОФЗ?» — одно правило на витрину, ленту и скринер.
+
+    Регресс: в /api/bonds стояла своя регулярка ^(ОФЗ|SU2\\d) без SECID-улики,
+    и бумага серии SU3…/SU4… или строка с эмитентом «Минфин России» без «ОФЗ»
+    в имени попадала в КОРП в мониторе и в ОФЗ в сигналах."""
+    from api.routes.bonds import _is_ofz
+    assert _is_ofz({"emitter_name": "Минфин России"}, "какое-то имя")
+    assert _is_ofz({}, "ОФЗ 29014")
+    assert _is_ofz({"secid": "SU29006RMFS4"}, "неведомое имя")
+    assert _is_ofz({}, "SU26248RMFS3"), "серии не только SU2 — критерий по SU+цифра"
+    assert not _is_ofz({"emitter_name": "Минфин Амурской области"}, "Амур 24001")
+    assert not _is_ofz({"emitter_name": "РЖД"}, "РЖД 1Р-52R")

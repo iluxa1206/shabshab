@@ -1,16 +1,14 @@
 import { useMemo, useState } from "react";
-import { fmt } from "../format.js";
+import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
 
 // Аналитика фиксов — зеркало AnalyticsPanel флоатеров, но метрики к погашению:
 // g-спред vs модифицированная дюрация, распределение g-спреда, срочность.
 
-const BUCKETS = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
-const norm = (r) => (r && BUCKETS.includes(r) ? r : "NR");
-const BCOLOR = {
-  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
-  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
-};
+// бакеты/палитра/правило — из format.js (одно на фронт)
+const BUCKETS = RT_BUCKETS;
+const norm = ratingBucket;
+const BCOLOR = RT_BUCKET_COLOR;
 
 const plu = (n) => {
   const a = Math.abs(n) % 100, b = a % 10;

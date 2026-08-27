@@ -305,22 +305,6 @@ def _accrued_from_periods(periods, d: date, face: float) -> Optional[float]:
     return None
 
 
-def _accrued_estimate(periods, d: date, face: float, index_pct: Optional[float],
-                      margin_bps: int) -> Optional[float]:
-    """ЛЕГАСИ, оставлено для тестов: «индекс на дату + маржа», simple ACT/365.
-
-    В расчёте больше не используется — это последняя ступень общей лестницы
-    services/accrued.accrued_for, и вызывается она оттуда. Отдельно этот путь
-    завышал НКД вдвое при падающей ставке, потому что берёт СПОТ индекса вместо
-    ставки периода по спеке."""
-    p = _period_at(periods, d)
-    if not p or index_pct is None:
-        return None
-    s, _e, _v = p
-    rate = (index_pct / 100.0) + (margin_bps or 0) / 10000.0
-    return face * rate * (d - s).days / 365.0
-
-
 def _accrue_to_date(accint_fact: float, trade_date: date, d: date, periods,
                     face: float) -> Tuple[float, Optional[str]]:
     """НКД на календарную дату d из биржевого факта на trade_date ≤ d.

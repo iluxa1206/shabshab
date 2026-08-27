@@ -49,12 +49,14 @@ _BASE_LABEL = {"KEYRATE": "Ключевая ставка", "RUONIA": "RUONIA"}
 # ОФЗ-ПК: суверен Минфина. Эмитент в реестре — авторитет, имя выпуска (ОФЗ 29xxx /
 # SU29…) — фолбэк для строк без emitter_name. Субфеды («Минфин Амурской обл.»,
 # «Амур 24001») сюда НЕ попадают: для витрины это корпоративный риск.
-_OFZ_NAME_RE = re.compile(r"^(ОФЗ|SU2\d)", re.I)
-
-
 def _is_ofz(u: dict, name: str) -> bool:
-    return (u.get("emitter_name") or "").strip() == "Минфин России" \
-        or bool(_OFZ_NAME_RE.match((name or "").strip()))
+    """Выпуск Минфина — ОДНО правило на проект (screener_core.is_ofz).
+
+    Своя регулярка тут была уже, «ОФЗ или SU2…», и она не знала ни SECID-улики,
+    ни серий SU3…/SU4…: чип ОФЗ/КОРП в мониторе и фильтр «только ОФЗ» в
+    сигналах/портфеле/боте отбирали РАЗНЫЕ множества."""
+    from services.screener_core import is_ofz
+    return is_ofz(dict(u, name=name or u.get("name")))
 
 
 async def compute_universe_metrics(uni: list, isins: list) -> dict:

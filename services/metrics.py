@@ -17,13 +17,6 @@ from datetime import date
 from typing import Optional
 
 
-def years_to(d: Optional[date], calc_date: date) -> Optional[float]:
-    """Срок до даты в годах ACT/365 (0, если дата в прошлом; None если нет даты)."""
-    if not d:
-        return None
-    return max((d - calc_date).days, 0) / 365.0
-
-
 def macaulay_years(cfs, calc_date: date, y: float) -> Optional[float]:
     """Macaulay-длительность потоков при непрерывной доходности y (годы).
     Для флоатера это spread duration — приближённая dP/P на 1% параллельного

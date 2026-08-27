@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { calcCustomBond, calcCustomFloater, fetchBonds, fetchFixed } from "../api.js";
-import { fmt, dmColor } from "../format.js";
+import { fmt, dmColor, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket, yearsToNum } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
 
 // КАЛЬКУЛЯТОР кастомной облигации: юзер вводит параметры выпуска + эмитента и
@@ -11,21 +11,15 @@ import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/ind
 // (/api/fixed или /api/bonds): scatter доходность×срок, где подсвечены выпуски
 // того же эмитента и бумаги того же рейтинга.
 
-const RT = ["AAA", "AA", "A", "BBB", "BB", "B", "NR"];
-const RTCOLOR = {
-  AAA: "var(--rt-aaa)", AA: "var(--rt-aa)", A: "var(--rt-a)", BBB: "var(--rt-bbb)",
-  BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
-};
-const norm = (r) => (r && RT.includes(r) ? r : "NR");
+// бакеты/палитра/правило — из format.js (одно на фронт)
+const RT = RT_BUCKETS;
+const RTCOLOR = RT_BUCKET_COLOR;
+const norm = ratingBucket;
 const D = () => <span className="dash">—</span>;
 
 // та же отсечка мусора, что в аналитике фиксов
 const okG = (v) => v != null && v < 3000 && v > -500;
 const okY = (v) => v != null && v > 0 && v < 60;
-
-// лет до погашения — фолбэк оси для КАСТОМНОЙ бумаги, пока движок не вернул
-// её спред-дюрацию (МСК не критична: точность оси — недели)
-const yrsTo = (iso) => (iso ? (new Date(iso) - Date.now()) / (365.25 * 864e5) : null);
 
 const SC_PAD = { l: 46, r: 14, t: 14, b: 30 };
 
@@ -205,8 +199,9 @@ export default function CalcModule({ initialKind = "fixed" }) {
 
   // метрики показываем только если посчитаны для ТЕКУЩЕГО типа
   const m = res?.kind === kind ? res.metrics : null;
-  // точка «своей» бумаги на скэттере: x-координата по типу
-  const customPt = m ? { ...m, _x: isFloat ? (m.spread_dur_yrs ?? yrsTo(form.maturity)) : m.mod_dur } : null;
+  // точка «своей» бумаги на скэттере: x — спред-дюрация от движка, а пока её
+  // нет — срок до погашения (общий yearsToNum, своей копии арифметики нет)
+  const customPt = m ? { ...m, _x: isFloat ? (m.spread_dur_yrs ?? yearsToNum(form.maturity)) : m.mod_dur } : null;
   const modes = AXES[kind].modes;
   return (
     <div className="calc-page">

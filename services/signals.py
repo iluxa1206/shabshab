@@ -222,9 +222,14 @@ def _reset_state(fid: int) -> None:
 # --- лента событий ---
 
 def _with_maturity(rows: List[dict]) -> List[dict]:
-    """Дописывает погашение и срок до него. Считаем НА ЧТЕНИИ, а не пишем в
-    событие: срок тает каждый день, а лента живёт неделями — записанное число
-    лет к моменту просмотра уже врёт. Реестр недоступен — просто без срока."""
+    """Дописывает погашение и срок до ГОРИЗОНТА ПРАЙСИНГА. Считаем НА ЧТЕНИИ, а
+    не пишем в событие: срок тает каждый день, а лента живёт неделями —
+    записанное число лет к моменту просмотра уже врёт. Реестр недоступен —
+    просто без срока.
+
+    Срок считает общий meta_years: своя арифметика тут мерила до ПОГАШЕНИЯ,
+    хотя фильтр, породивший событие, отобрал бумагу по горизонту — в пуше
+    стояло «8,2 г» у бумаги, попавшей под окно «до 2 лет»."""
     if not rows:
         return rows
     try:
@@ -232,17 +237,14 @@ def _with_maturity(rows: List[dict]) -> List[dict]:
         labels = reg.labels_map(sorted({r["isin"] for r in rows}))
     except Exception:
         return rows
+    from services.market_data import MarketDataService
+    mx = MarketDataService.universe_metrics() or {}
     today = date.today()
     for r in rows:
-        mat = (labels.get(r["isin"]) or {}).get("maturity")
-        r["maturity"] = mat
-        r["years"] = None
-        if mat:
-            try:
-                r["years"] = max(
-                    0.0, (date.fromisoformat(mat) - today).days / 365.25)
-            except ValueError:
-                pass
+        meta = block_meta(labels, r["isin"], mx)
+        r["maturity"] = meta.get("maturity")
+        yrs = meta_years(meta, today)
+        r["years"] = None if yrs is None else max(0.0, yrs)
     return rows
 
 

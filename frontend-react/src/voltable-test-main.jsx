@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Toolbar from "./components/Toolbar.jsx";
 import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
 import { applyVolume } from "./vwap.js";
+import { yearsToIso } from "./format.js";
 import "./styles.css";
 
 // алертов в харнессе нет — глушим запрос таблицы, чтобы не сыпал 401
@@ -68,7 +69,6 @@ function Harness() {
 
   const rows = useMemo(() => {
     let out = ROWS.slice();
-    const yearsToIso = (y) => new Date(Date.now() + y * 365.25 * 86400e3).toISOString().slice(0, 10);
     const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
     if (Number.isFinite(mFrom)) out = out.filter((b) => b.maturity_date && b.maturity_date >= yearsToIso(mFrom));
     if (Number.isFinite(mTo)) out = out.filter((b) => b.maturity_date && b.maturity_date <= yearsToIso(mTo));
