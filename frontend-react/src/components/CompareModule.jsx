@@ -296,7 +296,7 @@ function PickTable({ rows, sel, onToggle, onSetAll, onClear, onOpen, hi, onHi })
                 </td>
                 <td className="num" title="средневзвешенная цена дня (WAP биржи)">
                   {fmt.pct(b.wap_price_pct) ?? "—"}</td>
-                <td className="num" title="R-spread по средневзвешенной цене (линеаризация от торгового якоря)">
+                <td className="num" title="R-spread по средневзвешенной цене (посчитан к ней по методике)">
                   {fmt.bps(wap) ?? "—"}</td>
               </tr>
             );

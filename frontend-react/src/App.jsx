@@ -286,7 +286,13 @@ function Dashboard() {
   const abortRef = useRef(null);
   // весь рынок (universe); watchlist обогащается live-ценой + нашим DM
   const paramsRef = useRef({});
-  paramsRef.current = { watch, volBid, volAsk };
+  // Размер тикета УХОДИТ НА БЭК ЦЕЛЫМ, и ключ его чисел строится из того же
+  // целого. Ключ на сервере — f"{side}:{size:.0f}", а .0f в Python округляет
+  // к чётному (1 000 000,5 → 1 000 000), тогда как Math.round даёт 1 000 001:
+  // на дробном размере фронт искал бы ключ, которого в патче нет. Округляем
+  // ОДИН раз здесь — дальше обе стороны видят одно и то же число.
+  const volSize = (v) => (v > 0 ? Math.round(v) : 0);
+  paramsRef.current = { watch, volBid: volSize(volBid), volAsk: volSize(volAsk) };
 
   const loadBonds = useCallback(async () => {
     // размеры тикета едут в запрос: Y-IDX цены набора считает БЭКЕНД по
@@ -412,7 +418,7 @@ function Dashboard() {
       const { volBid, volAsk } = paramsRef.current;
       for (const [side, size] of [["bid", volBid], ["ask", volAsk]]) {
         if (!(size > 0)) continue;
-        const key = `${side}:${Math.round(size)}`;
+        const key = `${side}:${size}`;      // size уже целый (см. volSize)
         if (q.vol_px) n[`vol_${side}_price_pct`] = q.vol_px[key] ?? null;
         if (q.y_idx_vol) n[`y_idx_vol_${side}_bps`] = q.y_idx_vol[key] ?? null;
       }
@@ -505,7 +511,8 @@ function Dashboard() {
   // промежуточный размер заставлял бы движок считать цены, которых никто не ждёт.
   useEffect(() => {
     const t = setTimeout(
-      () => wsRef.current?.setVolSizes([volBid, volAsk].filter((v) => v > 0)), 400);
+      () => wsRef.current?.setVolSizes(
+        [volSize(volBid), volSize(volAsk)].filter((v) => v > 0)), 400);
     return () => clearTimeout(t);
   }, [volBid, volAsk]);
 

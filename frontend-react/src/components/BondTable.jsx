@@ -90,7 +90,7 @@ function qTitle(b, side) {
   const mln = fmt.num(vol / 1e6, 1);
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
-    + `; R-spread пересчитан на неё (линеаризация от верха стакана)`;
+    + `; R-spread посчитан к ней по методике (движок метрик, такт ≤5 с)`;
 }
 
 // Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
@@ -216,7 +216,7 @@ export const COLS = [
     cell: (b) => <Quote key="wap_price_pct" side="wap" px={b.wap_price_pct} spread={wapSpread(b)}
       base7={b.y_idx_avg7_bps}
       title={(b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня")
-        + "; R-spread пересчитан на эту цену (линеаризация от цены сделки)"} /> },
+        + "; R-spread посчитан к этой цене по методике (движок метрик)"} /> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;

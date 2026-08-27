@@ -276,3 +276,28 @@ def test_vol_sizes_expire_by_ttl(monkeypatch):
         assert us.active_vol_sizes() == []
     finally:
         us._vol_sizes.clear()
+
+
+def test_new_ticket_size_queues_whole_market():
+    """Размер тикета увидели впервые → весь рынок встаёт в дешёвую очередь.
+
+    Иначе цену набора получили бы только бумаги, которые сами о себе напомнят
+    (сделкой или движением сторон), а у застывшего неликвида такого повода может
+    не быть весь день — и в колонке навсегда остался бы прочерк."""
+    us._vol_sizes.clear()
+    us._sides_dirty.clear()
+    us._last_quote.clear()
+    try:
+        us._last_quote.update({"RU000A100001": {}, "RU000A100002": {}})
+        us.register_vol_sizes([5e6])
+        assert us._sides_dirty == {"RU000A100001", "RU000A100002"}
+
+        # ТОТ ЖЕ размер (продление регистрации по таймеру) рынок не будит —
+        # иначе вкладка раз в пять минут заказывала бы пересчёт всего юниверса
+        us._sides_dirty.clear()
+        us.register_vol_sizes([5e6])
+        assert us._sides_dirty == set()
+    finally:
+        us._vol_sizes.clear()
+        us._sides_dirty.clear()
+        us._last_quote.clear()

@@ -71,6 +71,7 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
     ? (mode === "or" ? okBid || okAsk : okBid && okAsk)
     : (wantBid ? okBid : okAsk);
   if (!pass) return null;
+  const px = (v) => Math.round(v.px * 10000) / 10000;
   return {
     ...b,
     // в подпись кладём ФАКТИЧЕСКИ набранные деньги (при частичном наборе в
@@ -79,14 +80,18 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
     _vwap_ask: okAsk ? ask.money : null,
     _vwap_bid_levels: okBid ? bid.levels : null,
     _vwap_ask_levels: okAsk ? ask.levels : null,
-    // Цена набора и её Y-IDX — оба числа С БЭКЕНДА (vol_*_price_pct /
-    // y_idx_vol_*_bps): движок считает их по методике на размер тикета,
-    // который ручка получила в запросе. Здесь книга нужна только чтобы решить,
-    // ИСПОЛНИМ ли тикет (это арифметика стакана, не модель).
-    // Раньше спред набора выводился наклоном dY/dP прямо в браузере — линия
-    // уводила число вслед за уехавшим якорем (27.08.2026).
-    bid_price_pct: wantBid ? (okBid ? (b.vol_bid_price_pct ?? null) : null) : b.bid_price_pct,
-    ask_price_pct: wantAsk ? (okAsk ? (b.vol_ask_price_pct ?? null) : null) : b.ask_price_pct,
+    // СПРЕД набора — только с бэкенда (y_idx_vol_*_bps): его считает движок по
+    // методике на размер тикета. В браузере он выводился наклоном dY/dP — линия
+    // уводила число вслед за уехавшим якорем (27.08.2026). Нет числа — прочерк.
+    //
+    // ЦЕНА набора — бэковская, если она пришла (тогда пара «цена → спред»
+    // заведомо из одного расчёта), иначе своя. Своя честна: это арифметика
+    // книги, а не модель, и она уже посчитана здесь ради самого фильтра.
+    // Без этого фолбэка цена пропадала бы у всех, по кому движок ещё не
+    // проходил, — а у застывшего неликвида повода напомнить о себе может не
+    // быть весь день.
+    bid_price_pct: wantBid ? (okBid ? (b.vol_bid_price_pct ?? px(bid)) : null) : b.bid_price_pct,
+    ask_price_pct: wantAsk ? (okAsk ? (b.vol_ask_price_pct ?? px(ask)) : null) : b.ask_price_pct,
     y_idx_bid_bps: wantBid ? (okBid ? (b.y_idx_vol_bid_bps ?? null) : null) : b.y_idx_bid_bps,
     y_idx_ask_bps: wantAsk ? (okAsk ? (b.y_idx_vol_ask_bps ?? null) : null) : b.y_idx_ask_bps,
   };
