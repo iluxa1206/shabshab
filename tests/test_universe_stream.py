@@ -2,7 +2,8 @@
 
 Экономика движка держится на трёх инвариантах:
 1. Полный пересчёт заказывает только смена ЦЕНЫ СДЕЛКИ (bid/ask двигаются на
-   порядок чаще и правятся наклоном).
+   порядок чаще, и по ним считается ТОЛЬКО Y-IDX — батчем по методике, поток и
+   база при этом не пересобираются).
 2. Уровень цены, посчитанный сегодня на этой версии кривых, второй раз не
    считается — берётся из кэша.
 3. Смена дня или пересборка кривых сбрасывают кэш целиком: та же цена на другой
@@ -14,13 +15,27 @@ from services import universe_stream as us
 
 
 @pytest.fixture(autouse=True)
+def exact_stub(monkeypatch):
+    """Точный расчёт сторон подменяем таблицей «цена → спред»: движок обязан
+    БРАТЬ число оттуда, а не выводить его линейно из цены сделки."""
+    import services.yidx_exact as ye
+    table = {99.8: 110, 100.1: 95, 99.9: 105, 100.6: 88, 100.4: 93}
+    monkeypatch.setattr(ye, "y_idx_many",
+                        lambda ctx, prices: {round(float(p), 4): table.get(round(float(p), 4))
+                                             for p in prices})
+    return table
+
+
+@pytest.fixture(autouse=True)
 def clean_state():
     us._level_memo.clear()
+    us._eval_ctx.clear()
     us._dirty.clear()
     us._last_quote.clear()
     us._memo_version = None
     yield
     us._level_memo.clear()
+    us._eval_ctx.clear()
     us._dirty.clear()
     us._last_quote.clear()
     us._memo_version = None
@@ -59,18 +74,22 @@ def test_new_level_recomputed():
     assert [c[1] for c in calls] == [100.5, 100.75]
 
 
-def test_bid_ask_patched_by_slope_from_cache():
-    """Кэш-хит: Y-IDX по верху стакана правится наклоном, а не пересчётом."""
+def test_bid_ask_computed_by_methodology_not_slope():
+    """Кэш-хит: уровень не пересчитывается, а стороны стакана считаются ПО
+    МЕТОДИКЕ (батч на бумагу), а не линией через цену сделки.
+
+    Наклон уводил все производные числа разом вслед за уехавшим якорем — так
+    27.08.2026 в телеграм уехала вся лестница стакана. Стаб отдаёт числа,
+    которых линия дать не может, — если движок вернётся к наклону, тест упадёт."""
     calls = []
     uni = {"RU000A100001": {"isin": "RU000A100001"}}
     us._crunch([("RU000A100001", {"last_price": 100.0})], _ctx(uni), enrich=_enrich_counter(calls))
-    # тот же уровень, но bid сдвинулся на -0.2 п.п. → yoi_bid = 100 + (-0.2)·(-50) = 110
     r = us._crunch([("RU000A100001", {"last_price": 100.0, "bid": 99.8, "ask": 100.1})],
                    _ctx(uni), enrich=_enrich_counter(calls))
-    assert len(calls) == 1                     # пересчёта не было
+    assert len(calls) == 1                     # полного пересчёта не было
     row = r["RU000A100001"]
     assert row["yoi_bid"] == 110
-    assert row["yoi_ask"] == 95                # 100 + 0.1·(-50) = 95
+    assert row["yoi_ask"] == 95
 
 
 def test_version_change_clears_memo():
@@ -87,7 +106,7 @@ def test_version_change_clears_memo():
 
 
 def test_cache_row_not_mutated_by_patch():
-    """Наружу уходит копия: bid/ask-патч не должен въедаться в кэш уровня."""
+    """Наружу уходит копия: числа сторон не должны въедаться в кэш уровня."""
     calls = []
     uni = {"RU000A100001": {"isin": "RU000A100001"}}
     us._crunch([("RU000A100001", {"last_price": 100.0, "bid": 99.0})],
@@ -97,7 +116,7 @@ def test_cache_row_not_mutated_by_patch():
     # прямой инвариант: повторный вызов с другим bid даёт другой патч
     r2 = us._crunch([("RU000A100001", {"last_price": 100.0, "bid": 99.9})],
                     _ctx(uni), enrich=_enrich_counter(calls))
-    assert r2["RU000A100001"]["yoi_bid"] == 105   # 100 + (-0.1)·(-50)
+    assert r2["RU000A100001"]["yoi_bid"] == 105   # из точного расчёта, не из линии
 
 
 def test_metrics_patch_maps_to_frontend_names():
@@ -142,26 +161,32 @@ def test_px_or_none_normalizes_zero():
     assert _px_or_none(99.75) == 99.75
 
 
-# ── спред по средневзвесу: наклон только вблизи цены сделки ────────────────
+# ── спред по средневзвесу: только методика ────────────────────────────────
 
-def test_wap_far_from_last_uses_exact_path(monkeypatch):
-    """Средневзвес далеко от цены сделки — считаем точно, а не наклоном.
+def test_wap_spread_comes_from_exact_batch():
+    """Спред по средневзвесу дня считается ТЕМ ЖЕ батчем, что стороны стакана.
 
-    Наклон честен на масштабе долей пункта; у неликвида wap уходит на пункты, и
-    линеаризация врёт сотнями bps (замер 25.08: сдвиг 1 пп → до 214, 2 пп → 410).
-    Тогда витрина и график показывали бы РАЗНЫЕ числа одной метрики."""
-    from services import universe_stream as us
-    from services.bonds import yidx_at_price
+    Раньше он выводился наклоном от цены сделки (yidx_at_price, удалён
+    27.08.2026): у неликвида средневзвес уходит от last на пункты, и линия
+    врала сотнями bps (замер 25.08: сдвиг 1 пп → до 214, 2 пп → 410). Стаб
+    отдаёт число, которого линия дать не может."""
+    import services.yidx_exact as ye
+    import services.live_quotes as lq
 
-    row = {"yoi": 200.0, "yoi_slope": -50.0, "last": 100.0}
-    near, far = 100.2, 97.0
-    assert abs(near - row["last"]) <= us.WAP_EXACT_PP
-    assert abs(far - row["last"]) > us.WAP_EXACT_PP
+    uni = {"RU000A100001": {"isin": "RU000A100001"}}
+    calls = []
+    ctx = _ctx(uni, board={"RU000A100001": {"waprice": 97.0}})
 
-    # вблизи — наклон, он же и остаётся в строке
-    assert yidx_at_price(row, near) == pytest.approx(190, abs=1)
-    # далеко — наклон даёт 350, а точный путь 260: расходятся на 90 bps
-    assert yidx_at_price(row, far) == pytest.approx(350, abs=1)
-    monkeypatch.setattr("services.screener_core.exact_y_idx", lambda i, p: 260.0)
-    from services.screener_core import exact_y_idx
-    assert int(round(exact_y_idx("RU1", far))) == 260
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(ye, "y_idx_many", lambda c, prices: {round(float(p), 4): 260
+                                                   for p in prices})
+    mp.setattr(lq, "get", lambda i: {})
+    try:
+        r = us._crunch([("RU000A100001", {"last_price": 100.0})], ctx,
+                       enrich=_enrich_counter(calls))
+    finally:
+        mp.undo()
+    # наклон дал бы 100 + (97 − 100)·(−50) = 250; методика — 260
+    assert r["RU000A100001"]["yoi_wap"] == 260
+

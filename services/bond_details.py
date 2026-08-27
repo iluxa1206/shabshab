@@ -353,12 +353,29 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
     if _rem is not None and abs(_rem - ref_obj.face_value) > 0.5:
         ref_obj.face_value = _rem
     accrued_live = snapshot.get(isin, {}).get("accrued")
+    accrued_src = snapshot.get(isin, {})
+    if accrued_live is None:
+        # ПРОМАХ ПЕРСОНАЛЬНОГО СНИМКА — добираем НКД из общего борд-снимка: он
+        # день кэшируется в памяти (сети не будет) и это ТОТ ЖЕ источник, по
+        # которому считает витрина.
+        #
+        # Без этого добора контекст молча считал начисление сам, и точный путь
+        # расходился с таблицей: прод 27.08.2026, РЕСОЛизБО5 — 368 бп против
+        # 382 в таблице при ctx_accrued=None; у ВЭБ2Р-53 та же причина дала
+        # 166 против 188 и увела за собой всю лестницу стакана в телеграме,
+        # потому что уровни считаются этим же путём.
+        try:
+            board = await MarketDataService.fetch_board_snapshot()
+            accrued_src = board.get(isin) or {}
+            accrued_live = accrued_src.get("accrued")
+        except Exception as e:
+            logger.debug("board accrued fallback %s: %s", isin, e)
     if accrued_live is not None:
         ref_obj.accrued_rub = accrued_live
     # дата, на которую биржа посчитала этот НКД: с нашей поставкой она
     # расходится (пятница/праздники), и без неё срок и НКД считаются на разные
     # дни — см. services/valuation.calculate_valuation_metrics
-    accrued_date = _acc_date(snapshot.get(isin, {}).get("accrued_date"))
+    accrued_date = _acc_date(accrued_src.get("accrued_date"))
 
     curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
     if curve is None:
@@ -372,6 +389,12 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
         "calc_date": calc_date,
         "accrued_live": accrued_live,
         "accrued_date": accrued_date,
+        # НКД не дали ни персональный снимок, ни борд: считать спред «точно» в
+        # этом состоянии нельзя — начисление придётся выдумывать, а ошибка в
+        # десятые доли рубля превращается в десятки б.п. спреда (см. выше).
+        # Потребители точного пути обязаны молчать, а не показывать сдвинутое
+        # число (screener_core.exact_y_idx).
+        "accrued_missing": accrued_live is None,
         # расписание купонов: свой источник, а при его промахе — из полного
         # bondization (см. _periods_from_coupons)
         "periods": schedules.get(isin) or _periods_from_coupons(

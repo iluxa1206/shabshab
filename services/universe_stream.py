@@ -53,10 +53,54 @@ _BATCH_SEC = 5.0            # такт событийного пересчёта
 # минуты, зато CPU не насыщается и loop не лагает (80 давало 4.8с/окно — на
 # двухъядерном хосте это почти постоянная занятость ядра)
 _MAX_BATCH = 40
+# Потолок дешёвой очереди сторон за такт. 60×13мс ≈ 0.8с на 5-секундное окно;
+# наблюдаемый поток движений сторон на проде — сотни бумаг в минуту, и 720/мин
+# ёмкости с запасом их накрывают.
+_MAX_SIDES_BATCH = int(os.getenv("UNIVERSE_SIDES_BATCH", "60"))
 _PRICE_KEY_DIGITS = 3       # квантование цены в ключе кэша уровней
 
 # ── состояние ────────────────────────────────────────────────────────────────
+# Вход точного расчёта Y-IDX по ЛЮБОЙ цене (bid/ask/средневзвес): поток, кривая
+# и база от цены не зависят, поэтому храним их на БУМАГУ и переиспользуем весь
+# день. Собирается на промахе кэша уровней — из тех же данных, которыми считался
+# сам уровень, без единого сетевого вызова.
+_eval_ctx: Dict[str, dict] = {}
 _last_quote: Dict[str, dict] = {}    # isin → последний пуш {last_price, bid, ask, ...}
+# Бумаги, у которых сдвинулись ТОЛЬКО стороны стакана. Полный пересчёт им не
+# нужен (уровень цены сделки тот же), но спред сторон обязан пересчитаться по
+# методике: раньше его «правил наклон» уже в браузере, и точное число приходило
+# только со следующей сделкой — у неликвида это часы.
+_sides_dirty: set = set()
+
+# ОБЪЁМ ТИКЕТА: размеры, которые сейчас смотрят в браузере. Y-IDX по VWAP-цене
+# набора считается ЗДЕСЬ, по методике, а не линеаризацией в браузере (он
+# репрайсить не умеет). Размеры регистрирует API-запрос таблицы; живут TTL, а
+# их число ограничено — каждый размер это ещё одна цена в батче (~1,5 мс).
+_VOL_TTL_SEC = float(os.getenv("UNIVERSE_VOL_TTL_SEC", "600"))
+_VOL_MAX_SIZES = int(os.getenv("UNIVERSE_VOL_MAX", "4"))
+_vol_sizes: Dict[float, float] = {}     # размер, ₽ → monotonic последнего спроса
+
+
+def register_vol_sizes(sizes) -> None:
+    """Клиент смотрит таблицу с фильтром по объёму — запоминаем размеры тикета,
+    чтобы движок считал по ним Y-IDX в своём такте."""
+    now = time.monotonic()
+    for v in sizes or []:
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            _vol_sizes[round(v, 2)] = now
+    for k in [k for k, t in _vol_sizes.items() if now - t > _VOL_TTL_SEC]:
+        _vol_sizes.pop(k, None)
+
+
+def active_vol_sizes() -> list:
+    """Свежие размеры тикета, самые крупные вперёд (их и режет потолок)."""
+    now = time.monotonic()
+    live = [k for k, t in _vol_sizes.items() if now - t <= _VOL_TTL_SEC]
+    return sorted(live, reverse=True)[:_VOL_MAX_SIZES]
 _dirty: set = set()                  # бумаги со сменившейся ценой сделки
 _streamed: set = set()               # ISIN на живых сокетах пула (для live_isins)
 _depth_streamed: set = set()         # ISIN на живых depth-сокетах
@@ -161,10 +205,15 @@ async def _on_quote(isin: str, data: dict) -> None:
     _seed_price(isin, px)
     prev = _last_quote.get(isin)
     _last_quote[isin] = data
-    # dirty только по смене цены СДЕЛКИ: bid/ask двигаются на порядок чаще и
-    # полного пересчёта не стоят (их правит наклон в батче)
+    # Полный пересчёт заказывает смена цены СДЕЛКИ: она меняет уровень, а с ним
+    # весь набор метрик строки.
     if px is not None and (prev is None or prev.get("last_price") != px):
         _dirty.add(isin)
+    # Смена сторон — отдельная, ДЕШЁВАЯ очередь: пересчитывается только Y-IDX
+    # сторон (поток и база не пересобираются, ~13 мс на бумагу). Наклон отсюда
+    # убран 27.08.2026 — линия через якорь уводила число вслед за якорем.
+    elif prev is not None and any(prev.get(k) != data.get(k) for k in ("bid", "ask")):
+        _sides_dirty.add(isin)
     await _broadcast_quote(isin, data)
 
 
@@ -352,15 +401,121 @@ def invalidate_params(isin: Optional[str] = None) -> None:
     if isin:
         for k in [k for k in _level_memo if k[0] == isin]:
             _level_memo.pop(k, None)
+        _eval_ctx.pop(isin, None)
         if isin in _last_quote:
             _dirty.add(isin)
     else:
         _level_memo.clear()
+        _eval_ctx.clear()
         _dirty.update(_last_quote.keys())
 
 
 def _px_key(px: float) -> float:
     return round(float(px), _PRICE_KEY_DIGITS)
+
+
+async def _push_metrics(wsmod, rows: Dict[str, dict]) -> None:
+    """Подписчикам — производные пушем: /reprice с фронта не нужен."""
+    for isin, row in rows.items():
+        if wsmod.manager.has_market_audience(isin):
+            patch = _metrics_patch(row)
+            if patch:
+                await wsmod.manager.broadcast_market_data(isin, patch)
+
+
+def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
+    """Y-IDX сторон стакана и средневзвеса дня — ПО МЕТОДИКЕ, одним батчем.
+
+    Поток, кривая и база от цены не зависят и уже лежат в _eval_ctx, поэтому
+    три цены стоят ~13 мс на бумагу (замер на проде 27.08.2026) против 85 мс за
+    цену при поштучном reprice. Наклон отсюда убран: он честен только рядом с
+    якорем, а уехавший якорь уводил за собой все производные числа разом."""
+    from services import live_quotes as _lq
+    lvq = _lq.get(isin) or {}
+    wap = lvq.get("vwap_pct") or snap.get("waprice")
+    wap = wap if (wap or 0) > 0 else None
+    row["yoi_wap"] = None
+    for side in sides:
+        row[f"yoi_{side}"] = None
+    # цены VWAP-наборов по активным размерам тикета — такие же альт-цены
+    vol_px = _vol_prices(isin)
+    row["vol_px"] = vol_px or None
+    row["yoi_vol"] = None
+
+    ev = _eval_ctx.get(isin)
+    if ev is None:
+        return
+    from services.yidx_exact import y_idx_many
+    want = [v for v in list(sides.values()) + [wap] if v is not None]
+    want += [p for p in vol_px.values() if p is not None]
+    if not want:
+        return
+    got = y_idx_many(ev, want)
+    for side, v in sides.items():
+        if v is not None:
+            row[f"yoi_{side}"] = got.get(round(float(v), 4))
+    if wap is not None:
+        row["yoi_wap"] = got.get(round(float(wap), 4))
+    if vol_px:
+        row["yoi_vol"] = {k: got.get(round(float(p), 4))
+                          for k, p in vol_px.items() if p is not None}
+
+
+def _vol_prices(isin: str) -> dict:
+    """{"bid:5000000": цена, "ask:5000000": цена} — VWAP-цены наборов активных
+    размеров по обеим сторонам. Набор считает тот же vwap_for, что скринер и
+    портфель: одна арифметика книги на всё приложение."""
+    sizes = active_vol_sizes()
+    if not sizes:
+        return {}
+    from services import depth as depth_svc
+    from services.screener_core import vwap_for, vwap_passes
+    from services.market_data import market_cache
+    row = (market_cache.get("universe_metrics") or {}).get(isin) or {}
+    face = row.get("face_px") or 1000.0
+    accrued = row.get("accrued_settle") or 0.0
+    ladders = depth_svc.get_depth().get(isin) or {}
+    out = {}
+    for size in sizes:
+        for side, key in (("bid", "b"), ("ask", "a")):
+            v = vwap_for(ladders.get(key), size, face, accrued)
+            # набор не собрался (книги не хватило даже с допуском) — числа нет
+            out[f"{side}:{size:.0f}"] = round(v["px"], 4) if vwap_passes(v, size) else None
+    return out
+
+
+def _sides_of(q: dict) -> dict:
+    """Цены сторон из котировки. 0 = стороны в стакане нет: ни цены, ни спреда
+    по ней (МТС 2Р-03 — 8960 б.п. при отсутствующем оффере)."""
+    out = {}
+    for side in ("bid", "ask"):
+        v = q.get(side)
+        out[side] = v if (v or 0) > 0 else None
+    return out
+
+
+def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
+    """Дешёвый пересчёт ТОЛЬКО сторон стакана для бумаг из очереди _sides_dirty.
+
+    Уровень цены сделки не менялся — строка метрик остаётся прежней, меняются
+    её цено-зависимые числа по bid/ask. Без этого точный спред стороны приезжал
+    бы только со следующей СДЕЛКОЙ (у неликвида — часы), а между сделками жила
+    линеаризация в браузере."""
+    from services.market_data import market_cache
+    um = market_cache.get("universe_metrics") or {}
+    out: Dict[str, dict] = {}
+    for isin in isins:
+        row = um.get(isin)
+        q = _last_quote.get(isin)
+        if not row or not q or isin not in _eval_ctx:
+            continue
+        row = dict(row)
+        sides = _sides_of(q)
+        for side, v in sides.items():
+            row[side] = v
+        _fill_side_metrics(row, isin, sides, board.get(isin, {}) or {})
+        out[isin] = row
+    return out
 
 
 def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
@@ -402,22 +557,38 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
                 logger.debug("universe crunch %s: %s", isin, e)
                 continue
             _level_memo[key] = row
+            try:
+                from services.bond_details import _acc_date, _periods_from_coupons
+                _eval_ctx[isin] = {
+                    "isin": isin, "ref_obj": ref,
+                    "curve": (ctx["ruonia_curve"] if u.get("base_rate_type") == "RUONIA"
+                              else ctx["keyrate_curve"]),
+                    "ruonia_curve": ctx["ruonia_curve"],
+                    "calc_date": ctx["calc_date"],
+                    "accrued_live": snap.get("accrued"),
+                    "accrued_date": _acc_date(snap.get("accrued_date")),
+                    "periods": _periods_from_coupons(
+                        (ctx["full_by"].get(isin) or {}).get("coupons")),
+                    "amorts": (ctx["full_by"].get(isin) or {}).get("amorts"),
+                    "offers": (ctx["full_by"].get(isin) or {}).get("offers"),
+                    # без биржевого НКД точного числа не бывает (27.08.2026)
+                    "accrued_missing": snap.get("accrued") is None,
+                }
+            except Exception as e:
+                logger.debug("eval ctx %s: %s", isin, e)
+                _eval_ctx.pop(isin, None)
         else:
             _memo_hits += 1
         row = dict(row)          # кэш неизменяем — наружу копия
-        # вне уровня: верх стакана (Y-IDX наклоном от цены сделки) и оборот
-        slope = row.get("yoi_slope")
-        yoi = row.get("yoi")
-        for side, fld in (("bid", "yoi_bid"), ("ask", "yoi_ask")):
-            v = q.get(side)
-            # 0 = стороны в стакане нет: ни цены, ни спреда по ней. Раньше ноль
-            # ехал в колонку как «0,00», а наклон от него давал спред в тысячи
-            # б.п. (МТС 2Р-03 — 8960 при отсутствующем оффере).
-            v = v if (v or 0) > 0 else None
+        # ВНЕ УРОВНЯ: цены сторон стакана. Считаем их ПО МЕТОДИКЕ, а не наклоном
+        # от цены сделки. Наклон — линия через якорь: пока якорь верен, ошибка
+        # мала, но уехавший якорь уводит за собой все производные числа разом
+        # (прод 27.08.2026 — вся лестница стакана в телеграме). Батч из двух-трёх
+        # цен стоит ~13 мс на бумагу (замер там же), поток и база не пересобираются.
+        sides = _sides_of(q)
+        for side, v in sides.items():
             row[side] = v
-            row[fld] = None
-            if v is not None and yoi is not None and slope is not None:
-                row[fld] = int(round(yoi + (v - px) * slope))
+        _fill_side_metrics(row, isin, sides, (ctx["board"].get(isin, {}) or {}))
         snap = ctx["board"].get(isin, {})
         # свой тиковый счёт впереди биржевого (см. services/universe): VALTODAY и
         # WAPRICE из ISS-снапшота отстают, тик уже здесь
@@ -427,11 +598,6 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
         if vol is not None:
             row["val_today"] = vol
         row["wap"] = lv.get("vwap_pct") or snap.get("waprice") or row.get("wap")
-        # спред по средневзвесу дня — метрика аналитики: last price это одна
-        # сделка (в неликвиде — случайный тонкий принт), средневзвес взвешен
-        # объёмом. Считается тем же наклоном, что спред верха стакана.
-        from services.bonds import yidx_at_price
-        row["yoi_wap"] = yidx_at_price(row, row.get("wap"))
         out[isin] = row
     return out
 
@@ -470,6 +636,9 @@ def _check_version(version: tuple) -> None:
     global _memo_version
     if version != _memo_version:
         _level_memo.clear()
+        # контекст точного расчёта держит ССЫЛКУ на кривую — на новой кривой он
+        # так же недействителен, как и сами уровни
+        _eval_ctx.clear()
         _memo_version = version
 
 
@@ -481,6 +650,7 @@ async def metrics_worker() -> None:
     from services.market_data import MarketDataService, market_cache
     await asyncio.sleep(40)
     done_since_log = 0
+    sides_since_log = 0
     last_log = time.time()
     while True:
         await asyncio.sleep(_BATCH_SEC)
@@ -488,42 +658,56 @@ async def metrics_worker() -> None:
             # минутная сводка — живой ли конвейер и каков хит-рейт кэша уровней
             if done_since_log and time.time() - last_log >= 60:
                 global _depth_msgs
-                logger.info("metrics engine: %d строк/мин · memo %d (hit %d / miss %d) · "
-                            "dirty %d · depth-пушей %d/мин (%d бумаг)",
-                            done_since_log, len(_level_memo), _memo_hits, _memo_misses,
-                            len(_dirty), _depth_msgs, len(_depth_streamed))
+                logger.info("metrics engine: %d строк/мин · сторон %d/мин · "
+                            "memo %d (hit %d / miss %d) · dirty %d (+%d сторон) · "
+                            "depth-пушей %d/мин (%d бумаг)",
+                            done_since_log, sides_since_log, len(_level_memo),
+                            _memo_hits, _memo_misses, len(_dirty), len(_sides_dirty),
+                            _depth_msgs, len(_depth_streamed))
                 done_since_log = 0
+                sides_since_log = 0
                 _depth_msgs = 0
                 last_log = time.time()
-            if not _dirty:
+            if not _dirty and not _sides_dirty:
                 continue
-            take = list(_dirty)[:_MAX_BATCH]
-            _dirty.difference_update(take)
             ctx = await _day_ctx()
             if ctx is None:
                 continue
             _check_version(ctx["version"])
-            # расписания бумаг батча — из day-кэша (промах = одна ходка на бумагу в день)
-            fulls = await asyncio.gather(
-                *(MarketDataService.fetch_bond_schedule_full(i) for i in take),
-                return_exceptions=True)
-            ctx["full_by"] = {i: ({} if isinstance(f, Exception) else f or {})
-                              for i, f in zip(take, fulls)}
-            batch = [(i, _last_quote.get(i) or {}) for i in take]
             from services.heavy import run_heavy
-            rows = await run_heavy(_crunch, batch, ctx)
-            if not rows:
-                continue
-            um = market_cache.get("universe_metrics") or {}
-            um.update(rows)
-            market_cache["universe_metrics"] = um
-            done_since_log += len(rows)
-            # подписчикам — производные пушем: /reprice с фронта не нужен
-            for isin, row in rows.items():
-                if wsmod.manager.has_market_audience(isin):
-                    patch = _metrics_patch(row)
-                    if patch:
-                        await wsmod.manager.broadcast_market_data(isin, patch)
+
+            # ПОЛНЫЙ пересчёт — сменившим цену сделки (новый уровень цены).
+            take = list(_dirty)[:_MAX_BATCH]
+            _dirty.difference_update(take)
+            if take:
+                # расписания батча — из day-кэша (промах = одна ходка на бумагу в день)
+                fulls = await asyncio.gather(
+                    *(MarketDataService.fetch_bond_schedule_full(i) for i in take),
+                    return_exceptions=True)
+                ctx["full_by"] = {i: ({} if isinstance(f, Exception) else f or {})
+                                  for i, f in zip(take, fulls)}
+                batch = [(i, _last_quote.get(i) or {}) for i in take]
+                rows = await run_heavy(_crunch, batch, ctx)
+                if rows:
+                    um = market_cache.get("universe_metrics") or {}
+                    um.update(rows)
+                    market_cache["universe_metrics"] = um
+                    done_since_log += len(rows)
+                    await _push_metrics(wsmod, rows)
+            # ДЕШЁВАЯ ОЧЕРЕДЬ: у этих бумаг сдвинулись только стороны стакана —
+            # уровень цены сделки прежний, пересчитываем ТОЛЬКО Y-IDX сторон и
+            # средневзвеса (~13 мс на бумагу). Без этого точное число стороны
+            # ждало бы следующей сделки, а до неё жила линеаризация в браузере.
+            if _sides_dirty:
+                take_s = list(_sides_dirty)[:_MAX_SIDES_BATCH]
+                _sides_dirty.difference_update(take_s)
+                srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
+                if srows:
+                    um = market_cache.get("universe_metrics") or {}
+                    um.update(srows)
+                    market_cache["universe_metrics"] = um
+                    sides_since_log += len(srows)
+                    await _push_metrics(wsmod, srows)
         except asyncio.CancelledError:
             raise
         except Exception as e:

@@ -455,9 +455,23 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     лестница, чем колонка прочерков."""
     d = depth_side or {}
 
+    # ВСЕ уровни — одним расчётом по методике. Поштучный reprice стоил бы 85 мс
+    # на цену, батч через alt_prices — 1,5 мс (замер на проде 27.08.2026), так
+    # что «дорого» больше не аргумент в пользу наклона. Наклон уводил лестницу
+    # целиком вслед за уехавшим якорем — ровно это и произошло 27.08.
+    exact_map = {}
+    if isin:
+        rec = _exact_ctx.get(isin)
+        if _ctx_fresh(rec) and rec[1] is not None:
+            from services.yidx_exact import y_idx_many
+            _sync_ctx_curves(rec[1], rec[2])
+            pxs = [_px(l) for key in ("a", "b") for l in (d.get(key) or [])[:levels]]
+            exact_map = y_idx_many(rec[1], [p for p in pxs if p is not None])
+
     def level_y(px: float, side: str) -> Optional[float]:
-        v = exact_y_idx(isin, px) if isin else None
-        return v if v is not None else y_idx_at(row, px, side)
+        v = exact_map.get(round(float(px), 4))
+        # без контекста/НКД числа нет — прочерк честнее наклона от чужого якоря
+        return v
 
     def side_rows(key: str, best_first: bool) -> list:
         out = []
@@ -635,6 +649,11 @@ def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     if not _ctx_fresh(rec) or rec[1] is None:
         return None
     ctx, memo = rec[1], rec[2]
+    if ctx.get("accrued_missing"):
+        # НКД неизвестен — «точного» числа не бывает: расчёт начислит своё, и
+        # спред уедет на десятки б.п. (прод 27.08.2026, см. load_reprice_ctx).
+        # Потребитель откатится на наклон от строки метрик, где НКД биржевой.
+        return None
     _sync_ctx_curves(ctx, memo)
     key = round(float(px), _EXACT_PX_DIGITS)
     if key in memo:

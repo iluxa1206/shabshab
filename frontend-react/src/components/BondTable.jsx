@@ -35,19 +35,13 @@ function Chip({ value }) {
   return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
 }
 
-// R-spread по цене СРЕДНЕВЗВЕСА. Своей цифры бэк для этой цены не считает —
-// линеаризуем от известного якоря через dY/dP (y_idx_slope_bps_per_pct), как это
-// делает фильтр по объёму для VWAP стакана. Якорь — цена последней сделки (обе
-// цены торговые, шаг между ними мал), иначе верх стакана.
+// R-spread по цене СРЕДНЕВЗВЕСА — число бэкенда, посчитанное по методике
+// (движок метрик считает средневзвес такой же альт-ценой, как bid/ask).
+// Раньше здесь стояла линеаризация от якоря «бэк для этой цены не считает» —
+// с 27.08.2026 считает, а линия через якорь уводила число вслед за якорем.
+// Нет числа — прочерк: догадка на месте спреда хуже пустой ячейки.
 export function wapSpread(b) {
-  const k = b.y_idx_slope_bps_per_pct, px = b.wap_price_pct;
-  if (px == null || k == null) return null;
-  const anchors = [[b.last_price_pct, b.yield_over_index_bps],
-                   [b.bid_price_pct, b.y_idx_bid_bps], [b.ask_price_pct, b.y_idx_ask_bps]];
-  for (const [ap, ay] of anchors) {
-    if (ap != null && ay != null) return Math.round(ay + (px - ap) * k);
-  }
-  return null;
+  return b.y_idx_wap_bps ?? null;
 }
 
 // Котировка двумя этажами в одной ячейке: чистая цена, под ней R-spread по ней

@@ -583,6 +583,23 @@ def pick_horizon(m: Dict[str, Any], horizon: str = "auto") -> Dict[str, Any]:
     return sel
 
 
+def horizon_at_price(price: float, m: Dict[str, Any]) -> str:
+    """Какой горизонт выбирает ПРАВИЛО ЦЕНЫ для конкретной альт-цены.
+
+    `preferred_horizon` в ответе относится к цене, с которой звали расчёт. Для
+    лестницы стакана этого мало: правило сравнивает Y-IDX горизонтов, а он у
+    каждого уровня свой, и на границе безразличия соседние уровни законно
+    выбирают разные горизонты.
+
+    Само правило НЕ дублируем — подставляем в него метрики этой цены
+    (`horizons[k]["y_idx_by_price"][price]`) и зовём тот же `_preferred_horizon`.
+    Иначе лестница зажила бы своей версией правила, а их и так уже чинили."""
+    hzs = m.get("horizons") or {}
+    shadow = {k: dict(h, yield_over_index_bps=(h.get("y_idx_by_price") or {}).get(price))
+              for k, h in hzs.items()}
+    return _preferred_horizon(price, shadow)
+
+
 def horizon_pair(m: Dict[str, Any], horizon: str = "auto") -> tuple:
     """(метрики выбранного горизонта, метрики ВТОРОГО, ключ второго).
 

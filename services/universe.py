@@ -11,7 +11,6 @@ from typing import Dict, List, Optional
 from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
-    yidx_at_price,
 )
 from services.valuation import (calculate_valuation_metrics, horizon_pair,
                                 alt_horizon as _alt_horizon)
@@ -55,7 +54,8 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 ruonia_curve, keyrate_curve, exp_ks, exp_ru, g_curve,
                 calc_date: date, prev_date: Optional[str] = None,
                 bid: Optional[float] = None, ask: Optional[float] = None,
-                accrued_date: Optional[str] = None) -> dict:
+                accrued_date: Optional[str] = None,
+                wap: Optional[float] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
     вызывающий (фон — board snapshot + кэш поллера; watch — live-цена +
@@ -103,6 +103,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     face_px = accrued_settle = yoi_slope = None
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
+    yoi_wap = None
     hz_alt, yoi_alt = None, None
     # Маркер оферты для таблицы (даты из MOEX bondization). offertype у MOEX
     # колл не различает — на всём универсе только 'Оферта'/'Оферта (состоялось)'/
@@ -122,6 +123,9 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     _dp = 0.5
     _probe = ([round(price_calc - _dp, 4), round(price_calc + _dp, 4)]
               if price_calc is not None else [])
+    # средневзвес дня — такая же альт-цена, как bid/ask: считаем ЕГО спред тем же
+    # расчётом, а не наклоном от цены сделки (наклон убран 27.08.2026)
+    wap = wap if (wap or 0) > 0 else None
     if price_calc is not None and curve and base in ("RUONIA", "KEYRATE"):
         try:
             m = calculate_valuation_metrics(ref, price_calc, curve, calc_date,
@@ -133,7 +137,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             periods=periods or None,
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
-                                            alt_prices=[p for p in (bid, ask) if p] + _probe)
+                                            alt_prices=[p for p in (bid, ask, wap) if p] + _probe)
             # ГОРИЗОНТ ПРАЙСИНГА по правилу цены (services.valuation._preferred_horizon):
             # цена ниже цены пут-выкупа → бумага торгуется к оферте, выше цены
             # call-выкупа → к коллу, иначе к погашению. Колонки таблицы (Y-IDX/YTM/
@@ -155,6 +159,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
             _alt = _hzm.get("y_idx_by_price") or m.get("y_idx_by_price") or {}
             yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
+            yoi_wap = _alt.get(wap)
             # номинал и НКД РОВНО те, из которых собран dirty (амортизация учтена,
             # НКД на дату поставки) — фронт считает ими деньги уровня стакана
             face_px, accrued_settle = m.get("pricing_face_rub"), m.get("accrued_settle_rub")
@@ -226,6 +231,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             "has_amort": has_amort,
             "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
             "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,
+            "yoi_wap": yoi_wap,
             "ytm": ytm, "base_ytm": base_ytm, "price_stale": price_stale,
             "next_coupon": next_cpn, "z_model": z_model, "spread_dur": spread_dur,
             "refix": refix, "current_coupon": cur_cpn, "implausible": implausible,
@@ -279,12 +285,16 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             u = uni_by[isin]
             snap = board.get(isin, {})
             ref = build_universe_ref(u, isin, cache, secs)
+            # средневзвес нужен ДО расчёта: его спред считается той же альт-ценой,
+            # что bid/ask (свой счёт по тикам живее биржевого WAPRICE)
+            _lv = live_quotes.get(isin) or {}
             out[isin] = enrich_bond(
                 u, ref, full_by.get(isin) or {},
                 last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
                 accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
                 accrued_date=snap.get("accrued_date"),
                 bid=snap.get("bid"), ask=snap.get("ask"),
+                wap=_lv.get("vwap_pct") or snap.get("waprice"),
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
             # оборот и средневзвес дня: сначала свой счёт по тикам Alor (живой),
@@ -295,10 +305,10 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             vol = snap.get("vol")
             lvol = lv.get("val_today")
             out[isin]["val_today"] = max(vol or 0, lvol or 0) or None
+            # спред по средневзвесу дня посчитан внутри enrich (alt_prices) —
+            # аналитика считает по нему, а не по last price (одна сделка, в
+            # неликвиде — случайный тонкий принт)
             out[isin]["wap"] = lv.get("vwap_pct") or snap.get("waprice")
-            # спред по средневзвесу дня: аналитика считает по нему, а не по
-            # last price (одна сделка, в неликвиде — случайный тонкий принт)
-            out[isin]["yoi_wap"] = yidx_at_price(out[isin], out[isin]["wap"])
 
         # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
         # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках

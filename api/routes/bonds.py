@@ -367,13 +367,12 @@ async def get_quotes():
         m = um.get(isin)
         if m and m.get("yoi") is not None:
             it["yoi"] = m["yoi"]
-        # спред по средневзвесу дня считаем ЗДЕСЬ, на свежем wap котировки:
-        # у движка он от его такта, а wap тикает с каждой сделкой
-        if m:
-            from services.bonds import yidx_at_price
-            yw = yidx_at_price(m, it.get("wap"))
-            if yw is not None:
-                it["yoi_wap"] = yw
+        # спред по средневзвесу берём ИЗ ДВИЖКА: он посчитан по методике в его
+        # такте (≤5 с назад). Раньше здесь стоял пересчёт наклоном от цены
+        # сделки ради свежести wap — но приближение, обновлённое мгновенно,
+        # хуже точного числа пятисекундной давности (27.08.2026).
+        if m and m.get("yoi_wap") is not None:
+            it["yoi_wap"] = m["yoi_wap"]
         items.append(it)
     return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 
