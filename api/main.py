@@ -1023,6 +1023,8 @@ async def lifespan(app: FastAPI):
     # поэтому апдейты забираем сами — см. services/tg_poll.py
     tg_poll_task = asyncio.create_task(tg_poll_worker())
     signals_task = asyncio.create_task(signals_worker())
+    from services.yidx_sentinel import run_forever as _yidx_sentinel
+    yidx_task = asyncio.create_task(_yidx_sentinel())
     yield
     tg_sig_task.cancel()
     stream_wd_task.cancel()
@@ -1030,6 +1032,7 @@ async def lifespan(app: FastAPI):
     feed_wd_task.cancel()
     tg_poll_task.cancel()
     signals_task.cancel()
+    yidx_task.cancel()
     quotes_task.cancel()
     pool_task.cancel()
     tape_task.cancel()

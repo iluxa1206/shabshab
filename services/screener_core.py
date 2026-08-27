@@ -699,6 +699,45 @@ def y_idx_at(row: dict, px: Optional[float], side: str) -> Optional[float]:
     return None
 
 
+def y_idx_diag(isin: str, px: Optional[float], row: dict, side: str) -> dict:
+    """ИЗ ЧЕГО сложилось число события: точный путь, наклон, индекс-база,
+    возраст контекста и якоря строки метрик.
+
+    Диагностика поставлена 2026-08-27: на проде спред одной бумаги прыгал
+    188↔166 бп при неизменных цене и книге, а в отдельном процессе оба движка
+    стабильно дают 188. Значит расходится состояние ЖИВОГО воркера, и увидеть
+    его можно только изнутри него."""
+    rec = _exact_ctx.get(isin)
+    ctx = rec[1] if rec and len(rec) > 1 else None
+    out = {
+        "exact": exact_y_idx(isin, px),
+        "slope": y_idx_at(row, px, side),
+        "ctx_age_s": None if not rec else round(time.monotonic() - rec[0], 1),
+        "ask": row.get("ask"), "yoi_ask": row.get("yoi_ask"),
+        "last": row.get("last"), "yoi": row.get("yoi"),
+        "slope_bps_pp": row.get("yoi_slope"),
+        "accrued": row.get("accrued_settle"), "face": row.get("face_px"),
+    }
+    if ctx is not None and px is not None:
+        try:
+            from services.bond_details import reprice_at_price
+            from services.valuation import pick_horizon
+            h = pick_horizon(reprice_at_price(ctx, float(px)), "auto")
+            out.update(index_pct=h.get("index_yield_pct"), ytm=h.get("yield_xirr_pct"),
+                       horizon=h.get("horizon"))
+        except Exception as e:
+            out["ctx_err"] = str(e)[:80]
+        from services.market_data import market_cache
+        out["curve_is_live"] = ctx.get("curve") is (
+            market_cache.get("ruonia_curve")
+            if getattr(ctx.get("ref_obj"), "base", None) == "RUONIA"
+            else market_cache.get("keyrate_curve"))
+        out["idx_curve_is_live"] = ctx.get("ruonia_curve") is market_cache.get("ruonia_curve")
+        out["ctx_accrued"] = ctx.get("accrued_live")
+        out["ctx_calc_date"] = str(ctx.get("calc_date"))
+    return out
+
+
 def static_candidates(params: dict, uni: List[dict],
                       today: Optional[date] = None) -> List[dict]:
     """Отбор по НЕподвижным признакам: рейтинг/эмитент/ISIN, ОФЗ/корп, срок, суборд.

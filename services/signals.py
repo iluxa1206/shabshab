@@ -609,6 +609,18 @@ async def run_cycle() -> int:
             tg_events = []
             for e in events:
                 row = metrics.get(e["isin"]) or {}
+                # ДИАГНОСТИКА расхождения спреда (2026-08-27): пишем ингредиенты
+                # числа рядом с самим числом — иначе разбор задним числом
+                # упирается в то, что состояние живого воркера невоспроизводимо.
+                try:
+                    from services.screener_core import y_idx_diag
+                    logger.info("signal diag %s px=%s val=%s ур=%s | %s | ask-лестница %s",
+                                e["isin"], e.get("price"), e.get("val_bps"), e.get("levels"),
+                                y_idx_diag(e["isin"], e.get("price"), row,
+                                           f["params"].get("side") or "ask"),
+                                ((depth_map.get(e["isin"]) or {}).get("a") or [])[:3])
+                except Exception as _de:
+                    logger.warning("signal diag %s: %s", e.get("isin"), _de)
                 tg_events.append(dict(e, book=book_snapshot(
                     depth_map.get(e["isin"]), row,
                     row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0,
