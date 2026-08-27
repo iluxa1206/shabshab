@@ -630,7 +630,12 @@ async def memory_watch(period_sec: int = 1800):
             from services import backdate as bd
             from services.market_data import MarketDataService as MD
             from services import universe_stream as us
-            parts = [f"honest={len(bd._honest_memo)}", f"anchor={len(bd._anchor_memo)}",
+            # asof — САМЫЙ ТЯЖЁЛЫЙ из долгоживущих: до _ASOF_MEMO_MAX=120 фабрик,
+            # каждая держит периоды/амортизации/кривую целой бумаги. Именно его
+            # не хватало 13.08, когда процесс вырос 599 → 1004 МБ и виновника
+            # «не нашли»: в этом списке его просто не было.
+            parts = [f"asof={len(bd._asof_memo)}",
+                     f"honest={len(bd._honest_memo)}", f"anchor={len(bd._anchor_memo)}",
                      f"full={len(MD._full_mem)}", f"snap={len(MD._snap_cache)}",
                      f"secid={len(MD._secid_cache)}", f"sec={len(MD._sec_cache)}",
                      f"levels={len(us._level_memo)}"]

@@ -95,6 +95,7 @@ async def memory():
 
     try:
         from services import backdate as bd
+        _len("backdate.asof_memo", bd._asof_memo)      # самый тяжёлый, см. memory_watch
         _len("backdate.honest_memo", bd._honest_memo)
         _len("backdate.anchor_memo", bd._anchor_memo)
     except Exception:

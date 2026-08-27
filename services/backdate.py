@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 from bisect import bisect_right
 from collections import OrderedDict
 from datetime import date, timedelta
@@ -644,7 +645,10 @@ def _alt_horizon(hz_key: str, horizons: dict) -> Optional[str]:
 # Сборка — это сеть (история, кривые) плюс контексты по дням; её просят и бары,
 # и маркеры сделок, и стакан, причём с разными окнами. Фабрика умеет любую дату
 # внутри своего окна, поэтому запрос поуже обслуживается уже построенной.
-_ASOF_MEMO_MAX = 120
+# Потолок через env — АВАРИЙНЫЙ КЛАПАН: фабрика держит периоды/амортизации/
+# кривую целой бумаги, и 120 штук — это сотни МБ при лимите контейнера 1.17 ГиБ.
+# Под давлением памяти опускается без правки кода (ASOF_MEMO_MAX=40 в compose).
+_ASOF_MEMO_MAX = int(os.getenv("ASOF_MEMO_MAX", "120"))
 _asof_memo: "OrderedDict[tuple, tuple]" = OrderedDict()   # (isin,board) → (день, days, fn)
 
 
