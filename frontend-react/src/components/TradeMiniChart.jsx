@@ -16,9 +16,19 @@ import { ChartFrame, linearScale, niceTicks, extent, dateTickIdx, tickLabel,
 // нет, поэтому в режиме спреда таких точек на графике не будет, и это сказано
 // подписью, а не молчаливым исчезновением половины сделок.
 
-const HEIGHT = 190;
-const PAD = { l: 44, r: 10, t: 10, b: 22 };
+// Высота поля графика и поля вокруг него. Левое поле НЕ константа: подпись Y
+// бывает и «150» (спред), и «100,08» (цена в узком дневном диапазоне) — при
+// фиксированном l цена упиралась в край viewBox и первая цифра срезалась.
+// r/t/b — чтобы крайняя точка и подписи X не резались рамкой SVG.
+const HEIGHT = 300;
+const PAD = { r: 16, t: 14, b: 28 };
+// ширина знака подписи оси (.an-axis) — на глаз не считаем: замер в браузере
+// даёт ~8.8px на символ, отсюда и запас
+const CH = 9;
 const LIMIT = 3000;
+// поле по краям оси времени: без него первая и последняя сделки лежат ровно на
+// рамке и кружок обрезается пополам
+const X_INSET = 0.03;
 const parseTs = (ts) => Date.parse(String(ts).replace(" ", "T"));
 
 export default function TradeMiniChart({ isin, name, params }) {
@@ -56,11 +66,13 @@ export default function TradeMiniChart({ isin, name, params }) {
   );
 
   let body;
-  if (q.isPending) body = <div className="tmc-empty">читаю сделки…</div>;
-  else if (q.isError) body = <div className="tmc-empty">не вышло: {q.error?.message}</div>;
+  // высота у всех состояний одна: окошко позиционируется по замеру, и «прыжок»
+  // размера после загрузки перекидывал бы его относительно кнопки
+  if (q.isPending) body = <div className="tmc-empty" style={{ height: HEIGHT }}>читаю сделки…</div>;
+  else if (q.isError) body = <div className="tmc-empty" style={{ height: HEIGHT }}>не вышло: {q.error?.message}</div>;
   else if (!data.length) {
     body = (
-      <div className="tmc-empty">
+      <div className="tmc-empty" style={{ height: HEIGHT }}>
         {metric === "spread" && all.length
           ? "у этих сделок спред не посчитан (мелкие принты и фиксы)"
           : "под фильтрами ленты сделок по бумаге нет"}
@@ -69,28 +81,41 @@ export default function TradeMiniChart({ isin, name, params }) {
   } else {
     const times = data.map((p) => p.ts);
     const span = spanDays(times);
-    const [t0, t1] = [data[0].t, data[data.length - 1].t];
+    const tMin = data[0].t, tMax = data[data.length - 1].t;
+    const tPad = (tMax - tMin) * X_INSET || 36e5;   // одна сделка — ±час
+    const [t0, t1] = [tMin - tPad, tMax + tPad];
     const vals = data.map((p) => p[key]);
     // одна сделка (или все по одной цене) — домен вырожден; раздвигаем, иначе
     // точка легла бы на край рамки
     const [lo, hi] = extent(vals, 0.08, metric === "spread" ? 10 : 0.2);
 
+    // Сетка Y и точность её подписей считаются ДО каркаса: от них зависит
+    // левое поле. Точность — по ШАГУ сетки, а не константой: у выпуска, весь
+    // день простоявшего в четверти процента, «100,0 · 100,0 · 100,1» — три
+    // одинаковых подписи вместо шкалы.
+    const yTicks = niceTicks(lo, hi, 4);
+    const step = Math.abs((yTicks[1] ?? hi) - (yTicks[0] ?? lo)) || (hi - lo);
+    const dRaw = Math.max(0, Math.min(3, Math.ceil(-Math.log10(step || 1))));
+    const digits = metric === "spread" ? Math.min(dRaw, 1) : dRaw;
+    const yFormat = (v) => fmt.num(v, digits);
+    const yw = Math.max(...yTicks.map((v) => (yFormat(v) || "").length));
+    const pad = { ...PAD, l: Math.round(yw * CH) + 10 };
+
     const build = (g) => {
       const sx = linearScale([t0, t1 > t0 ? t1 : t0 + 1], [g.x0, g.x1]);
       const sy = linearScale([lo, hi], [g.y0, g.y1]);
-      const nx = Math.max(2, Math.min(5, Math.round(g.iw / 70)));
+      const nx = Math.max(2, Math.min(7, Math.round(g.iw / 80)));
+      // подпись центрируется по тику, поэтому у самых краёв её сдвигаем внутрь —
+      // иначе «28.08» наполовину уезжает за viewBox
+      const clamp = (x) => Math.min(Math.max(x, g.x0 + 14), g.x1 - 14);
       const xTicks = dateTickIdx(times, nx)
-        .map((i) => ({ x: sx(data[i].t), label: tickLabel(times[i], span) }));
-      return {
-        sx, sy, xTicks,
-        yTicks: niceTicks(lo, hi, 4),
-        yFormat: (v) => (metric === "spread" ? fmt.bps(v) : fmt.num(v, 1)),
-      };
+        .map((i) => ({ x: clamp(sx(data[i].t)), label: tickLabel(times[i], span) }));
+      return { sx, sy, xTicks, yTicks, yFormat };
     };
 
     body = (
       <ChartFrame
-        height={HEIGHT} pad={PAD} minWidth={200} data={data} build={build}
+        height={HEIGHT} pad={pad} minWidth={240} data={data} build={build}
         label={`Сделки по ${name || isin}: ${metric === "spread" ? "R-spread" : "цена"}`}
         px={(p, s) => s.sx(p.t)} py={(p, s) => s.sy(p[key])}
         yBadge={(p) => (metric === "spread" ? fmt.bps(p[key]) : fmt.num(p[key], 2))}

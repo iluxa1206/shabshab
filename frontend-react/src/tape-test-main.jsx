@@ -49,10 +49,15 @@ window.fetch = (url) => {
     })) });
   }
   if (u.includes("/api/trades")) {
-    const lim = Number(new URL(u, location.origin).searchParams.get("limit")) || 500;
-    const rows = ROWS.slice(0, Math.min(lim, ROWS.length));
+    const sp = new URL(u, location.origin).searchParams;
+    const lim = Number(sp.get("limit")) || 500;
+    // сужение на одну бумагу — им пользуется и поиск по ISIN, и мини-окошко
+    // сделок по наведению на «график»
+    const one = sp.get("isin");
+    const pool = one ? ROWS.filter((r) => r.isin === one) : ROWS;
+    const rows = pool.slice(0, Math.min(lim, pool.length));
     return json({
-      from: "2026-08-05", days: 7, trades: rows, truncated: rows.length < ROWS.length,
+      from: "2026-08-05", days: 7, trades: rows, truncated: rows.length < pool.length,
       summary: { n: ROWS.length, value: 29271400000, buy_value: 6845800000,
         sell_value: 7738100000, by_market: { ndm: { n: 17, value: 14687500000 } },
         top: NAMES.map(([isin, name], i) => ({ isin, name, n: 40 - i * 7, value: 4.2e9 - i * 1e9 })),

@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings,
          fetchTradeFlags, addTradeFlag, removeTradeFlag } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
+import RatingMenu from "./RatingMenu.jsx";
 import { copyText } from "../clipboard.js";
 import { HeaderCell } from "./TableHeader.jsx";
 import { IconCalendar, IconFlag } from "./icons.jsx";
@@ -36,8 +37,8 @@ const PERIODS = [[1, "1д"], [7, "7д"], [30, "30д"], [null, "всё"]];
 const PAGE = 500;
 // Предпросмотр графика по наведению: геометрия окошка и задержки открытия/
 // закрытия (мс). Закрытие медленнее открытия — курсору надо доехать до окна.
-const PEEK_W = 380;
-const PEEK_H = 260;
+const PEEK_W = 620;
+const PEEK_H = 360;
 const PEEK_OPEN_MS = 260;
 const PEEK_CLOSE_MS = 240;
 // РПС здесь = дневной агрегат адресных режимов (см. шапку файла)
@@ -206,6 +207,10 @@ const mlnToRub = (v) => {
   const n = parseFloat(String(v).replace(",", "."));
   return Number.isFinite(n) && n > 0 ? Math.round(n * 1e6) : 0;
 };
+// Подпись грейда в чипе: BELOW — это «BB и ниже» (одна кнопка вместо BB/B/CCC…)
+const RT_BUCKET_LABEL = { BELOW: "BB↓" };
+const BUCKET_KEYS = new Set(["AAA", "AA", "A", "BBB", "BELOW", "NR"]);
+
 const pick = (v, fallback) => (v === undefined || v === null ? fallback : v);
 
 /** ISIN с копированием по клику: в ленте он нужен, чтобы утащить бумагу в
@@ -233,12 +238,15 @@ function IsinCell({ isin }) {
  *  проходе мыши по колонке кнопок; закрывается тоже с задержкой, чтобы курсор
  *  успел переехать в само окно (там переключатель цена/спред).
  *
- *  Рисуем через портал в body: у таблицы ленты свой скролл-контейнер с
- *  overflow, внутри него окошко обрезалось бы по краю таблицы. Отсюда же
- *  координаты — фиксированные, от прямоугольника кнопки. */
+ *  Рисуем порталом мимо таблицы: у неё свой скролл-контейнер с overflow,
+ *  внутри него окошко обрезалось бы по краю таблицы. Отсюда же координаты —
+ *  фиксированные, от прямоугольника кнопки. Цель портала — КОРЕНЬ ТЕМЫ, а не
+ *  body: палитра живёт классом .theme-dark на корневом div, и в body окно
+ *  выпадало из неё — на тёмном столе всплывала белая плашка. */
 function ChartPeek({ isin, name, params, onOpen }) {
   const [pos, setPos] = useState(null);
   const btn = useRef(null);
+  const pop = useRef(null);
   const timer = useRef(null);
 
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -249,8 +257,9 @@ function ChartPeek({ isin, name, params, onOpen }) {
     timer.current = setTimeout(() => {
       const r = btn.current?.getBoundingClientRect();
       if (!r) return;
-      // окно уходит влево от кнопки (она у правого края строки) и вниз, а у
-      // нижней кромки экрана переворачивается вверх
+      // прикидка: окно уходит влево от кнопки (она у правого края строки) и
+      // вниз, а у нижней кромки экрана переворачивается вверх. Точную позицию
+      // доводит useLayoutEffect ниже — по РЕАЛЬНОМУ размеру окна
       const left = Math.min(Math.max(8, r.right - PEEK_W), window.innerWidth - PEEK_W - 8);
       const top = r.bottom + 6 + PEEK_H > window.innerHeight
         ? Math.max(8, r.top - PEEK_H - 6) : r.bottom + 6;
@@ -262,6 +271,21 @@ function ChartPeek({ isin, name, params, onOpen }) {
     timer.current = setTimeout(() => setPos(null), PEEK_CLOSE_MS);
   };
   const keep = () => clearTimeout(timer.current);
+  // корень темы: #app несёт .theme-dark/.theme-win, у него нет transform и
+  // overflow — position: fixed внутри считается от вьюпорта, как в body
+  const host = () => document.getElementById("app") || document.body;
+
+  // Доводка позиции по факту: прикидка считает высоту константой, а реальная
+  // зависит от длины имени и подвала — окно уезжало за нижний край экрана и
+  // график обрезался. Тут вжимаем его в видимую область целиком.
+  useEffect(() => {
+    const node = pop.current;
+    if (!pos || !node) return;
+    const r = node.getBoundingClientRect();
+    const left = Math.max(8, Math.min(pos.left, window.innerWidth - r.width - 8));
+    const top = Math.max(8, Math.min(pos.top, window.innerHeight - r.height - 8));
+    if (Math.abs(left - pos.left) > 1 || Math.abs(top - pos.top) > 1) setPos({ left, top });
+  }, [pos]);
 
   return (
     <>
@@ -272,10 +296,10 @@ function ChartPeek({ isin, name, params, onOpen }) {
         график
       </button>
       {pos && createPortal(
-        <div className="tmc-pop" style={{ left: pos.left, top: pos.top, width: PEEK_W }}
+        <div className="tmc-pop" ref={pop} style={{ left: pos.left, top: pos.top, width: PEEK_W }}
           onMouseEnter={keep} onMouseLeave={hide} onClick={(e) => e.stopPropagation()}>
           <TradeMiniChart isin={isin} name={name} params={params} />
-        </div>, document.body)}
+        </div>, host())}
     </>
   );
 }
@@ -381,7 +405,10 @@ export default function TradesTape() {
   // "watch", своей копии у ленты нет — звезда там и здесь означает одно и то же.
   const [onlyWatch, setOnlyWatch] = useState(() => pick(savedFilters().onlyWatch, false));
   const watch = useMemo(() => readLS("watch", []) || [], []);
+  // ступени (AA+/AA/AA−…) — для меню «▾»; грейды — для чипов. Раньше чипами
+  // были ВСЕ значения справочника, и появление ступеней разносило ряд фильтра.
   const [ratingOpts, setRatingOpts] = useState([]);
+  const [ratingBuckets, setRatingBuckets] = useState([]);
   // ФЛАЖКИ. Отметка сделки живёт на сервере (per-user): стол смотрит ленту с
   // разных машин, а localStorage привязан к браузеру. Локально держим только
   // множество id — чтобы флажок перекрашивался мгновенно, не дожидаясь ответа.
@@ -472,7 +499,9 @@ export default function TradesTape() {
 
   useEffect(() => {
     fetchTapeIssuers().then(setIssuers).catch(() => setIssuers([]));
-    fetchTapeRatings().then(setRatingOpts).catch(() => setRatingOpts([]));
+    fetchTapeRatings()
+      .then(({ ratings, buckets }) => { setRatingOpts(ratings); setRatingBuckets(buckets); })
+      .catch(() => { setRatingOpts([]); setRatingBuckets([]); });
     fetchTradeFlags()
       .then((rows) => setFlagIds(new Set(rows.map((r) => r.trade_id))))
       .catch(() => {});
@@ -901,12 +930,17 @@ export default function TradesTape() {
           </div>
 
           <div className="fgroup">
-            {ratingOpts.map((r) => (
+            {ratingBuckets.map((r) => (
               <button key={r.name} className={"chip-btn" + (ratings.includes(r.name) ? " on" : "")}
-                style={ratings.includes(r.name) ? undefined : { color: ratingColor(r.name) }}
+                style={ratings.includes(r.name) ? undefined : { color: ratingColor(r.name === "BELOW" ? "BB" : r.name) }}
                 title={`${r.count} бумаг в справочниках`}
-                onClick={() => setRatings((a) => toggle(a, r.name))}>{r.name}</button>
+                onClick={() => setRatings((a) => toggle(a, r.name))}>
+                {RT_BUCKET_LABEL[r.name] || r.name}
+              </button>
             ))}
+            <RatingMenu options={ratingOpts} sel={ratings}
+              onToggle={(name) => setRatings((a) => toggle(a, name))}
+              onClear={() => setRatings((a) => a.filter((k) => BUCKET_KEYS.has(k)))} />
           </div>
 
           <div className="fgroup" title="Нижний порог суммы сделки, млн ₽. Верхней границы нет: крупные принты — то, ради чего лента и открыта.">

@@ -2593,8 +2593,12 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* Мини-окошко сделок по наведению на кнопку «график» (ChartPeek + TradeMiniChart).
    Портал в body: у ленты свой скролл-контейнер, внутри него окно обрезалось бы. */
 .tmc-pop { position: fixed; z-index: 60; background: var(--bg);
-  border: 1px solid var(--line-2); box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
-  padding: 6px 8px 4px; }
+  border: 1px solid var(--line-2); box-shadow: 0 8px 26px rgba(0, 0, 0, .45);
+  padding: 7px 10px 5px; box-sizing: border-box;
+  /* на узком экране окно шире вьюпорта не растёт — иначе график уезжал за край */
+  max-width: calc(100vw - 16px); }
+/* на чёрном фоне тень не читается — окно отделяет от ленты рамка посветлее */
+.theme-dark .tmc-pop { border-color: var(--mut-2); }
 .tmc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin-bottom: 2px; }
 .tmc-name { font-family: var(--mono); font-size: 10.5px; color: var(--fg);
@@ -2606,7 +2610,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .tmc-sbtn:hover { color: var(--fg); border-color: var(--fg); }
 .tmc-sbtn.on { background: var(--inv-bg); color: var(--inv-fg); border-color: var(--inv-bg); }
 .tmc-box { position: relative; }
-.tmc-empty { display: flex; align-items: center; justify-content: center; height: 150px;
+.tmc-empty { display: flex; align-items: center; justify-content: center;
   font-size: 11px; color: var(--mut); text-align: center; padding: 0 10px; }
 .tmc-foot { font-family: var(--mono); font-size: 9px; color: var(--mut-2);
   letter-spacing: .04em; min-height: 11px; }
