@@ -1905,7 +1905,10 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sb-row-2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; margin-top: 3px;
             font-size: 12.5px; color: var(--mut); }
 .sb-time { font-family: var(--mono); color: var(--mut); }
-.sb-px, .sb-vol { color: var(--mut); }
+.sb-px { color: var(--mut); }
+/* объём набирается тем же моноширинным, что и спред: две главные величины
+   строки читаются как пара, а не как «число и подпись» */
+.sb-vol { color: var(--mut); font-family: var(--mono); white-space: nowrap; }
 .sb-mode { color: var(--mut-2); }
 .sb-row-3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
             font-family: var(--mono); font-size: 9.5px; color: var(--mut-2);
