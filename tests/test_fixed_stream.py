@@ -164,3 +164,24 @@ def test_fixed_volume_ticket_price_and_spread(fixed_row, monkeypatch):
         assert key in out["g_spread_vol"]
     finally:
         us._vol_sizes.clear()
+
+
+def test_disabled_layer_serves_empty_without_network(monkeypatch):
+    """FIXED_TAB=0: ручки фиксов отвечают пустотой и НЕ ходят в MOEX.
+
+    Слой гасят, когда он мешает флоатерам; ходить за универсом ради витрины,
+    которой на фронте уже нет, — ровно та нагрузка, от которой избавлялись."""
+    import asyncio as _aio
+    from api.routes import fixed as route
+    from services import fixed_income as fi
+
+    monkeypatch.setenv("FIXED_TAB", "0")
+
+    async def boom():
+        raise AssertionError("сеть не должна дёргаться при выключенном слое")
+
+    monkeypatch.setattr(fi, "fetch_fixed_universe", boom)
+    resp = _aio.run(route.get_fixed())
+    assert resp["items"] == [] and resp["total"] == 0 and resp["disabled"] is True
+    quotes = _aio.run(route.get_fixed_quotes())
+    assert quotes["items"] == [] and quotes["disabled"] is True

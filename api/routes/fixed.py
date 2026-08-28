@@ -59,6 +59,12 @@ async def get_fixed(
     vol_ask: float = Query(None, description="Тикет на оффере, ₽"),
 ):
     """{items, total, calc_date} — фиксы с YTM/g-спред/z-спред/дюрацией."""
+    from services.feature_flags import fixed_enabled
+    if not fixed_enabled():
+        # слой выключен (FIXED_TAB=0): прогрева нет, и ходить за универсом в
+        # MOEX ради пустой витрины незачем — старая вкладка получит пустой ответ
+        return {"items": [], "total": 0, "disabled": True,
+                "calc_date": date.today().isoformat()}
     from services import fixed_income as fi
     # размеры тикета регистрируем В ДВИЖКЕ: он посчитает цену набора и спред по
     # ней в своём такте по методике, а ручка только выберет нужный размер
@@ -118,6 +124,9 @@ async def get_fixed_quotes():
 
     ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
     """
+    from services.feature_flags import fixed_enabled
+    if not fixed_enabled():
+        return {"ts": None, "n": 0, "items": [], "disabled": True}
     from services import fixed_income as fi
     from services import live_quotes
     uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
