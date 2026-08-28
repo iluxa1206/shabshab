@@ -63,6 +63,42 @@ def test_redemption_is_indexed(ruonia_curve, calc_date):
                                               rel=1e-6)
 
 
+def test_principal_uses_price_base_not_schedule(ruonia_curve, calc_date):
+    """Погашение считается от НОМИНАЛА ЦЕНЫ, а не от суммы в графике MOEX.
+
+    Биржа публикует сумму погашения по СЕГОДНЯШНЕМУ индексированному номиналу и
+    переписывает её каждый день. При оценке на прошлую дату (as-of) в графике
+    стоит свежий номинал, а цена котируется от старого: истёкшая индексация
+    уезжала в спред (ВЭБ2Р-58 на 16.06.2026: Y-IDX 315 бп вместо 213 при
+    неизменной цене).
+    """
+    bond = _linker_bond()
+    periods = quarterly_periods(bond.issue_date, bond.maturity_date)
+    stale = [{"date": bond.maturity_date.isoformat(), "value": 1080.0}]   # график «из будущего»
+    cfs = build_cashflows_to_maturity(bond, ruonia_curve, calc_date, explicit_periods=periods,
+                                      amorts=stale, face_grow_fn=_grow_15)
+    principal = sum(cf.amount_rub for cf in cfs if cf.type == "REDEMPTION")
+    assert principal == pytest.approx(1000.0 * _grow_15(calc_date, bond.maturity_date, None),
+                                      rel=1e-6)
+
+
+def test_amortizing_linker_keeps_schedule_shape(ruonia_curve, calc_date):
+    """Нормировка графика к базе цены сохраняет ДОЛИ траншей: 30/30/40 остаются
+    30/30/40 от номинала цены, каждый со своим множителем индексации."""
+    bond = _linker_bond()
+    periods = quarterly_periods(bond.issue_date, bond.maturity_date)
+    am = [{"date": date(2028, 1, 12).isoformat(), "value": 324.0},   # график в чужой базе:
+          {"date": date(2029, 1, 12).isoformat(), "value": 324.0},   # 30/30/40 от 1080
+          {"date": bond.maturity_date.isoformat(), "value": 432.0}]
+    cfs = build_cashflows_to_maturity(bond, ruonia_curve, calc_date, explicit_periods=periods,
+                                      amorts=am, face_grow_fn=_grow_15)
+    red = sorted((cf for cf in cfs if cf.type == "REDEMPTION"), key=lambda c: c.pay_date)
+    real = [cf.amount_rub / _grow_15(calc_date, cf.pay_date, None) for cf in red]
+    assert sum(real) == pytest.approx(1000.0, rel=1e-6)
+    assert real[0] == pytest.approx(300.0, rel=1e-6)
+    assert real[2] == pytest.approx(400.0, rel=1e-6)
+
+
 def test_moex_echo_value_is_ignored(ruonia_curve, calc_date):
     """Сумма купона из bondization у линкера — ЭХО по сегодняшнему номиналу
     (MOEX проставляет её сразу во все периоды). Как факт она занижает хвост
