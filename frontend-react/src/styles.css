@@ -2589,3 +2589,28 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .pf-rej-list { margin-top: 10px; max-height: 260px; overflow-y: auto; }
 .pf-rej-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px;
   padding: 3px 0; border-bottom: 1px solid var(--line); }
+
+/* Мини-окошко сделок по наведению на кнопку «график» (ChartPeek + TradeMiniChart).
+   Портал в body: у ленты свой скролл-контейнер, внутри него окно обрезалось бы. */
+.tmc-pop { position: fixed; z-index: 60; background: var(--bg);
+  border: 1px solid var(--line-2); box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  padding: 6px 8px 4px; }
+.tmc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 2px; }
+.tmc-name { font-family: var(--mono); font-size: 10.5px; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tmc-sw { display: inline-flex; gap: 3px; flex: none; }
+.tmc-sbtn { background: transparent; border: 1px solid var(--line-2); color: var(--mut);
+  font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+  line-height: 1; padding: 3px 5px; cursor: pointer; }
+.tmc-sbtn:hover { color: var(--fg); border-color: var(--fg); }
+.tmc-sbtn.on { background: var(--inv-bg); color: var(--inv-fg); border-color: var(--inv-bg); }
+.tmc-box { position: relative; }
+.tmc-empty { display: flex; align-items: center; justify-content: center; height: 150px;
+  font-size: 11px; color: var(--mut); text-align: center; padding: 0 10px; }
+.tmc-foot { font-family: var(--mono); font-size: 9px; color: var(--mut-2);
+  letter-spacing: .04em; min-height: 11px; }
+/* точка сделки: цвет — сторона агрессора, у адресных её нет (нейтральная) */
+.tmc-dot { fill: var(--mut); fill-opacity: .75; }
+.tmc-dot.buy { fill: var(--up); fill-opacity: .85; }
+.tmc-dot.sell { fill: var(--down); fill-opacity: .85; }

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings,
          fetchTradeFlags, addTradeFlag, removeTradeFlag } from "../api.js";
@@ -8,6 +9,7 @@ import { HeaderCell } from "./TableHeader.jsx";
 import { IconCalendar, IconFlag } from "./icons.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import CouponFormula from "./CouponFormula.jsx";
+import TradeMiniChart from "./TradeMiniChart.jsx";
 import { usePageStatus } from "../pageStatus.jsx";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
@@ -32,6 +34,12 @@ import { usePageStatus } from "../pageStatus.jsx";
 const MAX_DAYS = 400;
 const PERIODS = [[1, "1д"], [7, "7д"], [30, "30д"], [null, "всё"]];
 const PAGE = 500;
+// Предпросмотр графика по наведению: геометрия окошка и задержки открытия/
+// закрытия (мс). Закрытие медленнее открытия — курсору надо доехать до окна.
+const PEEK_W = 380;
+const PEEK_H = 260;
+const PEEK_OPEN_MS = 260;
+const PEEK_CLOSE_MS = 240;
 // РПС здесь = дневной агрегат адресных режимов (см. шапку файла)
 const MARKETS = [[null, "все"], ["bonds", "Т+"], ["ndm", "РПС"]];
 const SIDES = [[null, "любая"], ["buy", "buy"], ["sell", "sell"]];
@@ -219,17 +227,67 @@ function IsinCell({ isin }) {
   );
 }
 
+/** Предпросмотр графика по наведению на кнопку «график»: мини-окошко со всеми
+ *  сделками бумаги точками (оси — дата и цена/спред) под теми же фильтрами, что
+ *  стоят на ленте. Открывается с задержкой — иначе окно вспыхивало бы на каждом
+ *  проходе мыши по колонке кнопок; закрывается тоже с задержкой, чтобы курсор
+ *  успел переехать в само окно (там переключатель цена/спред).
+ *
+ *  Рисуем через портал в body: у таблицы ленты свой скролл-контейнер с
+ *  overflow, внутри него окошко обрезалось бы по краю таблицы. Отсюда же
+ *  координаты — фиксированные, от прямоугольника кнопки. */
+function ChartPeek({ isin, name, params, onOpen }) {
+  const [pos, setPos] = useState(null);
+  const btn = useRef(null);
+  const timer = useRef(null);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const show = () => {
+    clearTimeout(timer.current);
+    if (pos) return;
+    timer.current = setTimeout(() => {
+      const r = btn.current?.getBoundingClientRect();
+      if (!r) return;
+      // окно уходит влево от кнопки (она у правого края строки) и вниз, а у
+      // нижней кромки экрана переворачивается вверх
+      const left = Math.min(Math.max(8, r.right - PEEK_W), window.innerWidth - PEEK_W - 8);
+      const top = r.bottom + 6 + PEEK_H > window.innerHeight
+        ? Math.max(8, r.top - PEEK_H - 6) : r.bottom + 6;
+      setPos({ left, top });
+    }, PEEK_OPEN_MS);
+  };
+  const hide = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setPos(null), PEEK_CLOSE_MS);
+  };
+  const keep = () => clearTimeout(timer.current);
+
+  return (
+    <>
+      <button type="button" className="tape-link" ref={btn}
+        title="График выпуска на весь экран; наведение — окошко со сделками"
+        onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
+        onClick={(e) => { e.stopPropagation(); clearTimeout(timer.current); setPos(null); onOpen(isin, "chart"); }}>
+        график
+      </button>
+      {pos && createPortal(
+        <div className="tmc-pop" style={{ left: pos.left, top: pos.top, width: PEEK_W }}
+          onMouseEnter={keep} onMouseLeave={hide} onClick={(e) => e.stopPropagation()}>
+          <TradeMiniChart isin={isin} name={name} params={params} />
+        </div>, document.body)}
+    </>
+  );
+}
+
 /** Кнопки строки: график во весь экран и стакан бумаги. Подписаны словами, а
  *  не значками — в плотной ленте иконку приходится расшифровывать наведением.
  *  Обе — обычная навигация, поэтому «назад» возвращает в ленту с её фильтрами. */
-function RowLinks({ isin, onOpen, kind, hasChart = true }) {
+function RowLinks({ isin, name, onOpen, kind, hasChart = true, peekParams }) {
   const stop = (e) => e.stopPropagation();
   return (
     <span className="tape-links">
-      {hasChart && (
-        <button type="button" className="tape-link" title="График выпуска на весь экран"
-          onClick={(e) => { stop(e); onOpen(isin, "chart"); }}>график</button>
-      )}
+      {hasChart && <ChartPeek isin={isin} name={name} params={peekParams} onOpen={onOpen} />}
       <button type="button" className="tape-link" title="Карточка бумаги со стаканом"
         onClick={(e) => { stop(e); onOpen(isin, "card", kind); }}>стакан</button>
     </span>
@@ -389,6 +447,18 @@ export default function TradesTape() {
     dateFrom: dateFrom || undefined,
     dateTo: dateTo || undefined,
   };
+
+  // Срез для мини-окошка по наведению: те же условия, что и у ленты, но без
+  // ISIN и лимита — бумагу подставляет сама кнопка строки. Держим объектом,
+  // чтобы окошко и лента не разъезжались по фильтрам (и чтобы ключ кэша
+  // запроса менялся вместе с ними).
+  const peekParams = useMemo(() => ({
+    ...win, minValue, side, market, issuer: emitters, scope,
+    spreadMin: num(spreadMin), spreadMax: num(spreadMax),
+    ttmMin: num(ttmMin), ttmMax: num(ttmMax),
+    rating: ratings, base: bases, cls, hideSubord: hideSub, hideAmort,
+  }), [win.days, win.dateFrom, win.dateTo, minValue, side, market, emitters, scope,
+       spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort]);
 
   useEffect(() => {
     localStorage.setItem(LS_FILTERS, JSON.stringify({
@@ -952,7 +1022,8 @@ export default function TradesTape() {
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
                     // у бумаг вне юниверса карточки нет — кнопки строки не рисуем
                     act: clickable
-                      ? <RowLinks isin={r.isin} onOpen={openBond} kind={bondKind} hasChart={isFloater} />
+                      ? <RowLinks isin={r.isin} name={r.name} onOpen={openBond} kind={bondKind}
+                          hasChart={isFloater} peekParams={peekParams} />
                       : null,
                   };
                   const head = dayHeads[r.trade_id];
