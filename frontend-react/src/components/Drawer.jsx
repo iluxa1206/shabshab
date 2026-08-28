@@ -401,12 +401,18 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
       <div className="ref-grid">
         <RefCell k="Эмитент / имя">{r.short_name}</RefCell>
         <RefCell k="ISIN">{r.isin}</RefCell>
-        <RefCell k="База">{baseLabel(r.base_rate_type)}</RefCell>
+        <RefCell k="База">{baseLabel(r.base_rate_type) + (r.face_index ? " · индексируемый номинал" : "")}</RefCell>
         <RefCell k="Формула купона">
           <CouponFormula base={r.base_rate_type} spreadBps={r.spread_bps} formula={r.formula}
+            faceIndex={r.face_index}
             couponsPerYear={couponsPerYear(r.coupon_period_days, r.coupons_per_year)} />
         </RefCell>
-        <RefCell k="Спред выпуска">{r.spread_bps != null ? "+" + r.spread_bps + " bps" : null}</RefCell>
+        {/* У линкера это не спред к базе, а фиксированная ставка купона: по базе
+            растёт номинал, складывать её с RUONIA нельзя. */}
+        <RefCell k={r.face_index ? "Ставка купона" : "Спред выпуска"}>
+          {r.spread_bps != null
+            ? (r.face_index ? fmt.pct(r.spread_bps / 100) + "% год." : "+" + r.spread_bps + " bps")
+            : null}</RefCell>
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>
         <RefCell k="Размещение">{fmt.date(r.start_date)}</RefCell>
         <RefCell k="Погашение">{fmt.date(r.maturity_date)}</RefCell>

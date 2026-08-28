@@ -318,6 +318,7 @@ def extract_bond_reference_dict(isin: str, data: dict, ref_obj: BondRefData) -> 
         "face_value": ref_obj.face_value,
         "face_unit": data.get("FACEUNIT", "RUB"),
         "base_rate_type": ref_obj.base,
+        "face_index": ref_obj.face_index,
         "spread_bps": ref_obj.spread_issue_bps,
         "formula": data.get("FORMULA", ""),
         "start_date": ref_obj.issue_date,

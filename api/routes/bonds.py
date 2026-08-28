@@ -283,6 +283,7 @@ async def get_bonds(
                 isin=isin,
                 short_name=short_name,
                 base_rate_type=ref_obj.base,
+                face_index=ref_obj.face_index,
                 formula=formula,
                 spread_issue_bps=ref_obj.spread_issue_bps,
                 coupons_per_year=_coupons_per_year(ref_obj.coupon_period_days,

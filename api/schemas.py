@@ -33,6 +33,9 @@ class BondReference(BaseModel):
     face_value: float
     face_unit: str
     base_rate_type: str
+    # ЛИНКЕР: база индексации НОМИНАЛА ('RUONIA' | None). spread_bps у такой
+    # бумаги — не спред к базе, а фиксированная ставка купона.
+    face_index: Optional[str] = None
     spread_bps: int
     formula: str
     start_date: Optional[date]

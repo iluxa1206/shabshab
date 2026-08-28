@@ -156,8 +156,13 @@ export const COLS = [
       <CouponFormula base={b.base_rate_type} spreadBps={b.spread_issue_bps}
         faceIndex={b.face_index}
         couponsPerYear={b.coupons_per_year} formula={b.formula} /></td> },
+  // У линкера в этой колонке НЕ спред к базе, а фиксированная ставка купона:
+  // складывать её с RUONIA нельзя, по индексу растёт номинал. Значение то же,
+  // подпись в подсказке.
   { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num", w: 8,
-    cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
+    cell: (b) => <td className="num" key="spread_issue_bps"
+      title={b.face_index ? "фиксированная ставка купона, а не спред к базе: по базе растёт номинал" : undefined}>
+      {b.spread_issue_bps != null ? (b.face_index ? "" : "+") + b.spread_issue_bps : <D />}</td> },
   { key: "next_coupon_date", label: "COUPON", sub: "NEXT", w: 10,
     cell: (b) => <td className="num" style={{ fontSize: 12 }} key="next_coupon_date">{fmt.date(b.next_coupon_date) ?? <D />}</td> },
   // Два этажа: погашение с годами до него, под ним — дата оферты (если есть) с
