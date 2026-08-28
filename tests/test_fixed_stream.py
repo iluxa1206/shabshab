@@ -91,7 +91,7 @@ def test_side_move_asks_full_recount_for_fixed(monkeypatch):
     for isin in both:      # вторая: цена сделки та же, сдвинулся только бид
         asyncio.run(us._on_quote(isin, {"last_price": 100.0, "bid": 99.2, "ask": 100.5}))
     assert us._dirty == {"RU000A1FIX01"}
-    assert us._sides_dirty == {"RU000A1FLT01"}
+    assert set(us._sides_dirty) == {"RU000A1FLT01"}
 
 
 def test_pool_groups_are_independent(monkeypatch):
@@ -135,3 +135,32 @@ def test_pool_groups_are_independent(monkeypatch):
                 us._depth_shards.pop(sid, None)
 
     asyncio.run(scenario())
+
+
+def test_fixed_volume_ticket_price_and_spread(fixed_row, monkeypatch):
+    """ФИЛЬТР ПО ОБЪЁМУ: цена набора тикета по лестнице стакана и g-спред ПО НЕЙ.
+
+    Считает движок, а не браузер: в браузере нет ни потока, ни кривой, а спред
+    по цене набора обязан считаться той же методикой, что и по цене сделки."""
+    row, sched = fixed_row
+    isin = row["isin"]
+    from services import depth as depth_svc
+    # книга: бид тонкий сверху, глубже дешевле — набор на 5 млн ₽ уедет от верха
+    monkeypatch.setattr(depth_svc, "get_depth", lambda: {isin: {
+        "b": [[99.5, 100], [99.0, 5000], [98.5, 20000]],
+        "a": [[100.5, 100], [101.0, 5000]],
+    }})
+    us.register_vol_sizes([5_000_000])
+    try:
+        ctx = _ctx({isin: row}, {isin: sched})
+        out = us._crunch([(isin, {"last_price": 100.0, "bid": 99.5, "ask": 100.5})], ctx)[isin]
+        key = "bid:5000000"
+        assert out["vol_px"][key] is not None, "цена набора посчитана"
+        assert out["vol_px"][key] < 99.5, "набор уходит вглубь книги, ниже верха бида"
+        # метрики по цене набора — свои, и доходность ВЫШЕ, чем по верху бида
+        # (набор уехал вглубь, цена ниже). g-спред считается там же, но в тесте
+        # кривой нет — проверяем, что ключ заполняется той же парой.
+        assert out["ytm_vol"][key] > out["ytm_bid"]
+        assert key in out["g_spread_vol"]
+    finally:
+        us._vol_sizes.clear()

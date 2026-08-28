@@ -89,14 +89,14 @@ def test_small_trade_inside_universe_kept(ts):
     assert len(mod._buf.get("RU000TEST01") or []) == 1
 
 
-def test_fixed_gets_live_count_but_not_archive(ts, monkeypatch):
-    """ФИКС: мелкая сделка кормит живой счёт дня (VWAP/оборот витрины), но в
-    архив не идёт.
+def test_fixed_tick_goes_to_tape_and_live_count(ts, monkeypatch):
+    """ФИКС: мелкая сделка идёт и в живой счёт дня, и в ленту — порога для него
+    нет, как и для флоатер-юниверса.
 
-    Тик фикса всё равно доедет в архив плановым добором (bars.refresh_universe →
-    trades_archive.drain), поэтому дублировать тот же объём ещё и realtime-записью
-    незачем: в ленте крупняк живой, остальное приезжает добором. А вот средневзвес
-    и оборот витрины обязаны считать КАЖДУЮ сделку — иначе VWAP смещён."""
+    Порог существует ради бумаг вне обеих витрин. У фикса своя лента, и сделка
+    должна быть видна сразу, а не через час плановым добором. Объём базы от этого
+    не растёт: те же тики доезжают добором, а вставка идёт INSERT OR IGNORE по
+    (isin, trade_id)."""
     _pdb, mod = ts
     from services import live_quotes
     seen = []
@@ -108,4 +108,5 @@ def test_fixed_gets_live_count_but_not_archive(ts, monkeypatch):
     mod._on_trade("RU000FIXED1", {"id": 7, "price": 100.0, "qty": 5,
                                   "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
     assert seen == ["RU000FIXED1"], "живой счёт дня получил тик"
-    assert mod._buf == {} and mod._stats["skipped_small"] == 1, "в архив не пишем"
+    assert len(mod._buf.get("RU000FIXED1") or []) == 1, "тик уехал в ленту/архив"
+    assert mod._stats["skipped_small"] == 0

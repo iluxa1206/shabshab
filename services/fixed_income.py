@@ -467,6 +467,11 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
         "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
         "put_date": m.get("put_date"),
+        # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
+        # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
+        # флоатеров, чтобы арифметика книги на фронте была одна на две витрины
+        "face_value_rub": m.get("face_current"),
+        "accrued_rub": row.get("accrued"),
     })
     # МЕТРИКИ ПО ДРУГИМ ЦЕНАМ той же бумаги: средневзвес дня и стороны стакана.
     # Средневзвес — база аналитики: last price это ОДНА сделка, в неликвиде

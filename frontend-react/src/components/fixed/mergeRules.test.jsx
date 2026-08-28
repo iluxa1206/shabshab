@@ -97,3 +97,28 @@ describe("пара «цена → спред» едет из одного рас
     expect(n.g_spread_wap_bps).toBe(33);
   });
 });
+
+describe("фильтр по объёму на витрине фиксов", () => {
+  // Арифметика книги одна на две витрины (src/vwap.js), различаются только
+  // имена чисел, которые она подменяет: у фикса это цена стороны и g-спред.
+  const LADDER = { b: [[99.5, 100], [99.0, 5000]], a: [[100.5, 100], [101.0, 5000]] };
+  const ROW = {
+    isin: "RU000A1FIX01", face_value_rub: 1000, accrued_rub: 10,
+    bid: 99.5, ask: 100.5, g_spread_bid_bps: 120, g_spread_ask_bps: 90,
+    vol_bid_price_pct: 99.1, g_spread_vol_bid_bps: 135,
+  };
+
+  it("цена стороны и g-спред берутся на объём набора", async () => {
+    const { applyVolume, FIXED_VOL_FIELDS } = await import("../../vwap.js");
+    const n = applyVolume(ROW, LADDER, 3_000_000, 0, "and", FIXED_VOL_FIELDS);
+    expect(n.bid).toBe(99.1);                 // число движка, не верх стакана
+    expect(n.g_spread_bid_bps).toBe(135);
+    expect(n.ask).toBe(100.5);                // сторона без фильтра не тронута
+    expect(n._vwap_bid).toBeGreaterThan(0);
+  });
+
+  it("книги не хватило — строка уходит из выборки", async () => {
+    const { applyVolume, FIXED_VOL_FIELDS } = await import("../../vwap.js");
+    expect(applyVolume(ROW, LADDER, 900_000_000, 0, "and", FIXED_VOL_FIELDS)).toBeNull();
+  });
+});

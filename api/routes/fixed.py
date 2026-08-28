@@ -28,13 +28,43 @@ _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur
                 "bid", "ask", "g_spread_bid_bps", "g_spread_ask_bps",
                 "ytm_bid", "ytm_ask",
                 # движение к вчерашнему закрытию и признаки выпуска для фильтров
-                "delta_to_prev_close", "has_amort", "price_thin")
+                "delta_to_prev_close", "has_amort", "price_thin",
+                # номинал на дату поставки и НКД — из них фронт считает ДЕНЬГИ
+                # уровня стакана для фильтра по объёму тикета
+                "face_value_rub", "accrued_rub")
+
+
+def _vol_fields(m: dict, vol_bid, vol_ask) -> dict:
+    """Цена набора тикета и метрики ПО НЕЙ — из чисел, посчитанных движком в его
+    такте (universe_stream._crunch_fixed). Здесь ничего не считается: своя
+    арифметика в ручке разъехалась бы с движком — то же правило, что у флоатеров
+    (api/routes/bonds._vol_fields)."""
+    out: dict = {}
+    px_map = m.get("vol_px") or {}
+    g_map = m.get("g_spread_vol") or {}
+    y_map = m.get("ytm_vol") or {}
+    for side, size in (("bid", vol_bid), ("ask", vol_ask)):
+        if not size:
+            continue
+        key = f"{side}:{float(size):.0f}"
+        out[f"vol_{side}_price_pct"] = px_map.get(key)
+        out[f"g_spread_vol_{side}_bps"] = g_map.get(key)
+        out[f"ytm_vol_{side}"] = y_map.get(key)
+    return out
 
 
 @router.get("", tags=["Fixed"])
-async def get_fixed():
+async def get_fixed(
+    vol_bid: float = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её g-спред"),
+    vol_ask: float = Query(None, description="Тикет на оффере, ₽"),
+):
     """{items, total, calc_date} — фиксы с YTM/g-спред/z-спред/дюрацией."""
     from services import fixed_income as fi
+    # размеры тикета регистрируем В ДВИЖКЕ: он посчитает цену набора и спред по
+    # ней в своём такте по методике, а ручка только выберет нужный размер
+    if vol_bid or vol_ask:
+        from services.universe_stream import register_vol_sizes
+        register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
     uni = market_cache.get("fixed_universe")
     if not uni:
         uni = await fi.fetch_fixed_universe()
@@ -68,6 +98,8 @@ async def get_fixed():
         for k in _METRIC_KEYS:
             if k in m:
                 item[k] = m[k]
+        if vol_bid or vol_ask:
+            item.update(_vol_fields(m, vol_bid, vol_ask))
         items.append(item)
 
     return {"items": items, "total": len(items),

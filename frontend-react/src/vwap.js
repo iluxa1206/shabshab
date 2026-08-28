@@ -59,7 +59,17 @@ function passes(v, want) {
 // "or" — достаточно одной. Возвращает null, если условие не выполнено (строку
 // прячем: тикет не исполнить). Заполненная сторона, не набравшая объём, гаснет
 // в прочерк — в режиме "or" строка может остаться живой за счёт второй стороны.
-export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
+// Имена полей строки, куда кладётся результат. У монитора флоатеров это Y-IDX
+// по сторонам, у монитора фиксов — g-спред: арифметика книги одна, различаются
+// только названия чисел, которые она подменяет.
+const FLOATER_FIELDS = {
+  bidPx: "bid_price_pct", askPx: "ask_price_pct",
+  bidSpread: "y_idx_bid_bps", askSpread: "y_idx_ask_bps",
+  volBidPx: "vol_bid_price_pct", volAskPx: "vol_ask_price_pct",
+  volBidSpread: "y_idx_vol_bid_bps", volAskSpread: "y_idx_vol_ask_bps",
+};
+
+export function applyVolume(b, ladder, volBid, volAsk, mode = "and", fields = FLOATER_FIELDS) {
   const wantBid = volBid > 0, wantAsk = volAsk > 0;
   if (!wantBid && !wantAsk) return b;
   if (!ladder) return null;
@@ -90,9 +100,18 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and") {
     // Без этого фолбэка цена пропадала бы у всех, по кому движок ещё не
     // проходил, — а у застывшего неликвида повода напомнить о себе может не
     // быть весь день.
-    bid_price_pct: wantBid ? (okBid ? (b.vol_bid_price_pct ?? px(bid)) : null) : b.bid_price_pct,
-    ask_price_pct: wantAsk ? (okAsk ? (b.vol_ask_price_pct ?? px(ask)) : null) : b.ask_price_pct,
-    y_idx_bid_bps: wantBid ? (okBid ? (b.y_idx_vol_bid_bps ?? null) : null) : b.y_idx_bid_bps,
-    y_idx_ask_bps: wantAsk ? (okAsk ? (b.y_idx_vol_ask_bps ?? null) : null) : b.y_idx_ask_bps,
+    [fields.bidPx]: wantBid ? (okBid ? (b[fields.volBidPx] ?? px(bid)) : null) : b[fields.bidPx],
+    [fields.askPx]: wantAsk ? (okAsk ? (b[fields.volAskPx] ?? px(ask)) : null) : b[fields.askPx],
+    [fields.bidSpread]: wantBid ? (okBid ? (b[fields.volBidSpread] ?? null) : null) : b[fields.bidSpread],
+    [fields.askSpread]: wantAsk ? (okAsk ? (b[fields.volAskSpread] ?? null) : null) : b[fields.askSpread],
   };
 }
+
+// Строка МОНИТОРА ФИКСОВ: те же наборы по лестнице, но подменяются цена стороны
+// и g-спред по ней (см. components/fixed/fixedCols.jsx).
+export const FIXED_VOL_FIELDS = {
+  bidPx: "bid", askPx: "ask",
+  bidSpread: "g_spread_bid_bps", askSpread: "g_spread_ask_bps",
+  volBidPx: "vol_bid_price_pct", volAskPx: "vol_ask_price_pct",
+  volBidSpread: "g_spread_vol_bid_bps", volAskSpread: "g_spread_vol_ask_bps",
+};

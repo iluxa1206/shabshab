@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { connectMarketWs, fetchFixed, fetchFixedQuotes } from "../../api.js";
-import { fmt, ratingMatches, yearsToIso } from "../../format.js";
+import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../../api.js";
+import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
 import { makeBondFilter } from "../../search.js";
+import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
 import { usePageStatus } from "../../pageStatus.jsx";
 import Toolbar from "../Toolbar.jsx";
 import BondTable from "../BondTable.jsx";
@@ -18,7 +19,8 @@ import { FIXED_COLS, FIXED_COL_META, FIXED_DEFAULT_COLS } from "./fixedCols.jsx"
 // localStorage с суффиксом _fx. Иначе переключение типа бумаг тащило бы за
 // собой чужой отбор (у фиксов нет ни базы купона, ни бумаг того же эмитента).
 const FILTER_KEYS = ["fxq", "fxw", "fxrt", "fxem", "fxcls", "fxnosub", "fxnoam",
-                     "fxmyf", "fxmyt", "fxgf", "fxgt", "fxyf", "fxyt", "fxtwo"];
+                     "fxmyf", "fxmyt", "fxgf", "fxgt", "fxyf", "fxyt", "fxtwo",
+                     "fxvb", "fxva", "fxvm"];
 // Суборды/перпы — по имени выпуска, тот же паттерн, что у флоатеров (App.jsx)
 // и у скринера (services/screener_core.py::_SUBORD_RE).
 const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
@@ -117,6 +119,15 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   const [clsSel, setClsSel] = useState(() => initialParams().getAll("fxcls"));
   // односторонний рынок торговать нечем — тот же чип BID×OFFER, что у флоатеров
   const [twoSided, setTwoSided] = useState(() => initialParams().get("fxtwo") === "1");
+  // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка
+  // стороны пересчитывается в средневзвешенную цену набора по лестнице стакана,
+  // а g-спред к этой цене считает движок (см. universe_stream._crunch_fixed)
+  const [volBid, setVolBid] = useState(() => Number(initialParams().get("fxvb"))
+    || Number(ls("volBidRub_fx", "0")) || 0);
+  const [volAsk, setVolAsk] = useState(() => Number(initialParams().get("fxva"))
+    || Number(ls("volAskRub_fx", "0")) || 0);
+  const [volMode, setVolMode] = useState(() => (initialParams().get("fxvm")
+    || ls("volMode_fx")) === "or" ? "or" : "and");
   // суборды вон по умолчанию — как у флоатеров: другой класс риска, спред к ним
   // не сравним со старшим долгом
   const [hideSub, setHideSub] = useState(() => {
@@ -185,6 +196,9 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       if (hideSub) next.set("fxnosub", "1");
       if (hideAmort) next.set("fxnoam", "1");
       if (twoSided) next.set("fxtwo", "1");
+      if (volBid) next.set("fxvb", String(volBid));
+      if (volAsk) next.set("fxva", String(volAsk));
+      if (volMode === "or" && (volBid || volAsk)) next.set("fxvm", "or");
       if (matFrom) next.set("fxmyf", matFrom);
       if (matTo) next.set("fxmyt", matTo);
       if (spreadFrom) next.set("fxgf", spreadFrom);
@@ -194,6 +208,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       return next;
     }, { replace: true });
   }, [query, onlyWatch, ratingsSel, emittersSel, clsSel, hideSub, hideAmort, twoSided,
+      volBid, volAsk, volMode,
       matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord_fx", hideSub ? "1" : "0"); }, [hideSub]);
@@ -204,6 +219,9 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   useEffect(() => { localStorage.setItem("gSpreadTo_fx", spreadTo); }, [spreadTo]);
   useEffect(() => { localStorage.setItem("ytmFrom_fx", ytmFrom); }, [ytmFrom]);
   useEffect(() => { localStorage.setItem("ytmTo_fx", ytmTo); }, [ytmTo]);
+  useEffect(() => { localStorage.setItem("volBidRub_fx", String(volBid)); }, [volBid]);
+  useEffect(() => { localStorage.setItem("volAskRub_fx", String(volAsk)); }, [volAsk]);
+  useEffect(() => { localStorage.setItem("volMode_fx", volMode); }, [volMode]);
   useEffect(() => { localStorage.setItem("watch_fx", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols_fx", JSON.stringify(visibleCols)); }, [visibleCols]);
   useEffect(() => { localStorage.setItem("colw_fx", JSON.stringify(colWidths)); }, [colWidths]);
@@ -212,10 +230,25 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   // ── данные ──
   // метрики (YTM/спреды/дюрация) — свой цикл прогрева на бэке, тянем реже;
   // цены и стакан — тактом 5 с отдельной лёгкой ручкой
-  const listQ = useQuery({ queryKey: ["fixed"], queryFn: fetchFixed,
-    staleTime: 30_000, refetchInterval: 60_000 });
+  const listQ = useQuery({
+    // размеры тикета — часть ключа: сменил объём, значит нужны другие цены
+    // наборов (их считает движок, ручка только выбирает нужный размер)
+    queryKey: ["fixed", volBid, volAsk],
+    queryFn: () => fetchFixed({ volBid, volAsk }),
+    staleTime: 30_000, refetchInterval: 60_000, placeholderData: (prev) => prev,
+  });
   const quotesQ = useQuery({ queryKey: ["fixed-quotes"], queryFn: fetchFixedQuotes,
     refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS });
+
+  // Лестницы стаканов — только когда фильтр по объёму включён: ответ тяжёлый
+  // (весь рынок × 20 уровней), а без фильтра он не нужен. Бэк держит их
+  // push-свежими (depth-пул universe_stream), поэтому такт частый.
+  const volOn = volBid > 0 || volAsk > 0;
+  const depthQ = useQuery({
+    queryKey: ["depth"], queryFn: fetchDepth, refetchInterval: 15000,
+    enabled: volOn, staleTime: 10000,
+  });
+  const depth = depthQ.data?.items;
 
   // ЖИВОЙ ПОТОК. Пул котировок и стаканов Alor покрывает и фиксы
   // (services/universe_stream), движок пересчитывает по цене YTM и g-спред и
@@ -227,6 +260,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   // применяются один раз здесь, а не при каждом рендере таблицы.
   const [overlay, setOverlay] = useState({});
   const bufRef = useRef({});
+  const wsRef = useRef(null);
   const tsRef = useRef({});      // isin → monotonic-ish время последнего пуша
   const flushRef = useRef(null);
   // wildcard-подписка несёт ВЕСЬ пул, включая флоатеров: чужие патчи молча
@@ -266,11 +300,19 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         });
       }, WS_FLUSH_MS);
     });
+    wsRef.current = conn;
     return () => {
+      wsRef.current = null;
       if (flushRef.current) { clearTimeout(flushRef.current); flushRef.current = null; }
       conn.close();
     };
   }, []);
+
+  // Размеры тикета — в движок тем же сокетом: он считает цену набора и спред по
+  // ней только по размерам, которые кто-то смотрит, и помнит их с TTL.
+  useEffect(() => {
+    wsRef.current?.setVolSizes([volBid, volAsk].filter((v) => v > 0));
+  }, [volBid, volAsk]);
 
   // Ссылки НЕизменившихся строк держим стабильными: таблица пересобирается на
   // каждом такте котировок, а memo(BondRow) снимает ре-рендер тех ~700 строк,
@@ -330,6 +372,14 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     if (hideSub) r = r.filter((b) => !SUBORD_RE.test(b.short_name || ""));
     if (hideAmort) r = r.filter((b) => !b.has_amort);
     if (clsSel.length) r = r.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
+    // ФИЛЬТР ПО ОБЪЁМУ: котировка заполненной стороны становится VWAP на её
+    // тикет по лестнице, g-спред — числом движка к этой цене. volMode решает
+    // судьбу строки, когда заполнены оба поля. Чип BID×OFFER применяется
+    // следующим и может дополнительно потребовать обе стороны.
+    if (volOn && depth) {
+      r = r.map((b) => applyVolume(b, depth[b.isin], volBid, volAsk, volMode, FIXED_VOL_FIELDS))
+           .filter(Boolean);
+    }
     if (twoSided) r = r.filter((b) => b.bid != null && b.ask != null);
     // Окно срока — до ГОРИЗОНТА, к которому посчитаны метрики строки: оферта,
     // если поток обрезан на ней (put_date), иначе погашение.
@@ -366,6 +416,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     });
     return r;
   }, [bonds, onlyWatch, watch, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
+      volOn, volBid, volAsk, volMode, depth,
       matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, query, sort]);
 
   // Итоги выборки — в общую нижнюю полосу, как у флоатеров (Kpis/StatusBar),
@@ -412,15 +463,20 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   const activeFilters = (onlyWatch ? 1 : 0) + (ratingsSel.length ? 1 : 0)
     + (emittersSel.length ? 1 : 0) + (clsSel.length ? 1 : 0) + (hideSub ? 0 : 1)
     + (hideAmort ? 1 : 0) + (query !== "" ? 1 : 0) + (twoSided ? 1 : 0)
+    + (volBid > 0 || volAsk > 0 ? 1 : 0)
     + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0)
     + (ytmFrom !== "" ? 1 : 0) + (ytmTo !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setRatingsSel([]); setEmittersSel([]); setClsSel([]);
     setHideSub(true); setHideAmort(false); setQuery(""); setTwoSided(false);
+    setVolBid(0); setVolAsk(0);
     setMatFrom(""); setMatTo(""); setSpreadFrom(""); setSpreadTo("");
     setYtmFrom(""); setYtmTo("");
   }, []);
+
+  // ступени рейтинга витрины (меню «▾» рядом с чипами грейдов) — до фильтров
+  const ratingOpts = useMemo(() => ratingOptions(bonds.map((b) => b.rating)), [bonds]);
 
   const status = listQ.isPending ? "loading" : listQ.error ? "error" : "ready";
 
@@ -428,7 +484,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     <>
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
-        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)} ratingOpts={ratingOpts}
         issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
         activeFilters={activeFilters} onResetFilters={resetFilters}
@@ -436,6 +492,9 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         hideAmort={hideAmort} setHideAmort={setHideAmort}
         clsSel={clsSel} toggleCls={toggleIn(setClsSel)}
         twoSided={twoSided} setTwoSided={setTwoSided}
+        volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
+        volMode={volMode} setVolMode={setVolMode}
+        depthTs={depthQ.data?.ts} depthLoading={volOn && depthQ.isLoading}
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         spreadLabel="G-спред"
         spreadFrom={spreadFrom} setSpreadFrom={setSpreadFrom}

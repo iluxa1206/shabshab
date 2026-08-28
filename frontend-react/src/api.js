@@ -391,7 +391,16 @@ export const fetchPaymentsCalendar = ({ from, to } = {}) => {
   return request(`/api/bonds/calendar${q ? "?" + q : ""}`);
 };
 
-export const fetchFixed = () => request("/api/fixed");
+// vol_bid/vol_ask — размеры тикета: бэк регистрирует их в движке и возвращает
+// цену набора по лестнице стакана вместе с g-спредом по ней (считать это в
+// браузере нечем — там нет ни потока, ни кривой).
+export const fetchFixed = ({ volBid = 0, volAsk = 0 } = {}) => {
+  const p = new URLSearchParams();
+  if (volBid > 0) p.set("vol_bid", String(Math.round(volBid)));
+  if (volAsk > 0) p.set("vol_ask", String(Math.round(volAsk)));
+  const q = p.toString();
+  return request("/api/fixed" + (q ? "?" + q : ""));
+};
 // Котировки фиксов (цена/стакан/средневзвес/оборот) — лёгкий ответ, такт 5с.
 // Метрики (YTM/g-спред) в него не входят: они живут своим циклом в /api/fixed.
 export const fetchFixedQuotes = () => request("/api/fixed/quotes");

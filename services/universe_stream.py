@@ -54,12 +54,15 @@ WAP_EXACT_PP = float(os.getenv("UNIVERSE_WAP_EXACT_PP", "0.5"))
 # ~740 подписок котировок и столько же стаканов, и откат на проде должен быть
 # переменной окружения, а не релизом.
 _FIXED_STREAM = os.getenv("FIXED_STREAM", "1") not in ("0", "false", "no")
-# СТАКАНЫ фиксам по умолчанию НЕ качаем: лестница на 20 уровней нужна ровно
-# одному потребителю — фильтру по объёму тикета, которого на витрине фиксов нет.
-# Верх стакана (bid/ask, по ним считаются YTM и g-спред сторон) приезжает
-# котировочным сокетом. Замер 28.08.2026: с фиксами в depth-пуле пушей стаканов
-# 3400/мин против 660/мин без них — впятеро больше трафика и парсинга ни за что.
-_FIXED_DEPTH = os.getenv("FIXED_DEPTH_STREAM", "0") not in ("0", "false", "no")
+# СТАКАНЫ фиксам качаем: лестница на 20 уровней нужна фильтру по объёму тикета
+# (цена набора и спред по ней). Это недёшево — замер 28.08.2026: с фиксами в
+# depth-пуле пушей стаканов 3400/мин против 660/мин, впятеро трафика и парсинга,
+# — поэтому вынесено в переменную: FIXED_DEPTH_STREAM=0 отключает стаканы фиксов
+# целиком, и витрина остаётся с верхом стакана из котировочного сокета.
+_FIXED_DEPTH = os.getenv("FIXED_DEPTH_STREAM", "1") not in ("0", "false", "no")
+# Пока прогрев не положил универс фиксов, владелец пула заглядывает сюда чаще
+# обычного такта: иначе витрина фиксов ждёт потока целых 5 минут после старта.
+_FIXED_WAIT_SEC = float(os.getenv("FIXED_POOL_WAIT_SEC", "30"))
 # ISIN фиксов, попавших в пул: по нему движок выбирает ветку расчёта (у фикса
 # своя математика — YTM/g-спред, а не Y-IDX/DM).
 _fixed_isins: set = set()
@@ -77,11 +80,20 @@ _BATCH_SEC = 5.0            # такт событийного пересчёта
 # запасом на промахи кэша. Вынесено в переменную окружения — крутить на проде
 # по замеру «мс/шт» из минутной сводки движка.
 _MAX_BATCH = int(os.getenv("UNIVERSE_FULL_BATCH", "60"))
-# Потолок дешёвой очереди сторон за такт. 60×13мс ≈ 0.8с на 5-секундное окно;
-# наблюдаемый поток движений сторон на проде — сотни бумаг в минуту, и 720/мин
-# ёмкости с запасом их накрывают.
-_MAX_SIDES_BATCH = int(os.getenv("UNIVERSE_SIDES_BATCH", "60"))
+# Потолок дешёвой очереди сторон за такт. 100×25мс ≈ 2.5с на 5-секундное окно —
+# половина такта, вторая остаётся полному пересчёту (60×5мс ≈ 0.3с) и запасу.
+# Прежние 60 брались из замера 13 мс на бумагу; после того как цены наборов по
+# объёму стали реально собираться (глубина книги 50), сторона стоит 20–30 мс, и
+# на 60 волна нового размера тикета растягивалась на минуту.
+_MAX_SIDES_BATCH = int(os.getenv("UNIVERSE_SIDES_BATCH", "100"))
 _PRICE_KEY_DIGITS = 3       # квантование цены в ключе кэша уровней
+# Кэш Y-IDX по НАБОРУ цен бумаги: isin → (ключ набора, момент, {цена: бп}).
+# Стоимость батча почти вся в сборке потока и кривой, а не в числе цен (66 мс
+# за 3 цены против 69 мс за 11, замер на проде 28.08.2026), поэтому экономить
+# надо ЦЕЛЫЙ вызов, когда набор цен не изменился.
+_YOI_TTL_SEC = float(os.getenv("UNIVERSE_YOI_TTL_SEC", "60"))
+_yoi_cache: Dict[str, tuple] = {}
+_yoi_cache_epoch = 0        # правка параметров/смена дня — сдвигаем, кэш мимо
 
 # ── состояние ────────────────────────────────────────────────────────────────
 # Вход точного расчёта Y-IDX по ЛЮБОЙ цене (bid/ask/средневзвес): поток, кривая
@@ -94,7 +106,24 @@ _last_quote: Dict[str, dict] = {}    # isin → последний пуш {last_
 # нужен (уровень цены сделки тот же), но спред сторон обязан пересчитаться по
 # методике: раньше его «правил наклон» уже в браузере, и точное число приходило
 # только со следующей сделкой — у неликвида это часы.
-_sides_dirty: set = set()
+#
+# ОЧЕРЕДЬ С ПРИОРИТЕТОМ (isin → ключ сортировки, меньше = раньше), а не набор:
+# у неё два потребителя с разной срочностью. Движение сторон (приоритет 0) —
+# это свежие данные, их ждут прямо сейчас; волна «включили фильтр по объёму»
+# ставит в очередь пол-рынка разом (см. register_vol_sizes) и не должна
+# отодвигать живой поток на минуту вперёд. Порядок внутри волны — от бумаг с
+# самым крупным собирающимся набором: их под фильтром объёма и смотрят.
+_SIDES_PRIO_LIVE = 0.0        # движение сторон стакана
+_SIDES_PRIO_WAVE = 1.0        # волна нового размера тикета (+ ранг ликвидности)
+_sides_dirty: Dict[str, float] = {}
+
+
+def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
+    """В очередь сторон. Живое событие ПОВЫШАЕТ приоритет бумаги, уже стоящей в
+    волне: она нужна раньше, а не вторым заходом."""
+    cur = _sides_dirty.get(isin)
+    if cur is None or prio < cur:
+        _sides_dirty[isin] = prio
 
 # ОБЪЁМ ТИКЕТА: размеры, которые сейчас смотрят в браузере. Y-IDX по VWAP-цене
 # набора считается ЗДЕСЬ, по методике, а не линеаризацией в браузере (он
@@ -133,15 +162,55 @@ def register_vol_sizes(sizes) -> None:
     for k in [k for k, t in _vol_sizes.items() if now - t > _VOL_TTL_SEC]:
         _vol_sizes.pop(k, None)
     if fresh:
-        # РАЗМЕР ВИДЯТ ВПЕРВЫЕ — ставим в очередь весь рынок, иначе цену набора
-        # получили бы только бумаги, которые сами о себе напомнят (сделкой или
-        # движением сторон). У застывшего неликвида такого повода может не быть
-        # весь день, и в таблице у него навсегда остался бы прочерк.
-        # Очередь дешёвая и с потолком на такт: рынок разгребается за минуту.
+        # РАЗМЕР ВИДЯТ ВПЕРВЫЕ — ставим бумаги в очередь сами, иначе цену набора
+        # получили бы только те, кто о себе напомнит (сделкой или движением
+        # сторон). У застывшего неликвида такого повода может не быть весь день,
+        # и в таблице у него навсегда остался бы прочерк.
+        # НЕ ВЕСЬ РЫНОК, а только те, у кого набор ДЕЙСТВИТЕЛЬНО собирается:
+        # у остальных цена набора — None, ради которого незачем гонять
+        # переоценку в 20–30 мс. Замер на проде 28.08.2026 по 120 бумагам:
+        # тикет 1 млн набирают 68%, 5 млн — 47%, 20 млн — 24%, то есть очередь
+        # короче вдвое-вчетверо, а проверка стоит ~0,05 мс на бумагу.
         # ФИКСЫ сюда не кладём: у них своей дешёвой ветки нет (recrunch_sides их
-        # молча пропускает), а очередь с потолком на такт они бы просто заняли,
-        # отодвинув пересчёт тех, кому он действительно нужен.
-        _sides_dirty.update(k for k in _last_quote if k not in _fixed_isins)
+        # молча пропускает), а очередь с потолком на такт они бы просто заняли.
+        for rank, isin in enumerate(_vol_wave_candidates()):
+            _queue_sides(isin, _SIDES_PRIO_WAVE + rank / 1e6)
+
+
+def _vol_wave_candidates() -> list:
+    """Бумаги для волны нового размера тикета: набор собирается хотя бы по одной
+    стороне. Порядок — от самого крупного собирающегося размера: под фильтром
+    объёма первым делом смотрят на бумаги, которые держат крупный тикет."""
+    sizes = active_vol_sizes()
+    if not sizes:
+        return []
+    from services import depth as depth_svc
+    from services.screener_core import vwap_for, vwap_passes
+    from services.market_data import market_cache
+    ladders = depth_svc.get_depth()
+    um = market_cache.get("universe_metrics") or {}
+    ranked = []
+    for isin in _last_quote:
+        if isin in _fixed_isins:
+            continue
+        lad = ladders.get(isin)
+        if not lad:
+            continue
+        row = um.get(isin) or {}
+        face = row.get("face_px") or 1000.0
+        accrued = row.get("accrued_settle") or 0.0
+        best = 0.0
+        for size in sizes:
+            if size <= best:
+                continue          # больший размер уже собрался — мельче не спрашиваем
+            for key in ("b", "a"):
+                if vwap_passes(vwap_for(lad.get(key), size, face, accrued), size):
+                    best = size
+                    break
+        if best:
+            ranked.append((-best, isin))
+    ranked.sort()
+    return [i for _, i in ranked]
 
 
 def active_vol_sizes() -> list:
@@ -262,6 +331,11 @@ _FIXED_PATCH_FIELDS = (
     "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
     "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
     "delta_to_prev_close", "val_today", "wap_pct", "price_stale",
+    # цены наборов тикета и метрики по ним — словарями по размеру («ask:5000000»),
+    # потому что размеры выбирает клиент (см. register_vol_sizes)
+    "vol_px", "g_spread_vol", "ytm_vol",
+    # номинал и НКД: по ним фронт считает деньги уровня стакана
+    "face_value_rub", "accrued_rub",
 )
 
 
@@ -347,7 +421,10 @@ async def _on_quote(isin: str, data: dict) -> None:
     elif prev is not None and any(prev.get(k) != data.get(k) for k in ("bid", "ask")):
         # У ФИКСА отдельной дешёвой ветки нет: compute_fixed_row считает цену
         # сделки и обе стороны одним проходом по расписанию, дробить нечего.
-        (_dirty if isin in _fixed_isins else _sides_dirty).add(isin)
+        if isin in _fixed_isins:
+            _dirty.add(isin)
+        else:
+            _queue_sides(isin)
     await _broadcast_quote(isin, data)
 
 
@@ -583,8 +660,9 @@ async def universe_stream_pool() -> None:
         _stop_sockets(g["tasks"], g["stops"])
         g["key"] = None
         g["shards"] = 0
-    retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
+    retry = 0                   # пауза до следующего такта: см. хвост цикла
     while True:
+        waiting_fixed = False   # универс фиксов ещё греется — заглянем раньше
         try:
             uni = await instruments_registry.fetch_floater_universe()
             isins = sorted({u["isin"] for u in uni if u.get("isin")})
@@ -618,10 +696,16 @@ async def universe_stream_pool() -> None:
                                                       _GROUP_STRIDE, fgroup,
                                                       depth=_FIXED_DEPTH)
                     fgroup["key"] = fkey
+                # ХОЛОДНЫЙ СТАРТ: прогрев фиксов (~700 bondization) обычно не
+                # успевает к первой сборке пула, и по обычному такту витрина
+                # фиксов оставалась без потока пять минут (прод 28.08: старт
+                # 12:52, фиксы 12:57). Ждать целый такт незачем — заглядываем
+                # снова через полминуты, пока прогрев не положил универс.
+                waiting_fixed = not fkey
             _pool.update(built=time.time(),
                          shards=sum(g["shards"] for g in _groups.values()))
             _pool["err"] = None
-            retry = 0
+            retry = _FIXED_WAIT_SEC if waiting_fixed else 0
         except asyncio.CancelledError:
             for g in _groups.values():
                 _stop_sockets(g["tasks"], g["stops"])
@@ -644,15 +728,19 @@ def invalidate_params(isin: Optional[str] = None) -> None:
     а сам пересчёт заказывается только сменой цены: без этого пинка правка
     доезжала до таблицы со следующей сделкой, а в неликвиде не доезжала вовсе.
     isin=None — массовая правка (импорт xlsx): чистим весь кэш."""
+    global _yoi_cache_epoch
     if isin:
         for k in [k for k in _level_memo if k[0] == isin]:
             _level_memo.pop(k, None)
         _eval_ctx.pop(isin, None)
+        _yoi_cache.pop(isin, None)
         if isin in _last_quote:
             _dirty.add(isin)
     else:
         _level_memo.clear()
         _eval_ctx.clear()
+        _yoi_cache.clear()
+        _yoi_cache_epoch += 1
         _dirty.update(_last_quote.keys())
 
 
@@ -696,7 +784,19 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     want += [p for p in vol_px.values() if p is not None]
     if not want:
         return
-    got = y_idx_many(ev, want)
+    # ТОТ ЖЕ НАБОР ЦЕН — ответ уже посчитан. Пересчёт заказывает движение
+    # сторон, но в очередь бумага попадает и по другим поводам (волна нового
+    # размера тикета, вернувшаяся на прежний уровень заявка), а цена набора по
+    # объёму от дрожания верха книги обычно не меняется вовсе. TTL держит
+    # число живым по кривой: она обновляется внутри дня, а версия дня при этом
+    # та же, и вечный кэш залипал бы на утренней кривой.
+    key = (tuple(sorted(want)), _yoi_cache_epoch)
+    hit = _yoi_cache.get(isin)
+    if hit and hit[0] == key and time.time() - hit[1] <= _YOI_TTL_SEC:
+        got = hit[2]
+    else:
+        got = y_idx_many(ev, want)
+        _yoi_cache[isin] = (key, time.time(), got)
     for side, v in sides.items():
         if v is not None:
             row[f"yoi_{side}"] = got.get(round(float(v), 4))
@@ -707,19 +807,26 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
                           for k, p in vol_px.items() if p is not None}
 
 
-def _vol_prices(isin: str) -> dict:
+def _vol_prices(isin: str, face: float = None, accrued: float = None) -> dict:
     """{"bid:5000000": цена, "ask:5000000": цена} — VWAP-цены наборов активных
     размеров по обеим сторонам. Набор считает тот же vwap_for, что скринер и
-    портфель: одна арифметика книги на всё приложение."""
+    портфель: одна арифметика книги на всё приложение.
+
+    face/accrued — номинал и НКД бумаги (деньги уровня = qty × (номинал × цена%
+    + НКД)). Не переданы — берём из строки метрик флоатера; у фикса своя схема
+    строки, поэтому он передаёт их явно."""
     sizes = active_vol_sizes()
     if not sizes:
         return {}
     from services import depth as depth_svc
     from services.screener_core import vwap_for, vwap_passes
     from services.market_data import market_cache
-    row = (market_cache.get("universe_metrics") or {}).get(isin) or {}
-    face = row.get("face_px") or 1000.0
-    accrued = row.get("accrued_settle") or 0.0
+    if face is None or accrued is None:
+        row = (market_cache.get("universe_metrics") or {}).get(isin) or {}
+        face = face if face is not None else row.get("face_px")
+        accrued = accrued if accrued is not None else row.get("accrued_settle")
+    face = face or 1000.0
+    accrued = accrued or 0.0
     ladders = depth_svc.get_depth().get(isin) or {}
     out = {}
     for size in sizes:
@@ -794,6 +901,21 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
         if snap.get(src) is not None:
             row[dst] = snap[src]
     out = compute_fixed_row(row, full, ctx["g_curve"], ctx["calc_date"])
+    # ФИЛЬТР ПО ОБЪЁМУ: цена набора тикета по лестнице стакана и метрики ПО НЕЙ.
+    # Считаем здесь, а не в браузере: там нет ни потока, ни кривой, а спред по
+    # цене набора обязан считаться той же методикой, что и по цене сделки.
+    vol_px = _vol_prices(isin, face=out.get("face_value_rub"),
+                         accrued=out.get("accrued_rub"))
+    out["vol_px"] = vol_px or None
+    out["g_spread_vol"] = out["ytm_vol"] = None
+    if vol_px:
+        from services.fixed_income import fixed_side_metrics
+        prices = [p for p in vol_px.values() if p is not None]
+        got = fixed_side_metrics(row, full, ctx["g_curve"], ctx["calc_date"], prices)
+        out["g_spread_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("g_spread_bps")
+                               for k, p in vol_px.items() if p is not None}
+        out["ytm_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("ytm")
+                          for k, p in vol_px.items() if p is not None}
     lv = live_quotes.get(isin) or {}
     vol = max(snap.get("vol") or 0, lv.get("val_today") or 0) or None
     if vol is not None:
@@ -937,12 +1059,15 @@ async def _day_ctx() -> Optional[dict]:
 def _check_version(version: tuple) -> None:
     """Новый день или пересобранные кривые → кэш уровней недействителен весь:
     та же цена даёт другой спред на другой кривой."""
-    global _memo_version
+    global _memo_version, _yoi_cache_epoch
     if version != _memo_version:
         _level_memo.clear()
         # контекст точного расчёта держит ССЫЛКУ на кривую — на новой кривой он
         # так же недействителен, как и сами уровни
         _eval_ctx.clear()
+        # спред по цене считан на ТОЙ кривой — набор цен прежний, число другое
+        _yoi_cache.clear()
+        _yoi_cache_epoch += 1
         _memo_version = version
 
 
@@ -993,14 +1118,15 @@ async def metrics_worker() -> None:
                 global _depth_msgs
                 logger.info("metrics engine: %d строк/мин (%.1fс, %.0fмс/шт) · "
                             "сторон %d/мин (%.1fс, %.0fмс/шт) · "
-                            "memo %d (hit %d / miss %d) · dirty %d (+%d сторон) · "
+                            "memo %d (hit %d / miss %d) · yoi-кэш %d · "
+                            "dirty %d (+%d сторон) · "
                             "depth-пушей %d/мин (%d бумаг)",
                             done_since_log, full_ms / 1000.0,
                             full_ms / max(1, done_since_log),
                             sides_since_log, sides_ms / 1000.0,
                             sides_ms / max(1, sides_since_log),
                             len(_level_memo), _memo_hits, _memo_misses,
-                            len(_dirty), len(_sides_dirty),
+                            len(_yoi_cache), len(_dirty), len(_sides_dirty),
                             _depth_msgs, len(_depth_streamed))
                 done_since_log = 0
                 sides_since_log = 0
@@ -1041,8 +1167,10 @@ async def metrics_worker() -> None:
             # средневзвеса (~13 мс на бумагу). Без этого точное число стороны
             # ждало бы следующей сделки, а до неё жила линеаризация в браузере.
             if _sides_dirty:
-                take_s = list(_sides_dirty)[:_MAX_SIDES_BATCH]
-                _sides_dirty.difference_update(take_s)
+                # порядок — по приоритету: живые движения сторон впереди волны
+                take_s = sorted(_sides_dirty, key=_sides_dirty.get)[:_MAX_SIDES_BATCH]
+                for _i in take_s:
+                    _sides_dirty.pop(_i, None)
                 _t0 = time.perf_counter()
                 srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
                 sides_ms += (time.perf_counter() - _t0) * 1000.0
