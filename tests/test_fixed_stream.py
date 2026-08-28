@@ -101,7 +101,7 @@ def test_pool_groups_are_independent(monkeypatch):
     гасило бы вместе с ними живые подписки флоатеров каждый раз."""
     started = []
 
-    async def fake_socket(sid, isins, stop):
+    async def fake_socket(sid, isins, stop, *a, **kw):
         started.append(sid)
         await stop.wait()
 

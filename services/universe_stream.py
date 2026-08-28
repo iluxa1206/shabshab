@@ -45,6 +45,11 @@ _QUOTE_FREQ_MS = 1000       # серверный троттл Alor на бума
 # подписок и на порядок больше трафика; выключается флагом.
 _DEPTH_STREAM = os.getenv("DEPTH_STREAM", "1") not in ("0", "false", "no")
 _DEPTH_FREQ_MS = 1700       # книга шевелится часто — прижимаем частоту пуша
+# У ФИКСОВ книга живее (ОФЗ и ликвидные корпораты), а нужна она одному
+# потребителю — фильтру по объёму тикета, где важна не миллисекундная свежесть
+# лестницы, а её глубина. Отдельная, более редкая частота: замер 28.08.2026 —
+# на общей 1700 мс пул фиксов давал ~3400 пушей/мин против 700 у флоатеров.
+_FIXED_DEPTH_FREQ_MS = int(os.getenv("FIXED_DEPTH_FREQ_MS", "4000"))
 _DEPTH_LEVELS = WS_DEPTH    # как у батч-снимка (services/depth._DEPTH_LEVELS)
 # За этим сдвигом средневзвеса от цены сделки наклон перестаёт быть честным
 # приближением, и спред по нему считается точно (см. yoi_wap ниже).
@@ -499,7 +504,8 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
         backoff = min(backoff * 2, 30)
 
 
-async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None:
+async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event,
+                        freq_ms: int = _DEPTH_FREQ_MS) -> None:
     """Сокет стрима стаканов: OrderBookGetAndSubscribe на шард, пуш → кэш
     глубины (market_cache['depth']) — тот же формат, что batch-снимок, лестницы
     фильтра по объёму просто становятся push-свежими."""
@@ -530,7 +536,7 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                         await ws.send_json({
                             "opcode": "OrderBookGetAndSubscribe", "code": isin,
                             "exchange": "MOEX", "depth": _DEPTH_LEVELS, "format": "Simple",
-                            "frequency": _DEPTH_FREQ_MS, "guid": guid, "token": token})
+                            "frequency": freq_ms, "guid": guid, "token": token})
                         if n % 50 == 49:
                             await asyncio.sleep(0.2)
                     _depth_streamed.update(isins)
@@ -611,7 +617,7 @@ def _stop_sockets(tasks: list, stops: list) -> None:
 
 
 def _rebuild_group(name: str, isins: list, base: int, group: dict,
-                   depth: bool = True) -> int:
+                   depth: bool = True, depth_freq_ms: int = _DEPTH_FREQ_MS) -> int:
     """Пересобирает сокеты ОДНОЙ группы пула (флоатеры / фиксы) и возвращает
     число её шардов.
 
@@ -630,7 +636,8 @@ def _rebuild_group(name: str, isins: list, base: int, group: dict,
         if _DEPTH_STREAM and depth:
             dstop = asyncio.Event()
             group["stops"].append(dstop)
-            group["tasks"].append(asyncio.create_task(_depth_socket(sid, shard, dstop)))
+            group["tasks"].append(asyncio.create_task(
+                _depth_socket(sid, shard, dstop, depth_freq_ms)))
     # группа ужалась — лишние номера уходят из статистики, иначе в ней вечно
     # висел бы «мёртвый» сокет без сообщений
     for sid in [s for s in _shards if base <= s < base + _GROUP_STRIDE
@@ -701,7 +708,8 @@ async def universe_stream_pool() -> None:
                 if fkey and fkey != fgroup["key"]:
                     fgroup["shards"] = _rebuild_group("фиксы", list(fkey),
                                                       _GROUP_STRIDE, fgroup,
-                                                      depth=_FIXED_DEPTH)
+                                                      depth=_FIXED_DEPTH,
+                                                      depth_freq_ms=_FIXED_DEPTH_FREQ_MS)
                     fgroup["key"] = fkey
                 # ХОЛОДНЫЙ СТАРТ: прогрев фиксов (~700 bondization) обычно не
                 # успевает к первой сборке пула, и по обычному такту витрина
