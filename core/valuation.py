@@ -21,6 +21,15 @@ class BondRefData:
     """
     Reference data for a floater bond.
     base: "RUONIA" or "KEYRATE"
+
+    face_index — база ИНДЕКСАЦИИ НОМИНАЛА ("RUONIA" | None). Не путать с base:
+    у линкера (ВЭБ.РФ ПБО-002Р-58) ставка купона ФИКСИРОВАНА (1.85%), а плавает
+    номинал — он растёт дневно по официальному индексу RUONIA ЦБ. Экономически
+    это тот же флоатер «RUONIA + 185 bps», поэтому base остаётся RUONIA (кривая,
+    конвенция дисконта, база Y-IDX — общие с обычными RUONIA-бумагами), а
+    отличие живёт ровно в одном месте — построении потока (см.
+    build_cashflows_to_maturity): купон = S% на ПРОИНДЕКСИРОВАННЫЙ номинал,
+    погашение = проиндексированный номинал.
     """
     isin: str
     base: str  
@@ -32,6 +41,7 @@ class BondRefData:
     coupons_per_year: int
     issue_date: Optional[date] = None
     coupon_period_days: Optional[int] = None
+    face_index: Optional[str] = None
 
 
 @dataclass
@@ -622,6 +632,7 @@ def build_cashflows_to_maturity(
     to_offer: bool = False,
     cut_date: Optional[date] = None,
     index_pct_fn=None,
+    face_grow_fn=None,
     warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
     """
@@ -646,6 +657,13 @@ def build_cashflows_to_maturity(
     coupon_calib.index_history) — ядро само в сеть не ходит. None → легаси-фолбэк
     на lazy-импорт (CLI-пути). warnings_out — аккумулятор деградаций: сбой
     провайдера больше не глотается молча, а помечается (купон уходит на форвард).
+
+    face_grow_fn — провайдер РОСТА ИНДЕКСА НОМИНАЛА для линкеров
+    (bond.face_index), сигнатура fn(frm, to, fwd_pct) → множитель роста за
+    (frm, to]; факт ЦБ до последней публикации, дальше форвард кривой (см.
+    services.linker.face_grow_provider). Ядро в сеть не ходит, поэтому без
+    провайдера линкер считать нечем — поток строится в РЕАЛЬНЫХ (не растущих)
+    рублях, что занижает и купоны, и погашение; деградация помечается.
     """
     _check_curve_convention(bond.base, curve)
     if explicit_periods:
@@ -753,6 +771,51 @@ def build_cashflows_to_maturity(
     # причитающегося покупателю.
     pricing_face = face_for_pricing(bond.face_value, amorts, calc_date)
 
+    # ── ЛИНКЕР: номинал индексируется, ставка купона фиксирована ──────────────
+    # Поток строится в НОМИНАЛЬНЫХ рублях: номинал на дату t = pricing_face
+    # (биржевой FACEVALUE, уже проиндексированный на сегодня) × рост индекса за
+    # (calc_date, t]. Так линкер попадает в ТУ ЖЕ машину, что обычный флоатер:
+    # дисконт (форвард базы + маржа) сокращает индексный множитель, и solver
+    # выдаёт РЕАЛЬНУЮ доходность — она же спред к RUONIA. Отдельной ветки
+    # дисконтирования не нужно.
+    linker = bool(bond.face_index)
+    if linker and face_grow_fn is None:
+        msg = ("рост индексируемого номинала не резолвится (нет провайдера) — "
+               "поток посчитан в реальных рублях: купоны и погашение занижены")
+        logger.warning("%s: %s", bond.isin, msg)
+        if warnings_out is not None:
+            warnings_out.append(msg)
+
+    def _grow(to: date) -> float:
+        """Множитель индексации номинала на дату `to` относительно calc_date.
+        Меньше единицы для прошлых дат — начавшийся купон начислялся на номинал,
+        который тогда был меньше сегодняшнего."""
+        if not linker or face_grow_fn is None or to == calc_date:
+            return 1.0
+        try:
+            return float(face_grow_fn(calc_date, to,
+                                      lambda dt: curve.daily_forward(dt) * 100.0))
+        except Exception as e:
+            if warnings_out is not None:
+                warnings_out.append(
+                    f"рост номинала на {to}: {type(e).__name__} — множитель принят 1.0")
+            return 1.0
+
+    def _grow_avg(start: date, end: date) -> float:
+        """Средний множитель индексации по периоду [start, end].
+
+        Купон линкера начисляется ПОДНЕВНО на номинал каждого дня
+        (Σ Nom_d·S/365), то есть равен S·α от СРЕДНЕГО номинала периода, а не от
+        номинала на любую из границ. Сверка на ВЭБ2Р-58: MOEX даёт 9.96 ₽ за
+        188 дней при S=1.85% — это среднее (9.95), а не старт (9.53) и не конец
+        (10.36). Путь роста гладкий (экспонента), поэтому среднее берём
+        Симпсоном по трём точкам — ошибка много меньше копейки.
+        """
+        if not linker:
+            return 1.0
+        mid = start + timedelta(days=(end - start).days // 2)
+        return (_grow(start) + 4.0 * _grow(mid) + _grow(end)) / 6.0
+
     # Кэп/флор купона (MIN(КС+m;X%)/«не более», MAX/«не менее») — потолок/пол ставки
     # годовых. Прайсим прогнозные купоны с клэмпом (зафикс. value уже с кэпом фактом).
     cap_pct = floor_pct = None
@@ -810,7 +873,16 @@ def build_cashflows_to_maturity(
         alpha = days / 365.0
         base_pct = None   # индекс-компонента (для display); зафикс. купон — None
 
-        if value is not None:
+        if linker:
+            # Ставка фиксирована (S = spread_issue_bps), плавает НОМИНАЛ.
+            # value MOEX игнорируем СОЗНАТЕЛЬНО: в bondization линкера сумма
+            # купона проставлена во ВСЕ периоды по СЕГОДНЯШНЕМУ номиналу
+            # (у ВЭБ2Р-58 все шесть купонов = 9.96 ₽ до 2029 года) — это эхо,
+            # а не факт, и как факт оно занижает весь хвост потока.
+            face = face * _grow_avg(start, end)
+            factor = sp_bps / 10000.0 * alpha
+            coupon_amt = face * factor
+        elif value is not None:
             # #1: зафиксированный купон — факт MOEX, без перепрогноза форвардом
             coupon_amt = float(value)
         else:
@@ -900,17 +972,22 @@ def build_cashflows_to_maturity(
     # амортизации по графику, затем НЕПОГАШЕННЫЙ ОСТАТОК одним платежом — на дату
     # оферты (по её цене) либо на погашение. Инвариант: Σ принципала == pricing_face
     # ровно, при любой комбинации (bullet / амортизируемая / оферта / T+1 окно).
+    # Линкер гасится ПРОИНДЕКСИРОВАННЫМ номиналом: каждый транш умножается на
+    # рост индекса к своей дате. Инвариант «Σ принципала == pricing_face»
+    # сохраняется в РЕАЛЬНЫХ единицах (множители у не-линкера равны 1.0).
     for d, v in future_am:
-        cfs.append(Cashflow(pay_date=d, amount_rub=v, type="REDEMPTION",
+        cfs.append(Cashflow(pay_date=d, amount_rub=v * _grow(d), type="REDEMPTION",
                             period_start=d, period_end=d))
     residual = pricing_face - sum(v for _d, v in future_am)
     if residual > 1e-9:
         if put:
             px = _offer_price_pct(offers, put) / 100.0
-            cfs.append(Cashflow(pay_date=put, amount_rub=residual * px, type="REDEMPTION",
-                                period_start=put, period_end=put))
+            cfs.append(Cashflow(pay_date=put, amount_rub=residual * px * _grow(put),
+                                type="REDEMPTION", period_start=put, period_end=put))
         elif bond.maturity_date and bond.maturity_date > calc_date:
-            cfs.append(Cashflow(pay_date=bond.maturity_date, amount_rub=residual, type="REDEMPTION",
+            cfs.append(Cashflow(pay_date=bond.maturity_date,
+                                amount_rub=residual * _grow(bond.maturity_date),
+                                type="REDEMPTION",
                                 period_start=bond.maturity_date, period_end=bond.maturity_date))
 
     # 5. Sort by pay_date
@@ -929,6 +1006,7 @@ def build_cashflows_with_spread(
     to_offer: bool = False,
     cut_date: Optional[date] = None,
     index_pct_fn=None,
+    face_grow_fn=None,
     warnings_out: Optional[list] = None,
 ) -> List[Cashflow]:
     bond_variant = BondRefData(
@@ -942,11 +1020,15 @@ def build_cashflows_with_spread(
         coupons_per_year=bond.coupons_per_year,
         issue_date=bond.issue_date,
         coupon_period_days=bond.coupon_period_days,
+        # без переноса линкер бы прайсился как обычный флоатер на ПОСТОЯННОМ
+        # номинале — молча и во всех солверах сразу (SM/DM зовут именно эту обёртку)
+        face_index=bond.face_index,
     )
     return build_cashflows_to_maturity(bond_variant, curve, calc_date,
                                        explicit_periods=explicit_periods, amorts=amorts,
                                        offers=offers, to_offer=to_offer, cut_date=cut_date,
-                                       index_pct_fn=index_pct_fn, warnings_out=warnings_out)
+                                       index_pct_fn=index_pct_fn, face_grow_fn=face_grow_fn,
+                                       warnings_out=warnings_out)
 
 
 def xnpv(rate: float, cashflows: List[tuple[date, float]]) -> float:

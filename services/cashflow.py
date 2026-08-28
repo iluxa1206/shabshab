@@ -37,6 +37,7 @@ def build_cashflow_from_moex(
     Раньше это был ручной форк ~180 строк, дублировавший проекцию: каждый фикс
     приходилось вносить дважды и копии разъезжались."""
     from core.valuation import build_cashflows_with_spread, settle_date
+    from services.linker import grow_fn_for
     settle = settle_date(calc_date)
 
     # индекс-провайдер для фиксинга начавшегося периода (как в pricing)
@@ -102,6 +103,7 @@ def build_cashflow_from_moex(
             ref, curve, calc_date, ref.spread_issue_bps or 0,
             explicit_periods=periods or None, amorts=amorts, offers=offers,
             index_pct_fn=index_pct_fn, cut_date=cut_date,
+            face_grow_fn=grow_fn_for(ref, calc_date),
         )
     except Exception as e:
         if warnings_out is not None:

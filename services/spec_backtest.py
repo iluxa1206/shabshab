@@ -37,6 +37,14 @@ async def _one(isin: str, row: dict, today: date) -> dict | None:
     base = row.get("base")
     if base not in ("KEYRATE", "RUONIA"):
         return None
+    # ЛИНКЕР: судить нечего — ставка купона у него КОНСТАНТА, спеки фиксинга
+    # (окно/лаг/режим) не существует, плавает номинал. Гоняя его через бэктест,
+    # мы сравнивали бы фиксированные 1.85% с проекцией RUONIA и получали
+    # гарантированный BAD. Вердикт всё же пишем (не return None): очередь
+    # сортируется по давности проверки, и непроставленная дата держала бы
+    # бумагу в голове очереди, вытесняя тех, кого проверять надо.
+    if row.get("face_index"):
+        return {"isin": isin, "verdict": "NO_DATA", "err": None, "n": 0}
     try:
         full = await MarketDataService.fetch_bond_schedule_full(isin)
     except Exception as e:

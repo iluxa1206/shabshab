@@ -354,7 +354,15 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
 
     spec_block = {"effective": {}, "sources": {}, "layers": {}, "coupon_text": None}
     backtest = {"rows": [], "n": 0, "verdict": "NO_DATA"}
-    if base in ("KEYRATE", "RUONIA"):
+    # ЛИНКЕР: спеки фиксинга не существует — ставка купона КОНСТАНТА, по индексу
+    # растёт номинал. Бэктест сравнивал бы фиксированные проценты с проекцией
+    # RUONIA и давал заведомый BAD; вместо него отдельная строка паспорта.
+    face_index = (reg_row or {}).get("face_index")
+    if face_index:
+        check("face_index", "Индексируемый номинал", "ok",
+              f"номинал растёт по {face_index}, ставка купона фиксирована "
+              f"({margin_pct:g}% год.) — спека фиксинга не применима")
+    elif base in ("KEYRATE", "RUONIA"):
         try:
             spec_block = _resolve_spec_layers(isin, coupons, margin_pct, face,
                                               today, amorts)

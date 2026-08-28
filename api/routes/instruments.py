@@ -27,12 +27,12 @@ _XLSX_COLS = ("isin", "short_name", "base", "margin_bps", "maturity_date",
               "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
               "avg_window_days", "compounded", "br_coupon_mode", "br_fixing_lag", "spec_eff",
               "cap_pct", "floor_pct", "var_type", "coupon_text", "margin_schedule",
-              "rating", "source")
+              "face_index", "rating", "source")
 _XLSX_EDITABLE = ("short_name", "base", "margin_bps", "maturity_date",
                   "issue_date", "coupon_period_days", "coupons_per_year", "day_count",
                   "face_value", "coupon_mode", "fixing_lag", "fixing_lag_unit",
                   "avg_window_days", "compounded", "cap_pct", "floor_pct", "var_type",
-                  "coupon_text", "margin_schedule")
+                  "coupon_text", "margin_schedule", "face_index")
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
              "avg_window_days", "compounded"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
@@ -80,6 +80,12 @@ class InstrumentParams(BaseModel):
         description="лесенка маржи по номерам купонов: «7-20=400; 21-24=550» (bps) "
                     "или JSON [{\"from\":7,\"to\":20,\"bps\":400}]. Купоны вне "
                     "диапазонов = не плавающие (скаляр margin_bps, бэктест их не судит)")
+    face_index: Optional[str] = Field(
+        None, max_length=16,
+        description="ЛИНКЕР: база индексации НОМИНАЛА — 'RUONIA' или пусто. У такой "
+                    "бумаги ставка купона фиксирована (её и держит margin_bps), а по "
+                    "индексу растёт номинал. Детект автоматический "
+                    "(services.linker), это поле — ручной оверрайд")
 
 
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -306,6 +312,9 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
                                                          "FIXED", "EXOTIC"):
             errors.append(f"строка {rn} ({isin}): base ∈ KEYRATE|RUONIA|FIXED|EXOTIC")
             continue
+        if params.get("face_index") and params["face_index"] not in ("RUONIA",):
+            errors.append(f"строка {rn} ({isin}): face_index ∈ RUONIA либо пусто")
+            continue
         if params.get("coupon_mode") and params["coupon_mode"] not in ("point", "average", "avg_prev", "month_start"):
             errors.append(f"строка {rn} ({isin}): coupon_mode ∈ average|month_start "
                           "(point = average+окно1, avg_prev = average+окно=период)")
@@ -435,6 +444,10 @@ async def set_instrument(body: InstrumentParams, isin: str = Path(...),
                                     detail="avg_prev: неизвестен купонный период — задай avg_window_days явно")
     if body.base is not None and body.base not in ("KEYRATE", "RUONIA", "FIXED"):
         raise HTTPException(status_code=422, detail="base ∈ KEYRATE|RUONIA|FIXED")
+    # пустая строка — СНЯТИЕ признака линкера (None в модели значит «поле не
+    # прислали», им очистить нельзя)
+    if body.face_index is not None and body.face_index not in ("RUONIA", ""):
+        raise HTTPException(status_code=422, detail="face_index ∈ RUONIA либо пусто")
     for f in ("maturity_date", "issue_date"):
         if params.get(f) and not _ISO_RE.fullmatch(params[f]):
             raise HTTPException(status_code=422, detail=f"{f}: ожидается YYYY-MM-DD")

@@ -276,6 +276,10 @@ class BondListItem(BaseModel):
     isin: str
     short_name: str
     base_rate_type: str
+    # ЛИНКЕР: база индексации НОМИНАЛА ('RUONIA' | None). У такой бумаги ставка
+    # купона фиксирована, а по индексу растёт номинал — экономически тот же
+    # флоатер, но формулу в витрине надо читать иначе.
+    face_index: Optional[str] = None
     formula: str
     emitter_id: Optional[int] = None       # MOEX EMITTER_ID (фильтр/агрегаты по эмитенту)
     emitter_name: Optional[str] = None

@@ -218,6 +218,17 @@ def calculate_valuation_metrics(
 
     index_pct_fn, hist_pairs = _index_provider(bond.base, warnings, calc_date)
 
+    # ЛИНКЕР (индексируемый номинал): провайдер роста индекса для потока. База у
+    # такой бумаги остаётся RUONIA — меняется только номинал, на который
+    # начисляется фиксированная ставка (см. core.valuation, ветка `linker`).
+    face_grow_fn = None
+    if bond.face_index:
+        from services.linker import face_grow_provider
+        face_grow_fn = face_grow_provider(calc_date)
+        if face_grow_fn is None:
+            warnings.append("история индекса RUONIA недоступна — рост индексируемого "
+                            "номинала не спроецирован: SM/DM/Y-IDX занижены")
+
     # кэп/флор купона: если число распарсилось — прогноз клэмпится в
     # build_cashflows (потолок/пол ставки учтён). Если capped, но числа нет —
     # проекция линейна, помечаем (при высокой базе DM/SM/YTM могут завышать).
@@ -243,7 +254,8 @@ def calculate_valuation_metrics(
     # (факт MOEX), амортизации учитываем.
     cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
                                       explicit_periods=periods, amorts=amorts, offers=offers,
-                                      index_pct_fn=index_pct_fn, warnings_out=warnings)
+                                      index_pct_fn=index_pct_fn, face_grow_fn=face_grow_fn,
+                                      warnings_out=warnings)
 
     # ГАРАНТИРОВАННЫЙ НОМИНАЛЬНЫЙ УБЫТОК: dirty > Σ всех будущих потоков (даже без
     # дисконта). Держать до погашения = точно потерять деньги → цена явно битая
@@ -331,7 +343,9 @@ def calculate_valuation_metrics(
             flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
                                                    explicit_periods=periods, amorts=amorts,
                                                    offers=offers,
-                                                   index_pct_fn=index_pct_fn, warnings_out=warnings)
+                                                   index_pct_fn=index_pct_fn,
+                                                   face_grow_fn=face_grow_fn,
+                                                   warnings_out=warnings)
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
     except Exception as e:
         logger.warning(f"Discount margin error for {bond.isin}: {e}")
@@ -417,7 +431,9 @@ def calculate_valuation_metrics(
         cfs_h = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
                                             explicit_periods=periods, amorts=amorts,
                                             offers=offers, cut_date=cut,
-                                            index_pct_fn=index_pct_fn, warnings_out=warnings)
+                                            index_pct_fn=index_pct_fn,
+                                            face_grow_fn=face_grow_fn,
+                                            warnings_out=warnings)
         if not cfs_h:
             return None
         y_h = xirr_yield_pct(dirty_rub, cfs_h, calc_date)
@@ -431,7 +447,9 @@ def calculate_valuation_metrics(
             flat_cfs_h = build_cashflows_with_spread(bond, flat_h, calc_date, bond.spread_issue_bps,
                                                      explicit_periods=periods, amorts=amorts,
                                                      offers=offers, cut_date=cut,
-                                                     index_pct_fn=index_pct_fn, warnings_out=warnings)
+                                                     index_pct_fn=index_pct_fn,
+                                                   face_grow_fn=face_grow_fn,
+                                                   warnings_out=warnings)
             dm_h = solve_discount_margin_bps(flat_cfs_h, calc_date, dirty_rub, L_h)
         idx_y_h = None
         if _ru_curve is not None:

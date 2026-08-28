@@ -666,6 +666,11 @@ class MarketDataService:
                             "start": cg(row, "startdate"), "end": end,
                             "value": cg(row, "value"), "valueprc": cg(row, "valueprc"),
                             "face": cg(row, "facevalue"),
+                            # ПЕРВОНАЧАЛЬНЫЙ номинал выпуска: пара
+                            # (initial_face, face) — единственный признак
+                            # индексируемого номинала в bondization
+                            # (services.linker.is_ruonia_linked)
+                            "initial_face": cg(row, "initialfacevalue"),
                         })
                     # AMORTS/OFFERS ЧИТАЕМ С КАЖДОЙ СТРАНИЦЫ. ISS пагинирует ВСЕ
                     # блоки одним start/limit, а не только купоны: у ИА РТБ-1

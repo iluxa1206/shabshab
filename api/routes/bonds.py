@@ -77,10 +77,16 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
     base = u.get("base_rate_type", "UNKNOWN")
     spread = u.get("spread_issue_bps") or 0
     label = _BASE_LABEL.get(base, base)
-    formula = f"{label} + {spread / 100:g}%" if spread else label
+    if u.get("face_index"):
+        # У линкера складывать базу со спредом нельзя: ставка купона
+        # ФИКСИРОВАНА и равна этому «спреду», а по базе индексируется номинал.
+        formula = f"номинал по {label}, купон {spread / 100:g}%"
+    else:
+        formula = f"{label} + {spread / 100:g}%" if spread else label
     last = mx.get("last")
     return BondListItem(
         isin=u["isin"], short_name=name, base_rate_type=base, formula=formula,
+        face_index=u.get("face_index"),
         spread_issue_bps=int(spread),
         coupons_per_year=_coupons_per_year(u.get("coupon_period_days"),
                                            u.get("coupons_per_year")),

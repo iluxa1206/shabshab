@@ -45,6 +45,7 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
     """Будущие платежи одной бумаги. Канонический builder; на экзотике/ошибке —
     фолбэк на сырой график MOEX (зафиксированные купоны + амортизации + финал)."""
     from core.valuation import build_cashflows_with_spread, settle_date
+    from services.linker import grow_fn_for
     settle = settle_date(calc_date)
     isin = ref.isin
     coupons = full.get("coupons") or []
@@ -90,6 +91,7 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
                 ref, curve, calc_date, ref.spread_issue_bps or 0,
                 explicit_periods=periods or None, amorts=amorts, offers=offers,
                 index_pct_fn=index_pct_fn,
+                face_grow_fn=grow_fn_for(ref, calc_date),
             )
         except Exception as e:
             logger.warning(f"calendar builder failed {isin}: {e}")

@@ -480,9 +480,22 @@ async def discover_floaters(listing: dict | None = None,
             reg.mark_discovery_seen(isin, None)
             continue
         is_fl = any(c.get("value") is None for c in coupons)
+        mo = listing[isin]
+        # ЛИНКЕР RUONIA — второй вид флоатера, которого правило «есть купон с
+        # value=None» не ловит: ставка у него ФИКСИРОВАНА, плавает номинал, и
+        # MOEX проставляет сумму во все купоны сразу. Без этой ветки ВЭБ2Р-58 и
+        # его будущие собратья уходили в negative-кэш как фиксы и оседали во
+        # вкладке ФИКСЫ с YTM, посчитанным на застывшем номинале.
+        from services import linker as _lnk
+        linked = False
+        if not is_fl:
+            try:
+                linked = _lnk.is_ruonia_linked(coupons, mo.get("face"))
+            except Exception as e:
+                logger.warning("детект линкера %s: %s", isin, e)
+            is_fl = linked
         reg.mark_discovery_seen(isin, is_fl)
         if is_fl:
-            mo = listing[isin]
             # купонный период — из ФАКТИЧЕСКОГО графика (два последних купона /
             # размещение+первый), а не round(365/freq). Точнее для генерации
             # форвард-графика без bondization и для display в Справочнике.
@@ -491,6 +504,19 @@ async def discover_floaters(listing: dict | None = None,
                                              today=date.today())
             row = {"isin": isin, "short_name": mo.get("short_name"),
                    "maturity_date": mo.get("maturity"), "face_value": mo.get("face")}
+            if linked:
+                # Параметры линкера известны сразу и целиком: база сравнения —
+                # RUONIA, «маржа выпуска» — та самая фиксированная ставка купона
+                # (у ВЭБ2Р-58 1.85% ⇒ 185 bps), поэтому бумага заводится
+                # прайсуемой, а не висит в очереди ревью без базы.
+                rate = _lnk._fixed_rate_pct(coupons)
+                row["base"] = "RUONIA"
+                row["face_index"] = _lnk.RUONIA
+                if rate is not None:
+                    row["margin_bps"] = int(round(rate * 100))
+                # номинал у линкера биржевой и растёт ежедневно — снимок дня
+                # заведения в реестре только мешал бы (см. bonds.apply_registry_params)
+                row.pop("face_value", None)
             # дата размещения — из САМОГО раннего купона графика. Листинг MOEX её
             # не отдаёт (колонки ISIN/SHORTNAME/MATDATE/COUPONPERCENT/FACEVALUE),
             # поэтому mo.get("issue") здесь всегда None, и у заведённых дискавери

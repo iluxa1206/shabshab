@@ -118,6 +118,7 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     Кривая: у ExpCurve берём внутреннюю bootstrap-кривую (та же конвенция
     forward, что в exp.fwd; builder клэмпит анкер к calc_date сам)."""
     from core.valuation import build_cashflows_to_maturity
+    from services.linker import grow_fn_for
     triples = []
     for c in coupons or []:
         e = _d(c.get("end"))
@@ -128,7 +129,8 @@ def project_cfs(ref, exp: ExpCurve, calc_date: date, coupons: list, amorts: list
     curve = getattr(exp, "_curve", exp)
     cfs = build_cashflows_to_maturity(
         ref, curve, calc_date, explicit_periods=triples or None,
-        amorts=amorts, offers=offers, index_pct_fn=index_pct_fn)
+        amorts=amorts, offers=offers, index_pct_fn=index_pct_fn,
+        face_grow_fn=grow_fn_for(ref, calc_date))
     return [(cf.pay_date, cf.amount_rub) for cf in cfs]
 
 

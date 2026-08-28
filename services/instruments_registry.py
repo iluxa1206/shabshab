@@ -36,7 +36,7 @@ _MANUAL_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
                   "coupon_period_days", "coupons_per_year", "day_count",
                   "fixing_lag", "fixing_lag_unit", "coupon_mode",
                   "short_name", "var_type", "cap_pct", "floor_pct", "coupon_text",
-                  "avg_window_days", "compounded", "margin_schedule")
+                  "avg_window_days", "compounded", "margin_schedule", "face_index")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instruments(
@@ -154,6 +154,13 @@ _MIGRATIONS = [
     # Купоны вне диапазонов лесенки считаются НЕ плавающими: прайсинг берёт по
     # ним скаляр margin_bps, бэктест спеки их не судит (bond_audit._backtest).
     "ALTER TABLE instruments ADD COLUMN margin_schedule TEXT",
+    # ЛИНКЕР: база ИНДЕКСАЦИИ НОМИНАЛА ('RUONIA' | NULL). Не путать с base: у
+    # такой бумаги ставка купона фиксирована, а плавает номинал (ВЭБ.РФ
+    # ПБО-002Р-58: 1.85% на номинал, растущий по индексу RUONIA ЦБ). base при
+    # этом остаётся RUONIA — кривая, конвенция дисконта и база Y-IDX те же, что
+    # у обычного RUONIA-флоатера; отличие только в построении потока
+    # (core.valuation, ветка `linker`; детект — services.linker).
+    "ALTER TABLE instruments ADD COLUMN face_index TEXT",
 ]
 
 
@@ -191,7 +198,7 @@ _COLS = ("short_name", "base", "margin_bps", "maturity_date", "issue_date",
          "coupon_period_days", "coupons_per_year", "day_count", "face_value",
          "var_type", "fixing_lag", "fixing_lag_unit", "coupon_mode", "rating",
          "cap_pct", "floor_pct", "coupon_text", "avg_window_days", "compounded",
-         "has_call", "margin_schedule")
+         "has_call", "margin_schedule", "face_index")
 
 
 def upsert(row: dict, source: str, mark_new: bool = True,
@@ -291,7 +298,8 @@ def set_manual(isin: str, params: dict, lock: bool = True) -> None:
 # кэш немедленно (см. set_manual) — правка справочника видна расчёту сразу.
 _calc_params_cache = {"ts": 0.0, "map": None}
 _CALC_FIELDS = ("base", "margin_bps", "maturity_date", "issue_date",
-                "coupon_period_days", "coupons_per_year", "face_value")
+                "coupon_period_days", "coupons_per_year", "face_value",
+                "face_index")
 
 
 # Версия данных реестра: инкремент при каждой правке (set_manual/reset/br-импорт).
@@ -677,6 +685,10 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "emitter_name": canon.get(r["emitter_id"]) or r["emitter_name"],
             "coupon_period_days": r["coupon_period_days"],
             "coupons_per_year": r["coupons_per_year"],
+            # линкер: база индексации номинала (см. services.linker). Витрине
+            # нужна, чтобы «RUONIA + 185» у такой бумаги не читалось как
+            # обычный плавающий купон — плавает номинал, ставка фиксирована
+            "face_index": r["face_index"],
             # None = не знаем (corpbonds не скрейплен), True/False — знаем
             "has_call": None if r["has_call"] is None else bool(r["has_call"]),
         })

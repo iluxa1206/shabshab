@@ -43,7 +43,13 @@ def apply_registry_params(ref: BondRefData) -> BondRefData:
         ref.coupon_period_days = int(row["coupon_period_days"])
     if row.get("coupons_per_year"):
         ref.coupons_per_year = int(row["coupons_per_year"])
-    if row.get("face_value"):
+    # ЛИНКЕР: база индексации номинала — только из реестра (в MOEX-справочнике
+    # признака нет). Ставится ДО номинала: у такой бумаги номинал биржевой и
+    # меняется каждый день, а реестровое значение — снимок дня заведения, и
+    # оверрайд им откатывал бы бумагу на месяцы назад по всей индексации.
+    if row.get("face_index"):
+        ref.face_index = row["face_index"]
+    if row.get("face_value") and not ref.face_index:
         ref.face_value = float(row["face_value"])
     # first_coupon_date производён от issue+шага — пересчёт от финальных значений
     if ref.issue_date and ref.coupons_per_year and 1 <= ref.coupons_per_year <= 12:
