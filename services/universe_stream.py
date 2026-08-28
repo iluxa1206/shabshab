@@ -661,21 +661,28 @@ async def universe_stream_pool() -> None:
         g["key"] = None
         g["shards"] = 0
     retry = 0                   # пауза до следующего такта: см. хвост цикла
+    fast_fixed = False          # прошлый такт ждал прогрева фиксов
+    isins: list = []            # последний известный состав флоатеров
     while True:
         waiting_fixed = False   # универс фиксов ещё греется — заглянем раньше
         try:
-            uni = await instruments_registry.fetch_floater_universe()
-            isins = sorted({u["isin"] for u in uni if u.get("isin")})
-            if not isins:
-                # Пустой юниверс — это сбой источника, а не «бумаг не осталось».
-                # Пересборка по нему убила бы все живые сокеты (см. схлопывание
-                # пула сделок, services/trades_stream.subscription_isins).
-                raise RuntimeError("пустой юниверс — пул не пересобираем")
-            group = _groups["floaters"]
-            key = tuple(isins)
-            if key != group["key"]:
-                group["shards"] = _rebuild_group("флоатеры", isins, 0, group)
-                group["key"] = key
+            # БЫСТРЫЙ ПРОХОД (ждём прогрева фиксов) идёт ТОЛЬКО за фиксами.
+            # Состав флоатер-юниверса в первые минуты после старта ещё дрожит
+            # (реестр догружается: 609 → 615 → 609), и на учащённом такте это
+            # пересобирало бы их сокеты по три раза за две минуты.
+            if not fast_fixed:
+                uni = await instruments_registry.fetch_floater_universe()
+                isins = sorted({u["isin"] for u in uni if u.get("isin")})
+                if not isins:
+                    # Пустой юниверс — это сбой источника, а не «бумаг не
+                    # осталось». Пересборка по нему убила бы все живые сокеты
+                    # (см. схлопывание пула сделок, trades_stream).
+                    raise RuntimeError("пустой юниверс — пул не пересобираем")
+                group = _groups["floaters"]
+                key = tuple(isins)
+                if key != group["key"]:
+                    group["shards"] = _rebuild_group("флоатеры", isins, 0, group)
+                    group["key"] = key
             # ФИКСЫ — своя группа и СВОЙ guard: битый листинг фиксов не имеет
             # права уронить подписки флоатеров (ISS отдаёт пустой борд чаще, чем
             # кажется — см. сторож стримов 28.08.2026). Не дали фиксов — держим
@@ -706,6 +713,7 @@ async def universe_stream_pool() -> None:
                          shards=sum(g["shards"] for g in _groups.values()))
             _pool["err"] = None
             retry = _FIXED_WAIT_SEC if waiting_fixed else 0
+            fast_fixed = waiting_fixed
         except asyncio.CancelledError:
             for g in _groups.values():
                 _stop_sockets(g["tasks"], g["stops"])
@@ -717,6 +725,7 @@ async def universe_stream_pool() -> None:
             _pool.update(err=str(e), err_at=time.time())
             logger.warning("universe pool reconcile: %s", e)
             retry = min(retry * 2 or 20, _RECONCILE_SEC)
+            fast_fixed = False      # после ошибки идём полным проходом
         await asyncio.sleep(retry or _RECONCILE_SEC)
 
 
