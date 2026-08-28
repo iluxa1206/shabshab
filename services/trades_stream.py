@@ -86,6 +86,12 @@ _shards: dict[int, dict] = {}
 # без отдельного REST-запроса; дубли снимает INSERT OR IGNORE по TRADENO.
 _RESUB_DEPTH = int(os.getenv("ALOR_TRADES_RESUB_DEPTH", "10"))
 _REPORT_SEC = 300           # период сводки в лог
+# Сеанс дольше этого считаем состоявшимся — только он сбрасывает бэкофф сокета.
+_UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
+# Потолок буфера на возврат не записанной пачки (см. _requeue). 100 тыс. тиков —
+# это минуты потока всего рынка на пике, а по памяти ~30 МБ: буфер переживает
+# короткий отказ записи, но не растёт до OOM, если запись легла совсем.
+_REQUEUE_MAX = int(os.getenv("TRADES_STREAM_REQUEUE_MAX", "100000"))
 _last_report = 0.0
 
 
@@ -225,33 +231,71 @@ async def _alert_on_ticks(chunks: list[tuple[str, list]]) -> None:
         logger.info("trades stream: %d уведомлений о сделках (без ISS-лага)", sent)
 
 
+def _requeue(chunks: list[tuple[str, list]]) -> None:
+    """Не записанную пачку — обратно в буфер, старым тикам вперёд.
+
+    Пачка уходит из _buf ДО записи, поэтому любая ошибка записи (диск, замок
+    SQLite, упавший поток) уносила сделки навсегда: водяной знак дрейна стрим
+    не двигает, но по бумагам ВНЕ юниверса дрейна и нет — их вернул бы только
+    ISS со своей планкой 1 млн и 15 минутами.
+
+    Потолок обязателен: если запись не встаёт вовсе (кончился диск), буфер без
+    него растёт до OOM. При переполнении бумага теряет самые СТАРЫЕ свои тики,
+    а хвост списка бумаг — все; о потере говорим ошибкой в лог, тихо терять
+    сделки нельзя."""
+    n = sum(len(v) for v in _buf.values())
+    dropped = 0
+    for isin, raw in chunks:
+        free = _REQUEUE_MAX - n
+        if free <= 0:
+            dropped += len(raw)
+            continue
+        take = raw[-free:] if len(raw) > free else raw
+        dropped += len(raw) - len(take)
+        _buf.setdefault(isin, [])[:0] = take
+        n += len(take)
+    if dropped:
+        logger.error("trades stream: буфер переполнен (%d тиков), ПОТЕРЯНО %d "
+                     "сделок — запись в архив не встаёт", n, dropped)
+
+
+async def _flush_once() -> int:
+    """Один слив буфера в архив. Ошибка возвращает тики в буфер (см. _requeue)."""
+    chunks = [(isin, raw) for isin, raw in _buf.items() if raw]
+    _buf.clear()
+    if not chunks:
+        return 0
+    try:
+        faces = await _faces_map()
+        await _fx_map()     # курс валюты номинала — тем же тактом: без него
+                            # порог режет замещайки как «мелочь» (_tick_value)
+        saved = await run_bg(_flush_sync, chunks, faces)
+    except asyncio.CancelledError:
+        # Отмена могла прийти УЖЕ ПОСЛЕ записи в потоке — тогда возврат в буфер
+        # даст повтор, а не дубль: вставка идёт INSERT OR IGNORE по TRADENO.
+        _requeue(chunks)
+        raise
+    except Exception as e:
+        _requeue(chunks)
+        logger.warning("trades stream flush: %s", e)
+        return 0
+    try:
+        await _alert_on_ticks(chunks)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("trades stream alerts: %s", e)
+    _stats["flushes"] += 1
+    _stats["saved"] += saved
+    return saved
+
+
 async def _flusher(stop: asyncio.Event) -> None:
     while not stop.is_set():
         await asyncio.sleep(_FLUSH_SEC)
         if not _buf:
             continue
-        chunks = [(isin, raw) for isin, raw in _buf.items() if raw]
-        _buf.clear()
-        if not chunks:
-            continue
-        try:
-            faces = await _faces_map()
-            await _fx_map()     # курс валюты номинала — тем же тактом: без него
-                                # порог режет замещайки как «мелочь» (_tick_value)
-            saved = await run_bg(_flush_sync, chunks, faces)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("trades stream flush: %s", e)
-            continue
-        try:
-            await _alert_on_ticks(chunks)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("trades stream alerts: %s", e)
-        _stats["flushes"] += 1
-        _stats["saved"] += saved
+        await _flush_once()
         # сводка редкая: на такте раз в 2с построчный лог сам стал бы потоком
         global _last_report
         if time.time() - _last_report >= _REPORT_SEC:
@@ -277,15 +321,22 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                                        "resubs": 0, "errors": 0, "last": 0.0})
     st["isins"] = len(isins)
     backoff = 1
+    up_at = 0.0
     while not stop.is_set():
-        token = await alor_token()
-        if not token:
-            await asyncio.sleep(10)
-            continue
         try:
+            # ТОКЕН ВНУТРИ try: alor_token() кидает, когда oauth не ответил за
+            # свои 5 секунд. Снаружи это уносило ВЕСЬ таск шарда, а владелец
+            # пула пересоздаёт таски только при смене состава бумаг — 250
+            # бумаг оставались без потока до следующего reconcile с новым
+            # юниверсом, то есть часами, и молча: ноля на сокетах нет, сторож
+            # видит живых соседей.
+            token = await alor_token()
+            if not token:
+                await asyncio.sleep(10)
+                continue
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
-                    backoff = 1
+                    up_at = time.monotonic()
                     depth = _RESUB_DEPTH if st["resubs"] else 0
                     st["resubs"] += 1
                     st["up"] = True
@@ -337,6 +388,12 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
         finally:
             st["up"] = False
             _streamed.difference_update(isins)
+        # БЭКОФФ СБРАСЫВАЕТ ТОЛЬКО ДОЛГИЙ СЕАНС, а не сам факт коннекта: если
+        # брокер принимает соединение и тут же рвёт его (лимит подписок, чужой
+        # токен), сброс на входе давал реконнект раз в секунду с каждого из 12+
+        # сокетов — шторм по себе и по чужому rate-limit'у.
+        if up_at and time.monotonic() - up_at >= _UP_OK_SEC:
+            backoff = 1
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
 
@@ -443,6 +500,22 @@ async def subscription_isins() -> list[str]:
     return (core + rest)[:_MAX_ISINS]
 
 
+_sock_tasks: list = []       # см. trades_stream_pool
+_sock_stops: list = []
+_flush_task = None           # сливной таск буфера, тоже на модуле
+
+
+def _stop_sockets(tasks: list, stops: list) -> None:
+    """Гасит текущий комплект сокетов пула: сигнал stop (сокет сам выходит из
+    чтения), затем отмена таска."""
+    for s in stops:
+        s.set()
+    for t in tasks:
+        t.cancel()
+    tasks.clear()
+    stops.clear()
+
+
 async def trades_stream_pool() -> None:
     """Владелец пула: режет рынок на шарды, держит по сокету на шард и один
     сливной таск, пересобирает пул при изменении списка бумаг."""
@@ -450,12 +523,20 @@ async def trades_stream_pool() -> None:
         return
     _pool["started"] = time.time()
     await asyncio.sleep(30)     # старт после прогрева, следом за пулом котировок
-    tasks: list = []
-    stops: list = []
+    # Ручки сокетов держим НА МОДУЛЕ: владельца пула перезапускает супервизор
+    # (api.main._supervise), и локальный список унёс бы с собой ручки ЖИВЫХ
+    # сокетов — старые подписки висели бы дальше, новые легли бы сверху, и
+    # каждая сделка приезжала бы дважды с двойным комплектом подписок.
+    tasks, stops = _sock_tasks, _sock_stops
+    _stop_sockets(tasks, stops)
     current: Optional[tuple] = None
     retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
+    global _flush_task
+    if _flush_task and not _flush_task.done():
+        _flush_task.cancel()    # перезапуск пула не должен оставить ВТОРОЙ
+                                # сливной таск на том же буфере
     flush_stop = asyncio.Event()
-    flush_task = asyncio.create_task(_flusher(flush_stop))
+    flush_task = _flush_task = asyncio.create_task(_flusher(flush_stop))
     try:
         while True:
             try:
@@ -469,11 +550,7 @@ async def trades_stream_pool() -> None:
                 await live_quotes.seed_universe(_core)
                 key = tuple(isins)
                 if key != current:
-                    for s in stops:
-                        s.set()
-                    for t in tasks:
-                        t.cancel()
-                    tasks, stops = [], []
+                    _stop_sockets(tasks, stops)
                     shards = [isins[i:i + _SHARD_SIZE]
                               for i in range(0, len(isins), _SHARD_SIZE)]
                     for n, shard in enumerate(shards):
@@ -502,10 +579,21 @@ async def trades_stream_pool() -> None:
                 retry = min(retry * 2 or 20, _RECONCILE_SEC)
             await asyncio.sleep(retry or _RECONCILE_SEC)
     except asyncio.CancelledError:
-        for s in stops:
-            s.set()
-        for t in tasks:
-            t.cancel()
+        _stop_sockets(tasks, stops)
         flush_stop.set()
         flush_task.cancel()
+        # ПОСЛЕДНИЙ СЛИВ: в буфере лежит до _FLUSH_SEC секунд рыночного потока,
+        # и на редеплое он просто исчезал. Флоатерам это позже закрыл бы REST-
+        # дрейн (знак дрейна стрим не двигает), остальному рынку — никто.
+        # Отмена уже пришла, поэтому щит: без него await умрёт на первом же
+        # переключении, и слив не состоится.
+        try:
+            n = await asyncio.wait_for(asyncio.shield(_flush_once()), timeout=10)
+            if n:
+                logger.info("trades stream: финальный слив, %d сделок записано", n)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            logger.warning("trades stream: финальный слив не успел, %d тиков "
+                           "в буфере", sum(len(v) for v in _buf.values()))
+        except Exception as e:
+            logger.warning("trades stream: финальный слив: %s", e)
         raise

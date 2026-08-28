@@ -39,6 +39,8 @@ _FREQ_MS = 800         # серверный троттл Alor: не чаще р�
 _LIVE_CAP = int(os.getenv("ALOR_LIVE_CAP", "60"))
 _CTX_TTL = 300         # пересборка reprice-контекста per isin, сек
 _RECONCILE_SEC = 2.0   # период сверки подписок с фронтом
+# Сеанс дольше этого считаем состоявшимся — только он сбрасывает бэкофф.
+_UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
 
 
 class _Sub:
@@ -154,15 +156,19 @@ async def alor_orderbook_ws():
     from services import live_quotes
     manager = wsmod.manager
     backoff = 1
+    up_at = 0.0
     while True:
-        token = await alor_token()
-        if not token:
-            await asyncio.sleep(10)
-            continue
         try:
+            # ТОКЕН ВНУТРИ try: alor_token() кидает, когда oauth не ответил за
+            # свои 5 секунд, и снаружи это убивало таск НАВСЕГДА — карточка и
+            # стакан молча оставались на HTTP-поллинге до рестарта процесса.
+            token = await alor_token()
+            if not token:
+                await asyncio.sleep(10)
+                continue
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
-                    backoff = 1
+                    up_at = time.monotonic()
                     subs = {}        # isin -> _Sub (стакан с reprice уровней)
                     trades = {}      # isin -> guid (поток сделок → живой VWAP)
                     guid_map = {}    # guid -> (канал, isin)
@@ -337,7 +343,14 @@ async def alor_orderbook_ws():
                             if _bad[0] in (1, 10, 100) or _bad[0] % 1000 == 0:
                                 logger.warning("alor_ws: сообщение %s %s: %s "
                                                "(всего сбоев %d)", chan, isin, e, _bad[0])
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(f"alor_ws error: {e}")
+        # Бэкофф сбрасывает только СОСТОЯВШИЙСЯ сеанс, а не факт коннекта:
+        # соединение, которое брокер рвёт сразу, иначе давало реконнект раз в
+        # секунду.
+        if up_at and time.monotonic() - up_at >= _UP_OK_SEC:
+            backoff = 1
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)

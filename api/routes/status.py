@@ -146,6 +146,8 @@ async def memory():
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
     from services import trades_stream as tstream
+    from services.universe_stream import stats as _us_stats
+    from api.main import daemons_state as _daemons_state
     from auth import alor_token
 
     # универсы
@@ -228,6 +230,11 @@ async def get_status():
         # живая лента: сколько бумаг идёт пушем Alor (у остальных сделки видны
         # только через ISS, а он публично отдаёт с задержкой 15 минут)
         "trades_stream": tstream.stats(),
+        # пул котировок/стаканов по сокетам: мёртвый шард уносит 150 бумаг, и
+        # общий счётчик streamed этого не показывает
+        "universe_stream": _us_stats(),
+        # фоновые воркеры: упавший и перезапущенный виден по restarts
+        "daemons": _daemons_state(),
         # что грузится ПРЯМО СЕЙЧАС: обход баров, прогрев после рестарта, дрейн
         # рейтингов, разовые бэкфилл-скрипты (см. services/progress.py)
         "jobs": progress.snapshot(),

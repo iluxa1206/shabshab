@@ -160,8 +160,29 @@ def pool_state() -> dict:
     return dict(_pool)
 
 
+# Состояние КАЖДОГО сокета пула. Общий счётчик streamed падение одного шарда не
+# показывает: 150 бумаг из 600 просто перестают шевелиться, сторож видит живых
+# соседей и молчит, а поллер-фолбэк тихо тянет их снапшотом раз в 5 секунд.
+_SHARD0 = {"isins": 0, "up": False, "msgs": 0, "conns": 0, "errors": 0, "last": 0.0}
+_shards: Dict[int, dict] = {}         # котировки
+_depth_shards: Dict[int, dict] = {}   # стаканы
+# Сеанс дольше этого считаем состоявшимся — только он сбрасывает бэкофф сокета.
+_UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
+
+
+def _shard_view(src: Dict[int, dict]) -> dict:
+    now = time.time()
+    rows = [{"id": sid, **s,
+             "quiet_min": round((now - s["last"]) / 60, 1) if s["last"] else None}
+            for sid, s in sorted(src.items())]
+    return {"total": len(rows), "up": sum(1 for s in rows if s["up"]),
+            "mute": [s["id"] for s in rows if s["up"] and not s["msgs"]],
+            "list": rows}
+
+
 def stats() -> dict:
     return {"streamed": len(_streamed), "dirty": len(_dirty), "pool": pool_state(),
+            "shards": _shard_view(_shards), "depth_shards": _shard_view(_depth_shards),
             "memo": len(_level_memo), "hits": _memo_hits, "misses": _memo_misses}
 
 
@@ -278,16 +299,25 @@ async def _on_quote(isin: str, data: dict) -> None:
 
 async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None:
     """Один сокет пула: подписка на свой шард, чтение до сигнала stop."""
+    st = _shards.setdefault(shard_id, dict(_SHARD0, isins=len(isins)))
+    st["isins"] = len(isins)
     backoff = 1
+    up_at = 0.0
     while not stop.is_set():
-        token = await alor_token()
-        if not token:
-            await asyncio.sleep(10)
-            continue
         try:
+            # ТОКЕН ВНУТРИ try: alor_token() кидает, когда oauth не ответил за
+            # свои 5 секунд, и снаружи это уносило ВЕСЬ таск шарда. Владелец
+            # пула пересоздаёт таски только при смене юниверса, так что 150
+            # бумаг оставались без котировок до нового выпуска или погашения.
+            token = await alor_token()
+            if not token:
+                await asyncio.sleep(10)
+                continue
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
-                    backoff = 1
+                    up_at = time.monotonic()
+                    st["up"] = True
+                    st["conns"] += 1
                     guid_isin = {}
                     for n, isin in enumerate(isins):
                         guid = f"up{shard_id}-{isin}-{n}"
@@ -316,13 +346,22 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                         data, guid = payload.get("data"), payload.get("guid")
                         isin = guid_isin.get(guid)
                         if data and isin:
+                            st["msgs"] += 1
+                            st["last"] = time.time()
                             await _on_quote(isin, data)
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            st["errors"] += 1
             logger.warning("universe pool shard %d: %s", shard_id, e)
         finally:
+            st["up"] = False
             _streamed.difference_update(isins)
+        # Бэкофф сбрасывает только СОСТОЯВШИЙСЯ сеанс: коннект, который брокер
+        # рвёт сразу (лимит подписок, чужой токен), иначе давал реконнект раз в
+        # секунду с каждого сокета пула.
+        if up_at and time.monotonic() - up_at >= _UP_OK_SEC:
+            backoff = 1
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
 
@@ -333,16 +372,21 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
     фильтра по объёму просто становятся push-свежими."""
     global _depth_msgs
     from services.market_data import market_cache
+    st = _depth_shards.setdefault(shard_id, dict(_SHARD0, isins=len(isins)))
+    st["isins"] = len(isins)
     backoff = 1
+    up_at = 0.0
     while not stop.is_set():
-        token = await alor_token()
-        if not token:
-            await asyncio.sleep(10)
-            continue
         try:
+            token = await alor_token()     # внутри try: см. _shard_socket
+            if not token:
+                await asyncio.sleep(10)
+                continue
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
-                    backoff = 1
+                    up_at = time.monotonic()
+                    st["up"] = True
+                    st["conns"] += 1
                     guid_isin = {}
                     for n, isin in enumerate(isins):
                         guid = f"ud{shard_id}-{isin}-{n}"
@@ -390,17 +434,38 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                         market_cache["depth_ts"] = _now_ts
                         market_cache.setdefault("depth_shard_ts", {})[shard_id] = _now_ts
                         _depth_msgs += 1
+                        st["msgs"] += 1
+                        st["last"] = _now_ts
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            st["errors"] += 1
             logger.warning("depth stream shard %d: %s", shard_id, e)
         finally:
+            st["up"] = False
             _depth_streamed.difference_update(isins)
             # метку снимаем: пока сокет мёртв, его бумаги обязаны считаться
             # протухшими, а не жить на метке соседних шардов
             market_cache.get("depth_shard_ts", {}).pop(shard_id, None)
+        if up_at and time.monotonic() - up_at >= _UP_OK_SEC:
+            backoff = 1
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
+
+
+_sock_tasks: list = []       # см. universe_stream_pool
+_sock_stops: list = []
+
+
+def _stop_sockets(tasks: list, stops: list) -> None:
+    """Гасит текущий комплект сокетов пула: сначала сигнал stop (сокет выходит
+    из чтения сам), потом отмена таска."""
+    for s in stops:
+        s.set()
+    for t in tasks:
+        t.cancel()
+    tasks.clear()
+    stops.clear()
 
 
 async def universe_stream_pool() -> None:
@@ -409,8 +474,12 @@ async def universe_stream_pool() -> None:
     from services import instruments_registry
     _pool["started"] = time.time()
     await asyncio.sleep(25)     # старт после прогрева и первого снапшота
-    tasks: list = []
-    stops: list = []
+    # Ручки сокетов держим НА МОДУЛЕ: владельца пула перезапускает супервизор
+    # (api.main._supervise), и локальный список унёс бы с собой ручки ЖИВЫХ
+    # сокетов — старые подписки остались бы висеть, новые легли бы сверху, и
+    # брокер получил бы двойной комплект подписок на те же бумаги.
+    tasks, stops = _sock_tasks, _sock_stops
+    _stop_sockets(tasks, stops)
     current: Optional[tuple] = None
     retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
     while True:
@@ -424,11 +493,7 @@ async def universe_stream_pool() -> None:
                 raise RuntimeError("пустой юниверс — пул не пересобираем")
             key = tuple(isins)
             if key != current:
-                for s in stops:
-                    s.set()
-                for t in tasks:
-                    t.cancel()
-                tasks, stops = [], []
+                _stop_sockets(tasks, stops)
                 shards = [isins[i:i + _SHARD_SIZE]
                           for i in range(0, len(isins), _SHARD_SIZE)]
                 for n, shard in enumerate(shards):
@@ -439,6 +504,11 @@ async def universe_stream_pool() -> None:
                         dstop = asyncio.Event()
                         stops.append(dstop)
                         tasks.append(asyncio.create_task(_depth_socket(n, shard, dstop)))
+                # юниверс ужался — лишние номера уходят из статистики, иначе в
+                # ней вечно висел бы «мёртвый» сокет без сообщений
+                for sid in [s for s in _shards if s >= len(shards)]:
+                    _shards.pop(sid, None)
+                    _depth_shards.pop(sid, None)
                 current = key
                 _pool.update(built=time.time(), shards=len(shards))
                 logger.info("universe pool: %d бумаг / %d сокетов котировок%s",
@@ -447,10 +517,7 @@ async def universe_stream_pool() -> None:
             _pool["err"] = None
             retry = 0
         except asyncio.CancelledError:
-            for s in stops:
-                s.set()
-            for t in tasks:
-                t.cancel()
+            _stop_sockets(tasks, stops)
             raise
         except Exception as e:
             # Ошибка reconcile (ISS не отдал юниверс) на холодном старте

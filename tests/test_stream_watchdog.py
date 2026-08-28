@@ -237,3 +237,88 @@ def test_pool_hint_separates_causes():
     assert "ISS 502" in m._pool_hint({"pool": {"err": "ISS 502"}})
     assert "ни разу" in m._pool_hint({"pool": {"built": 0.0}})
     assert "токен/сеть/брокер" in m._pool_hint({"pool": {"built": 1.0, "shards": 13}})
+
+
+# ── восстановление без потери данных ─────────────────────────────────────────
+
+def test_failed_flush_returns_ticks_to_buffer(monkeypatch):
+    """Пачка уходит из буфера ДО записи: ошибка записи не должна её съедать —
+    по бумагам вне юниверса такую сделку не вернёт никто, кроме ISS с планкой
+    1 млн и 15 минутами."""
+    from services import trades_stream as ts
+
+    ts._buf.clear()
+    ts._buf["RU000A1"] = [{"id": 1, "price": 100.0, "qty": 1, "time": "", "val": 5.0}]
+
+    async def boom(*a, **kw):
+        raise RuntimeError("диск кончился")
+
+    monkeypatch.setattr(ts, "_faces_map", boom)
+    assert asyncio.run(ts._flush_once()) == 0
+    assert [t["id"] for t in ts._buf["RU000A1"]] == [1]
+    ts._buf.clear()
+
+
+def test_requeue_keeps_order_and_caps(monkeypatch):
+    """Вернувшиеся тики старше тех, что прилетели во время записи, — значит
+    вперёд. Потолок роняет самое старое и об этом говорит, а не растёт до OOM."""
+    from services import trades_stream as ts
+
+    ts._buf.clear()
+    ts._buf["X"] = [{"id": 3}]
+    ts._requeue([("X", [{"id": 1}, {"id": 2}])])
+    assert [t["id"] for t in ts._buf["X"]] == [1, 2, 3]
+
+    monkeypatch.setattr(ts, "_REQUEUE_MAX", 4)
+    ts._requeue([("X", [{"id": 0}, {"id": -1}])])
+    assert len(ts._buf["X"]) == 4, "потолок держит буфер конечным"
+    ts._buf.clear()
+
+
+def test_dead_shard_alerts_even_when_neighbours_live():
+    """Мёртвый шард уносит 150–250 бумаг, а общий счётчик бумаг на сокетах при
+    этом не ноль — раньше сторож видел живых соседей и молчал."""
+    us = {"streamed": 450, "shards": {"total": 4, "up": 2},
+          "depth_shards": {"total": 4, "up": 4}}
+    ts = {"streamed": 3000, "shards": {"total": 13, "up": 13}}
+    problems = {}
+    for k, sh, what in (("books_shards", us.get("shards") or {}, "котировок"),
+                        ("depth_shards", us.get("depth_shards") or {}, "стаканов"),
+                        ("trades_shards", ts.get("shards") or {}, "сделок")):
+        tot, up = sh.get("total") or 0, sh.get("up") or 0
+        if tot and up < m.SHARD_UP_MIN * tot:
+            problems[k] = f"сокетов {what}: живо {up} из {tot}"
+    assert set(problems) == {"books_shards"}
+
+
+def test_daemon_restarts_after_crash():
+    """Воркер, упавший вне своего внутреннего try, обязан вернуться сам: голый
+    create_task убивал его насмерть и молча."""
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("упал")
+
+    real_sleep = asyncio.sleep
+
+    async def no_wait(*_a, **_k):       # бэкофф демона не должен держать тест
+        await real_sleep(0)
+
+    async def run():
+        m._daemon_restarts.clear()
+        m.asyncio.sleep = no_wait
+        try:
+            task = asyncio.create_task(m._supervise("test", flaky))
+            for _ in range(200):        # ждём перезапуск, не завися от таймера
+                await real_sleep(0)
+                if task.done():
+                    break
+            task.cancel()
+        finally:
+            m.asyncio.sleep = real_sleep
+
+    asyncio.run(run())
+    assert len(calls) == 2, "после падения демон поднялся заново"
+    assert m._daemon_restarts["test"] == 1

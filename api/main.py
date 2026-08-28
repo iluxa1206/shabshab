@@ -271,6 +271,9 @@ STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
 # такт к обнаружению настоящего отказа; выгода — тишина на каждой моргнувшей
 # подписке (иначе тревога «стрим молчит» с отбоем через 5 минут).
 STREAM_CONFIRM_TICKS = int(os.getenv("STREAM_CONFIRM_TICKS", "2"))
+# Доля живых сокетов пула, ниже которой это уже отказ, а не переподписка одного
+# шарда. 0.8 — как порог фолбэка стаканов (universe_stream.depth_stream_covers).
+SHARD_UP_MIN = float(os.getenv("STREAM_SHARD_UP_MIN", "0.8"))
 # Момент старта процесса: молодой процесс объясняет пустые сокеты сам.
 _PROC_STARTED = time.time()
 
@@ -381,6 +384,17 @@ async def stream_watchdog(period_sec: int = 300):
                 elif not (_mc.get("depth") or {}):
                     problems["depth"] = (f"сокеты стаканов живы "
                                          f"({us['streamed']} бумаг), но кэш глубины пуст")
+                # ЧАСТИЧНЫЙ ОТКАЗ ПУЛА: мёртвый шард уносит 150–250 бумаг, и
+                # снаружи это выглядело как «по ним не торгуют» — общий счётчик
+                # бумаг на сокетах не ноль, сторож видел живых соседей и молчал.
+                for k, sh, what in (
+                        ("books_shards", us.get("shards") or {}, "котировок"),
+                        ("depth_shards", us.get("depth_shards") or {}, "стаканов"),
+                        ("trades_shards", ts.get("shards") or {}, "сделок")):
+                    tot, up = sh.get("total") or 0, sh.get("up") or 0
+                    if tot and up < SHARD_UP_MIN * tot:
+                        problems[k] = (f"сокетов {what}: живо {up} из {tot} — "
+                                       f"бумаги мёртвых шардов без потока")
                 if not ts.get("streamed"):
                     problems["trades"] = (f"сделки — 0 бумаг на сокетах; "
                                           f"{_pool_hint(ts)}")
@@ -1014,6 +1028,54 @@ async def depth_poller():
 API_POOL_WORKERS = int(os.getenv("API_POOL_WORKERS", "12"))
 
 
+# Живые демоны: имя → таск. Через него их и останавливает lifespan, и смотрит
+# /api/status (перезапущенный воркер обязан быть виден).
+_daemons: dict = {}
+_daemon_restarts: dict = {}
+
+
+async def _supervise(name: str, fn) -> None:
+    """Демон, переживающий СВОЁ падение.
+
+    Все фоновые воркеры поднимались голым create_task, и исключение вне их
+    внутреннего try убивало таск насмерть — молча: результат таска никто не
+    читает, в лог падает разве что «Task exception was never retrieved» при
+    сборке мусора. Снаружи слой выглядит живым (сокеты есть, ручки отвечают),
+    а считать, писать и звонить уже некому.
+
+    Нормальный возврат — это «мне тут делать нечего» (слой выключен флагом):
+    перезапускать нечего. Падение — перезапуск с бэкоффом до 5 минут, чтобы
+    воркер, падающий сразу на старте, не крутил ошибку в цикле."""
+    backoff = 5
+    while True:
+        try:
+            await fn()
+            logger.info("демон %s завершился штатно", name)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _daemon_restarts[name] = _daemon_restarts.get(name, 0) + 1
+            logger.exception("демон %s УПАЛ (перезапуск №%d через %.0f с)",
+                             name, _daemon_restarts[name], backoff)
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 300)
+
+
+def _daemon(name: str, fn) -> asyncio.Task:
+    """Фоновый воркер под присмотром — см. _supervise."""
+    t = asyncio.create_task(_supervise(name, fn), name=name)
+    _daemons[name] = t
+    return t
+
+
+def daemons_state() -> dict:
+    """Кто из фоновых воркеров жив и сколько раз падал — для /api/status."""
+    return {name: {"running": not t.done(),
+                   "restarts": _daemon_restarts.get(name, 0)}
+            for name, t in _daemons.items()}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from concurrent.futures import ThreadPoolExecutor
@@ -1036,76 +1098,63 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"watermark seed error: {e}")
 
-    seed = asyncio.create_task(_seed_tick_watermarks())
-    warm = asyncio.create_task(warmup_caches())
-    task = asyncio.create_task(ws_market_data_broadcaster())
-    poller = asyncio.create_task(universe_price_poller())
-    prewarm = asyncio.create_task(daily_prewarm())
+    _daemon("watermark-seed", _seed_tick_watermarks)
+    _daemon("warmup", warmup_caches)
+    _daemon("ws-broadcaster", ws_market_data_broadcaster)
+    _daemon("price-poller", universe_price_poller)
+    _daemon("daily-prewarm", daily_prewarm)
     from services.alor_ws import alor_orderbook_ws
-    alor_ws = asyncio.create_task(alor_orderbook_ws())
-    spread_snap = asyncio.create_task(spread_snapshotter())
-    bars_worker = asyncio.create_task(hourly_bars_worker())
-    night_warm = asyncio.create_task(nightly_spread_warm())
-    night_roll = asyncio.create_task(nightly_daily_rollup())
-    mem_watch = asyncio.create_task(memory_watch())
-    depth_task = asyncio.create_task(depth_poller())
-    archive_task = asyncio.create_task(archive_maintenance())
-    blocks_task = asyncio.create_task(block_trades_worker())
+    _daemon("alor-ws", alor_orderbook_ws)
+    _daemon("spread-snapshotter", spread_snapshotter)
+    _daemon("hourly-bars", hourly_bars_worker)
+    _daemon("nightly-spread-warm", nightly_spread_warm)
+    _daemon("nightly-rollup", nightly_daily_rollup)
+    _daemon("memory-watch", memory_watch)
+    _daemon("depth-poller", depth_poller)
+    _daemon("archive-maintenance", archive_maintenance)
+    _daemon("block-trades", block_trades_worker)
     # вечерний «разбор дня» альбомом картинок (services/tg_digest)
     from services.tg_digest import digest_worker
-    digest_task = asyncio.create_task(digest_worker())
-    quotes_task = asyncio.create_task(quotes_poller())
+    _daemon("tg-digest", digest_worker)
+    _daemon("quotes-poller", quotes_poller)
     from services.universe_stream import universe_stream_pool, metrics_worker
     from services.trades_stream import trades_stream_pool
-    pool_task = asyncio.create_task(universe_stream_pool())
+    _daemon("universe-pool", universe_stream_pool)
     # безадресные сделки юниверса пушем: ISS-лента (block_trades) отстаёт на 15
     # минут, у Alor задержки нет — см. services/trades_stream
-    tape_task = asyncio.create_task(trades_stream_pool())
-    engine_task = asyncio.create_task(metrics_worker())
-    lag_task = asyncio.create_task(loop_lag_watchdog())
+    _daemon("trades-pool", trades_stream_pool)
+    _daemon("metrics-engine", metrics_worker)
+    _daemon("loop-lag-watchdog", loop_lag_watchdog)
     # тихий отказ стримов выглядит как «рынок спокоен» — сторож делает его громким
-    stream_wd_task = asyncio.create_task(stream_watchdog())
+    _daemon("stream-watchdog", stream_watchdog)
     # место на диске и свежесть копий: оба отказа тихие, см. disk_watchdog
-    disk_wd_task = asyncio.create_task(disk_watchdog())
+    _daemon("disk-watchdog", disk_watchdog)
     # живой сокет ≠ свежая лента: сторож меряет, доезжают ли сделки вовремя
-    feed_wd_task = asyncio.create_task(feed_lag_watchdog())
+    _daemon("feed-watchdog", feed_lag_watchdog)
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
-    tg_sig_task = asyncio.create_task(tg_signal_worker())
+    _daemon("tg-signals", tg_signal_worker)
     # команды бота: на этом VPS Telegram до нас не достучится (вебхук молчит),
     # поэтому апдейты забираем сами — см. services/tg_poll.py
-    tg_poll_task = asyncio.create_task(tg_poll_worker())
-    signals_task = asyncio.create_task(signals_worker())
+    _daemon("tg-poll", tg_poll_worker)
+    _daemon("signals", signals_worker)
     from services.yidx_sentinel import run_forever as _yidx_sentinel
-    yidx_task = asyncio.create_task(_yidx_sentinel())
+    _daemon("yidx-sentinel", _yidx_sentinel)
     yield
-    tg_sig_task.cancel()
-    stream_wd_task.cancel()
-    disk_wd_task.cancel()
-    feed_wd_task.cancel()
-    tg_poll_task.cancel()
-    signals_task.cancel()
-    yidx_task.cancel()
-    quotes_task.cancel()
-    pool_task.cancel()
-    tape_task.cancel()
-    engine_task.cancel()
-    lag_task.cancel()
-    seed.cancel()
-    warm.cancel()
-    task.cancel()
-    poller.cancel()
-    prewarm.cancel()
-    alor_ws.cancel()
-    spread_snap.cancel()
-    bars_worker.cancel()
-    night_warm.cancel()
-    night_roll.cancel()
-    mem_watch.cancel()
-    depth_task.cancel()
-    archive_task.cancel()
-    blocks_task.cancel()
-    digest_task.cancel()
+    _live = set(_daemons.values())
+    for _t in _live:
+        _t.cancel()
+    # ДАЁМ ДОБЕЖАТЬ ДО finally: у пула сделок там последний слив буфера в архив
+    # (до _FLUSH_SEC секунд рыночного потока, которые иначе исчезают на каждом
+    # редеплое). Зависшего не ждём дольше грейса — стоп сервера важнее.
+    try:
+        _, pending = await asyncio.wait(_live, timeout=15)
+        if pending:
+            logger.warning("остановка: %d демонов не завершились за 15 с",
+                           len(pending))
+    except Exception as e:
+        logger.warning("остановка демонов: %s", e)
+    _daemons.clear()
     from services import telegram as _tg
     await _tg.aclose()          # keepalive-пул Bot API живёт между вызовами
 

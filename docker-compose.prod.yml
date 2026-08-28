@@ -44,6 +44,21 @@ services:
     # соседнего стека astra-prod: на 3.8GB VPS свободно ~2.5GB.
     mem_limit: 1200m
     mem_reservation: 256m
+    # ЖИВОСТЬ ПРОЦЕССА, А НЕ ФАКТ ЗАПУСКА: restart ловит только exit и OOM-kill,
+    # а самый частый отказ — залипший event loop (сайт «висит», контейнер
+    # Running). /api/health открыта без сессии и отвечает из петли, поэтому
+    # проверка меряет именно её отзывчивость. curl в python:slim нет — стучимся
+    # штатным urllib.
+    # ВНИМАНИЕ: docker compose сам по себе unhealthy-контейнер НЕ перезапускает,
+    # он только метит его. Рестарт по метке даёт сайдкар autoheal (см. ниже).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5           # 2.5 минуты подряд без ответа — это отказ, а не пик
+      start_period: 180s   # холодный старт греет кэши и поднимает пулы сокетов
+    labels:
+      autoheal: "true"     # по этой метке сайдкар autoheal и рестартит (см. ниже)
     networks:
       - web
     expose:
@@ -77,6 +92,25 @@ services:
       - web
     volumes:
       - /root/xray:/usr/local/etc/xray:ro
+
+  # Рестарт по метке unhealthy: сам compose её только выставляет. Autoheal
+  # слушает события docker и перезапускает контейнеры с меткой
+  # autoheal=true — сюда её ставит label выше у floaters.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+      AUTOHEAL_START_PERIOD: "180"
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    volumes:
+      # ДОСТУП К ДЕМОНУ DOCKER = права root на хосте. Осознанный размен:
+      # контейнер официальный, ничего наружу не публикует и сокет берёт
+      # только на чтение событий и рестарт.
+      - /var/run/docker.sock:/var/run/docker.sock
 
 networks:
   web:
