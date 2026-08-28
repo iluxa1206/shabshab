@@ -187,6 +187,26 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const fillFor = (side, price) => sigFill[`${side}:${price}`]
     || (volFill[`${side}:${price}`] ? { ...volFill[`${side}:${price}`], vol: true } : null);
 
+  // Скролл при открытии: центрируем спред (лучший бид/оффер). Лестница на 50
+  // уровней вдвое длиннее панели, и без этого стол видит хвост офферов, а не
+  // рынок. Центрируем один раз на каждый набор ключей (бумага/глубина/режим):
+  // живые пуши не должны дёргать скролл под руками.
+  const scrollRef = useRef(null);
+  const spreadRef = useRef(null);
+  const centeredKey = useRef(null);
+  useEffect(() => {
+    const key = `${isin}|${depth}|${full}`;
+    if (empty) { if (centeredKey.current === key) centeredKey.current = null; return; }
+    if (centeredKey.current === key) return;
+    const box = scrollRef.current, row = spreadRef.current;
+    if (!box || !row) return;
+    centeredKey.current = key;
+    // через rect, а не offsetTop: у .ob-scroll нет position, и offsetParent
+    // строки — внешняя панель, отсчёт от неё врёт на высоту шапки
+    const br = box.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    box.scrollTop += (rr.top - br.top) - (box.clientHeight - rr.height) / 2;
+  }, [isin, depth, full, empty, asks.length, bids.length]);
+
   // Легенда подсветки: рисуем только те строки, которые реально сейчас видны в
   // стакане — иначе стол читает про режимы, которых на экране нет.
   const hasSig = Object.keys(sigFill).length > 0;
@@ -223,7 +243,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
           : q.isFetching ? "обновление…" : "live · 3с"}
       </div>
 
-      <div className="ob-scroll">
+      <div className="ob-scroll" ref={scrollRef}>
         {q.isLoading && !wsUsable && empty && (
           <div style={{ padding: "4px 20px" }} role="status" aria-label="Загрузка стакана">
             {Array.from({ length: 10 }, (_, i) => <div key={i} className="skel skel-line" />)}
@@ -242,7 +262,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
             </thead>
             <tbody>
               {asks.map((l, i) => <Level key={"a" + i} lvl={l} side="ask" face={face} isFixed={isFixed} fill={fillFor("ask", l.price_pct)} />)}
-              <tr className="ob-spread">
+              <tr className="ob-spread" ref={spreadRef}>
                 <td colSpan={4}>
                   спред {spread != null ? fmt.pct(spread) + " %" : "—"}
                 </td>

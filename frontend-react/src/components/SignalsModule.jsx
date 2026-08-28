@@ -7,7 +7,8 @@ import {
   patchSignalFilter, previewBlockFilter, previewSignalFilter, searchInstruments,
 } from "../api.js";
 import { fmt, RT_FILTER } from "../format.js";
-import { bookMode, eventTag, maturityTxt, reasonDelta, reasonTitle, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
+import { bookMode, eventTag, maturityShort, maturityTxt, reasonDelta, reasonTitle,
+         sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 
 // значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
 const RATINGS = RT_FILTER;
@@ -983,25 +984,29 @@ export default function SignalsModule() {
                   + (REPEAT[h.reason] ? " hit-repeat" : "")
                   + (tradeTone(h) ? " sb-t-" + tradeTone(h) : "")}>
                 <div className="sig-hit-top">
+                  <span className={"sb-tag " + sideInfo(h).cls}>{eventTag(h)}</span>
                   <span className="sig-hit-name">{h.name || h.isin}</span>
-                  <span className={"sb-tag sb-" + h.reason}>{eventTag(h)}</span>
+                  {/* срок до РАСЧЁТНОЙ ДАТЫ (оферта/погашение) — там же, где
+                      он стоит в ленте колокольчика */}
+                  {maturityShort(h) && (
+                    <span className="sb-mat" title={maturityTxt(h)}>{maturityShort(h)}</span>
+                  )}
                   <span className="sig-hit-time num">{timeOf(h.fired_at)}</span>
                 </div>
                 <div className="sig-hit-body num">
-                  {/* у крупной сделки сторона — агрессор (buy/sell), а не сторона
-                      стакана; у адресной её нет вообще */}
-                  <span className={sideInfo(h).cls}>{sideInfo(h).text}</span>
+                  {/* сторона теперь в плашке (агрессор у сделки, очередь у
+                      заявки), здесь остаются только числа */}
                   {h.val_bps != null && (
-                    <> · <span className="sig-hit-k">R-spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
+                    <><span className="sig-hit-k">R-spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
                   )}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
                 </div>
                 <div className="sig-hit-mode">
-                  {[tradeMode(h), bookMode(h), maturityTxt(h)].filter(Boolean).join(" · ")}
+                  {[tradeMode(h), bookMode(h)].filter(Boolean).join(" · ")}
                   {reasonDelta(h) && (
                     <span className="sig-why" title={reasonTitle(h)}>
-                      {[tradeMode(h), bookMode(h), maturityTxt(h)].filter(Boolean).length ? " · " : ""}
+                      {[tradeMode(h), bookMode(h)].filter(Boolean).length ? " · " : ""}
                       {reasonDelta(h)}</span>
                   )}
                 </div>

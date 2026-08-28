@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useQueryClient } from "@tanstack/react-query";
 import { connectSignalsWs } from "../api.js";
-import { fmt, dmColor } from "../format.js";
-import { eventMoney, maturityTxt, reasonDelta, reasonTitle, sideInfo } from "../signalFormat.js";
+import { fmt } from "../format.js";
+import { eventMoney, reasonDelta } from "../signalFormat.js";
+import SignalEventRow from "./SignalEventRow.jsx";
 
 // Двухтональный сигнал через WebAudio (без ассета). Отличается от бипа алертов
 // стакана, чтобы на слух было понятно, что именно сработало.
@@ -105,124 +106,64 @@ export default function SignalsWatcher() {
 
   return (
     <div className="sig-toasts">
-      {cards.map(({ id, payload }) => (
-        <SignalToast key={id} p={payload} onOpen={openBond} onDismiss={() => dismiss(id)} />
-      ))}
+      {/* AnimatePresence — чтобы уход был ПЛАВНЫМ: без него карточка по
+          истечении 15 с исчезала кадром */}
+      <AnimatePresence initial={false}>
+        {cards.map(({ id, payload }) => (
+          <SignalToast key={id} p={payload} onOpen={openBond} onDismiss={() => dismiss(id)} />
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
 
+// Живёт 15 с — столько же, сколько показывает системное уведомление; дальше
+// событие никуда не девается, оно лежит в ленте колокольчика.
+const TOAST_MS = 15000;
+
+/**
+ * Всплывающее окно = кусок ленты колокольчика: тот же заголовок и ТЕ ЖЕ строки
+ * (SignalEventRow). Раньше у тоста была своя вёрстка, и одно событие в двух
+ * местах выглядело двумя разными новостями.
+ */
 function SignalToast({ p, onOpen, onDismiss }) {
   const reduce = useReducedMotion();
   useEffect(() => {
-    const t = setTimeout(onDismiss, 25000);
+    const t = setTimeout(onDismiss, TOAST_MS);
     return () => clearTimeout(t);
   }, [onDismiss]);
 
-  const side = p.side === "ask" ? "оффер" : "бид";
+  const isBlock = p.type === "block";
   const shown = p.matches.slice(0, 6);
+  // строке ленты нужны сторона и имя фильтра; у события стакана они лежат в
+  // конверте пуша, а не в самом match
+  const asEvent = (m) => ({
+    ...m,
+    reason: isBlock ? "block" : m.reason,
+    side: m.side ?? p.side,
+    filter_name: m.filter_name ?? (isBlock ? null : p.filter_name),
+  });
 
-  // Крупная сделка — другое событие, не срабатывание фильтра: ни стороны
-  // стакана, ни спреда набора у неё нет, поэтому и карточка своя.
-  if (p.type === "block") {
-    return (
-      <motion.div className="sig-toast" role="alert"
-        initial={reduce ? false : { x: 40, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        transition={{ type: "spring", stiffness: 400, damping: 30 }}>
-        <button className="sig-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
-        <div className="sig-toast-h">
-          <span>Крупная сделка</span>
-          <span className="sig-toast-n">
-            {p.matches.length} {p.matches.length === 1 ? "сделка" : "сделок"}</span>
-        </div>
-        <div className="sig-toast-b">
-          {shown.map((m) => (
-            <button type="button" className="sig-toast-row" key={m.isin + m.ts}
-              onClick={() => onOpen(m, "ask")} title="Открыть карточку и стакан">
-              <span className="sig-toast-nm">
-                <span className="nm">{m.name}</span>
-                {/* агрессор сделки: у адресной его нет — так и пишем */}
-                <span className={"sig-toast-side " + sideInfo(m).cls}>{sideInfo(m).text}</span>
-                <span className={"blk-tag" + (m.negotiated ? " blk-tag-ndm" : "")}>
-                  {m.negotiated ? "адресная" : "стакан"}</span>
-              </span>
-              <span className="sig-toast-val">
-                {money(eventMoney(m))}
-                {m.val_bps != null && (
-                  <span style={{ ...dmColor(m.val_bps), marginLeft: 6, fontSize: "11px" }}>
-                    {fmt.num(m.val_bps, 0)} бп</span>
-                )}
-              </span>
-              <span className="sig-toast-sub">
-                <span>{m.isin}</span>
-                <span>цена {fmt.num(m.price, 2)}%</span>
-                {/* срок бумаги: «блок на 600 млн» читается по-разному для
-                    годовой бумаги и для десятилетней */}
-                {maturityTxt(m) && <span>{maturityTxt(m)}</span>}
-                <span>{(m.ts || "").slice(11, 16)}</span>
-                {m.rating && <span>{m.rating}</span>}
-              </span>
-            </button>
-          ))}
-          {p.matches.length > shown.length && (
-            <div className="sig-toast-more">…и ещё {p.matches.length - shown.length}</div>
-          )}
-        </div>
-      </motion.div>
-    );
-  }
   return (
     <motion.div className="sig-toast" role="alert"
       initial={reduce ? false : { x: 40, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
+      exit={reduce ? { opacity: 0 } : { opacity: 0, x: 24, scale: 0.98 }}
       transition={{ type: "spring", stiffness: 400, damping: 30 }}>
       <button className="sig-toast-x" onClick={onDismiss} aria-label="Закрыть">✕</button>
       <div className="sig-toast-h">
-        <span>Сигнал · {p.filter_name}</span>
-        {/* оффер красный, бид зелёный — как в ленте событий (signalFormat.sideInfo) */}
-        <span className={p.side === "ask" ? "neg" : "pos"}>{side}</span>
+        <span>{isBlock ? "Крупная сделка" : `Сигнал · ${p.filter_name}`}</span>
         <span className="sig-toast-n">
-          {p.matches.length} {p.matches.length === 1 ? "бумага" : "бумаг"}</span>
+          {p.matches.length}{" "}
+          {isBlock
+            ? (p.matches.length === 1 ? "сделка" : "сделок")
+            : (p.matches.length === 1 ? "бумага" : "бумаг")}
+        </span>
       </div>
       <div className="sig-toast-b">
         {shown.map((m) => (
-          <button type="button" className="sig-toast-row" key={m.isin}
-            onClick={() => onOpen(m, p.side)} title="Открыть карточку и стакан">
-            <span className="sig-toast-nm">
-              <span className="nm">{m.name}</span>
-              <span className={"sb-tag sb-" + m.reason} title={reasonTitle(m)}>
-                {REASON[m.reason] || m.reason}</span>
-              {/* насколько ушло — рядом с ярлыком: «спред» без числа не говорит,
-                  стоит ли отрываться от текущего дела */}
-              {m.reason !== "new" && reasonDelta(m) && (
-                <span className="sig-why" title={reasonTitle(m)}>{reasonDelta(m)}</span>
-              )}
-            </span>
-            <span className="sig-toast-val" style={dmColor(m.val_bps)}>
-              {fmt.num(m.val_bps, 0)} бп
-              {m.prev_val_bps != null && m.val_bps !== m.prev_val_bps && (
-                <span className={"sb-delta " + (m.val_bps > m.prev_val_bps ? "pos" : "neg")}>
-                  {" "}{m.val_bps > m.prev_val_bps ? "+" : "−"}
-                  {fmt.num(Math.abs(m.val_bps - m.prev_val_bps), 0)}
-                </span>)}
-            </span>
-            <span className="sig-toast-sub">
-              <span>{m.isin}</span>
-              <span>цена {fmt.num(m.price, 2)}%
-                {m.prev_price != null && m.price !== m.prev_price && (
-                  <span className={"sb-delta " + (m.price > m.prev_price ? "pos" : "neg")}>
-                    {" "}{m.price > m.prev_price ? "+" : "−"}
-                    {fmt.num(Math.abs(m.price - m.prev_price), 2)}
-                  </span>)}
-              </span>
-              {eventMoney(m) != null && (
-                <span>объём {money(eventMoney(m))}{m.levels ? ` · ${m.levels} ур` : ""}
-                  {m.partial ? " (частично)" : ""}</span>)}
-              {maturityTxt(m) && <span>{maturityTxt(m)}</span>}
-              {m.rating && <span>{m.rating}</span>}
-            </span>
-          </button>
+          <SignalEventRow key={m.isin + (m.ts || "")} e={asEvent(m)}
+            onOpen={(e) => onOpen(e, e.side)} />
         ))}
         {p.matches.length > shown.length && (
           <div className="sig-toast-more">…и ещё {p.matches.length - shown.length}</div>

@@ -6,38 +6,19 @@
  */
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { eventTag, sideInfo, tradeMode, tradeTone } from "./signalFormat.js";
+import SignalEventRow from "./components/SignalEventRow.jsx";
 import "./styles.css";
 
+// поля ровно те, что приходят с бэка: строка стенда обязана быть той же, что
+// в ленте (SignalEventRow), иначе стенд врёт
 const EVENTS = [
-  { id: 1, name: "РЖД 1Р-54R", reason: "block", side: "buy", negotiated: false, price: 100.12, val_bps: 212 },
-  { id: 2, name: "ВЭБP-41", reason: "block", side: "sell", negotiated: false, price: 99.4, val_bps: 180 },
-  { id: 3, name: "ГТЛК 2P-01", reason: "block", side: null, negotiated: true, price: 98.8, val_bps: 340 },
-  { id: 4, name: "ПозитивР4", reason: "new", side: "ask", price: 100.5, val_bps: 160 },
-  { id: 5, name: "ДОМ 2P10", reason: "spread", side: "bid", price: 100.1, val_bps: 120 },
-  { id: 6, name: "МегаФн2Р14", reason: "money", side: "ask", price: 99.9, val_bps: 130 },
+  { id: 1, name: "РЖД 1Р-54R", reason: "block", side: "buy", negotiated: false, price: 100.12, val_bps: 212, prev_val_bps: 197, money_rub: 62.4e6, years: 2.7, fired_at: "2026-08-28T14:32:00", isin: "RU000A10FV69", maturity: "2029-05-14" },
+  { id: 2, name: "ВЭБP-41", reason: "block", side: "sell", negotiated: false, price: 99.4, val_bps: 180, money_rub: 310e6, years: 4.2, fired_at: "2026-08-28T14:31:00", isin: "RU000A10ABC1", maturity: "2030-11-02" },
+  { id: 3, name: "ГТЛК 2P-01", reason: "block", side: null, negotiated: true, price: 98.8, val_bps: 340, money_rub: 900e6, years: 0.6, fired_at: "2026-08-28T14:28:00", isin: "RU000A10ABC2", maturity: "2027-03-20" },
+  { id: 4, name: "ПозитивР4", reason: "new", side: "ask", price: 100.5, val_bps: 160, money_ok_rub: 25e6, levels: 3, years: 1.4, filter_name: "Мой фильтр КС", fired_at: "2026-08-28T14:20:00", isin: "RU000A10ABC3", maturity: "2027-12-01" },
+  { id: 5, name: "ДОМ 2P10", reason: "spread", side: "bid", price: 100.1, val_bps: 120, prev_val_bps: 105, prev_price: 99.98, money_ok_rub: 48e6, levels: 2, years: 3.1, filter_name: "Мой фильтр КС", fired_at: "2026-08-28T14:12:00", isin: "RU000A10ABC4", maturity: "2029-09-15" },
+  { id: 6, name: "МегаФн2Р14", reason: "money", side: "ask", price: 99.9, val_bps: 130, money_ok_rub: 77e6, prev_money_ok_rub: 59e6, levels: 5, years: 2.0, filter_name: "Объём 50 млн", fired_at: "2026-08-28T14:05:00", isin: "RU000A10ABC5", maturity: "2028-08-30" },
 ];
-
-function Row({ e }) {
-  const tone = tradeTone(e);
-  return (
-    <button type="button" className={"sb-row" + (tone ? " sb-t-" + tone : "")}>
-      <span className="sb-row-1">
-        <span className="sb-name">{e.name}</span>
-        <span className={"sb-tag sb-" + e.reason}>{eventTag(e)}</span>
-        <span className="sb-time num">14:32</span>
-      </span>
-      <span className="sb-row-2 num">
-        <span className={sideInfo(e).cls}>{sideInfo(e).text}</span>
-        <b><span className="sb-k">R-spread</span> {e.val_bps} бп</b>
-        <span className="sb-px">{e.price}%</span>
-        <span className="sb-vol">62,4 млн</span>
-      </span>
-      <span className="sb-row-mode">{[tradeMode(e), "погашение 2,7 г"].filter(Boolean).join(" · ")}</span>
-      <span className="sb-row-3">крупная сделка · RU000A10FV69</span>
-    </button>
-  );
-}
 
 const THEMES = [["", "light"], ["theme-dark", "dark"], ["theme-win", "win"]];
 
@@ -46,8 +27,8 @@ createRoot(document.getElementById("root")).render(
     {THEMES.map(([cls, label]) => (
       <div key={label} className={cls} style={{ background: "var(--bg)", padding: 10 }}>
         <div style={{ font: "700 11px var(--mono)", color: "var(--mut)", marginBottom: 6 }}>{label}</div>
-        <div className="sb-list" style={{ width: 360, border: "1px solid var(--line)" }}>
-          {EVENTS.map((e) => <Row key={e.id} e={e} />)}
+        <div className="sb-list" style={{ width: 560, border: "1px solid var(--line)" }}>
+          {EVENTS.map((e) => <SignalEventRow key={e.id} e={e} />)}
         </div>
       </div>
     ))}
