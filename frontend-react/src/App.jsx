@@ -761,6 +761,8 @@ function Dashboard() {
   // МОНИТОР фиксов — та же витрина, и переключатель «Аналитика» у неё общий:
   // состояние одно, вкладки рисуют каждая свою кросс-секцию
   const onFixed = pathname.startsWith("/fixed");
+  // слой фиксов: флага нет (старый бэк) — считаем включённым
+  const fixedOn = meta.features?.fixed !== false;
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
@@ -847,6 +849,7 @@ function Dashboard() {
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
+        features={meta.features}
         extra={(onFloaters || onFixed) && (
           <button className={"seg-btn tool-btn" + (showAnalytics ? " active" : "")}
             onClick={() => { setShowAnalytics(!showAnalytics); setAnFocus(null); }}
@@ -866,7 +869,11 @@ function Dashboard() {
             остаться закладки. */}
         <Route path="/issuers" element={<Navigate to="/floaters" replace />} />
         <Route path="/reference" element={<Catalog user={user} />} />
-        <Route path="/fixed" element={<FixedMonitor onOpen={openDrawer} showAnalytics={showAnalytics} />} />
+        {/* слой фиксов выключен на бэке (FIXED_TAB=0) — старые закладки ведут
+            в монитор флоатеров, а не в пустую витрину */}
+        <Route path="/fixed" element={fixedOn
+          ? <FixedMonitor onOpen={openDrawer} showAnalytics={showAnalytics} />
+          : <Navigate to="/floaters" replace />} />
         <Route path="/calc" element={<CalcModule />} />
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
         <Route path="/trades" element={<TradesTape />} />

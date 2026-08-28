@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from datetime import date
 from api.schemas import MetaResponse
 from services.market_data import MarketDataService
+from services.feature_flags import fixed_enabled
 from auth import REFRESH_TOKEN
 
 router = APIRouter()
@@ -51,4 +52,7 @@ async def get_meta():
         },
         source_status=source_status,
         warnings=warnings,
+        # какие слои приложения включены: фронт по этому флагу прячет вкладку
+        # фиксов, чтобы выключенный слой не смотрел пустой витриной
+        features={"fixed": fixed_enabled()},
     )

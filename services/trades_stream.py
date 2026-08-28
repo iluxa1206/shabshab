@@ -495,7 +495,14 @@ async def subscription_isins() -> list[str]:
     # живая. Пустой ответ источника не стирает набор (тот же guard, что у пула
     # котировок): куцый листинг не должен схлопывать подписки.
     from services.market_data import market_cache
-    fx = {u["isin"] for u in (market_cache.get("fixed_universe") or []) if u.get("isin")}
+    from services.feature_flags import fixed_stream_enabled
+    if not fixed_stream_enabled():
+        # слой выключен — фиксы теряют и приоритет подписки, и право писать
+        # мелкие тики: снова обычные бумаги рынка, под общим порогом
+        _fixed.clear()
+        fx = set()
+    else:
+        fx = {u["isin"] for u in (market_cache.get("fixed_universe") or []) if u.get("isin")}
     if fx:
         _fixed.clear()
         _fixed.update(fx)

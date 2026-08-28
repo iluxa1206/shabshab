@@ -33,6 +33,9 @@ const BOND = {
   is_ofz: false, has_amort: false,
 };
 
+// Слой фиксов включён/выключен (см. services/feature_flags → /api/meta.features).
+let FIXED_ON = true;
+
 // Строка МОНИТОРА ФИКСОВ: те же поля, что читает витрина фиксов.
 const FIXED = {
   isin: "RU000A100002", name: "ОФЗ 26999", secid: "SU26999RMFS1", issuer: "ОФЗ",
@@ -53,7 +56,8 @@ function replyFor(url) {
   if (url.includes("/api/orderbook/depth/all")) return { depth: {} };
   if (url.includes("/api/fixed/quotes")) return { ts: null, n: 0, items: [] };
   if (url.includes("/api/fixed")) return { items: [FIXED], total: 1, calc_date: "2026-08-27" };
-  if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27" };
+  if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27",
+                                           features: { fixed: FIXED_ON } };
   if (url.includes("/api/signals")) return [];
   return {};
 }
@@ -79,7 +83,7 @@ function stubNetwork() {
   return calls;
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); FIXED_ON = true; });
 
 describe("монтирование приложения", () => {
   it("гость видит форму входа", async () => {

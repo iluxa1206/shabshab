@@ -15,6 +15,8 @@ class MetaResponse(BaseModel):
     sources: Dict[str, Any]
     source_status: Dict[str, bool] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    # включённые слои приложения (см. services/feature_flags): {"fixed": true}
+    features: Dict[str, bool] = Field(default_factory=dict)
 
 # --- Error Models ---
 class ErrorDetail(BaseModel):

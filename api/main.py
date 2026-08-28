@@ -136,6 +136,9 @@ async def _warm_fixed(market_cache):
     к погашению (YTM/g-спред/z-спред/дюрация). Расписания MOEX day-кэшируются →
     первый прогон тяжёлый (bondization ~700 бумаг), дальше дёшево. Кладём в
     market_cache, эндпоинт /api/fixed отдаёт кэш."""
+    from services.feature_flags import fixed_enabled
+    if not fixed_enabled():
+        return          # слой фиксов выключен целиком (FIXED_TAB=0)
     try:
         from services import fixed_income as fi
         funi = await fi.fetch_fixed_universe()
