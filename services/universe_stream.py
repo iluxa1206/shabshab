@@ -147,8 +147,21 @@ def depth_stream_covers(n_universe: int) -> bool:
     return _DEPTH_STREAM and n_universe > 0 and len(_depth_streamed) >= 0.8 * n_universe
 
 
+# Состояние ВЛАДЕЛЬЦА пула — отдельно от состояния сокетов. «0 бумаг на
+# сокетах» снаружи одинаково выглядит и когда пул ещё не строил шарды (холодный
+# старт, упавший на ISS reconcile), и когда все сокеты отвалились; лечится это
+# по-разному, поэтому причину носим с собой, а не ищем в логах постфактум.
+_pool = {"started": 0.0, "built": 0.0, "shards": 0, "err": None, "err_at": 0.0}
+
+
+def pool_state() -> dict:
+    """Почему на сокетах пусто: когда пул стартовал, когда в последний раз
+    собрал шарды и на чём падал. Читает сторож стримов (api/main)."""
+    return dict(_pool)
+
+
 def stats() -> dict:
-    return {"streamed": len(_streamed), "dirty": len(_dirty),
+    return {"streamed": len(_streamed), "dirty": len(_dirty), "pool": pool_state(),
             "memo": len(_level_memo), "hits": _memo_hits, "misses": _memo_misses}
 
 
@@ -394,14 +407,21 @@ async def universe_stream_pool() -> None:
     """Владелец пула: режет юниверс на шарды, держит по сокету на шард,
     пересобирает пул при изменении юниверса (новые выпуски/погашения)."""
     from services import instruments_registry
+    _pool["started"] = time.time()
     await asyncio.sleep(25)     # старт после прогрева и первого снапшота
     tasks: list = []
     stops: list = []
     current: Optional[tuple] = None
+    retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
     while True:
         try:
             uni = await instruments_registry.fetch_floater_universe()
             isins = sorted({u["isin"] for u in uni if u.get("isin")})
+            if not isins:
+                # Пустой юниверс — это сбой источника, а не «бумаг не осталось».
+                # Пересборка по нему убила бы все живые сокеты (см. схлопывание
+                # пула сделок, services/trades_stream.subscription_isins).
+                raise RuntimeError("пустой юниверс — пул не пересобираем")
             key = tuple(isins)
             if key != current:
                 for s in stops:
@@ -420,9 +440,12 @@ async def universe_stream_pool() -> None:
                         stops.append(dstop)
                         tasks.append(asyncio.create_task(_depth_socket(n, shard, dstop)))
                 current = key
+                _pool.update(built=time.time(), shards=len(shards))
                 logger.info("universe pool: %d бумаг / %d сокетов котировок%s",
                             len(isins), len(shards),
                             f" + {len(shards)} стаканов" if _DEPTH_STREAM else "")
+            _pool["err"] = None
+            retry = 0
         except asyncio.CancelledError:
             for s in stops:
                 s.set()
@@ -430,8 +453,13 @@ async def universe_stream_pool() -> None:
                 t.cancel()
             raise
         except Exception as e:
+            # Ошибка reconcile (ISS не отдал юниверс) на холодном старте
+            # означает НОЛЬ сокетов: ждать полный такт — это 5 минут слепоты.
+            # Возвращаемся быстро, с бэкоффом до обычного такта.
+            _pool.update(err=str(e), err_at=time.time())
             logger.warning("universe pool reconcile: %s", e)
-        await asyncio.sleep(_RECONCILE_SEC)
+            retry = min(retry * 2 or 20, _RECONCILE_SEC)
+        await asyncio.sleep(retry or _RECONCILE_SEC)
 
 
 # ── событийный пересчёт с кэшем уровней ──────────────────────────────────────

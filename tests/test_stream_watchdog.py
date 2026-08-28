@@ -210,3 +210,30 @@ def test_live_capture_counts_only_resolved_window(tmp_path, monkeypatch):
     cap = bt.live_capture(minutes=60)
     assert cap["total"] == 2 and cap["live"] == 1
     assert cap["ratio"] == 0.5
+
+
+# ── подтверждение и причина ──────────────────────────────────────────────────
+
+def test_single_bad_tick_is_not_an_alert():
+    """Моргнувшая подписка — не отказ: сокеты рвутся и встают за секунды, а
+    холодный старт штатно проходит через «0 бумаг»."""
+    seen: dict = {}
+    p = {"books": "стаканы — 0 бумаг на сокетах"}
+    assert m._confirmed(p, seen, 2) == {}
+    assert m._confirmed(p, seen, 2) == p, "второй такт подряд — уже отказ"
+
+
+def test_gap_resets_confirmation():
+    seen: dict = {}
+    p = {"books": "стаканы — 0 бумаг на сокетах"}
+    m._confirmed(p, seen, 2)
+    m._confirmed({}, seen, 2)          # починилось
+    assert m._confirmed(p, seen, 2) == {}, "счётчик начинается заново"
+
+
+def test_pool_hint_separates_causes():
+    """«0 бумаг» от неподнявшегося пула и от мёртвых сокетов лечится по-разному."""
+    assert "не собрал шарды" in m._pool_hint({"pool": {"err": "ISS 502"}})
+    assert "ISS 502" in m._pool_hint({"pool": {"err": "ISS 502"}})
+    assert "ни разу" in m._pool_hint({"pool": {"built": 0.0}})
+    assert "токен/сеть/брокер" in m._pool_hint({"pool": {"built": 1.0, "shards": 13}})

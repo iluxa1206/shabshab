@@ -264,6 +264,16 @@ def _thread_stacks_brief() -> str:
 
 STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
 
+# Сколько ТАКТОВ подряд беда должна держаться, прежде чем звонить. Одиночный
+# плохой замер — ещё не отказ: сокет рвётся и переподписывается за секунды, а
+# холодный старт (рестарт контейнера, перевыкатка) штатно проходит через «0
+# бумаг на сокетах», пока пул собирает шарды. Цена подтверждения — плюс один
+# такт к обнаружению настоящего отказа; выгода — тишина на каждой моргнувшей
+# подписке (иначе тревога «стрим молчит» с отбоем через 5 минут).
+STREAM_CONFIRM_TICKS = int(os.getenv("STREAM_CONFIRM_TICKS", "2"))
+# Момент старта процесса: молодой процесс объясняет пустые сокеты сам.
+_PROC_STARTED = time.time()
+
 
 # Как часто ПОВТОРЯТЬ предупреждение об одной и той же беде. Сторожа ходят
 # часто, но одна поломка не должна звонить каждый такт: чинить её начинают с
@@ -273,6 +283,38 @@ STREAM_ALERT_REPEAT_MIN = float(os.getenv("STREAM_ALERT_REPEAT_MIN", "60"))
 # что сейчас сломано → когда об этом сообщили в последний раз, по сторожам
 _stream_alerted: dict = {}
 _disk_alerted: dict = {}
+# беда → сколько тактов подряд её видно (см. STREAM_CONFIRM_TICKS)
+_stream_seen: dict = {}
+
+
+def _confirmed(problems: dict, seen: dict, need: int) -> dict:
+    """Из находок такта оставляет те, что держатся `need` тактов подряд.
+
+    Пропавшая беда обнуляет свой счётчик — «мигало по разу в час» тревогой не
+    станет, а непрерывный отказ дозреет ровно за need тактов."""
+    for k in [k for k in seen if k not in problems]:
+        seen.pop(k, None)
+    out = {}
+    for k, msg in problems.items():
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] >= need:
+            out[k] = msg
+    return out
+
+
+def _pool_hint(st: dict) -> str:
+    """Почему на сокетах пусто — состоянием ВЛАДЕЛЬЦА пула, а не сокетов.
+
+    Без этого «0 бумаг» одинаково выглядит и когда пул не смог получить список
+    бумаг (ISS/реестр), и когда список есть, а сокеты не встают (токен, сеть,
+    брокер) — а чинится это по-разному."""
+    p = (st or {}).get("pool") or {}
+    if p.get("err"):
+        return f"пул не собрал шарды: {str(p['err'])[:120]}"
+    if not p.get("built"):
+        return "пул ещё ни разу не собрал шарды"
+    return (f"шарды собраны ({p.get('shards')} шт), но сокеты пусты — "
+            f"токен/сеть/брокер")
 
 
 async def _watch_alert(state: dict, problems: dict, title: str, tail: str,
@@ -334,12 +376,14 @@ async def stream_watchdog(period_sec: int = 300):
                 problems: dict = {}
                 us, ts = universe_stream.stats(), trades_stream.stats()
                 if not us.get("streamed"):
-                    problems["books"] = ("стаканы — 0 бумаг на сокетах")
+                    problems["books"] = (f"стаканы — 0 бумаг на сокетах; "
+                                         f"{_pool_hint(us)}")
                 elif not (_mc.get("depth") or {}):
                     problems["depth"] = (f"сокеты стаканов живы "
                                          f"({us['streamed']} бумаг), но кэш глубины пуст")
                 if not ts.get("streamed"):
-                    problems["trades"] = "сделки — 0 бумаг на сокетах"
+                    problems["trades"] = (f"сделки — 0 бумаг на сокетах; "
+                                          f"{_pool_hint(ts)}")
                 else:
                     last = ts.get("last_ts")
                     quiet = _quiet_min(last)
@@ -348,7 +392,16 @@ async def stream_watchdog(period_sec: int = 300):
                                              f"(последняя {last})")
                 for msg in problems.values():
                     logger.warning("СТРИМ МОЛЧИТ: %s", msg)
-                await _stream_alert(problems)
+                due = _confirmed(problems, _stream_seen, STREAM_CONFIRM_TICKS)
+                if problems and not due:
+                    logger.info("сторож стримов: беда первый такт, ждём "
+                                "подтверждения (%d бумаг стаканы / %d сделки)",
+                                us.get("streamed", 0), ts.get("streamed", 0))
+                age = (time.time() - _PROC_STARTED) / 60
+                if due:
+                    due = {k: f"{v} (процесс живёт {age:.0f} мин)"
+                           for k, v in due.items()}
+                await _stream_alert(due)
         except asyncio.CancelledError:
             raise
         except Exception as e:

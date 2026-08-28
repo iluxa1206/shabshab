@@ -64,6 +64,9 @@ _MAX_ISINS = int(os.getenv("TRADES_STREAM_MAX", "3300"))
 # сегодняшняя цена бара и VWAP до прихода дрейна.
 _OTHER_MIN_RUB = float(os.getenv("TRADES_STREAM_MIN_RUB", "1000000"))
 
+# последний ХОРОШИЙ хвост рынка вне юниверса: сбой ISS не должен схлопывать пул
+_last_rest: list = []
+
 _buf: dict[str, list] = {}          # isin → сырые тики до ближайшего flush
 _streamed: set = set()              # ISIN на живых сокетах
 _core: set = set()                  # из них — флоатер-юниверс (пишем целиком)
@@ -86,6 +89,17 @@ _REPORT_SEC = 300           # период сводки в лог
 _last_report = 0.0
 
 
+# Состояние ВЛАДЕЛЬЦА пула — отдельно от сокетов: «0 бумаг на сокетах» одинаково
+# выглядит и когда пул ещё не строил шарды (холодный старт / упавший на листинге
+# ISS reconcile), и когда все сокеты отвалились. Причину носим с собой.
+_pool = {"started": 0.0, "built": 0.0, "shards": 0, "err": None, "err_at": 0.0}
+
+
+def pool_state() -> dict:
+    """Почему на сокетах пусто: старт пула, последняя сборка шардов, ошибка."""
+    return dict(_pool)
+
+
 def stats() -> dict:
     """Состояние слоя — для /api/status."""
     now = time.time()
@@ -94,6 +108,7 @@ def stats() -> dict:
                "quiet_min": round((now - s["last"]) / 60, 1) if s["last"] else None}
               for sid, s in sorted(_shards.items())]
     return {"streamed": len(_streamed), "core": len(_core), "scope": _SCOPE,
+            "pool": pool_state(),
             "buffered": sum(len(v) for v in _buf.values()),
             "shards": {"total": len(shards), "up": sum(1 for s in shards if s["up"]),
                        "mute": [s["id"] for s in shards if s["up"] and not s["ticks"]],
@@ -413,6 +428,18 @@ async def subscription_isins() -> list[str]:
     from services.market_data import MarketDataService
     all_bonds = await MarketDataService.fetch_bond_listing()
     rest = sorted(set(all_bonds or {}) - set(core))
+    # ISS отдаёт пустой (или куцый) листинг на любом своём сбое — молча, пустым
+    # словарём. Раньше это схлопывало ПУЛ: список бумаг менялся 3166 → 608,
+    # владелец убивал все 13 сокетов и поднимал 3, а весь рынок вне юниверса
+    # слеп до следующего такта (замер 2026-08-28: так схлопывалось по разу в
+    # час, каждый раз на 5 минут). Битый ответ не должен переподписывать пул:
+    # держим последний хороший хвост, ждём следующего такта.
+    if _last_rest and len(rest) < 0.5 * len(_last_rest):
+        logger.warning("trades stream: листинг ISS куцый (%d бумаг вне юниверса "
+                       "против %d) — пул не пересобираем", len(rest), len(_last_rest))
+        rest = _last_rest
+    elif rest:
+        _last_rest[:] = rest
     return (core + rest)[:_MAX_ISINS]
 
 
@@ -421,10 +448,12 @@ async def trades_stream_pool() -> None:
     сливной таск, пересобирает пул при изменении списка бумаг."""
     if not TRADES_STREAM:
         return
+    _pool["started"] = time.time()
     await asyncio.sleep(30)     # старт после прогрева, следом за пулом котировок
     tasks: list = []
     stops: list = []
     current: Optional[tuple] = None
+    retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
     flush_stop = asyncio.Event()
     flush_task = asyncio.create_task(_flusher(flush_stop))
     try:
@@ -456,14 +485,22 @@ async def trades_stream_pool() -> None:
                     for sid in [s for s in _shards if s >= len(shards)]:
                         _shards.pop(sid, None)
                     current = key
+                    _pool.update(built=time.time(), shards=len(shards))
                     logger.info("trades stream: %d бумаг (%d юниверс) / %d сокетов "
                                 "сделок, охват %s", len(isins), len(_core),
                                 len(shards), _SCOPE)
+                _pool["err"] = None
+                retry = 0
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                # Пока reconcile падает (листинг ISS, реестр), сокетов НЕТ ни
+                # одного: полный такт ожидания — это 5 минут слепой ленты.
+                # Быстрый повтор с бэкоффом до обычного такта.
+                _pool.update(err=str(e), err_at=time.time())
                 logger.warning("trades stream reconcile: %s", e)
-            await asyncio.sleep(_RECONCILE_SEC)
+                retry = min(retry * 2 or 20, _RECONCILE_SEC)
+            await asyncio.sleep(retry or _RECONCILE_SEC)
     except asyncio.CancelledError:
         for s in stops:
             s.set()
