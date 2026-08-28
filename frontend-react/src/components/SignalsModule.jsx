@@ -984,7 +984,8 @@ export default function SignalsModule() {
                   + (REPEAT[h.reason] ? " hit-repeat" : "")
                   + (tradeTone(h) ? " sb-t-" + tradeTone(h) : "")}>
                 <div className="sig-hit-top">
-                  <span className={"sb-tag " + sideInfo(h).cls}>{eventTag(h)}</span>
+                  <span className={"sb-tag " + sideInfo(h).cls
+                    + (h.reason === "block" ? " sb-tag-fill" : "")}>{eventTag(h)}</span>
                   <span className="sig-hit-name">{h.name || h.isin}</span>
                   {/* срок до РАСЧЁТНОЙ ДАТЫ (оферта/погашение) — там же, где
                       он стоит в ленте колокольчика */}

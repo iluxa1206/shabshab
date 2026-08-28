@@ -83,7 +83,8 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
       <span className="sb-row-1">
         {/* плашка первой и несёт сторону: у сделки это агрессор, у заявки —
             сторона очереди; параметр повтора стоит в её же скобках */}
-        <span className={"sb-tag " + sideInfo(e).cls} title={title}>{eventTag(e)}</span>
+        <span className={"sb-tag " + sideInfo(e).cls + (isBlock ? " sb-tag-fill" : "")}
+          title={title}>{eventTag(e)}</span>
         <span className="sb-name">{e.name || e.isin}</span>
         {matShort && <><Sep /><span className="sb-mat" title={mat}>{matShort}</span></>}
         {e.val_bps != null && (
