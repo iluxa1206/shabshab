@@ -216,7 +216,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
         "iss.only": "securities,marketdata",
         "securities.columns": "SECID,ISIN,SHORTNAME,MATDATE,COUPONPERCENT,"
                               "FACEVALUE,FACEVALUEONSETTLEDATE,FACEUNIT,ACCRUEDINT,PREVPRICE,PREVDATE",
-        "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY",
+        "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY,BID,OFFER",
     }, timeout=20)
     if resp is None or resp.status_code != 200:
         return []
@@ -230,6 +230,8 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
     last_by: Dict[str, float] = {}
     val_by: Dict[str, float] = {}
     wap_by: Dict[str, float] = {}
+    bid_by: Dict[str, float] = {}
+    ask_by: Dict[str, float] = {}
     for mr in mrows:
         sid = mg(mr, "SECID")
         if sid:
@@ -240,6 +242,10 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             # средневзвешенная цена дня — отдельным полем, а не только фолбэком
             # для last: на ней стоит аналитика (см. compute_fixed_row)
             wap_by[sid] = _numf(mg(mr, "WAPRICE"))
+            # верх стакана из того же снапшота: пустая сторона приходит нулём —
+            # это «стороны нет», а не цена 0
+            bid_by[sid] = _numf(mg(mr, "BID")) or None
+            ask_by[sid] = _numf(mg(mr, "OFFER")) or None
     out = []
     for row in rows:
         isin = g(row, "ISIN")
@@ -264,6 +270,7 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
             "prev": _numf(g(row, "PREVPRICE")), "prev_date": g(row, "PREVDATE"),
             "last": last_by.get(g(row, "SECID")),
             "wap": wap_by.get(g(row, "SECID")),
+            "bid": bid_by.get(g(row, "SECID")), "ask": ask_by.get(g(row, "SECID")),
             "val_today": val_by.get(g(row, "SECID")) or 0.0, "board": board,
         })
     return out
@@ -344,6 +351,94 @@ async def fetch_fixed_universe() -> List[dict]:
     return rows
 
 
+def apply_board_prices(universe: List[dict], snap: Dict[str, dict]) -> None:
+    """Свежие цены борд-снапшота MOEX в строки универса (на месте).
+
+    Универс фиксов пересобирается раз в час (_UNI_TTL) — вместе с ценами, что
+    в нём лежат. Без этой накладки прогрев метрик считал бы YTM и спреды по
+    цене часовой давности, хотя снапшот держится свежим тактом 5с
+    (api.main.quotes_poller). Стороны стакана — ПОЛНЫЙ снимок верха: пусто
+    значит «стороны нет», поэтому они перезаписываются и пустыми."""
+    for u in universe:
+        v = snap.get(u.get("isin"))
+        if not v:
+            continue
+        for src, dst in (("last", "last"), ("prev", "prev"), ("prev_date", "prev_date"),
+                         ("accrued", "accrued"), ("waprice", "wap")):
+            if v.get(src) is not None:
+                u[dst] = v[src]
+        u["bid"], u["ask"] = v.get("bid"), v.get("ask")
+        if v.get("vol") is not None:
+            u["val_today"] = v["vol"]
+
+
+def fixed_side_metrics(row: dict, full: dict, g_curve, calc_date: date,
+                       prices, known: Dict[float, dict] = None) -> Dict[float, dict]:
+    """{цена: {'ytm','g_spread_bps'}} по произвольным ценам одной бумаги.
+
+    Стороны стакана, средневзвес, VWAP-набор тикета — всё это одна и та же
+    бумага по разным ценам: поток, номинал и НКД от цены не зависят, меняется
+    только дисконтирование. Считаем ПРЯМЫМ пересчётом на каждой цене, а не
+    линеаризацией от last: наклон честен только рядом с якорем, а уехавший
+    якорь уводит за собой все производные разом (флоатеры, 27.08.2026).
+    Повторы цен схлопываются — bid==last у неликвида обычное дело; known —
+    уже посчитанные цены той же бумаги (цена сделки), чтобы не считать дважды."""
+    out: Dict[float, dict] = dict(known or {})
+    face = row.get("settle_face") or row.get("face")
+    accrued = row.get("accrued") or 0.0
+    for px in prices:
+        if px is None or px <= 0:
+            continue
+        key = round(float(px), 4)
+        if key in out:
+            continue
+        m = fixed_metrics_from_schedule(full, px, accrued, calc_date, g_curve,
+                                        exchange_face=face)
+        out[key] = {"ytm": m.get("ytm_pct"), "g_spread_bps": m.get("g_spread_bps")}
+    return out
+
+
+# Своему тиковому средневзвесу верим, пока он покрывает БОЛЬШУЮ ЧАСТЬ дневного
+# оборота бумаги. У фиксов в архив тиков пишется только крупняк (порог
+# services/trades_stream), поэтому после рестарта дневной счёт поднимается из
+# архива неполным — и средневзвес по одним крупным сделкам смещён сильнее, чем
+# отстающий, но полный биржевой WAPRICE.
+_WAP_COVER_MIN = 0.7
+
+
+def pick_wap(row: dict) -> Optional[float]:
+    """Средневзвешенная цена дня: свой тиковый VWAP, если он покрывает оборот,
+    иначе биржевой WAPRICE из снапшота."""
+    from services import live_quotes
+    lv = live_quotes.get(row.get("isin")) or {}
+    own_px, own_val = lv.get("vwap_pct"), lv.get("val_today") or 0.0
+    exch_px, exch_val = row.get("wap"), row.get("val_today") or 0.0
+    if not own_px:
+        return exch_px
+    if exch_px and exch_val > 0 and own_val < _WAP_COVER_MIN * exch_val:
+        return exch_px
+    return own_px
+
+
+def _static_flags(out: dict, row: dict, full: dict, calc_date: date) -> None:
+    """Признаки выпуска, от цены не зависящие: амортизация и свежесть цены.
+    Нужны фильтрам витрины, поэтому ставятся и бумаге без метрик."""
+    # Амортизация: больше одного транша погашения номинала в графике MOEX
+    # (единственная запись — обычное погашение в конце).
+    out["has_amort"] = sum(1 for a in (full.get("amorts") or [])
+                           if a.get("value") is not None) > 1
+    # Тонкая цена: последняя цена MOEX старше 4 дней — бумага не торговалась,
+    # метрики сняты с несвежего принта. Правило то же, что у флоатеров
+    # (services/universe): возраст PREVDATE, а не NUMTRADES.
+    out["price_thin"] = False
+    pd = row.get("prev_date")
+    if pd:
+        try:
+            out["price_thin"] = (calc_date - date.fromisoformat(pd)).days > 4
+        except (ValueError, TypeError):
+            pass
+
+
 def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
                       price_override: float = None) -> dict:
     """Полный набор метрик фикс-бумаги для строки таблицы: цена (last→prev),
@@ -358,6 +453,7 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         px = row.get("last") if row.get("last") is not None else row.get("prev")
         out = {"last": px, "prev": row.get("prev"),
                "price_stale": row.get("last") is None and row.get("prev") is not None}
+    _static_flags(out, row, full, calc_date)
     if px is None or not full.get("coupons"):
         return out
     m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date,
@@ -372,28 +468,27 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
         "put_date": m.get("put_date"),
     })
-    # G-СПРЕД ПО СРЕДНЕВЗВЕСУ ДНЯ — метрика аналитики. last price это ОДНА
-    # сделка: в неликвиде случайный тонкий принт, часто на закрытии, и облако
-    # точек от него дрожит сильнее, чем двигался рынок. Средневзвес взвешен
-    # оборотом. Считаем ПРЯМЫМ пересчётом на этой цене, а не линеаризацией от
-    # last: у флоатеров наклон нужен ради стакана (спред по каждому уровню), а
-    # здесь число одно — второй проход дешевле двухточечной пробы и точен.
-    # Свой тиковый средневзвес впереди биржевого: WAPRICE из ISS отстаёт.
+    # МЕТРИКИ ПО ДРУГИМ ЦЕНАМ той же бумаги: средневзвес дня и стороны стакана.
+    # Средневзвес — база аналитики: last price это ОДНА сделка, в неликвиде
+    # случайный тонкий принт, часто на закрытии. Свой тиковый средневзвес
+    # впереди биржевого: WAPRICE из ISS отстаёт. Стороны стакана — то, по чему
+    # реально торгуют. Всё считается ПРЯМЫМ пересчётом (см. fixed_side_metrics).
     if price_override is None:
-        from services import live_quotes
-        lv = live_quotes.get(row.get("isin")) or {}
-        wap = lv.get("vwap_pct") or row.get("wap")
+        wap = pick_wap(row)
+        bid, ask = row.get("bid"), row.get("ask")
         out["wap_pct"] = wap
-        if wap is not None and wap > 0:
-            if abs(wap - px) < 1e-9:
-                out["g_spread_wap_bps"] = out.get("g_spread_bps")
-            else:
-                mw = fixed_metrics_from_schedule(full, wap, row.get("accrued") or 0.0,
-                                                 calc_date, g_curve,
-                                                 exchange_face=(row.get("settle_face")
-                                                                or row.get("face")))
-                out["g_spread_wap_bps"] = mw.get("g_spread_bps")
-                out["ytm_wap"] = mw.get("ytm_pct")
+        out["bid"] = bid
+        out["ask"] = ask
+        sides = fixed_side_metrics(
+            row, full, g_curve, calc_date, (wap, bid, ask),
+            known={round(float(px), 4): {"ytm": m.get("ytm_pct"),
+                                         "g_spread_bps": m.get("g_spread_bps")}})
+        for price, g_key, y_key in ((wap, "g_spread_wap_bps", "ytm_wap"),
+                                    (bid, "g_spread_bid_bps", "ytm_bid"),
+                                    (ask, "g_spread_ask_bps", "ytm_ask")):
+            m_side = sides.get(round(float(price), 4)) if price else {}
+            out[g_key] = (m_side or {}).get("g_spread_bps")
+            out[y_key] = (m_side or {}).get("ytm")
 
     # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
@@ -409,6 +504,12 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     cp = row.get("coupon_pct")
     if cp is not None and px:
         out["cur_yield"] = round(cp / (px / 100.0), 4)
+    # Движение к предыдущему закрытию, п.п. — как у флоатеров (services/universe):
+    # считаем от СЕГОДНЯШНЕЙ цены, а не от отката на prev-close, иначе бумага
+    # без сделок показывала бы аккуратный ноль вместо честного прочерка.
+    today_px, prev = row.get("last"), row.get("prev")
+    if price_override is None and today_px is not None and prev is not None:
+        out["delta_to_prev_close"] = round(float(today_px) - float(prev), 4)
     return out
 
 

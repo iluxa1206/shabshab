@@ -5,11 +5,11 @@ import { copyText } from "../clipboard.js";
 import CouponFormula from "./CouponFormula.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
 
-const D = () => <span className="dash">—</span>;
+export const D = () => <span className="dash">—</span>;
 
 // ISIN под именем выпуска: клик копирует его в буфер. stopPropagation — иначе
 // клик уходит в строку и открывает карточку вместо копирования.
-function IsinCopy({ isin }) {
+export function IsinCopy({ isin }) {
   const [state, setState] = useState(""); // "" | ok | err
   if (!isin) return null;
   const onClick = async (e) => {
@@ -51,7 +51,7 @@ export function wapSpread(b) {
 // base7 — база недели: у СРЕДНЕВЗВЕСА рядом со спредом мелким серым идёт
 // отклонение от неё («120 +20»). У котировок стакана база не рисуется: там и так
 // две цифры, а сравнивать с историей осмысленно цену сделок, а не заявку.
-function Quote({ px, spread, title, vwap, side, base7 }) {
+export function Quote({ px, spread, title, vwap, side, base7 }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
   const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
@@ -143,12 +143,18 @@ export const COLS = [
         </td>
       );
     } },
+  // Линкер помечен прямо в бейдже базы («RU·И»): у такой бумаги по базе растёт
+  // НОМИНАЛ, а ставка купона фиксирована — без метки строка «RU + 1,85%»
+  // читалась бы как флоатер с абсурдно узкой маржой.
   { key: "base_rate_type", label: "BASE", w: 6,
     cell: (b) => <td key="base_rate_type"><span className={"badge " + b.base_rate_type}
-      title={b.base_rate_type}>{baseLabel(b.base_rate_type)}</span></td> },
+      title={b.face_index ? b.face_index + ": индексируемый номинал, ставка купона фиксирована"
+                          : b.base_rate_type}>
+      {baseLabel(b.base_rate_type) + (b.face_index ? "·И" : "")}</span></td> },
   { key: "formula", label: "FORMULA", align: "left", w: 15,
     cell: (b) => <td className="left bond-formula" key="formula">
       <CouponFormula base={b.base_rate_type} spreadBps={b.spread_issue_bps}
+        faceIndex={b.face_index}
         couponsPerYear={b.coupons_per_year} formula={b.formula} /></td> },
   { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num", w: 8,
     cell: (b) => <td className="num" key="spread_issue_bps">{b.spread_issue_bps != null ? "+" + b.spread_issue_bps : <D />}</td> },
@@ -262,7 +268,7 @@ export const DEFAULT_COLS = COLS.map((c) => c.key);
 // остальных ~450 строк. Требует стабильных onOpen/onToggleStar (useCallback в App)
 // и стабильного cols (useMemo ниже). Flash — CSS-анимация tr.flash (styles.css)
 // вместо framer-инстанса на строку.
-const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }) {
+const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, kind }) {
   const prev = useRef(b.last_price_pct);
   const reduce = useReducedMotion();
   const [flash, setFlash] = useState(false);
@@ -274,7 +280,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }
     prev.current = b.last_price_pct;
   }, [b.last_price_pct, reduce]);
 
-  const open = (e) => onOpen(b.isin, e.currentTarget);
+  const open = (e) => onOpen(b.isin, e.currentTarget, kind);
   const toggleStar = (e) => { e.stopPropagation(); onToggleStar(b.isin); };
 
   return (
@@ -307,15 +313,18 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols }
   );
 });
 
-export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth }) {
+// colsDef/defaultCols — витрина, для которой рисуем таблицу. По умолчанию
+// флоатерная (COLS): у МОНИТОРА фиксов свой набор колонок того же формата
+// (components/fixed/fixedCols.jsx), всё остальное поведение общее.
+export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth, colsDef = COLS, defaultCols = DEFAULT_COLS, rowKind }) {
   // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),
-  // а не порядок объявления COLS. useMemo — стабильная ссылка для memo(BondRow).
+  // а не порядок объявления colsDef. useMemo — стабильная ссылка для memo(BondRow).
   const cols = useMemo(() => {
-    const byKey = new Map(COLS.map((c) => [c.key, c]));
-    const keys = visibleCols?.length ? visibleCols : DEFAULT_COLS;
+    const byKey = new Map(colsDef.map((c) => [c.key, c]));
+    const keys = visibleCols?.length ? visibleCols : defaultCols;
     const out = keys.map((k) => byKey.get(k)).filter(Boolean);
-    return out.length ? out : COLS;   // пустой/битый набор → дефолт, а не голая таблица
-  }, [visibleCols]);
+    return out.length ? out : colsDef;   // пустой/битый набор → дефолт, а не голая таблица
+  }, [visibleCols, colsDef, defaultCols]);
   // какую колонку тащим и над какой висим — для подсветки цели (ref — источник
   // правды в обработчиках, state только для стилей)
   const dragRef = useRef(null);
@@ -340,7 +349,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
     </td></tr>
   );
   else body = rows.map((b) => (
-    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} />
+    <BondRow key={b.isin} b={b} onOpen={onOpen} starred={watchSet.has(b.isin)} onToggleStar={onToggleStar} cols={cols} kind={rowKind} />
   ));
 
   return (

@@ -3,6 +3,7 @@
 поллером (market_cache), эндпоинт отдаёт кэш; при холодном кэше — быстрый фетч
 универса (2 запроса), метрики появляются по мере прогрева."""
 import re
+import asyncio
 import logging
 from datetime import date
 from fastapi import APIRouter, Path, Query, HTTPException
@@ -21,7 +22,13 @@ _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur
                 "dv01", "put_date",
                 # средневзвес дня и g-спред по нему — база графиков аналитики
                 # (last price в неликвиде это один случайный принт)
-                "wap_pct", "g_spread_wap_bps", "ytm_wap")
+                "wap_pct", "g_spread_wap_bps", "ytm_wap",
+                # верх стакана и YTM/g-спред по сторонам: по ним торгуют, а last
+                # это уже история (те же две колонки, что у флоатеров)
+                "bid", "ask", "g_spread_bid_bps", "g_spread_ask_bps",
+                "ytm_bid", "ytm_ask",
+                # движение к вчерашнему закрытию и признаки выпуска для фильтров
+                "delta_to_prev_close", "has_amort", "price_thin")
 
 
 @router.get("", tags=["Fixed"])
@@ -35,6 +42,17 @@ async def get_fixed():
 
     from services import ratings
     rmap = ratings.bucket_map_fixed([(u["isin"], u.get("cls")) for u in uni])  # батч (1 SQL)
+    # средний дневной оборот за месяц — из архива часовых баров (кэш в памяти на
+    # 15 мин, SQLite синхронный → в поток). Зовём БЕЗ kind, тем же ключом, что и
+    # /api/bonds: в bar_hourly у бумаги свой kind, поэтому ответ по всему рынку
+    # содержит и фиксы, а кэш ADV — на ОДИН ключ (services/bars._adv_cache), и
+    # два разных ключа выбивали бы друг друга полным сканом базы на каждый запрос.
+    from services import bars as bars_svc
+    try:
+        adv = await asyncio.to_thread(bars_svc.adv_map, 30)
+    except Exception as e:
+        logger.warning("fixed adv_map failed: %s", e)
+        adv = {}
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
@@ -43,6 +61,7 @@ async def get_fixed():
             "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
+            "adv_1m_rub": adv.get(u["isin"]),
             # цена: из метрик (last→prev с флагом) иначе сырой board
             "last_price_pct": m.get("last", u.get("last") if u.get("last") is not None else u.get("prev")),
         }
@@ -53,6 +72,41 @@ async def get_fixed():
 
     return {"items": items, "total": len(items),
             "calc_date": market_cache.get("fixed_calc_date") or date.today().isoformat()}
+
+
+@router.get("/quotes", tags=["Fixed"])
+async def get_fixed_quotes():
+    """Котировки фиксов одним компактным ответом — витрина тянет их тактом 5с.
+
+    Отдаёт только то, что двигается внутри дня: цену сделки, верх стакана,
+    средневзвес и оборот. Метрики (YTM/g-спред) живут своим циклом в /api/fixed
+    и здесь не дублируются: универс фиксов пересобирается раз в час, а цена
+    обязана быть свежей — источник тот же board-снапшот MOEX, который держит
+    свежим quotes_poller (сети на запрос нет).
+
+    ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
+    """
+    from services import fixed_income as fi
+    from services import live_quotes
+    uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
+    snap = await MarketDataService.fetch_board_snapshot()
+    items = []
+    for u in uni:
+        v = snap.get(u["isin"])
+        if not v:
+            continue
+        lv = live_quotes.get(u["isin"]) or {}
+        items.append({"isin": u["isin"], "last": v.get("last"), "bid": v.get("bid"),
+                      "ask": v.get("ask"),
+                      # средневзвес выбираем ТЕМ ЖЕ правилом, что и расчёт метрик
+                      # (fixed_income.pick_wap): свой тиковый — пока он покрывает
+                      # дневной оборот, иначе биржевой WAPRICE
+                      "wap": fi.pick_wap({"isin": u["isin"], "wap": v.get("waprice"),
+                                         "val_today": v.get("vol")}),
+                      # оборот — больший из двух: свой счёт полон только при живом
+                      # стриме, биржевой VALTODAY отстаёт
+                      "vol": max(v.get("vol") or 0, lv.get("val_today") or 0) or None})
+    return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 
 
 def _display_cashflow(full: dict, calc_date: date) -> list:

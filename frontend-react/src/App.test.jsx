@@ -33,12 +33,26 @@ const BOND = {
   is_ofz: false, has_amort: false,
 };
 
+// Строка МОНИТОРА ФИКСОВ: те же поля, что читает витрина фиксов.
+const FIXED = {
+  isin: "RU000A100002", name: "ОФЗ 26999", secid: "SU26999RMFS1", issuer: "ОФЗ",
+  cls: "ofz", rating: "AAA", maturity_date: "2031-05-14", coupon_pct: 12.25,
+  last_price_pct: 85.7, bid: 85.6, ask: 85.8, wap_pct: 85.75,
+  ytm: 16.1, ytm_bid: 16.2, ytm_ask: 16.0, cur_yield: 14.3, delta_ytm: -0.05,
+  g_spread_bps: 25, g_spread_bid_bps: 27, g_spread_ask_bps: 23, g_spread_wap_bps: 26,
+  z_spread_bps: 30, mod_dur: 3.4, mac_dur: 3.9, convexity: 16.2, dv01: 0.31,
+  dirty: 904.05, delta_to_prev_close: 0.1, val_today: 1.2e9, adv_1m_rub: 8e8,
+  has_amort: false, price_thin: false, price_stale: false,
+};
+
 /** Ответ на запрос по URL. Неизвестное — пустой объект: тест про рендер, не про данные. */
 function replyFor(url) {
   if (url.includes("/api/me")) return USER;
   if (url.includes("/api/bonds?universe")) return { items: [BOND], total: 1, limit: 2000, offset: 0 };
   if (url.includes("/api/bonds/quotes")) return { ts: null, n: 0, items: [] };
   if (url.includes("/api/orderbook/depth/all")) return { depth: {} };
+  if (url.includes("/api/fixed/quotes")) return { ts: null, n: 0, items: [] };
+  if (url.includes("/api/fixed")) return { items: [FIXED], total: 1, calc_date: "2026-08-27" };
   if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27" };
   if (url.includes("/api/signals")) return [];
   return {};
@@ -98,5 +112,51 @@ describe("монтирование приложения", () => {
     const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
     expect(fatal).toEqual([]);
     spy.mockRestore();
+  });
+
+  it("монитор фиксов монтируется и рисует строку", async () => {
+    // Витрина фиксов — клон монитора флоатеров на общих компонентах (BondTable,
+    // Toolbar), поэтому ошибка обобщения ломает её так же тихо: сборка зелёная,
+    // на странице белый экран.
+    const back = window.location.pathname;
+    window.history.pushState({}, "", "/app/fixed");
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a.join(" ")));
+    const calls = stubNetwork();
+
+    render(<App />);
+
+    await waitFor(() => expect(calls.some((u) => u.includes("/api/fixed"))).toBe(true));
+    expect(await screen.findByText(/ОФЗ 26999/)).toBeTruthy();
+    // первичные метрики витрины — на месте (g-спред и доходность к погашению)
+    expect((await screen.findAllByText("25")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("16,10")).length).toBeGreaterThan(0);
+
+    // витрина фиксов: стакан впереди последней сделки, обе первичные метрики
+    // и watchlist — то же, что у монитора флоатеров
+    for (const th of ["BID", "OFFER", "G-SPRD", "YTM", "ADV"]) {
+      expect((await screen.findAllByText(th)).length).toBeGreaterThan(0);
+    }
+    expect(screen.getByTitle("Watchlist")).toBeTruthy();
+    expect(screen.getByLabelText("Столбцы")).toBeTruthy();
+
+    const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
+    expect(fatal).toEqual([]);
+    spy.mockRestore();
+    window.history.pushState({}, "", back);
+  });
+
+  it("фильтры фиксов поднимаются из ссылки", async () => {
+    // Вид витрины должен переживать F5 и уезжать коллеге ссылкой: окно g-спреда
+    // из query string обязано примениться ДО первой отрисовки таблицы.
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/fixed?fxgf=500");   // g-спред от 500 бп
+    stubNetwork();
+    render(<App />);
+    // бумага витрины даёт 25 бп — под окно не попадает, таблица пуста
+    // (данные приезжают из кэша react-query или из сети — витрине всё равно)
+    await waitFor(() => expect(screen.queryByText(/ОФЗ 26999/)).toBeNull());
+    expect(await screen.findByText(/Ничего не найдено по фильтру/)).toBeTruthy();
+    window.history.pushState({}, "", back);
   });
 });

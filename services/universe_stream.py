@@ -33,6 +33,7 @@ from typing import Dict, Optional
 import aiohttp
 
 from auth import alor_token, REFRESH_TOKEN, BASE_API
+from core.orderbooks import WS_DEPTH, WS_COMPRESS
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +45,34 @@ _QUOTE_FREQ_MS = 1000       # серверный троттл Alor на бума
 # подписок и на порядок больше трафика; выключается флагом.
 _DEPTH_STREAM = os.getenv("DEPTH_STREAM", "1") not in ("0", "false", "no")
 _DEPTH_FREQ_MS = 1700       # книга шевелится часто — прижимаем частоту пуша
-_DEPTH_LEVELS = 20          # как у батч-снимка (services/depth._DEPTH_LEVELS)
+_DEPTH_LEVELS = WS_DEPTH    # как у батч-снимка (services/depth._DEPTH_LEVELS)
 # За этим сдвигом средневзвеса от цены сделки наклон перестаёт быть честным
 # приближением, и спред по нему считается точно (см. yoi_wap ниже).
 WAP_EXACT_PP = float(os.getenv("UNIVERSE_WAP_EXACT_PP", "0.5"))
+# ФИКСЫ В ПУЛЕ: витрина фиксов — тот же монитор, ей нужны те же живые котировки,
+# стаканы и пересчёт метрик по цене. Выключается флагом: пул фиксов это ещё
+# ~740 подписок котировок и столько же стаканов, и откат на проде должен быть
+# переменной окружения, а не релизом.
+_FIXED_STREAM = os.getenv("FIXED_STREAM", "1") not in ("0", "false", "no")
+# СТАКАНЫ фиксам по умолчанию НЕ качаем: лестница на 20 уровней нужна ровно
+# одному потребителю — фильтру по объёму тикета, которого на витрине фиксов нет.
+# Верх стакана (bid/ask, по ним считаются YTM и g-спред сторон) приезжает
+# котировочным сокетом. Замер 28.08.2026: с фиксами в depth-пуле пушей стаканов
+# 3400/мин против 660/мин без них — впятеро больше трафика и парсинга ни за что.
+_FIXED_DEPTH = os.getenv("FIXED_DEPTH_STREAM", "0") not in ("0", "false", "no")
+# ISIN фиксов, попавших в пул: по нему движок выбирает ветку расчёта (у фикса
+# своя математика — YTM/g-спред, а не Y-IDX/DM).
+_fixed_isins: set = set()
 _RECONCILE_SEC = 300        # пересборка шардов под изменившийся юниверс
 _BATCH_SEC = 5.0            # такт событийного пересчёта
 # Потолок полных пересчётов за такт (хвост — следующим). 40×~60мс ≈ 2.4с
 # потоковой работы на 5-секундное окно: стартовая волна юниверса длится ~1.5
 # минуты, зато CPU не насыщается и loop не лагает (80 давало 4.8с/окно — на
-# двухъядерном хосте это почти постоянная занятость ядра)
-_MAX_BATCH = 40
+# двухъядерном хосте это почти постоянная занятость ядра).
+# С приходом ФИКСОВ пул вырос вдвое (600 → 1336 бумаг), и стартовая волна
+# растянулась соответственно; потолок вынесен в переменную окружения, чтобы
+# крутить его на проде по замеру «мс/шт» из минутной сводки движка.
+_MAX_BATCH = int(os.getenv("UNIVERSE_FULL_BATCH", "40"))
 # Потолок дешёвой очереди сторон за такт. 60×13мс ≈ 0.8с на 5-секундное окно;
 # наблюдаемый поток движений сторон на проде — сотни бумаг в минуту, и 720/мин
 # ёмкости с запасом их накрывают.
@@ -116,7 +134,10 @@ def register_vol_sizes(sizes) -> None:
         # движением сторон). У застывшего неликвида такого повода может не быть
         # весь день, и в таблице у него навсегда остался бы прочерк.
         # Очередь дешёвая и с потолком на такт: рынок разгребается за минуту.
-        _sides_dirty.update(_last_quote.keys())
+        # ФИКСЫ сюда не кладём: у них своей дешёвой ветки нет (recrunch_sides их
+        # молча пропускает), а очередь с потолком на такт они бы просто заняли,
+        # отодвинув пересчёт тех, кому он действительно нужен.
+        _sides_dirty.update(k for k in _last_quote if k not in _fixed_isins)
 
 
 def active_vol_sizes() -> list:
@@ -141,10 +162,16 @@ def live_isins() -> set:
     return set(_streamed)
 
 
-def depth_stream_covers(n_universe: int) -> bool:
-    """Стрим стаканов покрывает юниверс — HTTP-батч depth_poller лишний.
-    Порог 0.8: пара отвалившихся шардов не должна выключать фолбэк целиком."""
-    return _DEPTH_STREAM and n_universe > 0 and len(_depth_streamed) >= 0.8 * n_universe
+def depth_stream_covers(isins) -> bool:
+    """Стрим стаканов покрывает ЭТОТ набор бумаг — HTTP-батч depth_poller лишний.
+    Порог 0.8: пара отвалившихся шардов не должна выключать фолбэк целиком.
+
+    Считаем пересечение с набором, а не общий счётчик: в пуле теперь и фиксы, и
+    их сокеты закрывали бы дыру в покрытии флоатеров одним лишь размером."""
+    want = set(isins)
+    if not _DEPTH_STREAM or not want:
+        return False
+    return len(want & _depth_streamed) >= 0.8 * len(want)
 
 
 # Состояние ВЛАДЕЛЬЦА пула — отдельно от состояния сокетов. «0 бумаг на
@@ -223,6 +250,29 @@ _METRIC_FIELDS = {
 }
 
 
+# Поля строки ФИКСА, зависящие от цены: имена уже совпадают с полями витрины
+# (/api/fixed), переименовывать нечего — в отличие от флоатеров, где ключи
+# enrich_bond и строки таблицы исторически разные.
+_FIXED_PATCH_FIELDS = (
+    "ytm", "ytm_bid", "ytm_ask", "ytm_wap", "cur_yield",
+    "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
+    "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
+    "delta_to_prev_close", "val_today", "wap_pct", "price_stale",
+)
+
+
+def _fixed_patch(row: dict) -> dict:
+    """Патч строки фикса для WS-пуша. Число, которого больше нет, уезжает явным
+    null — по той же причине, что и у флоатеров (см. _metrics_patch)."""
+    out = {k: row[k] for k in _FIXED_PATCH_FIELDS if k in row}
+    if out:
+        out["metrics"] = True
+        for k in ("bid", "ask"):
+            if k in row:
+                out[k] = row[k]
+    return out
+
+
 def _metrics_patch(row: dict) -> dict:
     """Патч производных метрик для WS-пуша: фронт мерджит и НЕ зовёт /reprice —
     пересчёт уже сделан здесь, вторая ходка за тем же числом не нужна.
@@ -291,7 +341,9 @@ async def _on_quote(isin: str, data: dict) -> None:
     # сторон (поток и база не пересобираются, ~13 мс на бумагу). Наклон отсюда
     # убран 27.08.2026 — линия через якорь уводила число вслед за якорем.
     elif prev is not None and any(prev.get(k) != data.get(k) for k in ("bid", "ask")):
-        _sides_dirty.add(isin)
+        # У ФИКСА отдельной дешёвой ветки нет: compute_fixed_row считает цену
+        # сделки и обе стороны одним проходом по расписанию, дробить нечего.
+        (_dirty if isin in _fixed_isins else _sides_dirty).add(isin)
     await _broadcast_quote(isin, data)
 
 
@@ -383,7 +435,10 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                 await asyncio.sleep(10)
                 continue
             async with aiohttp.ClientSession() as sess:
-                async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
+                # СЖАТИЕ ОБЯЗАТЕЛЬНО: без permessage-deflate Alor отбивает
+                # подписку с depth>20 (см. core.orderbooks.WS_DEPTH).
+                async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15,
+                                           compress=WS_COMPRESS) as ws:
                     up_at = time.monotonic()
                     st["up"] = True
                     st["conns"] += 1
@@ -453,8 +508,14 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
         backoff = min(backoff * 2, 30)
 
 
-_sock_tasks: list = []       # см. universe_stream_pool
-_sock_stops: list = []
+# Ручки сокетов ПО ГРУППАМ (см. universe_stream_pool). Номера шардов группы
+# лежат в своём диапазоне: floaters 0…, fixed 100… — сторож и статистика
+# различают их по номеру.
+_GROUP_STRIDE = 100
+_groups: Dict[str, dict] = {
+    "floaters": {"key": None, "shards": 0, "tasks": [], "stops": []},
+    "fixed": {"key": None, "shards": 0, "tasks": [], "stops": []},
+}
 
 
 def _stop_sockets(tasks: list, stops: list) -> None:
@@ -468,9 +529,45 @@ def _stop_sockets(tasks: list, stops: list) -> None:
     stops.clear()
 
 
+def _rebuild_group(name: str, isins: list, base: int, group: dict,
+                   depth: bool = True) -> int:
+    """Пересобирает сокеты ОДНОЙ группы пула (флоатеры / фиксы) и возвращает
+    число её шардов.
+
+    Группы независимы СПЕЦИАЛЬНО: состав фиксов пересобирается по ликвидности
+    каждый час, и общий пул на всех гасил бы вместе с ними живые подписки
+    флоатеров каждый раз. Номера шардов у групп не пересекаются (base) — по ним
+    сторож различает мёртвые сокеты в статистике.
+    """
+    _stop_sockets(group["tasks"], group["stops"])
+    shards = [isins[i:i + _SHARD_SIZE] for i in range(0, len(isins), _SHARD_SIZE)]
+    for n, shard in enumerate(shards):
+        sid = base + n
+        stop = asyncio.Event()
+        group["stops"].append(stop)
+        group["tasks"].append(asyncio.create_task(_shard_socket(sid, shard, stop)))
+        if _DEPTH_STREAM and depth:
+            dstop = asyncio.Event()
+            group["stops"].append(dstop)
+            group["tasks"].append(asyncio.create_task(_depth_socket(sid, shard, dstop)))
+    # группа ужалась — лишние номера уходят из статистики, иначе в ней вечно
+    # висел бы «мёртвый» сокет без сообщений
+    for sid in [s for s in _shards if base <= s < base + _GROUP_STRIDE
+                and s >= base + len(shards)]:
+        _shards.pop(sid, None)
+        _depth_shards.pop(sid, None)
+    logger.info("universe pool [%s]: %d бумаг / %d сокетов котировок%s",
+                name, len(isins), len(shards),
+                f" + {len(shards)} стаканов" if (_DEPTH_STREAM and depth) else "")
+    return len(shards)
+
+
 async def universe_stream_pool() -> None:
     """Владелец пула: режет юниверс на шарды, держит по сокету на шард,
-    пересобирает пул при изменении юниверса (новые выпуски/погашения)."""
+    пересобирает пул при изменении юниверса (новые выпуски/погашения).
+
+    Групп две — флоатеры и фиксы: у них разные источники состава и разный темп
+    его смены, и пересборка одной не трогает сокеты другой."""
     from services import instruments_registry
     _pool["started"] = time.time()
     await asyncio.sleep(25)     # старт после прогрева и первого снапшота
@@ -478,9 +575,10 @@ async def universe_stream_pool() -> None:
     # (api.main._supervise), и локальный список унёс бы с собой ручки ЖИВЫХ
     # сокетов — старые подписки остались бы висеть, новые легли бы сверху, и
     # брокер получил бы двойной комплект подписок на те же бумаги.
-    tasks, stops = _sock_tasks, _sock_stops
-    _stop_sockets(tasks, stops)
-    current: Optional[tuple] = None
+    for g in _groups.values():
+        _stop_sockets(g["tasks"], g["stops"])
+        g["key"] = None
+        g["shards"] = 0
     retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
     while True:
         try:
@@ -491,33 +589,38 @@ async def universe_stream_pool() -> None:
                 # Пересборка по нему убила бы все живые сокеты (см. схлопывание
                 # пула сделок, services/trades_stream.subscription_isins).
                 raise RuntimeError("пустой юниверс — пул не пересобираем")
+            group = _groups["floaters"]
             key = tuple(isins)
-            if key != current:
-                _stop_sockets(tasks, stops)
-                shards = [isins[i:i + _SHARD_SIZE]
-                          for i in range(0, len(isins), _SHARD_SIZE)]
-                for n, shard in enumerate(shards):
-                    stop = asyncio.Event()
-                    stops.append(stop)
-                    tasks.append(asyncio.create_task(_shard_socket(n, shard, stop)))
-                    if _DEPTH_STREAM:
-                        dstop = asyncio.Event()
-                        stops.append(dstop)
-                        tasks.append(asyncio.create_task(_depth_socket(n, shard, dstop)))
-                # юниверс ужался — лишние номера уходят из статистики, иначе в
-                # ней вечно висел бы «мёртвый» сокет без сообщений
-                for sid in [s for s in _shards if s >= len(shards)]:
-                    _shards.pop(sid, None)
-                    _depth_shards.pop(sid, None)
-                current = key
-                _pool.update(built=time.time(), shards=len(shards))
-                logger.info("universe pool: %d бумаг / %d сокетов котировок%s",
-                            len(isins), len(shards),
-                            f" + {len(shards)} стаканов" if _DEPTH_STREAM else "")
+            if key != group["key"]:
+                group["shards"] = _rebuild_group("флоатеры", isins, 0, group)
+                group["key"] = key
+            # ФИКСЫ — своя группа и СВОЙ guard: битый листинг фиксов не имеет
+            # права уронить подписки флоатеров (ISS отдаёт пустой борд чаще, чем
+            # кажется — см. сторож стримов 28.08.2026). Не дали фиксов — держим
+            # прежний набор, а не выкидываем их из пула.
+            if _FIXED_STREAM:
+                from services.market_data import market_cache
+                fx = sorted({u["isin"] for u in (market_cache.get("fixed_universe") or [])
+                             if u.get("isin")} - set(isins))
+                if fx:
+                    _fixed_isins.clear()
+                    _fixed_isins.update(fx)
+                elif _fixed_isins:
+                    logger.warning("universe pool: универс фиксов пуст — держим прежние")
+                fgroup = _groups["fixed"]
+                fkey = tuple(sorted(_fixed_isins))
+                if fkey and fkey != fgroup["key"]:
+                    fgroup["shards"] = _rebuild_group("фиксы", list(fkey),
+                                                      _GROUP_STRIDE, fgroup,
+                                                      depth=_FIXED_DEPTH)
+                    fgroup["key"] = fkey
+            _pool.update(built=time.time(),
+                         shards=sum(g["shards"] for g in _groups.values()))
             _pool["err"] = None
             retry = 0
         except asyncio.CancelledError:
-            _stop_sockets(tasks, stops)
+            for g in _groups.values():
+                _stop_sockets(g["tasks"], g["stops"])
             raise
         except Exception as e:
             # Ошибка reconcile (ISS не отдал юниверс) на холодном старте
@@ -557,7 +660,7 @@ async def _push_metrics(wsmod, rows: Dict[str, dict]) -> None:
     """Подписчикам — производные пушем: /reprice с фронта не нужен."""
     for isin, row in rows.items():
         if wsmod.manager.has_market_audience(isin):
-            patch = _metrics_patch(row)
+            patch = _fixed_patch(row) if row.get("_kind") == "fixed" else _metrics_patch(row)
             if patch:
                 await wsmod.manager.broadcast_market_data(isin, patch)
 
@@ -657,6 +760,44 @@ def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
     return out
 
 
+def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
+    """Строка ФИКСА по живой цене: YTM/g-спред/z-спред и те же числа по сторонам
+    стакана и средневзвесу.
+
+    Кэш уровней здесь не нужен: у фикса нет дешёвой ветки сторон — один вызов
+    compute_fixed_row считает цену сделки, bid, ask и средневзвес по уже
+    собранному потоку (несколько прогонов солвера, единицы мс)."""
+    from services.fixed_income import compute_fixed_row
+    from services import live_quotes
+    isin = u["isin"]
+    full = ctx["full_by"].get(isin) or {}
+    if not full.get("coupons"):
+        return None
+    snap = ctx["board"].get(isin, {}) or {}
+    row = dict(u)
+    px = q.get("last_price")
+    if px is not None:
+        row["last"] = px
+    sides = _sides_of(q)
+    row["bid"], row["ask"] = sides["bid"], sides["ask"]
+    # НКД и вчерашнее закрытие — из борд-снапшота: в справке универса они от
+    # часового кэша, а НКД капает каждый день
+    # оборот дня кладём В СТРОКУ до расчёта: по нему решается, доверять ли
+    # своему тиковому средневзвесу (fixed_income._wap_of)
+    for src, dst in (("prev", "prev"), ("accrued", "accrued"),
+                     ("prev_date", "prev_date"), ("waprice", "wap"),
+                     ("vol", "val_today")):
+        if snap.get(src) is not None:
+            row[dst] = snap[src]
+    out = compute_fixed_row(row, full, ctx["g_curve"], ctx["calc_date"])
+    lv = live_quotes.get(isin) or {}
+    vol = max(snap.get("vol") or 0, lv.get("val_today") or 0) or None
+    if vol is not None:
+        out["val_today"] = vol
+    out["_kind"] = "fixed"
+    return out
+
+
 def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
     """Синхронный счёт батча (в to_thread). batch = [(isin, quote)].
 
@@ -674,7 +815,20 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
     for isin, q in batch:
         px = q.get("last_price")
         u = ctx["uni_by"].get(isin)
-        if px is None or u is None:
+        if u is None:
+            # ФИКС: своя математика (YTM/g-спред), своя витрина, свой кэш метрик
+            fx = (ctx.get("fixed_by") or {}).get(isin)
+            if fx is None:
+                continue
+            try:
+                row = _crunch_fixed(fx, ctx, q)
+            except Exception as e:
+                logger.debug("fixed crunch %s: %s", isin, e)
+                continue
+            if row:
+                out[isin] = row
+            continue
+        if px is None:
             continue
         key = (isin, _px_key(px))
         row = _level_memo.get(key)
@@ -756,8 +910,15 @@ async def _day_ctx() -> Optional[dict]:
     exp_ks, exp_ru, g_curve = zctx
     from services import instruments_registry
     uni = await instruments_registry.fetch_floater_universe()
+    fixed_by: Dict[str, dict] = {}
+    if _FIXED_STREAM:
+        # справка фиксов (номинал/НКД/купон/прошлое закрытие) — из того же
+        # часового кэша, что кормит витрину; сети здесь нет
+        fixed_by = {u["isin"]: u for u in (market_cache.get("fixed_universe") or [])
+                    if u.get("isin")}
     return {
         "uni_by": {u["isin"]: u for u in uni if u.get("isin")},
+        "fixed_by": fixed_by,
         "cache": MarketDataService.get_local_bond_cache(cache_path("isins_cache.json")),
         "secs": {},              # промахи локального кэша обходятся без MOEX-добора
         "board": board,
@@ -779,6 +940,28 @@ def _check_version(version: tuple) -> None:
         # так же недействителен, как и сами уровни
         _eval_ctx.clear()
         _memo_version = version
+
+
+def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
+    """Строки такта — по своим витринам: флоатеры в universe_metrics (его читает
+    /api/bonds), фиксы в fixed_metrics (его читает /api/fixed). Один кэш на всех
+    завёл бы две разные схемы строки в одном словаре."""
+    fx = {i: r for i, r in rows.items() if r.get("_kind") == "fixed"}
+    fl = {i: r for i, r in rows.items() if i not in fx}
+    if fl:
+        um = market_cache.get("universe_metrics") or {}
+        um.update(fl)
+        market_cache["universe_metrics"] = um
+    if fx:
+        fm = market_cache.get("fixed_metrics") or {}
+        # delta_ytm живёт дневным срезом (apply_ytm_delta) и от цены не зависит —
+        # сохраняем прежнее значение, иначе тик сделки стирал бы колонку Δ YTM
+        for isin, row in fx.items():
+            prev = fm.get(isin) or {}
+            if row.get("delta_ytm") is None and prev.get("delta_ytm") is not None:
+                row["delta_ytm"] = prev["delta_ytm"]
+        fm.update(fx)
+        market_cache["fixed_metrics"] = fm
 
 
 async def metrics_worker() -> None:
@@ -832,9 +1015,12 @@ async def metrics_worker() -> None:
             take = list(_dirty)[:_MAX_BATCH]
             _dirty.difference_update(take)
             if take:
-                # расписания батча — из day-кэша (промах = одна ходка на бумагу в день)
+                # расписания батча — из day-кэша (промах = одна ходка на бумагу в день).
+                # У ОФЗ bondization по ISIN (RU000…) НЕ резолвится — только по
+                # SECID (SU26…), поэтому фиксы спрашиваем их идентификатором.
+                keys = {i: ((ctx["fixed_by"].get(i) or {}).get("secid") or i) for i in take}
                 fulls = await asyncio.gather(
-                    *(MarketDataService.fetch_bond_schedule_full(i) for i in take),
+                    *(MarketDataService.fetch_bond_schedule_full(keys[i]) for i in take),
                     return_exceptions=True)
                 ctx["full_by"] = {i: ({} if isinstance(f, Exception) else f or {})
                                   for i, f in zip(take, fulls)}
@@ -843,9 +1029,7 @@ async def metrics_worker() -> None:
                 rows = await run_heavy(_crunch, batch, ctx)
                 full_ms += (time.perf_counter() - _t0) * 1000.0
                 if rows:
-                    um = market_cache.get("universe_metrics") or {}
-                    um.update(rows)
-                    market_cache["universe_metrics"] = um
+                    _store_rows(market_cache, rows)
                     done_since_log += len(rows)
                     await _push_metrics(wsmod, rows)
             # ДЕШЁВАЯ ОЧЕРЕДЬ: у этих бумаг сдвинулись только стороны стакана —
@@ -859,9 +1043,7 @@ async def metrics_worker() -> None:
                 srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
                 sides_ms += (time.perf_counter() - _t0) * 1000.0
                 if srows:
-                    um = market_cache.get("universe_metrics") or {}
-                    um.update(srows)
-                    market_cache["universe_metrics"] = um
+                    _store_rows(market_cache, srows)
                     sides_since_log += len(srows)
                     await _push_metrics(wsmod, srows)
         except asyncio.CancelledError:

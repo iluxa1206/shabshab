@@ -139,6 +139,9 @@ async def _warm_fixed(market_cache):
     try:
         from services import fixed_income as fi
         funi = await fi.fetch_fixed_universe()
+        # цены в универсе живут его часовым кэшем — накладываем свежий
+        # борд-снапшот, иначе метрики считаются по часовой давности цене
+        fi.apply_board_prices(funi, await MarketDataService.fetch_board_snapshot())
         _r, _k, _cd, _rd = await MarketDataService.get_curves()
         _ek, _eu, g = await MarketDataService.get_zspread_ctx()
         fcd = _cd or _rd or date.today()
@@ -1008,7 +1011,7 @@ async def depth_poller():
                 # стаканы льются push'ем (depth-пул universe_stream) — HTTP-батч
                 # не нужен; поллер остаётся фолбэком на случай падения стрима
                 from services.universe_stream import depth_stream_covers
-                if depth_stream_covers(len(isins)):
+                if depth_stream_covers(isins):
                     pass
                 else:
                     n = await depth_svc.refresh_depth(isins, chunk=UNIVERSE_POLL_CHUNK)

@@ -40,7 +40,9 @@ export default function FiltersMenu({
       </button>
       {open && (
         <div className="filters-pop">
-          <div className="fp-sec">
+          {/* база купона — только у флоатеров: у фикса её нет вовсе, и пустая
+              секция «КС / RUONIA» на их витрине сбивала бы с толку */}
+          {toggleBase && <div className="fp-sec">
             <div className="fp-head">
               <span className="fg-lbl">БАЗА</span>
               {basesSel.length > 0 && (
@@ -53,7 +55,7 @@ export default function FiltersMenu({
               <button className={"chip-btn" + (basesSel.includes("RUONIA") ? " on" : "")}
                 onClick={() => toggleBase("RUONIA")}>RUONIA</button>
             </div>
-          </div>
+          </div>}
 
           {/* секции есть только там, где хост даёт обработчики (тест-страница таблицы — без них) */}
           {setHideSub && <div className="fp-sec">

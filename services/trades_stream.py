@@ -70,6 +70,11 @@ _last_rest: list = []
 _buf: dict[str, list] = {}          # isin → сырые тики до ближайшего flush
 _streamed: set = set()              # ISIN на живых сокетах
 _core: set = set()                  # из них — флоатер-юниверс (пишем целиком)
+# Универс ФИКСОВ — такой же «свой» набор: витрина фиксов живёт на своём VWAP и
+# обороте дня по тикам, а не на биржевых WAPRICE/VALTODAY (те отстают). Без
+# этого набора фикс попадал под общий порог для бумаг вне юниверса и его
+# дневной счёт был неполным.
+_fixed: set = set()
 _faces: dict = {"at": 0.0, "map": {}, "unit": {}}
 _fx: dict = {"at": 0.0, "rates": {}}
 _FX_TTL = 600               # курс валюты номинала: порог в рублях, а не в юанях
@@ -437,8 +442,23 @@ def _on_trade(isin: str, data: dict) -> None:
     if data.get("id") is None or data.get("price") is None or not data.get("qty"):
         return
     val, fx_ok = _tick_value(isin, data.get("price"), data.get("qty"))
+    # ЖИВОЙ СЧЁТ ДНЯ — до порога и по всем «своим» бумагам: средневзвес и оборот
+    # витрины должны считать каждую сделку, иначе VWAP смещён, а оборот занижен.
+    # Вне своих наборов — только то, за чем уже следит alor_ws (там поток обрезан
+    # порогом, и дневной счёт по нему всё равно был бы неполным).
+    from services import live_quotes
+    if isin in _core or isin in _fixed or live_quotes.get(isin) is not None:
+        live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
+                              tid=data.get("id"), ts=str(data.get("time") or "") or None,
+                              value=val)
     # Порогом режем только то, чей рублёвый объём знаем достоверно: у валютной
     # бумаги без курса «мелкий» объём — артефакт пересчёта, а не размер сделки.
+    #
+    # ФИКСЫ порогу ПОДЧИНЯЮТСЯ, хотя живой счёт получают целиком: их поток —
+    # это ~400 тыс. тиков в день против 26 тыс. по остальному рынку (замер по
+    # архиву 13–14.08.2026 против 25–27.08.2026), и складывать его в архив
+    # значило бы растить базу на пару гигабайт в месяц ради ленты сделок,
+    # которой хватает крупняка.
     if (isin not in _core and _OTHER_MIN_RUB > 0 and fx_ok
             and val < _OTHER_MIN_RUB):
         _stats["skipped_small"] += 1
@@ -456,16 +476,6 @@ def _on_trade(isin: str, data: dict) -> None:
     })
     _stats["ticks"] += 1
     _stats["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    # живая цена, средневзвес и ОБОРОТ дня — services/live_quotes. Держим их по
-    # всему юниверсу: тик сюда уже пришёл, дневной счёт стоит двух сложений, а
-    # биржевые WAPRICE/VALTODAY из ISS-снапшота приезжают с задержкой. Вне
-    # юниверса — только то, за чем следит alor_ws (там поток обрезан порогом,
-    # оборот по нему был бы неполным).
-    from services import live_quotes
-    if isin in _core or live_quotes.get(isin) is not None:
-        live_quotes.add_trade(isin, data.get("price"), data.get("qty"),
-                              tid=data.get("id"), ts=str(data.get("time") or "") or None,
-                              value=val)
 
 
 async def subscription_isins() -> list[str]:
@@ -480,11 +490,20 @@ async def subscription_isins() -> list[str]:
     core = sorted({u["isin"] for u in uni if u.get("isin")})
     _core.clear()
     _core.update(core)
+    # ФИКСЫ — вторым приоритетом, сразу за флоатерами: витрина фиксов такая же
+    # живая. Пустой ответ источника не стирает набор (тот же guard, что у пула
+    # котировок): куцый листинг не должен схлопывать подписки.
+    from services.market_data import market_cache
+    fx = {u["isin"] for u in (market_cache.get("fixed_universe") or []) if u.get("isin")}
+    if fx:
+        _fixed.clear()
+        _fixed.update(fx)
+    fixed = sorted(_fixed - set(core))
     if _SCOPE != "market":
-        return core[:_MAX_ISINS]
+        return (core + fixed)[:_MAX_ISINS]
     from services.market_data import MarketDataService
     all_bonds = await MarketDataService.fetch_bond_listing()
-    rest = sorted(set(all_bonds or {}) - set(core))
+    rest = sorted(set(all_bonds or {}) - set(core) - set(fixed))
     # ISS отдаёт пустой (или куцый) листинг на любом своём сбое — молча, пустым
     # словарём. Раньше это схлопывало ПУЛ: список бумаг менялся 3166 → 608,
     # владелец убивал все 13 сокетов и поднимал 3, а весь рынок вне юниверса
@@ -497,7 +516,7 @@ async def subscription_isins() -> list[str]:
         rest = _last_rest
     elif rest:
         _last_rest[:] = rest
-    return (core + rest)[:_MAX_ISINS]
+    return (core + fixed + rest)[:_MAX_ISINS]
 
 
 _sock_tasks: list = []       # см. trades_stream_pool
@@ -529,7 +548,7 @@ async def trades_stream_pool() -> None:
     # каждая сделка приезжала бы дважды с двойным комплектом подписок.
     tasks, stops = _sock_tasks, _sock_stops
     _stop_sockets(tasks, stops)
-    current: Optional[tuple] = None
+    current: Optional[frozenset] = None   # СОСТАВ последнего пула, не порядок
     retry = 0                   # пауза после ОШИБКИ: см. хвост цикла
     global _flush_task
     if _flush_task and not _flush_task.done():
@@ -547,8 +566,12 @@ async def trades_stream_pool() -> None:
                 # дневные агрегаты юниверса из архива — счёт с открытия сессии, а
                 # не с момента старта процесса; сверка идемпотентна
                 from services import live_quotes
-                await live_quotes.seed_universe(_core)
-                key = tuple(isins)
+                await live_quotes.seed_universe(_core | _fixed)
+                # Сравниваем СОСТАВ, а не порядок: приоритетные группы (юниверс,
+                # фиксы) переставляют бумаги внутри одного и того же рыночного
+                # набора, и по кортежу пул пересобирался бы на каждой такой
+                # перестановке — 13 сокетов заново из-за смены состава фиксов.
+                key = frozenset(isins)
                 if key != current:
                     _stop_sockets(tasks, stops)
                     shards = [isins[i:i + _SHARD_SIZE]

@@ -87,3 +87,25 @@ def test_small_trade_inside_universe_kept(ts):
     mod._on_trade("RU000TEST01", {"id": 3, "price": 100.0, "qty": 1,
                                   "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
     assert len(mod._buf.get("RU000TEST01") or []) == 1
+
+
+def test_fixed_gets_live_count_but_not_archive(ts, monkeypatch):
+    """ФИКС: мелкая сделка кормит живой счёт дня (VWAP/оборот витрины), но в
+    архив не идёт.
+
+    Поток фиксов — сотни тысяч тиков в день против десятков тысяч по остальному
+    рынку (замер по архиву 13–14.08.2026): складывать его в trade_tick значит
+    растить базу на гигабайты в месяц ради ленты, которой хватает крупняка. А вот
+    средневзвес и оборот витрины обязаны считать каждую сделку."""
+    _pdb, mod = ts
+    from services import live_quotes
+    seen = []
+    # набор фиксов подменяем, а не дополняем: он живёт на модуле и переживает
+    # тест (guard «нет свежего универса — держим прежний»)
+    monkeypatch.setattr(mod, "_fixed", {"RU000FIXED1"})
+    monkeypatch.setattr(live_quotes, "add_trade",
+                        lambda isin, *a, **kw: seen.append(isin))
+    mod._on_trade("RU000FIXED1", {"id": 7, "price": 100.0, "qty": 5,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
+    assert seen == ["RU000FIXED1"], "живой счёт дня получил тик"
+    assert mod._buf == {} and mod._stats["skipped_small"] == 1, "в архив не пишем"

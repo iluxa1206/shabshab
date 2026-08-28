@@ -5,7 +5,7 @@ import { IconColumns } from "./icons.jsx";
 // Дропдаун столбцов: видимость (чекбокс) + ПОРЯДОК (перетаскивание пункта или
 // стрелки ↑/↓). visibleCols — массив key В ПОРЯДКЕ ОТОБРАЖЕНИЯ; onToggle(key);
 // onMove(key, target|"+1"|"-1"); onReset().
-export default function ColumnsMenu({ visibleCols, onToggle, onReset, onMove }) {
+export default function ColumnsMenu({ visibleCols, onToggle, onReset, onMove, meta: metaDef = COL_META }) {
   const [open, setOpen] = useState(false);
   const [dragKey, setDragKey] = useState(null);   // только для подсветки
   const dragRef = useRef(null);                   // источник правды в обработчиках
@@ -22,10 +22,10 @@ export default function ColumnsMenu({ visibleCols, onToggle, onReset, onMove }) 
 
   const set = new Set(visibleCols);
   // сначала видимые в пользовательском порядке, следом скрытые (в порядке COLS)
-  const meta = new Map(COL_META.map((c) => [c.key, c]));
+  const meta = new Map(metaDef.map((c) => [c.key, c]));
   const items = [
     ...visibleCols.map((k) => meta.get(k)).filter(Boolean),
-    ...COL_META.filter((c) => !set.has(c.key)),
+    ...metaDef.filter((c) => !set.has(c.key)),
   ];
 
   return (

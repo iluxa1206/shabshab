@@ -392,6 +392,9 @@ export const fetchPaymentsCalendar = ({ from, to } = {}) => {
 };
 
 export const fetchFixed = () => request("/api/fixed");
+// Котировки фиксов (цена/стакан/средневзвес/оборот) — лёгкий ответ, такт 5с.
+// Метрики (YTM/g-спред) в него не входят: они живут своим циклом в /api/fixed.
+export const fetchFixedQuotes = () => request("/api/fixed/quotes");
 export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 
 // Калькулятор кастомной облигации: метрики по введённым параметрам (купон/

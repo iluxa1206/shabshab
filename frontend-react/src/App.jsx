@@ -20,7 +20,7 @@ import CompareModule, { CMP_MAX } from "./components/CompareModule.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
-import FixedModule from "./components/FixedModule.jsx";
+import FixedMonitor from "./components/fixed/FixedMonitor.jsx";
 import CalcModule from "./components/CalcModule.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
@@ -756,7 +756,11 @@ function Dashboard() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const onFloaters = useLocation().pathname.startsWith("/floaters");
+  const pathname = useLocation().pathname;
+  const onFloaters = pathname.startsWith("/floaters");
+  // МОНИТОР фиксов — та же витрина, и переключатель «Аналитика» у неё общий:
+  // состояние одно, вкладки рисуют каждая свою кросс-секцию
+  const onFixed = pathname.startsWith("/fixed");
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
@@ -843,7 +847,7 @@ function Dashboard() {
         user={user}
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
-        extra={onFloaters && (
+        extra={(onFloaters || onFixed) && (
           <button className={"seg-btn tool-btn" + (showAnalytics ? " active" : "")}
             onClick={() => { setShowAnalytics(!showAnalytics); setAnFocus(null); }}
             aria-pressed={showAnalytics}
@@ -862,7 +866,7 @@ function Dashboard() {
             остаться закладки. */}
         <Route path="/issuers" element={<Navigate to="/floaters" replace />} />
         <Route path="/reference" element={<Catalog user={user} />} />
-        <Route path="/fixed" element={<FixedModule onOpen={openDrawer} />} />
+        <Route path="/fixed" element={<FixedMonitor onOpen={openDrawer} showAnalytics={showAnalytics} />} />
         <Route path="/calc" element={<CalcModule />} />
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />
         <Route path="/trades" element={<TradesTape />} />
