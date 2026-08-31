@@ -441,6 +441,29 @@ def _null_stale_spreads(isin: str, frm: str, till_day: str) -> int:
         return cur.rowcount or 0
 
 
+def reset_metrics(isin: str, kind: str = "floater") -> dict:
+    """Сбрасывает метрики баров бумаги, сменившей класс, под пересчёт as-of.
+
+    metrics_ver=0 переводит часы в разряд «прошлой версии»: ensure_bars занулит
+    их стейл-спреды (_null_stale_spreads) и запустит фоновый honest-пересчёт
+    (_unpriced_in_window). Цена, объём и число сделок не трогаются — они от
+    класса бумаги не зависят и заново из сети не поднимаются (Alor отдаёт лишь
+    30 дней, остальное копится у нас).
+
+    bar_daily сносится ЦЕЛИКОМ, а не помечается: свёртка пропускает день, если
+    оборот совпал и версия дня равна версии его часов, — а после пересчёта часы
+    вернутся на ту же текущую версию, и день с чужим классом остался бы лежать
+    нетронутым. Это чистая агрегация часов, build_daily соберёт её заново."""
+    with _lock, _connect() as c:
+        hours = c.execute("UPDATE bar_hourly SET metrics_ver=0, kind=? WHERE isin=?",
+                          (kind, isin)).rowcount or 0
+        days = c.execute("DELETE FROM bar_daily WHERE isin=?", (isin,)).rowcount or 0
+    # память процесса о посчитанной глубине окна: без сброса ensure_bars сочтёт,
+    # что окно уже покрыто сегодня, и фоновый пересчёт не запустится до полуночи
+    _past_depth.pop(isin, None)
+    return {"hours": hours, "days": days}
+
+
 def _covered_from(isin: str) -> Optional[str]:
     """Самый ранний ts бара текущей версии метрик (None — таких нет)."""
     with _connect() as c:

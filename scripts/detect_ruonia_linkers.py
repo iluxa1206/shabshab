@@ -125,6 +125,10 @@ async def main(apply: bool) -> int:
             row["coupon_period_days"] = cpd
             row["coupons_per_year"] = max(1, round(365 / cpd))
         verdict = reg.upsert(row, source="moex", mark_new=True)
+        # история спреда, накопленная пока бумага считалась фиксом, посчитана по
+        # другой методике и сама себя не инвалидирует — см. reset_after_reclass
+        from services.spread_history import reset_after_reclass
+        reset_after_reclass(isin, "floater")
         # negative-кэш дискавери переворачиваем: иначе следующий проход снова
         # считал бы бумагу проверенным фиксом
         reg.mark_discovery_seen(isin, True)

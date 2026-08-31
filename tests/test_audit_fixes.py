@@ -762,3 +762,52 @@ def test_drop_honest_clears_regardless_of_engine_version(tmp_path, monkeypatch):
     assert drop_stale_honest(isin, HONEST_ENGINE_VERSION) == 0
     # а безусловный снос — находит
     assert drop_honest(isin) == 1
+
+
+def test_reset_after_reclass_clears_history_of_old_class(tmp_path, monkeypatch):
+    """Смена КЛАССА бумаги (фикс → флоатер/линкер) обесценивает всю её историю.
+
+    Ни одна штатная инвалидация её не заметит: engine_ver и metrics_ver остаются
+    ТЕКУЩИМИ — цифру испортила смена бумаги, а не смена движка. Так у ВЭБ2Р-58
+    после заведения линкером на графике остались 50 honest-точек с Y-IDX 359 при
+    верном ~208 и 99 дней bar_daily с kind='fixed' и пустым Y-IDX.
+    """
+    import services.portfolio_db as pdb
+    monkeypatch.setattr(pdb, "DB_PATH", tmp_path / "portfolio.db")
+    pdb.init_db()
+
+    from services.backdate import HONEST_ENGINE_VERSION
+    from services.bars import BARS_METRICS_VERSION, upsert_bars, build_daily, read_daily
+    from services.spread_history import (read_history, reset_after_reclass,
+                                         upsert_honest)
+    isin = "RU_TEST_RECLASS_1"
+
+    # honest-точка ТЕКУЩЕЙ версии движка, посчитанная под старый класс
+    upsert_honest(isin, [{"date": "2026-06-16", "price": 99.94, "y_idx_bps": 315,
+                          "dm_bps": 340, "ytm": 16.0}], set(), HONEST_ENGINE_VERSION)
+    # снапшот дня, когда бумага ещё считалась фиксом: y_idx нет, g-спред мусорный
+    with pdb._connect() as c:
+        c.execute("INSERT INTO spread_daily(isin,date,kind,price_pct,g_spread_bps,src) "
+                  "VALUES(?,?,?,?,?,?)", (isin, "2026-08-14", "fixed", 99.98, -1304.0, "snap"))
+    # час ТЕКУЩЕЙ версии метрик с чужим классом → свёрнут в день
+    upsert_bars([{"isin": isin, "ts": "2026-08-14 12", "kind": "fixed", "close": 99.98,
+                  "vwap_pct": 99.98, "volume": 10, "value": 1e6, "trades": 3,
+                  "g_spread_bps": -1304.0, "metrics_ver": BARS_METRICS_VERSION}])
+    assert build_daily(isin) == 1
+    assert read_daily(isin)[0]["kind"] == "fixed"
+
+    stat = reset_after_reclass(isin, "floater")
+
+    assert stat["honest"] == 1 and stat["kind_mismatch"] == 1
+    assert stat["hours"] == 1 and stat["days"] == 1
+    # в spread_daily не осталось ни honest старой методики, ни строк чужого класса
+    assert read_history(isin) == []
+    # день снят, час помечен под пересчёт (версия ниже текущей) и сменил класс
+    assert read_daily(isin) == []
+    with pdb._connect() as c:
+        row = c.execute("SELECT kind, metrics_ver, close, value FROM bar_hourly "
+                        "WHERE isin=?", (isin,)).fetchone()
+    assert row["kind"] == "floater"
+    assert row["metrics_ver"] < BARS_METRICS_VERSION
+    # цена и оборот часа уцелели: они от класса не зависят и из сети не вернутся
+    assert row["close"] == 99.98 and row["value"] == 1e6

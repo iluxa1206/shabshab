@@ -99,6 +99,38 @@ def drop_honest(isin: str) -> int:
         return cur.rowcount or 0
 
 
+def reset_after_reclass(isin: str, kind: str = "floater") -> dict:
+    """Сносит историю бумаги, СМЕНИВШЕЙ КЛАСС (фикс ⇄ флоатер/линкер).
+
+    Ни одна штатная инвалидация такую строку не заметит: и engine_ver
+    (spread_daily), и metrics_ver (bar_hourly) остаются ТЕКУЩИМИ — цифру
+    испортила не смена движка, а смена самой бумаги. ВЭБ2Р-58, 31.08.2026:
+    50 honest-точек с Y-IDX 359→273 при верном ~208 (считаны, пока купон
+    проецировался как у обычного флоатера, а не как фикс-ставка на растущий
+    номинал), 29 snap-строк с kind='fixed' и g-спредом −1300 bps (реальная
+    доходность 1.85% против номинальной G-кривой) и 99 дней bar_daily тем же
+    фиксом с пустым Y-IDX. Самолечение баров туда не добиралось: его условие
+    требует kind='floater' ЛИБО версию ниже текущей.
+
+    Что сносится: honest-строки целиком (их пересчитает ensure_honest_backfill
+    текущим движком), строки ЧУЖОГО класса любого источника (snap за дни старого
+    класса — цену для них honest возьмёт из истории MOEX) и метрики баров.
+    Цена/объём часов остаются: они от класса не зависят.
+    """
+    dropped_honest = drop_honest(isin)
+    with _lock, _connect() as c:
+        cur = c.execute("DELETE FROM spread_daily WHERE isin=? AND kind IS NOT NULL "
+                        "AND kind<>?", (isin, kind))
+        dropped_kind = cur.rowcount or 0
+    from services.bars import reset_metrics
+    bars = reset_metrics(isin, kind)
+    out = {"honest": dropped_honest, "kind_mismatch": dropped_kind, **bars}
+    logger.info("реклассификация %s → %s: снято honest %d, чужого класса %d, "
+                "часов сброшено %d, дней снято %d", isin, kind, dropped_honest,
+                dropped_kind, bars["hours"], bars["days"])
+    return out
+
+
 def drop_stale_honest(isin: str, engine_ver: int) -> int:
     """Сносит honest-строки, посчитанные СТАРЫМ as-of движком (engine_ver < текущей
     либо NULL). Точки, персистённые до фикса НКД/SECID, иначе живут вечно: бэкфилл

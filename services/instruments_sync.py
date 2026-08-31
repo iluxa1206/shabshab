@@ -530,6 +530,15 @@ async def discover_floaters(listing: dict | None = None,
                 row["coupon_period_days"] = cpd
                 row["coupons_per_year"] = max(1, round(365 / cpd))
             reg.upsert(row, source="moex", mark_new=True)
+            if linked:
+                # бумага могла годами жить фиксом (ВЭБ2Р-58 — до 31.08.2026) и
+                # накопить историю спреда, посчитанную ПОД ФИКС. Штатные
+                # инвалидации её не увидят — см. spread_history.reset_after_reclass
+                try:
+                    from services.spread_history import reset_after_reclass
+                    reset_after_reclass(isin, "floater")
+                except Exception as e:
+                    logger.warning("сброс истории линкера %s: %s", isin, e)
             discovered += 1
         if delay:
             await asyncio.sleep(delay)
