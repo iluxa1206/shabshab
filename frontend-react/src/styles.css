@@ -1821,8 +1821,8 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
              box-shadow: 0 6px 22px rgba(0,0,0,.25); }
 .sig-toast-h { display: flex; align-items: baseline; gap: 8px; padding: 9px 30px 8px 12px;
                border-bottom: 1px solid var(--line);
-               font-family: var(--mono); font-size: 10px; font-weight: 800;
-               text-transform: uppercase; letter-spacing: 0.1em; }
+               font-family: var(--mono); font-size: 12px; font-weight: 800;
+               text-transform: uppercase; letter-spacing: 0.06em; }
 .sig-toast-h .sig-toast-n { margin-left: auto; color: var(--mut); font-weight: 600;
                             text-transform: none; letter-spacing: 0; }
 /* тело тоста — те же строки, что в ленте колокольчика (.sb-row) */
@@ -1898,13 +1898,20 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sb-row:hover { background: var(--hover); }
 /* Первая строка — сама новость: сторона, бумага, срок, куда ушёл спред.
    Ради этих четырёх фактов строку и читают, остальное ниже и тише. */
-.sb-row-1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
+/* Первая строка НЕ переносится: имя алерта прижато вправо, и при переносе оно
+   уезжало на свою строку, оставляя дыру. Ужимаются двое — имя бумаги и имя
+   алерта (оба многоточием), числа держат ширину. */
+.sb-row-1 { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 5px;
             font-size: 12.5px; }
-.sb-name { font-size: 12.5px; font-weight: 700; color: var(--fg); }
+.sb-name { font-size: 12.5px; font-weight: 700; color: var(--fg);
+           flex: 0 1 auto; min-width: 6em; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
 /* размер внутри строки один на все факты (см. .sb-row-1): разнобой кеглей
    разбивал одну новость на «важное» и «мелкое», хотя читают её целиком */
-.sb-mat { color: var(--mut); }
-.sb-val { font-family: var(--mono); white-space: nowrap; }
+/* срок не рвётся посреди скобок: «(2,0» на одной строке и «г)» на другой
+   читается как обрубок числа */
+.sb-mat { color: var(--mut); white-space: nowrap; flex: none; }
+.sb-val { font-family: var(--mono); white-space: nowrap; flex: none; }
 /* точки-разделители фактов: держат ритм строки, но не спорят с числами */
 .sb-sep { color: var(--mut-2); }
 /* вторая строка — на кегль имени выпуска: те же факты о той же бумаге */
@@ -1914,7 +1921,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sb-px { color: var(--mut); }
 /* объём набирается тем же моноширинным, что и спред: две главные величины
    строки читаются как пара, а не как «число и подпись» */
-.sb-vol { color: var(--mut); font-family: var(--mono); white-space: nowrap; }
+.sb-vol { color: var(--mut); font-family: var(--mono); white-space: nowrap; flex: none; }
 .sb-mode { color: var(--mut-2); }
 /* Червячок «best» у имени уведомления (components/BestWorm): worm on a string.
    Тело в currentColor — красится темой; глаза и рот свои, иначе на тёмной теме
@@ -1935,9 +1942,11 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   .best-worm .bw-seg, .best-worm .bw-wig { animation: none; }
 }
 /* имя уведомления — вправо: событий от разных фильтров в ленте вперемешку */
-.sb-filter { margin-left: auto; display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px;
-             color: var(--mut-2); letter-spacing: .04em; white-space: nowrap;
-             overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.sb-filter { margin-left: auto; display: inline-flex; align-items: center;
+             font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+             color: var(--mut); letter-spacing: .02em; white-space: nowrap;
+             flex: 0 1 auto; min-width: 0; max-width: 34%; overflow: hidden;
+             text-overflow: ellipsis; }
 .sb-row-3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
             font-family: var(--mono); font-size: 9.5px; color: var(--mut-2);
             margin-top: 3px; letter-spacing: .04em; }
