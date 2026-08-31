@@ -861,6 +861,14 @@ async def block_trades_worker():
                 sent = await bt.notify_blocks()
                 if sent:
                     logger.info("block trades: %d уведомлений", sent)
+                # Итог текущего дня по всему рынку: history публикуется только
+                # после закрытия, а лента должна показывать биржевой оборот и
+                # внутри сессии. Один запрос, раз в несколько тактов.
+                if now.minute % 5 == 0:
+                    try:
+                        await bt.snapshot_bond_day_today()
+                    except Exception as e:
+                        logger.warning("bond day today: %s", e)
             else:
                 # Вне торгов новых сделок нет, но хвост без спреда добиваем:
                 # за такт считается лишь потолок флоатеров, и вечерний наплыв

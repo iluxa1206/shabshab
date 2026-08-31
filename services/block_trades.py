@@ -732,6 +732,68 @@ async def backfill_bond_day(d: str, client: Optional[httpx.AsyncClient] = None) 
     return saved
 
 
+async def snapshot_bond_day_today(client: Optional[httpx.AsyncClient] = None) -> int:
+    """Итог ТЕКУЩЕГО дня из marketdata: history публикуется только после закрытия.
+
+    Биржа сама отдаёт рублёвый оборот дня (VALTODAY_RUR) — для валютных бордов
+    это надёжнее нашего пересчёта, курс там биржевой. Строка дня переписывается
+    на каждом такте: VALTODAY растёт по ходу сессии."""
+    from services.market_data import _moex_get
+    own = client is None
+    client = client or httpx.AsyncClient()
+    secmap = await secid_map(client)
+    bccy = await board_ccy_map(client)
+    day = datetime.now(_MSK).date().isoformat()
+    try:
+        r = await _moex_get(
+            client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
+            params={"iss.meta": "off", "iss.only": "marketdata",
+                    "marketdata.columns": "SECID,BOARDID,VALTODAY,VALTODAY_RUR,"
+                                          "VOLTODAY,NUMTRADES,WAPRICE,LAST"},
+            timeout=40.0)
+    finally:
+        if own:
+            await client.aclose()
+    if r is None or r.status_code != 200:
+        logger.warning("bond day today: HTTP %s", r.status_code if r is not None else "timeout")
+        return 0
+    md = (r.json() or {}).get("marketdata", {})
+    cols, rows = md.get("columns", []), md.get("data", [])
+    if not rows:
+        return 0
+    g = {n: cols.index(n) for n in cols}
+    out = []
+    for row in rows:
+        sec, board = row[g["SECID"]], row[g["BOARDID"]]
+        meta = secmap.get(sec)
+        if meta is None or not board:
+            continue
+        cur = bccy.get(board) or "SUR"
+        # VALTODAY_RUR — рублёвый эквивалент от самой биржи; на рублёвом борде
+        # он равен VALTODAY, а на валютном избавляет от нашего курса
+        val = row[g.get("VALTODAY_RUR")] if "VALTODAY_RUR" in g else None
+        if not val:
+            val = row[g["VALTODAY"]] if cur == "SUR" else None
+        if not val:
+            continue
+        out.append((meta.get("isin") or sec, day, board, sec, row[g.get("NUMTRADES")],
+                    float(val), row[g.get("WAPRICE")], row[g.get("LAST")],
+                    row[g.get("VOLTODAY")], meta.get("face"), cur))
+    if not out:
+        return 0
+
+    def _write():
+        with _lock, _connect() as c:
+            cur_ = c.executemany(
+                "INSERT INTO bond_day(isin,date,board,secid,numtrades,value,waprice,"
+                "close,volume,face,cur) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(isin,date,board) DO UPDATE SET numtrades=excluded.numtrades,"
+                "value=excluded.value, waprice=excluded.waprice, close=excluded.close,"
+                "volume=excluded.volume, cur=excluded.cur", out)
+            return cur_.rowcount or 0
+    return await run_bg(_write)
+
+
 def bond_days_present() -> set[str]:
     with _connect() as c:
         return {r[0] for r in c.execute("SELECT DISTINCT date FROM bond_day")}
