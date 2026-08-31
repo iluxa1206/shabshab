@@ -732,6 +732,19 @@ async def backfill_bond_day(d: str, client: Optional[httpx.AsyncClient] = None) 
     return saved
 
 
+def _traded_boards() -> list[str]:
+    """Борды, на которых реально идут безадресные торги. Берём из уже собранной
+    дневной истории (bond_day) — она приезжает с БОРДОМ каждой строки, значит
+    список всегда соответствует рынку. Пусто (первый запуск) — режимы по
+    умолчанию, дальше список наполнится сам."""
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT DISTINCT board FROM bond_day WHERE date >= ?",
+            ((date.today() - timedelta(days=7)).isoformat(),)).fetchall()
+    boards = sorted(r["board"] for r in rows if r["board"])
+    return boards or ["TQCB", "TQOB", "TQIR", "TQRD", "TQOY", "TQOD", "TQOE"]
+
+
 async def snapshot_bond_day_today(client: Optional[httpx.AsyncClient] = None) -> int:
     """Итог ТЕКУЩЕГО дня из marketdata: history публикуется только после закрытия.
 
@@ -744,22 +757,32 @@ async def snapshot_bond_day_today(client: Optional[httpx.AsyncClient] = None) ->
     secmap = await secid_map(client)
     bccy = await board_ccy_map(client)
     day = datetime.now(_MSK).date().isoformat()
+    # ПО БОРДАМ, а не одним запросом: market-level marketdata отдаёт бумагу
+    # только на её основном режиме, и у выпуска, который торгуется и на TQCB, и
+    # на TQOB/TQOY, половина оборота терялась (замер 2026-08-31: 1969 строк
+    # против 3158 в дневной истории того же рынка).
+    boards = await run_bg(_traded_boards)
+    rows: list = []
+    cols: list = []
     try:
-        r = await _moex_get(
-            client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
-            params={"iss.meta": "off", "iss.only": "marketdata",
-                    "marketdata.columns": "SECID,BOARDID,VALTODAY,VALTODAY_RUR,"
-                                          "VOLTODAY,NUMTRADES,WAPRICE,LAST"},
-            timeout=40.0)
+        for board in boards:
+            r = await _moex_get(
+                client, f"{_ISS}/engines/stock/markets/bonds/boards/{board}/securities.json",
+                params={"iss.meta": "off", "iss.only": "marketdata",
+                        "marketdata.columns": "SECID,BOARDID,VALTODAY,VALTODAY_RUR,"
+                                              "VOLTODAY,NUMTRADES,WAPRICE,LAST"},
+                timeout=40.0)
+            if r is None or r.status_code != 200:
+                logger.warning("bond day today %s: HTTP %s", board,
+                               r.status_code if r is not None else "timeout")
+                continue
+            md = (r.json() or {}).get("marketdata", {})
+            cols = md.get("columns", []) or cols
+            rows.extend(md.get("data", []) or [])
     finally:
         if own:
             await client.aclose()
-    if r is None or r.status_code != 200:
-        logger.warning("bond day today: HTTP %s", r.status_code if r is not None else "timeout")
-        return 0
-    md = (r.json() or {}).get("marketdata", {})
-    cols, rows = md.get("columns", []), md.get("data", [])
-    if not rows:
+    if not rows or not cols:
         return 0
     g = {n: cols.index(n) for n in cols}
     out = []

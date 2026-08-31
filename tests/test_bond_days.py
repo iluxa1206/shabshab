@@ -112,3 +112,27 @@ def test_tape_stats_hides_market_value_under_filters(bt):
     mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 46_300_000.0)], SECMAP, {}, {})
     assert tape.tape_stats(frm="2026-08-28", min_value=1e6)["market_value"] is None
     assert tape.tape_stats(frm="2026-08-28", side="buy")["market_value"] is None
+
+
+def test_traded_boards_from_history(bt):
+    """Список бордов для снимка текущего дня берётся из уже собранной истории:
+    market-level marketdata отдаёт бумагу только на основном режиме, поэтому
+    снимок идёт по бордам, и список обязан соответствовать рынку."""
+    mod, _tape, _fx = bt
+    from datetime import date, timedelta
+    day = (date.today() - timedelta(days=1)).isoformat()
+    assert mod._traded_boards() == ["TQCB", "TQOB", "TQIR", "TQRD", "TQOY",
+                                    "TQOD", "TQOE"]     # пусто → умолчание
+    mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 1e6, date=day),
+                          _row("RU000A0000C3", "TQOB", 1e6, date=day)],
+                         SECMAP, {}, {})
+    assert mod._traded_boards() == ["TQCB", "TQOB"]
+
+
+def test_traded_boards_ignores_stale_dates(bt):
+    """Борд, на котором неделю не торговали, из списка выпадает."""
+    mod, _tape, _fx = bt
+    mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 1e6, date="2020-01-01")],
+                         SECMAP, {}, {})
+    assert "TQCB" in mod._traded_boards()      # умолчание, история старая
+    assert len(mod._traded_boards()) == 7
