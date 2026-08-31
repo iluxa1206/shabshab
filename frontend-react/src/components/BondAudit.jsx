@@ -198,6 +198,17 @@ const _isOff = (iso) => {
   return k === 0 || k === 6;
 };
 const _idx = (v) => (v == null ? "—" : v.toFixed(8).replace(".", ","));
+// локальная сегодняшняя дата в ISO (не toISOString — тот уводит в UTC и в
+// вечерней Москве подсвечивал бы завтрашнюю строку)
+const _today = () => {
+  const n = new Date();
+  return [n.getFullYear(), String(n.getMonth() + 1).padStart(2, "0"),
+    String(n.getDate()).padStart(2, "0")].join("-");
+};
+// прогнозные значения RUONIA-колонок метим отдельно от бейджа «Ист.»: тот
+// относится к ставке БАЗЫ БУМАГИ (она смотрит на день−лаг и бывает фактом
+// там, где RUONIA этого дня — уже прогноз)
+const _fwdCls = (src) => (src === "forward" ? "fwd-val" : "");
 
 // Выгрузка раскладки в CSV: ПЛОСКАЯ таблица дней, без строк-саммари купонов —
 // период уезжает в колонки (№ купона, его границы), чтобы файл открывался
@@ -250,7 +261,7 @@ function downloadCsv(text, name) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function DayGroup({ g, open, onToggle, lagLbl, marginBps }) {
+function DayGroup({ g, open, onToggle, lagLbl, marginBps, today }) {
   const mismatch = g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct;
   const nFwd = g.rows.length - g.n_fact;
   return (
@@ -282,13 +293,18 @@ function DayGroup({ g, open, onToggle, lagLbl, marginBps }) {
       {open && g.rows.map((r, i) => {
         return (
           <tr key={g.n + "-" + i}
-              className={(r.src === "fact" ? "past" : "") + (_isOff(r.day) ? " dayoff" : "")}>
+              className={(r.src === "fact" ? "past" : "") + (_isOff(r.day) ? " dayoff" : "")
+              + (r.day === today ? " dayrow-today" : "")}>
             <td className="dim">{i + 1}</td>
             <td className="left">{fmt.date(r.day)} <span className="dim">{_wd(r.day)}</span></td>
             <td className="left">{fmt.date(r.obs_date)} <span className="dim">{_wd(r.obs_date)}</span></td>
             <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
-            <td>{r.ru_rate_pct != null ? fmt.pct(r.ru_rate_pct, 4) : "—"}</td>
-            <td className="mono-idx">{_idx(r.ru_index)}</td>
+            <td className={_fwdCls(r.ru_rate_src)}
+                title={r.ru_rate_src === "forward" ? "прогноз: ступень RUONIA-кривой" : "факт ЦБ"}>
+              {r.ru_rate_pct != null ? fmt.pct(r.ru_rate_pct, 4) : "—"}</td>
+            <td className={"mono-idx " + _fwdCls(r.ru_index_src)}
+                title={r.ru_index_src === "forward" ? "прогноз: путь роллирования по кривой" : "официальный индекс ЦБ"}>
+              {_idx(r.ru_index)}</td>
             <td className="left">
               <span className={"src-badge " + (r.src === "fact" ? "src-fact" : "src-fwd")}>
                 {r.src === "fact" ? "ЦБ" : "фвд"}</span>
@@ -324,6 +340,7 @@ export function DayRatesModal({ isin, onClose }) {
   const allOpen = coupons.length > 0 && coupons.every((g) => isOpen(g.n));
 
   const lagLbl = d ? `${d.spec?.lag ?? 0} ${d.spec?.lag_unit === "work" ? "раб." : "кал."} дн` : "";
+  const today = _today();
   return (
     <div className="daymodal-overlay" onClick={onClose}>
       <div className="daymodal" onClick={(e) => e.stopPropagation()}>
@@ -383,7 +400,7 @@ export function DayRatesModal({ isin, onClose }) {
                 <tbody>
                   {coupons.map((g) => (
                     <DayGroup key={g.n} g={g} open={isOpen(g.n)} onToggle={() => toggle(g.n)}
-                      lagLbl={lagLbl} marginBps={d.spec?.margin_bps} />
+                      lagLbl={lagLbl} marginBps={d.spec?.margin_bps} today={today} />
                   ))}
                 </tbody>
               </table>
@@ -394,7 +411,10 @@ export function DayRatesModal({ isin, onClose }) {
                 калькулятором спредов. Индекс RUONIA — официальный накопленный индекс ЦБ,
                 за концом факта продолженный путём роллирования, из которого считается
                 доходность индекса в Y-IDX: отношение его уровней на дату поставки и на
-                погашение, в степени 365/дней, и есть база Y-IDX.
+                погашение, в степени 365/дней, и есть база Y-IDX. Пунктиром помечены
+                прогнозные значения RUONIA (ступень кривой вместо факта ЦБ) — их край свой,
+                не совпадает с бейджем «Ист.», который относится к ставке базы бумаги.
+                Рамкой выделен сегодняшний день.
               </div>
             </div>
           </>

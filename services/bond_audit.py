@@ -798,6 +798,11 @@ def _ruonia_ref_series(groups: list, ruonia_curve, calc_date: date) -> None:
             rr = _ru_rate(day)
             if rr is not None:
                 r["ru_rate_pct"] = rr
+            # источник ИМЕННО RUONIA-колонок: он свой, не тот, что у ставки базы
+            # бумаги (та смотрит на день−лаг, т.е. в прошлое, и остаётся фактом
+            # там, где RUONIA этого дня уже прогноз)
+            r["ru_rate_src"] = "fact" if (ru_last and day <= ru_last) else "forward"
+            r["ru_index_src"] = "fact" if (last_fact and day <= last_fact) else "forward"
         s_d, e_d = _parse_d(g["start"]), _parse_d(g["end"])
         lo = _norm(_parse_d(g["rows"][0]["day"])) if g["rows"] else None
         hi = _norm(e_d)

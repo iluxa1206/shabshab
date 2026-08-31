@@ -1471,6 +1471,15 @@ body.col-resizing * { cursor: col-resize !important; }
 .dm-formula { margin: 8px 16px 10px; }
 .daytable td.dim, .daytable .dim { color: var(--mut-2); }
 .cf-table tr.dayoff td { background: var(--hover); }
+/* прогнозные значения RUONIA-колонок: пунктир под числом — «это ступень
+   кривой, а не факт ЦБ». Бейдж «Ист.» рядом говорит о ДРУГОЙ колонке
+   (ставке базы бумаги), поэтому метка нужна своя */
+.daytable td.fwd-val { color: var(--mut); }
+.daytable td.fwd-val > * , .daytable td.fwd-val { text-decoration: underline dotted var(--line-2); text-underline-offset: 3px; }
+/* сегодняшний день — якорь глаза между фактом и прогнозом */
+.cf-table tr.dayrow-today td { background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
+.cf-table tr.dayrow-today td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .src-badge { font-size: 10px; letter-spacing: 0.08em; border: 1px solid var(--line);
   border-radius: 3px; padding: 0 4px; }
 .src-badge.src-fact { border-color: var(--mut); }
