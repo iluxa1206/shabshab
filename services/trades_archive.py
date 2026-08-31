@@ -193,18 +193,34 @@ async def fetch_today(client: httpx.AsyncClient, isin: str, headers: dict) -> li
 
 # ─────────────────────────── запись ───────────────────────────
 
+def _on_day(by_day: dict, day: str, fallback: float) -> float:
+    """Значение на день: точное, иначе последнее известное ДО него, иначе
+    fallback. Одно правило и для номинала (амортизация), и для курса валюты —
+    у обоих в карте только те дни, когда значение менялось/торговалось."""
+    if not by_day:
+        return fallback
+    v = by_day.get(day)
+    if v:
+        return v
+    prev = [d for d in by_day if d <= day]
+    return by_day[max(prev)] if prev else fallback
+
+
 def _tick_rows(isin: str, raw: list[dict], faces: dict[str, float],
                fallback_face: float = _DEFAULT_FACE,
                fx_rate: float = 1.0) -> list[tuple]:
     """Сырые пуши/ответы alltrades → строки trade_tick. faces — номиналы ПО ДНЯМ
     (у амортизируемых он меняется), fallback_face — когда дня в карте нет.
 
-    fx_rate — курс ВАЛЮТЫ НОМИНАЛА к рублю (1.0 у рублёвых). Alor отдаёт цену в
-    процентах от номинала, а номинал замещающих и юаневых бумаг выражен в валюте
-    (FACEUNIT), хотя расчёты рублёвые: без курса объём занижался в 11–86 раз
-    (замер 2026-08-31: BYM000001941 116 бумаг по 102% лежали как 118 320 ₽ при
-    реальных ~10,1 млн ₽), и такая сделка не проходила ни фильтр ленты «от 1
-    млн», ни порог записи потока.
+    fx_rate — курс ВАЛЮТЫ НОМИНАЛА к рублю (1.0 у рублёвых): число или карта
+    ПО ДНЯМ, как faces. Alor отдаёт цену в процентах от номинала, а номинал
+    замещающих и юаневых бумаг выражен в валюте (FACEUNIT), хотя расчёты
+    рублёвые: без курса объём занижался в 11–86 раз (замер 2026-08-31:
+    BYM000001941 116 бумаг по 102% лежали как 118 320 ₽ при реальных ~10,1 млн),
+    и такая сделка не проходила ни фильтр ленты «от 1 млн», ни порог записи
+    потока. Карта по дням нужна ИСТОРИЧЕСКОМУ дрейну: курс USD 03.08 был 80,24
+    против 85,84 на 31.08 — единый сегодняшний курс завышал объём на движение
+    валюты с даты сделки (пересчёт окна 11–31.08 биржевым VALUE отнял 1,59 млрд).
     """
     rows = []
     for t in raw:
@@ -213,12 +229,11 @@ def _tick_rows(isin: str, raw: list[dict], faces: dict[str, float],
             continue
         ts = _msk_ts(str(t.get("time") or ""))
         day = ts[:10]
-        face = faces.get(day) or fallback_face
-        prev = [d for d in faces if d <= day]
-        if day not in faces and prev:
-            face = faces[max(prev)]
+        face = _on_day(faces, day, fallback_face)
+        rate = (_on_day(fx_rate, day, 1.0) if isinstance(fx_rate, dict)
+                else (fx_rate or 1.0))
         rows.append((isin, int(tid), ts, float(price), float(qty),
-                     round(float(qty) * face * float(price) / 100 * (fx_rate or 1.0), 2),
+                     round(float(qty) * face * float(price) / 100 * rate, 2),
                      t.get("side"), t.get("board")))
     return rows
 
@@ -322,9 +337,10 @@ async def face_units() -> dict:
 
 
 async def face_fx(isin: str) -> float:
-    """Множитель номинала к рублю. 1.0 — рублёвая бумага или неизвестный курс:
-    промах даёт ЗАНИЖЕННЫЙ объём, а не потерянную сделку (в архив тик попадает
-    в любом случае, порогом режет только поток по бумагам вне юниверса)."""
+    """Множитель номинала к рублю НА СЕЙЧАС. 1.0 — рублёвая бумага или
+    неизвестный курс: промах даёт ЗАНИЖЕННЫЙ объём, а не потерянную сделку (в
+    архив тик попадает в любом случае, порогом режет только поток по бумагам
+    вне юниверса)."""
     import time as _time
     unit = (await face_units()).get(isin) or ""
     if unit in _RUB_UNITS:
@@ -343,6 +359,29 @@ async def face_fx(isin: str) -> float:
         logger.warning("tick %s: нет курса %s — объём в валюте номинала", isin, unit)
         return 1.0
     return float(rate)
+
+
+async def face_fx_days(isin: str, frm: str, till: str):
+    """Курс валюты номинала ПО ДНЯМ окна (или 1.0 для рублёвой бумаги).
+
+    Историческому дрейну нужен курс ДНЯ СДЕЛКИ, а не сегодняшний: за месяц
+    валюта уходит на проценты, и объём всего окна съезжает на это движение.
+    Архив курсов ведёт services/fx (таблица fx_rate, вперёд — фиксацией дня,
+    назад — историей MOEX/ЦБ). Архив пуст (свежая база, упавший бэкфилл) —
+    возвращаем сегодняшний курс: приближение прежнее, но не потеря."""
+    unit = (await face_units()).get(isin) or ""
+    if unit in _RUB_UNITS:
+        return 1.0
+    ccy = _FX_ALIAS.get(unit, unit)
+    try:
+        from services import fx as fx_svc
+        by_day = await asyncio.to_thread(fx_svc.rates_by_day, ccy, frm, till)
+    except Exception as e:
+        logger.warning("tick fx history %s: %s", isin, e)
+        by_day = {}
+    if by_day:
+        return by_day
+    return await face_fx(isin)
 
 
 async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] = None,
@@ -400,11 +439,9 @@ async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] =
         if include_today:
             raw += await fetch_today(client, isin, headers)
     fallback = max(faces.values()) if faces else _DEFAULT_FACE
-    # курс валюты номинала: у рублёвых 1.0, у замещаек — курс СЕГОДНЯШНИЙ.
-    # Для исторического окна это приближение (курс дня сделки был другим), но
-    # порядок величины восстанавливается; точное значение приходит из ISS —
-    # при склейке лент побеждает block_trade с его VALUE (services/tape).
-    rate = await face_fx(isin)
+    # курс валюты номинала ПО ДНЯМ окна: у рублёвых 1.0. Сегодняшним курсом
+    # историю считать нельзя — движение валюты за окно уезжает прямо в объём.
+    rate = await face_fx_days(isin, frm.date().isoformat(), today.isoformat())
     # вставка тысяч тиков — синхронный SQLite: на ликвидной бумаге executemany
     # держал event loop десятки мс, а демон зовёт drain по всему юниверсу
     n = await asyncio.to_thread(upsert_ticks, isin, raw, faces, fallback, rate)
@@ -468,6 +505,80 @@ def repair_values(days: int = 3, tol: float = 0.01, dry_run: bool = False,
                     [(r["iss_value"], r["isin"], r["trade_id"]) for r in bad])
     return {"rows": rows, "delta": round(delta, 2), "days": len(day_list),
             "dry_run": dry_run}
+
+
+async def repair_fx_values(days: int = 30, tol: float = 0.01,
+                           isins: Optional[list] = None,
+                           dry_run: bool = False) -> dict:
+    """Пересчёт объёма УЖЕ ЗАПИСАННЫХ тиков валютных бумаг по курсу ДНЯ СДЕЛКИ.
+
+    Нужен там, где сверить с биржей нечем: ISS-архив (block_trade) начинается
+    позже тикового, и в этом окне объём остался посчитанным по курсу на момент
+    заливки. Формула полная, а не поправочный коэффициент: value = qty ×
+    номинал дня × цена% × курс дня — она не зависит от того, каким курсом
+    строку записали раньше.
+
+    Строки, у которых ISS-двойник ЕСТЬ, не трогаем: биржевой VALUE точнее
+    любого нашего пересчёта, его ставит repair_values.
+    """
+    from services import fx as fx_svc
+    from services.bars import fetch_daily_face
+    from services.backdate import resolve_market
+
+    units = await face_units()
+    pool = [i for i in (isins or units.keys())
+            if (units.get(i) or "") not in _RUB_UNITS]
+    frm = (date.today() - timedelta(days=max(days, 1))).isoformat()
+    till = date.today().isoformat()
+    out = {"isins": 0, "rows": 0, "delta": 0.0, "skipped_no_rate": 0,
+           "dry_run": dry_run}
+
+    def _rows(isin):
+        with _connect() as c:
+            return c.execute(
+                "SELECT trade_id, ts, price, qty, value FROM trade_tick t "
+                "WHERE isin=? AND ts>=? AND NOT EXISTS (SELECT 1 FROM block_trade b "
+                "  WHERE b.trade_id=t.trade_id AND b.isin=t.isin)",
+                (isin, frm)).fetchall()
+
+    async with httpx.AsyncClient() as mc:
+        for isin in sorted(pool):
+            rows = await asyncio.to_thread(_rows, isin)
+            if not rows:
+                continue
+            ccy = _FX_ALIAS.get(units[isin], units[isin])
+            rates = await asyncio.to_thread(fx_svc.rates_by_day, ccy, frm, till)
+            if not rates:
+                out["skipped_no_rate"] += len(rows)
+                continue
+            secid, brd = await resolve_market(isin, None)
+            faces = await fetch_daily_face(mc, secid or isin, brd or "TQCB", frm, till)
+            fixed = []
+            for r in rows:
+                day = r["ts"][:10]
+                face = _on_day(faces, day, _DEFAULT_FACE)
+                rate = _on_day(rates, day, 0.0)
+                if not rate:
+                    out["skipped_no_rate"] += 1
+                    continue
+                val = round(r["qty"] * face * r["price"] / 100 * rate, 2)
+                old = r["value"] or 0
+                if old and abs(val - old) / old <= tol:
+                    continue
+                fixed.append((val, isin, r["trade_id"]))
+                out["delta"] += val - old
+            if not fixed:
+                continue
+            out["isins"] += 1
+            out["rows"] += len(fixed)
+            if not dry_run:
+                def _upd(batch=fixed):
+                    with _lock, _connect() as c:
+                        c.executemany("UPDATE trade_tick SET value=? "
+                                      "WHERE isin=? AND trade_id=?", batch)
+                await asyncio.to_thread(_upd)
+    out["delta"] = round(out["delta"], 2)
+    return out
 
 
 # ─────────────────────────── чтение / агрегация ───────────────────────────

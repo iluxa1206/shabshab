@@ -885,6 +885,17 @@ async def block_trades_worker():
                     fixed = await run_bg(tarch.repair_values, 3)
                     if fixed["rows"]:
                         logger.info("tick values repair: %s", fixed)
+                    # Курс валюты номинала пишется в архив живым слоем (fx), но
+                    # только за дни, когда сервис работал: рестарт на выходных
+                    # или пауза оставляют дыру, а объём сделки за прошлую дату
+                    # считается курсом ТОГО дня. Короткий добор истории закрывает
+                    # такие дыры и стоит один запрос к MOEX на валюту.
+                    from services import fx as fx_svc
+                    try:
+                        logger.info("fx history: %s",
+                                    (await fx_svc.backfill_history(14))["archive"])
+                    except Exception as e:
+                        logger.warning("fx history: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:

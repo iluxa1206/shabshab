@@ -225,11 +225,19 @@ npm --prefix frontend-react test
 * `bars.py` — часовые бары VWAP+спред: `build_bars`, `ensure_bars`, `read_bars`,
   `refresh_universe(days, full, concurrency)`, `resample(bars, hours)`, `adv_map`, `spread_avg_map`.
 * `trades_archive.py` — тиковый архив: `drain(isin)`, `read_trades`, `read_tape`, `tape_stats`,
-  `enrich_bars_with_ticks`, `prune`, `vacuum`, `db_stats`, `repair_values`. Alor отдаёт только 30 дней — копим сами.
+  `enrich_bars_with_ticks`, `prune`, `vacuum`, `db_stats`, `repair_values`, `repair_fx_values`.
+  Alor отдаёт только 30 дней — копим сами.
   Объём тика — В РУБЛЯХ: цена идёт в % от номинала, поэтому у замещаек номинал домножается на курс
-  валюты номинала (`face_fx`), иначе объём занижался в 11–86 раз. Промахи по номиналу (амортизация в
-  день события, курс не того дня) сверяются с биржевым VALUE по TRADENO — `repair_values`, ночным
-  тактом `block_trades_worker` и разово `scripts/fix_tick_values.py --all`.
+  валюты номинала (`face_fx_days` — курс ДНЯ СДЕЛКИ из архива `fx_rate`), иначе объём занижался
+  в 11–86 раз, а на историческом окне уезжал на движение валюты (USD 03.08 — 80,24 против 85,84
+  на 31.08). Промахи по номиналу (амортизация в день события) сверяются с биржевым VALUE по
+  TRADENO — `repair_values`, ночным тактом `block_trades_worker` и разово
+  `scripts/fix_tick_values.py --all`; где биржевого двойника нет (тиковый архив глубже ISS-ленты) —
+  полный пересчёт по номиналу и курсу дня: `repair_fx_values`, `scripts/fx_history.py --repair`.
+* `fx.py` — курсы валют: живой срез (MOEX TOM + ЦБ) и АРХИВ ПО ДНЯМ (`fx_rate`): `save_rates`,
+  `rate_on(ccy, day)`, `rates_by_day`, `backfill_history(days)` (история MOEX, недостающие валюты —
+  ЦБ), `archive_stats`. День фиксируется автоматически при каждом обновлении курса (дебаунс 10 мин),
+  дыры за нерабочие дни сервиса добирает ночной такт.
 * `block_trades.py` — крупные сделки всего рынка (безадресные + РПС из ISS `market=ndm`):
   `sweep()`, `backfill(days)`, `price_new_trades()`, `read_blocks`, `read_days`, `notify_blocks`, `prune`.
 * `tape.py` — единая лента: тики Alor + блоки ISS (`read_tape`, `tape_stats`).
