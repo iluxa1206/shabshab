@@ -211,6 +211,9 @@ class CouponDayRow(BaseModel):
     y_idx_bps: Optional[float] = None   # Y-IDX as-of дня по этой цене (spread_daily)
     index: Optional[float] = None       # расчётный индекс базы, старт 1.0 на начало периода
                                         # (капитализация по рабочим дням, выходные простыми)
+    ru_index: Optional[float] = None    # ЭТАЛОН: официальный накопленный индекс RUONIA ЦБ,
+                                        # нормированный на первый день раскладки (старт 1.0);
+                                        # за концом факта — путь роллирования базы Y-IDX
 
 class CouponDayGroup(BaseModel):
     n: Optional[int]               # № купона (как в таблице PV паспорта)
@@ -225,6 +228,9 @@ class CouponDayGroup(BaseModel):
     index_start: Optional[float] = None    # расчётный индекс на начало периода (сквозной!)
     index_end: Optional[float] = None      # он же на конец = index первой строки след. купона
     index_rate_pct: Optional[float] = None # рост ЗА ПЕРИОД в % годовых (End/Start−1)·365/дней
+    ru_index_start: Optional[float] = None # эталон RUONIA ЦБ на границах периода (норм.)
+    ru_index_end: Optional[float] = None
+    ru_index_rate_pct: Optional[float] = None  # рост эталона за период, % годовых
     rows: List[CouponDayRow]
 
 class CouponDaysResponse(BaseModel):

@@ -17,6 +17,7 @@
 """
 import asyncio
 import logging
+from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -504,7 +505,7 @@ async def build_bond_audit(isin: str, cache: dict) -> dict:
             val_dict = calculate_valuation_metrics(
                 ref_obj, px, curve, calc_date,
                 accrued_override=accrued_moex, periods=schedules.get(isin),
-                amorts=amorts, offers=offers)
+                amorts=amorts, offers=offers, ruonia_curve=ruonia_curve)
         except Exception as e:
             warnings.append(f"оценка: {e}")
 
@@ -705,6 +706,77 @@ def accrue_index(rows: list, state: dict = None) -> dict:
             "end": round(end, 10) if (seen and rows) else None}
 
 
+
+def _ruonia_ref_series(groups: list, ruonia_curve, calc_date: date) -> None:
+    """Дописывает в строки раскладки поле "ru_index" — ОФИЦИАЛЬНЫЙ накопленный
+    индекс RUONIA ЦБ, НОРМИРОВАННЫЙ на первый день раскладки (старт 1.0, как у
+    расчётного индекса рядом). Это внешний эталон для глаз: колонки обязаны
+    совпадать у RUONIA-бумаги с лагом 0 и расходиться ровно на лаг/базу у всех
+    остальных.
+
+    За концом факта ЦБ ряд продолжается ТЕМ ЖЕ путём роллирования, из которого
+    считается база Y-IDX (core.valuation._ruonia_path на RUONIA-кривой):
+    капитализация в рабочие дни, нерабочее окно простым начислением, ACT/ACT.
+    Поэтому колонка — это буквально знаменатель Y-IDX по дням, и ручная сверка
+    доходности индекса делается прямо в паспорте.
+
+    Индекс ЦБ недоступен (сбой + пустой кэш) — поле не выставляется, колонка
+    во фронте схлопывается в прочерки.
+    """
+    from core.valuation import _ruonia_path
+    from services.coupon_calib import ruonia_index_levels
+
+    rows_all = [r for g in groups for r in g["rows"]]
+    if not rows_all:
+        return
+    levels, last_fact = ruonia_index_levels()
+    if not levels:
+        return
+    keys = sorted(levels)
+
+    def _lvl_at(d: date):
+        """Уровень ЦБ на дату ≤ d (индекс публикуется на каждый календарный день,
+        bisect — страховка от дыры выгрузки)."""
+        i = bisect_right(keys, d) - 1
+        return levels[keys[i]] if i >= 0 else None
+
+    d0 = _parse_d(rows_all[0]["day"])
+    base_lvl = _lvl_at(d0)
+    if not base_lvl:
+        return
+    # якорь форвардного хвоста: последний день факта, но не раньше старта
+    anchor = max(d0, last_fact) if last_fact else d0
+    anchor_lvl = _lvl_at(anchor)
+    path = None
+    if anchor_lvl and ruonia_curve is not None and anchor >= d0:
+        try:
+            path = _ruonia_path(ruonia_curve, anchor)
+        except Exception as e:
+            logger.warning(f"RUONIA-путь для эталона: {e}")
+
+    def _norm(d: date):
+        if last_fact and d <= last_fact:
+            lv = _lvl_at(d)
+            return lv / base_lvl if lv else None
+        if path is None or not anchor_lvl:
+            return None
+        return (anchor_lvl / base_lvl) * path.growth_to(d)
+
+    for g in groups:
+        for r in g["rows"]:
+            v = _norm(_parse_d(r["day"]))
+            if v is not None:
+                r["ru_index"] = round(v, 10)
+        s_d, e_d = _parse_d(g["start"]), _parse_d(g["end"])
+        lo = _norm(_parse_d(g["rows"][0]["day"])) if g["rows"] else None
+        hi = _norm(e_d)
+        g["ru_index_start"] = round(lo, 10) if lo else None
+        g["ru_index_end"] = round(hi, 10) if hi else None
+        if lo and hi and e_d and s_d:
+            days = max((e_d - _parse_d(g["rows"][0]["day"])).days, 1)
+            g["ru_index_rate_pct"] = round((hi / lo - 1.0) * 365.0 / days * 100.0, 4)
+
+
 async def coupon_day_rates(isin: str, cache: dict) -> dict:
     """Полная дневная раскладка фиксинга по ВСЕМ неистёкшим купонам (текущий
     начавшийся + будущие до погашения/оферты): по каждому дню — дата наблюдения
@@ -877,6 +949,13 @@ async def coupon_day_rates(isin: str, cache: dict) -> dict:
             "n_fact": sum(1 for r in rows if r["src"] == "fact"),
             "rows": rows,
         })
+
+    # эталонная колонка: официальный индекс RUONIA ЦБ + форвардный хвост тем же
+    # путём роллирования, что база Y-IDX — сверка индекса глазами, без калькулятора
+    try:
+        _ruonia_ref_series(groups, ruonia_curve, calc_date)
+    except Exception as e:
+        logger.warning(f"RUONIA-эталон {isin}: {e}")
 
     return {
         "isin": isin, "calc_date": _iso(calc_date), "base": base,

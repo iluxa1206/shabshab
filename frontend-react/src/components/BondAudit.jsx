@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { fetchBondAudit, fetchCouponDays } from "../api.js";
@@ -185,6 +185,85 @@ function MarketSection({ m, v }) {
 
 // Окно дневной раскладки фиксинга: ВСЕ неистёкшие купоны одним прокручиваемым
 // списком — по каждому дню ставка индекса (факт ЦБ / форвард-ступень кривой).
+//
+// Купоны СВЁРНУТЫ по умолчанию (кроме текущего): горизонт до погашения — это
+// сотни строк, и раскладка читалась как сплошная лента без начала и конца.
+// Шапка купона несёт цифры плитками, а не строкой текста: период, сколько дней
+// уже факт, средняя база, маржа, итоговый купон, рост индекса.
+const WDAY = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const _wd = (iso) => (iso ? WDAY[new Date(iso + "T00:00:00Z").getUTCDay()] : "");
+const _isOff = (iso) => {
+  if (!iso) return false;
+  const k = new Date(iso + "T00:00:00Z").getUTCDay();
+  return k === 0 || k === 6;
+};
+const _idx = (v) => (v == null ? "—" : v.toFixed(8).replace(".", ","));
+
+function DayGroup({ g, open, onToggle, lagLbl, marginBps, deltaOf }) {
+  const mismatch = g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct;
+  const nFwd = g.rows.length - g.n_fact;
+  return (
+    <>
+      <tr className="daygroup" onClick={onToggle}>
+        <td className="left" colSpan={11}>
+          <div className="dg-head">
+            <span className="dg-caret">{open ? "▾" : "▸"}</span>
+            <b>Купон #{g.n}</b>
+            <span>{fmt.date(g.start)} — {fmt.date(g.end)}</span>
+            <span className="muted">выплата {fmt.date(g.pay_date)}</span>
+            {mismatch && <span className="neg">прайсинг {fmt.pct(g.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>}
+          </div>
+          <div className="dg-chips">
+            <span className="dg-chip">дней <b>{g.rows.length}</b></span>
+            <span className="dg-chip">факт <b>{g.n_fact}</b> · прогноз <b>{nFwd}</b></span>
+            <span className="dg-chip" title="среднее ставки базы по дням окна наблюдения">
+              средняя база <b>{fmt.pct(g.mean_pct, 4) ?? "—"}%</b></span>
+            <span className="dg-chip">маржа <b>{marginBps != null ? "+" + marginBps + " bps" : "—"}</b></span>
+            <span className="dg-chip dg-chip-out" title="средняя база + маржа (с кэпом/полом)">
+              купон <b>{fmt.pct(g.coupon_rate_pct, 4) ?? "—"}%</b></span>
+            {g.ru_index_rate_pct != null && (
+              <span className="dg-chip" title="рост официального индекса RUONIA ЦБ за этот период (за концом факта — путь роллирования базы Y-IDX)">
+                RUONIA ЦБ <b>{fmt.pct(g.ru_index_rate_pct, 4)}%</b> год.</span>
+            )}
+            {g.index_end != null && (
+              <span className="dg-chip" title="уровни индекса базы на границах периода">
+                индекс <b>{_idx(g.index_start)} → {_idx(g.index_end)}</b>
+                {g.index_rate_pct != null && <> = <b>{fmt.pct(g.index_rate_pct, 4)}%</b> год.</>}
+              </span>
+            )}
+          </div>
+        </td>
+      </tr>
+      {open && g.rows.map((r, i) => {
+        const dRub = deltaOf(g.n, i);
+        // расхождение с эталоном ЦБ накопленным итогом: у RUONIA-бумаги с лагом 0
+        // колонки обязаны совпасть, лаг/другая база разводят их предсказуемо
+        const dBps = r.index != null && r.ru_index ? (r.index / r.ru_index - 1) * 10000 : null;
+        return (
+          <tr key={g.n + "-" + i}
+              className={(r.src === "fact" ? "past" : "") + (_isOff(r.day) ? " dayoff" : "")}>
+            <td className="dim">{i + 1}</td>
+            <td className="left">{fmt.date(r.day)} <span className="dim">{_wd(r.day)}</span></td>
+            <td className="left">{fmt.date(r.obs_date)} <span className="dim">{_wd(r.obs_date)}</span></td>
+            <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
+            <td title="доход базы за этот день на 1000 ₽ = прирост индекса × 1000">
+              {dRub != null ? dRub.toFixed(4).replace(".", ",") : "—"}</td>
+            <td className="mono-idx">{_idx(r.index)}</td>
+            <td className="mono-idx">{_idx(r.ru_index)}</td>
+            <td className="dim">{dBps != null ? fmt.devBps(dBps) : "—"}</td>
+            <td className="left">
+              <span className={"src-badge " + (r.src === "fact" ? "src-fact" : "src-fwd")}>
+                {r.src === "fact" ? "ЦБ" : "фвд"}</span>
+            </td>
+            <td>{r.close_pct != null ? fmt.pct(r.close_pct) : "—"}</td>
+            <td>{r.y_idx_bps != null ? fmt.bps(r.y_idx_bps) : "—"}</td>
+          </tr>
+        );
+      })}
+    </>
+  );
+}
+
 export function DayRatesModal({ isin, onClose }) {
   const q = useQuery({
     queryKey: ["coupon-days", isin],
@@ -192,64 +271,105 @@ export function DayRatesModal({ isin, onClose }) {
     staleTime: 60_000,
   });
   const d = q.data;
-  const modeLbl = { average: "average · дни дохода (start, end]", avg_prev: "avg_prev · окно пред. периода",
-    point: "point · один фиксинг", month_start: "month_start · 1-е число месяца" };
+  const [openSet, setOpenSet] = useState(null);   // null = дефолт (первый купон)
+  const modeLbl = { average: "среднее по дням периода", avg_prev: "среднее окна пред. периода",
+    point: "один фиксинг на период", month_start: "фиксинг 1-го числа месяца" };
+
+  const coupons = d?.coupons || [];
+  const first = coupons[0]?.n;
+  const isOpen = (n) => (openSet ? openSet.has(n) : n === first);
+  const toggle = (n) => setOpenSet((s) => {
+    const next = new Set(s || (first != null ? [first] : []));
+    next.has(n) ? next.delete(n) : next.add(n);
+    return next;
+  });
+  const allOpen = coupons.length > 0 && coupons.every((g) => isOpen(g.n));
+
+  // прирост индекса за день = уровень СЛЕДУЮЩЕЙ строки − текущий. Индекс
+  // сквозной через купоны, поэтому последняя строка периода берёт первую строку
+  // следующего — разрыва на границе купонов нет.
+  const nextIndex = useMemo(() => {
+    const flat = [];
+    for (const g of coupons) g.rows.forEach((r, i) => flat.push([g.n + "-" + i, r.index]));
+    const m = new Map();
+    for (let k = 0; k < flat.length - 1; k++) m.set(flat[k][0], flat[k + 1][1]);
+    return m;
+  }, [coupons]);
+  const deltaOf = (n, i) => {
+    const g = coupons.find((c) => c.n === n);
+    const cur = g?.rows[i]?.index;
+    const nxt = nextIndex.get(n + "-" + i);
+    return cur != null && nxt != null ? (nxt - cur) * 1000 : null;
+  };
+
+  const lagLbl = d ? `${d.spec?.lag ?? 0} ${d.spec?.lag_unit === "work" ? "раб." : "кал."} дн` : "";
   return (
     <div className="daymodal-overlay" onClick={onClose}>
       <div className="daymodal" onClick={(e) => e.stopPropagation()}>
         <div className="daymodal-head">
-          <b>Фиксинг по дням · все будущие купоны{d ? ` (${d.coupons.length} куп. · ${d.n_days} дн)` : ""}</b>
-          <button className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
+          <b>Фиксинг по дням{d ? ` · ${d.coupons.length} куп. · ${d.n_days} дн` : ""}</b>
+          <span className="dm-head-btns">
+            {coupons.length > 1 && (
+              <button className="btn day-btn"
+                onClick={() => setOpenSet(allOpen ? new Set() : new Set(coupons.map((g) => g.n)))}>
+                {allOpen ? "СВЕРНУТЬ ВСЕ" : "РАЗВЕРНУТЬ ВСЕ"}
+              </button>
+            )}
+            <button className="btn" onClick={onClose}>ЗАКРЫТЬ</button>
+          </span>
         </div>
         {q.isError && <div className="warn-box">Ошибка: {q.error?.message}</div>}
         {!d && !q.isError && <div className="loading">ЗАГРУЗКА</div>}
         {d && (
           <>
-            <div className="fnote" style={{ marginTop: 0 }}>
-              {modeLbl[d.spec?.mode] || d.spec?.mode} · лаг {d.spec?.lag}{d.spec?.lag_unit === "work" ? " раб." : " кал."} дн ·
-              маржа {d.spec?.margin_bps != null ? "+" + d.spec.margin_bps + " bps" : "—"}
-              {d.spec?.cap_pct != null && <> · кэп {d.spec.cap_pct}%</>}
-              {d.spec?.floor_pct != null && <> · пол {d.spec.floor_pct}%</>}
-              {" · Close/R-spread — из spread_daily (та же серия, что график «Динамика DM»): сверка с историческим калькулятором спредов"}
+            <div className="dg-chips dm-spec">
+              <span className="dg-chip">режим <b>{modeLbl[d.spec?.mode] || d.spec?.mode}</b></span>
+              <span className="dg-chip" title="на сколько дней назад от дня начисления берётся значение индекса">
+                лаг фиксинга <b>{lagLbl}</b></span>
+              {d.spec?.avg_window_days != null &&
+                <span className="dg-chip">окно <b>{d.spec.avg_window_days} дн</b></span>}
+              <span className="dg-chip">маржа <b>{d.spec?.margin_bps != null ? "+" + d.spec.margin_bps + " bps" : "—"}</b></span>
+              {d.spec?.cap_pct != null && <span className="dg-chip">кэп <b>{d.spec.cap_pct}%</b></span>}
+              {d.spec?.floor_pct != null && <span className="dg-chip">пол <b>{d.spec.floor_pct}%</b></span>}
+              {d.spec?.compounded ? <span className="dg-chip">compounded</span> : null}
+            </div>
+            <div className="fnote dm-formula">
+              Купон = среднее «Ставка %» по дням периода + маржа. Индекс: старт 1,0, ставка дня
+              начисляет доход этого же дня и видна в уровне следующего; капитализация — в день
+              публикации фиксинга, в нерабочем окне начисление простое.
             </div>
             <div className="daymodal-body">
-              <table className="cf-table">
+              <table className="cf-table daytable">
                 <thead>
                   <tr>
-                    <th className="left">День</th><th className="left">Наблюдение</th><th>Ставка %</th>
-                    <th title="расчётный индекс базы: старт 1.0 в начале периода, фиксинг дня даёт прирост следующего; капитализация по рабочим дням, выходные простыми">Индекс</th>
-                    <th className="left">Источник</th><th>Close %</th><th>R-spread</th>
+                    <th title="номер дня внутри купонного периода">#</th>
+                    <th className="left">День</th>
+                    <th className="left" title={`день начисления минус лаг (${lagLbl})`}>Наблюдение</th>
+                    <th title="значение базы на дату наблюдения">Ставка %</th>
+                    <th title="доход базы за этот день на 1000 ₽ номинала">Δ ₽/1000</th>
+                    <th title="накопленный индекс базы, сквозной через все купоны: старт 1,0">Индекс</th>
+                    <th title="ЭТАЛОН: официальный накопленный индекс RUONIA ЦБ, нормированный на первый день раскладки (старт 1,0). За концом факта ЦБ — путь роллирования, из которого считается доходность индекса в Y-IDX">RUONIA</th>
+                    <th title="расхождение расчётного индекса базы с эталоном RUONIA, накопленным итогом">Δ bps</th>
+                    <th className="left" title="ЦБ — опубликованный факт; фвд — форвардная ступень кривой">Ист.</th>
+                    <th title="цена закрытия дня из spread_daily">Close %</th>
+                    <th title="Y-IDX того дня из spread_daily — та же серия, что график «Динамика DM»">R-spread</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {d.coupons.map((g) => (
-                    [
-                      <tr key={"h" + g.n} className="daygroup">
-                        <td className="left" colSpan={7}>
-                          Купон #{g.n} · {fmt.date(g.start)} — {fmt.date(g.end)} · выплата {fmt.date(g.pay_date)} ·
-                          факт {g.n_fact}/{g.rows.length} дн · среднее {fmt.pct(g.mean_pct, 4) ?? "—"}%
-                          {g.coupon_rate_pct != null && <> · купон {fmt.pct(g.coupon_rate_pct, 4)}%</>}
-                          {g.index_end != null && <> · индекс {g.index_start?.toFixed(8).replace(".", ",")} → {g.index_end.toFixed(8).replace(".", ",")}
-                            {g.index_rate_pct != null && <> ({fmt.pct(g.index_rate_pct, 4)}% годовых за период)</>}</>}
-                          {g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct
-                            && <span className="neg"> · прайсинг {fmt.pct(g.projected_pct, 4)}% — РАСХОЖДЕНИЕ</span>}
-                        </td>
-                      </tr>,
-                      ...g.rows.map((r, i) => (
-                        <tr key={g.n + "-" + i} className={r.src === "forward" ? "" : "past"}>
-                          <td className="left">{fmt.date(r.day)}</td>
-                          <td className="left">{fmt.date(r.obs_date)}</td>
-                          <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
-                          <td className="mono-idx">{r.index != null ? r.index.toFixed(8).replace(".", ",") : "—"}</td>
-                          <td className="left">{r.src === "fact" ? "факт ЦБ" : "форвард (ступень)"}</td>
-                          <td>{r.close_pct != null ? fmt.pct(r.close_pct) : "—"}</td>
-                          <td>{r.y_idx_bps != null ? fmt.bps(r.y_idx_bps) : "—"}</td>
-                        </tr>
-                      )),
-                    ]
+                  {coupons.map((g) => (
+                    <DayGroup key={g.n} g={g} open={isOpen(g.n)} onToggle={() => toggle(g.n)}
+                      lagLbl={lagLbl} marginBps={d.spec?.margin_bps} deltaOf={deltaOf} />
                   ))}
                 </tbody>
               </table>
+              <div className="daylegend">
+                Серые строки — уже реализованный факт ЦБ, светлые — прогноз по кривой.
+                Подсветка фона — выходные (ставка переносится с последнего фиксинга).
+                Close / R-spread берутся из spread_daily — сверка раскладки с историческим
+                калькулятором спредов. Колонка RUONIA — официальный индекс ЦБ (за концом факта
+                продолжен путём роллирования, из которого считается доходность индекса в Y-IDX);
+                Δ bps — накопленное расхождение с расчётным индексом базы слева.
+              </div>
             </div>
           </>
         )}
