@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services import fx  # noqa: E402
+from services import block_trades as bt  # noqa: E402
 from services import trades_archive as ta  # noqa: E402
 
 
@@ -48,6 +49,18 @@ async def main() -> int:
         print(f"  {ccy}: {st['n']} дней, {st['from']}…{st['till']}")
 
     if a.repair:
+        # 1) суммы валютных бордов в block_trade — к рублям по курсу дня
+        cur = await bt.repair_currency_values(days=a.repair_days, dry_run=a.dry_run)
+        print(f"валютные борды: {'нашлось' if a.dry_run else 'исправлено'} "
+              f"{cur['rows']} из {cur.get('seen', 0)} строк, "
+              f"сдвиг {cur['delta']/1e9:.2f} млрд ₽"
+              + (f", пропущено {cur['skipped']}" if cur.get("skipped") else ""))
+        # 2) тики, у которых есть биржевой двойник, — по его VALUE
+        if not a.dry_run:
+            fixed = ta.repair_values(days=a.repair_days, tol=a.tol)
+            print(f"тики по бирже: исправлено {fixed['rows']}, "
+                  f"сдвиг {fixed['delta']/1e9:.2f} млрд ₽")
+        # 3) остальные — полным пересчётом по номиналу и курсу дня
         rep = await ta.repair_fx_values(days=a.repair_days, tol=a.tol,
                                         dry_run=a.dry_run)
         verb = "нашлось" if a.dry_run else "пересчитано"

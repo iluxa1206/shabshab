@@ -124,3 +124,58 @@ async def test_repair_fx_values_recomputes_only_unmatched(fx, monkeypatch):
         vals = dict(c.execute("SELECT trade_id, value FROM trade_tick"))
     assert vals[1] == pytest.approx(80240.0)     # пересчитан курсом дня
     assert vals[2] == pytest.approx(85840.0)     # оставлен под repair_values
+
+
+@pytest.mark.asyncio
+async def test_iss_value_of_currency_board_converted_to_rubles(fx, monkeypatch):
+    """Сделка с юаневого борда: ISS отдаёт VALUE в юанях, в базу кладём рубли.
+
+    До фикса такая строка лежала с cur='SUR' (валюта бралась по бумаге, а
+    бумага торгуется и на рублёвом борде) — её объём попадал в рублёвые итоги
+    заниженным в ~12,7 раза и через сверку затягивался в тиковый архив."""
+    import importlib
+    import services.block_trades as bt
+    importlib.reload(bt)
+    fx.save_rates("2026-08-31", {"CNY": 12.8})
+    secmap = {"RU000A10FAK6": {"isin": "RU000A10FAK6", "face": 10000.0, "cur": "SUR"}}
+    rows = [{"TRADENO": 1, "SECID": "RU000A10FAK6", "BOARDID": "TQOY",
+             "TRADEDATE": "2026-08-31", "TRADETIME": "12:00:00",
+             "PRICE": 93.48, "QUANTITY": 3, "VALUE": 28044.0, "BUYSELL": "B"},
+            {"TRADENO": 2, "SECID": "RU000A10FAK6", "BOARDID": "TQOB",
+             "TRADEDATE": "2026-08-31", "TRADETIME": "12:00:00",
+             "PRICE": 93.48, "QUANTITY": 3, "VALUE": 358963.2, "BUYSELL": "B"}]
+    n, _ = bt.upsert_trades(rows, "bonds", secmap, {"TQOY": "CNY"})
+    assert n == 2
+    with bt._connect() as c:
+        got = {r["trade_id"]: (r["value"], r["cur"])
+               for r in c.execute("SELECT trade_id, value, cur FROM block_trade")}
+    assert got[1] == (pytest.approx(28044.0 * 12.8), "SUR")   # юани → рубли
+    assert got[2] == (pytest.approx(358963.2), "SUR")         # рублёвый борд как был
+
+
+@pytest.mark.asyncio
+async def test_repair_currency_values_fixes_history(fx, monkeypatch):
+    """Уже записанные валютные суммы приводятся к рублям по курсу дня."""
+    import importlib
+    import services.block_trades as bt
+    importlib.reload(bt)
+    fx.save_rates("2026-08-20", {"CNY": 12.6})
+
+    async def _boards(client=None, force=False):
+        return {"TQOY": "CNY"}
+
+    monkeypatch.setattr(bt, "board_ccy_map", _boards)
+    with bt._lock, bt._connect() as c:
+        # 1 — в юанях (как приходило от ISS), 2 — уже в рублях, трогать нельзя
+        c.execute("INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,"
+                  "qty,value,face,cur) VALUES(1,'RU000A10FAK6','RU000A10FAK6',"
+                  "'2026-08-20 12:00:00','bonds','TQOY',100.0,1,10000.0,10000.0,'SUR')")
+        c.execute("INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,"
+                  "qty,value,face,cur) VALUES(2,'RU000A10FAK6','RU000A10FAK6',"
+                  "'2026-08-20 12:00:00','bonds','TQOY',100.0,1,126000.0,10000.0,'SUR')")
+    res = await bt.repair_currency_values(days=3650)
+    assert res["rows"] == 1
+    with bt._connect() as c:
+        vals = dict(c.execute("SELECT trade_id, value FROM block_trade"))
+    assert vals[1] == pytest.approx(126000.0)
+    assert vals[2] == pytest.approx(126000.0)

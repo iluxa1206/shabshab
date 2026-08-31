@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -89,9 +90,57 @@ def _iss_rows(payload: dict, block: str) -> list[dict]:
     return [dict(zip(cols, row)) for row in (b.get("data") or [])]
 
 
+# ВАЛЮТА РАСЧЁТОВ — СВОЙСТВО БОРДА, А НЕ БУМАГИ. Замещайка торгуется сразу на
+# двух: TQOB (рубли) и TQOY (юани), и VALUE в ленте ISS приходит В ВАЛЮТЕ БОРДА.
+# Справочник бумаг отдаёт один CURRENCYID на SECID (у нас — с первой встреченной
+# борд-строки), поэтому юаневая сделка попадала в базу помеченной как рублёвая:
+# 136 из 210 строк TQOY по RU000A10FAK6 лежали в юанях под cur='SUR', а сверка
+# тиков затягивала это значение в рублёвый объём — занижение в ~12,7 раза.
+_BOARD_CCY_RE = re.compile(r"\((USD|EUR|CNY)\)")
+_board_ccy: dict = {"at": None, "map": {}}
+
+
+async def board_ccy_map(client: Optional[httpx.AsyncClient] = None,
+                        force: bool = False) -> dict[str, str]:
+    """{BOARDID: валюта расчётов} — только для НЕрублёвых бордов.
+
+    Источник — список бордов MOEX: валюта зашита в название («Т+: Облигации
+    (CNY) - безадрес.»). Кэш на сутки: борды заводят раз в годы."""
+    today = date.today().isoformat()
+    if not force and _board_ccy["at"] == today and _board_ccy["map"]:
+        return _board_ccy["map"]
+    from services.market_data import _moex_get
+    own = client is None
+    client = client or httpx.AsyncClient()
+    try:
+        r = await _moex_get(client, f"{_ISS}/engines/stock/markets/bonds/boards.json",
+                            params={"iss.meta": "off", "iss.only": "boards"},
+                            timeout=20.0)
+    finally:
+        if own:
+            await client.aclose()
+    if r is None or r.status_code != 200:
+        logger.warning("block: список бордов недоступен, валюта расчётов по кэшу")
+        return _board_ccy["map"]
+    b = (r.json() or {}).get("boards", {})
+    cols, rows = b.get("columns", []), b.get("data", [])
+    if not cols or "boardid" not in cols or "title" not in cols:
+        return _board_ccy["map"]
+    bi, ti = cols.index("boardid"), cols.index("title")
+    out = {}
+    for row in rows:
+        m = _BOARD_CCY_RE.search(row[ti] or "")
+        if m and row[bi]:
+            out[row[bi]] = m.group(1)
+    if out:
+        _board_ccy["map"], _board_ccy["at"] = out, today
+    return _board_ccy["map"]
+
+
 async def secid_map(client: Optional[httpx.AsyncClient] = None,
                     force: bool = False) -> dict[str, dict]:
-    """SECID → {isin, face} по ВСЕМ облигациям MOEX (3140 бумаг, один запрос).
+    """SECID → {isin, face, name, cur, maturity} по ВСЕМ облигациям MOEX
+    (3140 бумаг, один запрос).
 
     Нужна, потому что лента ISS идентифицирует бумагу через SECID, а у ОФЗ он
     не совпадает с ISIN (SU26248RMFS3 ↔ RU000A...). Кэш на сутки: состав
@@ -108,7 +157,8 @@ async def secid_map(client: Optional[httpx.AsyncClient] = None,
         r = await _moex_get(
             client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
             params={"iss.meta": "off", "iss.only": "securities",
-                    "securities.columns": "SECID,ISIN,FACEVALUE,SHORTNAME,CURRENCYID"},
+                    "securities.columns": "SECID,ISIN,FACEVALUE,SHORTNAME,"
+                                          "CURRENCYID,MATDATE"},
             timeout=30.0)
     finally:
         if own:
@@ -124,7 +174,11 @@ async def secid_map(client: Optional[httpx.AsyncClient] = None,
         out[sec] = {"isin": row.get("ISIN") or sec,
                     "face": float(row["FACEVALUE"]) if row.get("FACEVALUE") else None,
                     "name": row.get("SHORTNAME"),
-                    "cur": row.get("CURRENCYID")}
+                    "cur": row.get("CURRENCYID"),
+                    # Дата погашения нужна витринам, которые считают по СРОКУ
+                    # (карта рынка в дайджесте): реестр знает только флоатеры,
+                    # а этот справочник — весь рынок и приезжает тем же запросом.
+                    "maturity": row.get("MATDATE") or None}
     if out:
         _secmap["map"], _secmap["at"] = out, today
     return _secmap["map"]
@@ -168,16 +222,28 @@ def _side(row: dict) -> Optional[str]:
     return {"B": "buy", "S": "sell"}.get(v)
 
 
-def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set[str]]:
+def upsert_trades(rows: list[dict], market: str, secmap: dict,
+                  bccy: Optional[dict] = None) -> tuple[int, set[str]]:
     """Пишет сделки ≥ порога. Возвращает (записано, незнакомые SECID).
 
     INSERT OR IGNORE по TRADENO — перечитанная сессия (протухший курсор) дублей
     не плодит. Бумаги вне справочника облигаций отбрасываем: в ndm рядом с
     облигациями торгуются акции, ПАИ и ETF (PTEQ/PSIF/PTTF), а нам нужны только
     бонды. Незнакомые SECID возвращаем наверх — свежее размещение может просто
-    не успеть попасть в суточный кэш справочника."""
+    не успеть попасть в суточный кэш справочника.
+
+    VALUE ПРИВОДИТСЯ К РУБЛЯМ. На валютных бордах (TQOY/TQOD/TQOE и адресные
+    к ним) биржа отдаёт объём в валюте расчётов — сложить его с рублёвым
+    нельзя, а помечен он был рублёвым (валюта бралась по бумаге, а бумага
+    торгуется и на рублёвом борде). Курс берём НА ДЕНЬ СДЕЛКИ из архива
+    (services/fx): для вчерашней сессии сегодняшний курс уже неверен. Курса
+    нет — оставляем сумму в валюте и честно помечаем её cur=валюта: такие
+    строки везде исключаются из рублёвых итогов."""
     out, unknown = [], set()
     now = int(time.time())
+    bccy = bccy or {}
+    from services import fx as fx_svc
+    rate_cache: dict = {}
     for r in rows:
         val = r.get("VALUE")
         if val is None or (BLOCK_MIN_VALUE_RUB and float(val) < BLOCK_MIN_VALUE_RUB):
@@ -189,10 +255,21 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set
         if meta is None:
             unknown.add(sec)
             continue
-        out.append((int(tid), meta.get("isin") or sec, sec, _ts(r), market,
+        ts = _ts(r)
+        val = float(val)
+        cur = bccy.get(r.get("BOARDID")) or meta.get("cur")
+        if cur and cur != "SUR":
+            key = (cur, ts[:10])
+            if key not in rate_cache:
+                rate_cache[key] = fx_svc.rate_on(cur, ts[:10])
+            rate = rate_cache[key]
+            if rate:
+                val *= rate
+                cur = "SUR"
+        out.append((int(tid), meta.get("isin") or sec, sec, ts, market,
                     r.get("BOARDID"), r.get("PRICE"), r.get("QUANTITY"),
-                    float(val), r.get("YIELD"), _side(r), meta.get("face"),
-                    meta.get("cur"), now))
+                    val, r.get("YIELD"), _side(r), meta.get("face"),
+                    cur, now))
     if not out:
         return 0, unknown
     with _lock, _connect() as c:
@@ -201,6 +278,62 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict) -> tuple[int, set
             "(trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,face,cur,"
             "ins_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", out)
         return cur.rowcount or 0, unknown
+
+
+async def repair_currency_values(days: int = 60, dry_run: bool = False,
+                                 tol: float = 0.2) -> dict:
+    """Приводит УЖЕ ЗАПИСАННЫЕ суммы валютных бордов к рублям.
+
+    До 2026-08-31 строка с валютного борда ложилась с VALUE в валюте расчётов и
+    пометкой cur='SUR' (валюта бралась по бумаге, а бумага торгуется и на
+    рублёвом борде). Такую строку нельзя ни сложить в оборот, ни скопировать в
+    тик — сверка объёмов затягивала юани в рублёвое поле.
+
+    Отличаем «в валюте» от «в рублях» по самой сделке: рублёвый объём обязан
+    сойтись с qty × номинал × цена% × курс дня. Не сошёлся, а без курса —
+    сошёлся, значит сумма в валюте: домножаем и помечаем рублёвой. Строки, где
+    не сходится ни так, ни так, не трогаем — гадать не о чем."""
+    from services import fx as fx_svc
+    bccy = await board_ccy_map()
+    if not bccy:
+        return {"rows": 0, "delta": 0.0, "skipped": 0, "dry_run": dry_run,
+                "note": "карта бордов недоступна"}
+    frm = (date.today() - timedelta(days=max(days, 1))).isoformat()
+    boards = sorted(bccy)
+    ph = ",".join("?" * len(boards))
+    with _connect() as c:
+        rows = c.execute(
+            f"SELECT trade_id, ts, board, qty, price, value, face, cur FROM block_trade "
+            f"WHERE board IN ({ph}) AND ts >= ? AND qty > 0 AND price > 0 AND face > 0 "
+            f"AND value > 0", [*boards, frm]).fetchall()
+    fixed, skipped = [], 0
+    delta = 0.0
+    rate_cache: dict = {}
+    for r in rows:
+        ccy = bccy.get(r["board"])
+        key = (ccy, r["ts"][:10])
+        if key not in rate_cache:
+            rate_cache[key] = fx_svc.rate_on(ccy, r["ts"][:10])
+        rate = rate_cache[key]
+        if not rate:
+            skipped += 1
+            continue
+        base = r["qty"] * r["face"] * r["price"] / 100      # объём в ВАЛЮТЕ номинала
+        exp_rub = base * rate
+        if abs(r["value"] - exp_rub) / exp_rub <= tol:
+            continue                                        # уже рубли
+        if abs(r["value"] * rate - exp_rub) / exp_rub > tol:
+            skipped += 1                                    # не сходится никак
+            continue
+        val = round(r["value"] * rate, 2)
+        delta += val - r["value"]
+        fixed.append((val, r["trade_id"]))
+    if fixed and not dry_run:
+        with _lock, _connect() as c:
+            c.executemany("UPDATE block_trade SET value=?, cur='SUR' WHERE trade_id=?",
+                          fixed)
+    return {"rows": len(fixed), "delta": round(delta, 2), "skipped": skipped,
+            "seen": len(rows), "dry_run": dry_run}
 
 
 async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
@@ -215,6 +348,7 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
     own = client is None
     client = client or httpx.AsyncClient()
     secmap = await secid_map(client)
+    bccy = await board_ccy_map(client)
     cursor = None if from_start else get_cursor(market)
     seen = saved = pages = 0
     last = cursor
@@ -239,13 +373,13 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
             if not rows:
                 break
             seen += len(rows)
-            n, unknown = await run_bg(upsert_trades, rows, market, secmap)
+            n, unknown = await run_bg(upsert_trades, rows, market, secmap, bccy)
             if unknown and not refreshed:
                 # свежее размещение ещё не в суточном кэше справочника — иначе
                 # первая (и самая крупная) сделка нового выпуска потерялась бы
                 refreshed = True
                 secmap = await secid_map(client, force=True)
-                extra, _ = await run_bg(upsert_trades, rows, market, secmap)
+                extra, _ = await run_bg(upsert_trades, rows, market, secmap, bccy)
                 n += extra
             saved += n
             last = rows[-1].get("TRADENO") or last
@@ -671,15 +805,11 @@ def blocks_stats(frm: Optional[str] = None, till: Optional[str] = None,
             "archive_till": last["t"] if last else None}
 
 
-def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
-              till: Optional[str] = None, min_value: float = 0,
-              limit: int = 1000, isins: Optional[list[str]] = None) -> list[dict]:
-    """Дневные РПС-агрегаты (то, что есть за дни ДО поштучного сбора).
-
-    isins — охват (скоуп/эмитенты/срок до погашения); длинный список уезжает во
-    временную таблицу, как и в остальных чтениях архива."""
-    q = "SELECT * FROM block_day WHERE 1=1"
-    args: list = []
+def _days_where(c, isin: Optional[str], frm: Optional[str], till: Optional[str],
+                min_value: float, isins: Optional[list[str]]):
+    """Условие выборки дневных агрегатов — ОДНО на строки и на итоги: считать
+    итоги по другому набору условий, чем показана таблица, нельзя."""
+    q, args = " WHERE 1=1", []
     if isin:
         q += " AND isin = ?"
         args.append(isin)
@@ -692,18 +822,52 @@ def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
     if min_value:
         q += " AND value >= ?"
         args.append(money_floor(min_value))
+    if not isin and isins is not None:
+        if _bind_isins(c, isins):
+            q += f" AND isin IN (SELECT isin FROM {_TMP})"
+        elif isins:
+            q += f" AND isin IN ({','.join('?' * len(isins))})"
+            args.extend(isins)
+        else:
+            return None, None
+    return q, args
+
+
+def read_days(isin: Optional[str] = None, frm: Optional[str] = None,
+              till: Optional[str] = None, min_value: float = 0,
+              limit: int = 1000, isins: Optional[list[str]] = None) -> list[dict]:
+    """Дневные РПС-агрегаты (то, что есть за дни ДО поштучного сбора).
+
+    isins — охват (скоуп/эмитенты/срок до погашения); длинный список уезжает во
+    временную таблицу, как и в остальных чтениях архива."""
     with _connect() as c:
-        if not isin and isins is not None:
-            if _bind_isins(c, isins):
-                q += f" AND isin IN (SELECT isin FROM {_TMP})"
-            elif isins:
-                q += f" AND isin IN ({','.join('?' * len(isins))})"
-                args.extend(isins)
-            else:
-                return []
-        q += " ORDER BY date DESC, value DESC LIMIT ?"
-        args.append(limit)
-        return [dict(r) for r in c.execute(q, args).fetchall()]
+        where, args = _days_where(c, isin, frm, till, min_value, isins)
+        if where is None:
+            return []
+        q = ("SELECT * FROM block_day" + where
+             + " ORDER BY date DESC, value DESC LIMIT ?")
+        return [dict(r) for r in c.execute(q, [*args, limit]).fetchall()]
+
+
+def days_stats(isin: Optional[str] = None, frm: Optional[str] = None,
+               till: Optional[str] = None, min_value: float = 0,
+               isins: Optional[list[str]] = None, top: int = 10) -> dict:
+    """Итоги режима «по дням» — по ВСЕМ подходящим бумаго-дням окна, а не по
+    странице, которую видно в таблице (лимит режет строки, но не итоги)."""
+    with _connect() as c:
+        where, args = _days_where(c, isin, frm, till, min_value, isins)
+        if where is None:
+            return {"n": 0, "value": 0, "trades": 0, "top": [], "archive_till": None}
+        tot = c.execute("SELECT COUNT(*) n, SUM(value) v, SUM(numtrades) t "
+                        "FROM block_day" + where, args).fetchone()
+        tops = c.execute("SELECT isin, COUNT(*) n, SUM(value) v FROM block_day"
+                         + where + " GROUP BY isin ORDER BY v DESC LIMIT ?",
+                         [*args, top]).fetchall()
+        last = c.execute("SELECT MAX(date) d FROM block_day").fetchone()
+    return {"n": tot["n"] or 0, "value": tot["v"] or 0, "trades": tot["t"] or 0,
+            "top": [{"isin": r["isin"], "n": r["n"], "value": r["v"] or 0}
+                    for r in tops],
+            "archive_till": last["d"] if last else None}
 
 
 def boards_seen(days: int = 30) -> list[dict]:
