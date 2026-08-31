@@ -268,10 +268,14 @@ export const fetchHourlyBars = (isin, { kind = "floater", days = 30, hours = 1,
 // Сделки из тикового архива. min_value (₽) отсекает мелочь — остаются крупные
 // принты. Глубина: у брокера ~30 дней, глубже — только то, что накопил демон.
 // order='value' — самые крупные за окно (лента маркеров), 'ts' — последние.
+// market: bonds (безадресные, по умолчанию) | ndm (РПС) | all. Маркерам на
+// графике нужен bonds — адресные там рисует свой слой, иначе два маркера на
+// одну сделку; ленте в карточке нужен all.
 export const fetchTrades = (isin, { days = 30, minValue = 0, side, limit = 500,
-                                    order, refresh = true, kind } = {}) => {
+                                    order, refresh = true, kind, market } = {}) => {
   let u = `/api/history/${encodeURIComponent(isin)}/trades?days=${days}&min_value=${minValue}&limit=${limit}`;
   if (kind) u += `&kind=${kind}`;
+  if (market) u += `&market=${market}`;
   if (order) u += `&order=${order}`;
   if (side) u += `&side=${side}`;
   if (!refresh) u += "&refresh=false";

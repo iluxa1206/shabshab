@@ -149,3 +149,36 @@ def test_isin_tape_still_works_with_threshold(ta):
     _add(ta, "RU000A0000A1", 602, 2, 5e5)
     rows = tape_svc.read_isin_trades("RU000A0000A1", frm=_iso(10), min_value=1e6)
     assert [r["trade_id"] for r in rows] == [601]
+
+
+def _add_block(ta, isin, tid, days_ago, value, market="ndm", board="PSOB",
+               price=100.0, side=None):
+    """Строка ISS-ленты: адресные (РПС) живут только в ней — у брокера подписки
+    на них нет в принципе."""
+    with ta._lock, ta._connect() as c:
+        c.execute("INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,"
+                  "qty,value,side,cur) VALUES(?,?,?,?,?,?,?,?,?,?,'SUR')",
+                  (tid, isin, isin, f"{_iso(days_ago)} 12:00:00", market, board,
+                   price, 1.0, value, side))
+
+
+def test_isin_tape_hides_negotiated_by_default(ta):
+    """Дефолт — только безадресные: маркерам на графике адресные рисует свой
+    слой, и без фильтра одна сделка получила бы два маркера."""
+    from services import tape as tape_svc
+    _add(ta, "RU000A0000A1", 901, 1, 2e6)
+    _add_block(ta, "RU000A0000A1", 902, 1, 9e6)
+    rows = tape_svc.read_isin_trades("RU000A0000A1", frm=_iso(10))
+    assert [r["trade_id"] for r in rows] == [901]
+
+
+def test_isin_tape_market_none_adds_negotiated(ta):
+    """market=None — лента карточки: РПС видно рядом со стаканом, помечено."""
+    from services import tape as tape_svc
+    _add(ta, "RU000A0000A1", 903, 1, 2e6)
+    _add_block(ta, "RU000A0000A1", 904, 1, 9e6)
+    rows = tape_svc.read_isin_trades("RU000A0000A1", frm=_iso(10), market=None)
+    assert [r["trade_id"] for r in rows] == [903, 904]
+    assert [r["negotiated"] for r in rows] == [False, True]
+    assert tape_svc.count_isin_trades("RU000A0000A1", _iso(10), None, 0, None,
+                                      None) == 2

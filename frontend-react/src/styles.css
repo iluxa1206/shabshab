@@ -582,6 +582,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    оценка уровня. */
 .bt-row.bt-buy .bt-side { color: var(--up); }
 .bt-row.bt-sell .bt-side { color: var(--down); }
+/* Адресная сделка: агрессора нет, цветом «покупка/продажа» её красить нечем.
+   Метка режима — акцентом, вся строка чуть приглушена: по бумаге РПС часто
+   и есть весь дневной объём, но цена там договорная и рынку не равна. */
+.bt-row.bt-ndm { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.bt-row.bt-ndm .bt-side { color: var(--accent); font-weight: 700; }
 .bt-side { font-size: 10px; letter-spacing: 0.04em; }
 /* колонки не жмутся: дата/время узкие, цена и объём — по содержимому */
 .bt-table thead th, .bt-table td { padding-left: 6px; padding-right: 6px; white-space: nowrap; }

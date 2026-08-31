@@ -7,6 +7,11 @@ import { fetchTrades } from "../api.js";
 // Смысл: стакан показывает, по чему ГОТОВЫ торговать, лента — по чему УЖЕ
 // сторговали. Колонки урезаны до пяти (дата, время, цена, объём, спред): полный
 // набор фильтров и метрик живёт на вкладке СДЕЛКИ, сюда он не влезает и не нужен.
+// АДРЕСНЫЕ СДЕЛКИ (РПС, размещения, выкупы) здесь тоже есть — market=all. В
+// стакане их не видно в принципе, а по бумаге это часто и есть весь объём дня;
+// в ленте они помечены значком РПС и не участвуют в средневзвесе (цена
+// договорная). Слою маркеров на графике market=all не нужен — там адресные
+// рисует отдельный слой, иначе одна сделка получила бы два маркера.
 // Спред строки — тот же, что рисует общая лента: R-spread у флоатера, G-спред у
 // фикса, посчитанный по цене самой сделки (as-of для прошлых сессий).
 
@@ -44,7 +49,8 @@ export default function BondTrades({ isin, kind, onClose }) {
     // слоям карточки. Порог объёма фильтрует НА БЭКЕ (min_value в ₽): под
     // лимитом строк тогда остаются крупные принты, а не последние по времени.
     queryFn: () => fetchTrades(isin, { days, minValue: Math.round(volMln * 1e6),
-                                       limit: LIMIT, kind: isFixed ? "fixed" : "floater" }),
+                                       limit: LIMIT, kind: isFixed ? "fixed" : "floater",
+                                       market: "all" }),
     enabled: !!isin,
     // сделки не тикают так же часто, как стакан: 30с хватает, а дрейн дорогой
     refetchInterval: 30_000,
@@ -92,6 +98,7 @@ export default function BondTrades({ isin, kind, onClose }) {
           : rows.length === 0
             ? (volMln > 0 ? "нет сделок крупнее порога" : "сделок за окно нет")
           : `${d.n} сд · оборот ${fmt.mln(d.value) ?? "—"} млн ₽`
+            + (d.ndm_n ? ` · РПС ${d.ndm_n} на ${fmt.mln(d.ndm_value) ?? "—"}` : "")
             + (d.truncated ? ` · последние ${LIMIT} из ${d.total}` : "")}
       </div>
 
@@ -114,14 +121,19 @@ export default function BondTrades({ isin, kind, onClose }) {
                 const sp = spreadOf(r);
                 return (
                   <tr key={r.trade_id}
-                    className={"bt-row" + (r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
+                    className={"bt-row" + (r.negotiated ? " bt-ndm"
+                      : r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
                     title={`${r.ts} · ${fmt.num(r.qty, 0)} шт`
-                      + (r.side ? ` · агрессор ${r.side}` : "")}>
+                      + (r.side ? ` · агрессор ${r.side}` : "")
+                      + (r.negotiated ? ` · адресная сделка${r.board ? ` (${r.board})` : ""}` : "")}>
                     <td className={"left bt-d" + (String(r.ts || "").slice(0, 10) === today ? " bt-today" : "")}>
                       {dpart(r.ts)}</td>
                     <td className="left bt-d">{tpart(r.ts)}</td>
                     <td>{fmt.pct(r.price) ?? "—"}</td>
-                    <td className="bt-side">{r.side === "buy" ? "buy"
+                    {/* у адресной сделки агрессора нет по определению — она
+                        договорная; вместо стороны показываем сам режим */}
+                    <td className="bt-side">{r.negotiated ? "РПС"
+                      : r.side === "buy" ? "buy"
                       : r.side === "sell" ? "sell" : "—"}</td>
                     <td>{fmt.mln(r.value) ?? "—"}</td>
                     <td style={sp == null ? undefined : dmColor(sp)}>{fmt.bps(sp) ?? "—"}</td>
@@ -134,8 +146,9 @@ export default function BondTrades({ isin, kind, onClose }) {
       </div>
 
       <div className="ob-note">
-        Объём — млн ₽. Цвет строки — агрессор (покупка/продажа). Спред считается
-        по цене сделки; прошлые сессии — моделью того дня.
+        Объём — млн ₽. Цвет строки — агрессор (покупка/продажа). «РПС» — адресная
+        сделка: агрессора у неё нет, цена договорная, в средневзвес она не идёт.
+        Спред считается по цене сделки; прошлые сессии — моделью того дня.
       </div>
     </div>
   );

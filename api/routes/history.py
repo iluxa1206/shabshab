@@ -288,9 +288,16 @@ async def trades(
     refresh: bool = Query(True),
     board: str = Query(None),
     kind: str = Query("floater", pattern="^(floater|fixed)$"),
+    market: str = Query("bonds", pattern="^(bonds|ndm|all)$",
+                        description="bonds — безадресные, ndm — РПС/адресные, all — вместе"),
 ):
     """Сделки из тикового архива: цена, объём, рублёвый оборот, агрессор, спред.
-    min_value отсекает мелочь — остаются крупные принты."""
+    min_value отсекает мелочь — остаются крупные принты.
+
+    market=all добавляет адресные сделки (РПС, размещения, выкупы) — их видит
+    только ISS-лента, в обезличенном стакане их нет вовсе. Для слоя маркеров на
+    графике остаётся дефолт bonds: адресные там рисует отдельный слой РПС, и
+    одна сделка получила бы два маркера."""
     isin = (isin or "").strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
@@ -310,12 +317,15 @@ async def trades(
     # видел крупных сделок за дни до старта дрейна (ОФЗ 29010: принты на 37 и
     # 49 млн ₽ 11.08). Адресные исключены: их рисует отдельный слой РПС.
     from services import tape as tape_svc
+    mkt = None if market == "all" else market
     rows, total = await asyncio.gather(
         asyncio.to_thread(tape_svc.read_isin_trades, isin, frm=frm,
-                          min_value=min_value, side=side, limit=limit, order=order),
+                          min_value=min_value, side=side, limit=limit, order=order,
+                          market=mkt),
         # сколько сделок под фильтр вообще подходит: без этого клиент не отличает
         # «столько и было» от «лимит срезал остальное»
-        asyncio.to_thread(tape_svc.count_isin_trades, isin, frm, None, min_value, side))
+        asyncio.to_thread(tape_svc.count_isin_trades, isin, frm, None, min_value, side,
+                          mkt))
     # Спред КАЖДОЙ сделки — тем же reprice, что уровни стакана и бары: маркер
     # крупного принта без спреда заставлял считать в уме «дорого или дёшево он
     # взял». Модель выпуска строится один раз, дальше reprice по цене без I/O,
@@ -330,9 +340,17 @@ async def trades(
     buys = [r for r in rows if r.get("side") == "buy"]
     sells = [r for r in rows if r.get("side") == "sell"]
     vb, vs = _vwap(buys), _vwap(sells)
+    # СРЕДНЕВЗВЕС — только по безадресным: цена РПС договорная и к рынку
+    # отношения не имеет (бывает 100,00 в день размещения при рыночных 92),
+    # одна такая сделка сдвигала бы vwap панели на пункты. В обороте она при
+    # этом остаётся — деньги по бумаге прошли настоящие.
+    onex = [r for r in rows if not r.get("negotiated")]
+    ndm = [r for r in rows if r.get("negotiated")]
     return {"isin": isin, "from": frm, "min_value": min_value, "n": len(rows),
             "total": total, "truncated": total > len(rows), "order": order,
-            "vwap_pct": _vwap(rows), "buy_vwap": vb, "sell_vwap": vs,
+            "market": market,
+            "ndm_n": len(ndm), "ndm_value": sum(r.get("value") or 0 for r in ndm),
+            "vwap_pct": _vwap(onex), "buy_vwap": vb, "sell_vwap": vs,
             # эффективный спред по агрессору, б.п. цены (100 б.п. = 1 п.п. цены)
             "eff_spread_bps": round((vb - vs) * 100, 1) if vb is not None and vs is not None else None,
             "volume": sum(r.get("qty") or 0 for r in rows),
