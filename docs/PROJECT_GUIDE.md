@@ -225,7 +225,11 @@ npm --prefix frontend-react test
 * `bars.py` — часовые бары VWAP+спред: `build_bars`, `ensure_bars`, `read_bars`,
   `refresh_universe(days, full, concurrency)`, `resample(bars, hours)`, `adv_map`, `spread_avg_map`.
 * `trades_archive.py` — тиковый архив: `drain(isin)`, `read_trades`, `read_tape`, `tape_stats`,
-  `enrich_bars_with_ticks`, `prune`, `vacuum`, `db_stats`. Alor отдаёт только 30 дней — копим сами.
+  `enrich_bars_with_ticks`, `prune`, `vacuum`, `db_stats`, `repair_values`. Alor отдаёт только 30 дней — копим сами.
+  Объём тика — В РУБЛЯХ: цена идёт в % от номинала, поэтому у замещаек номинал домножается на курс
+  валюты номинала (`face_fx`), иначе объём занижался в 11–86 раз. Промахи по номиналу (амортизация в
+  день события, курс не того дня) сверяются с биржевым VALUE по TRADENO — `repair_values`, ночным
+  тактом `block_trades_worker` и разово `scripts/fix_tick_values.py --all`.
 * `block_trades.py` — крупные сделки всего рынка (безадресные + РПС из ISS `market=ndm`):
   `sweep()`, `backfill(days)`, `price_new_trades()`, `read_blocks`, `read_days`, `notify_blocks`, `prune`.
 * `tape.py` — единая лента: тики Alor + блоки ISS (`read_tape`, `tape_stats`).
@@ -343,7 +347,7 @@ npm --prefix frontend-react test
 | `universe_price_poller` | 600с | синк реестра, бэкфилл эмитентов, дискавери флоатеров, метрики юниверса, прогрев фиксов, драйн рейтингов (24/7) |
 | `ws_market_data_broadcaster` | 5с | пуш изменившихся цен подписчикам WS (heartbeat 60с) |
 | `universe_stream_pool` + `metrics_worker` | push / 5с | живой стрим котировок и стаканов по всему рынку + событийный пересчёт |
-| `trades_stream_pool` | push | безадресные сделки Alor → `trade_tick` |
+| `trades_stream_pool` | push | безадресные сделки Alor → `trade_tick` (объём в рублях: номинал × курс FACEUNIT) |
 | `alor_orderbook_ws` | push | стаканы избранного |
 | `depth_poller` | 120с | HTTP-фолбэк батч-снимка стаканов, если стрим не покрывает юниверс |
 | `alerts_monitor` | 12с | активные алерты против стакана → fired + Telegram |

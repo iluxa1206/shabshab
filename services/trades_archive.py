@@ -194,9 +194,18 @@ async def fetch_today(client: httpx.AsyncClient, isin: str, headers: dict) -> li
 # ─────────────────────────── запись ───────────────────────────
 
 def _tick_rows(isin: str, raw: list[dict], faces: dict[str, float],
-               fallback_face: float = _DEFAULT_FACE) -> list[tuple]:
+               fallback_face: float = _DEFAULT_FACE,
+               fx_rate: float = 1.0) -> list[tuple]:
     """Сырые пуши/ответы alltrades → строки trade_tick. faces — номиналы ПО ДНЯМ
-    (у амортизируемых он меняется), fallback_face — когда дня в карте нет."""
+    (у амортизируемых он меняется), fallback_face — когда дня в карте нет.
+
+    fx_rate — курс ВАЛЮТЫ НОМИНАЛА к рублю (1.0 у рублёвых). Alor отдаёт цену в
+    процентах от номинала, а номинал замещающих и юаневых бумаг выражен в валюте
+    (FACEUNIT), хотя расчёты рублёвые: без курса объём занижался в 11–86 раз
+    (замер 2026-08-31: BYM000001941 116 бумаг по 102% лежали как 118 320 ₽ при
+    реальных ~10,1 млн ₽), и такая сделка не проходила ни фильтр ленты «от 1
+    млн», ни порог записи потока.
+    """
     rows = []
     for t in raw:
         tid, price, qty = t.get("id"), t.get("price"), t.get("qty")
@@ -209,7 +218,7 @@ def _tick_rows(isin: str, raw: list[dict], faces: dict[str, float],
         if day not in faces and prev:
             face = faces[max(prev)]
         rows.append((isin, int(tid), ts, float(price), float(qty),
-                     round(float(qty) * face * float(price) / 100, 2),
+                     round(float(qty) * face * float(price) / 100 * (fx_rate or 1.0), 2),
                      t.get("side"), t.get("board")))
     return rows
 
@@ -225,23 +234,29 @@ def _insert_ticks(rows: list[tuple]) -> int:
 
 
 def upsert_ticks(isin: str, raw: list[dict], faces: dict[str, float],
-                 fallback_face: float = _DEFAULT_FACE) -> int:
+                 fallback_face: float = _DEFAULT_FACE,
+                 fx_rate: float = 1.0) -> int:
     """INSERT OR IGNORE по (isin, trade_id): перехлёст окон не плодит дублей."""
-    return _insert_ticks(_tick_rows(isin, raw, faces, fallback_face))
+    return _insert_ticks(_tick_rows(isin, raw, faces, fallback_face, fx_rate))
 
 
 def upsert_ticks_bulk(chunks: list[tuple[str, list[dict]]],
-                      faces: dict[str, float]) -> int:
+                      faces: dict[str, float],
+                      fx: Optional[dict[str, float]] = None) -> int:
     """Пачка «бумага → её сырые тики» ОДНОЙ транзакцией. faces — номинал на
-    бумагу (не по дням: у живого стрима день один — сегодня).
+    бумагу (не по дням: у живого стрима день один — сегодня), fx — курс валюты
+    номинала на бумагу (рублёвых в нём нет, для них множитель 1.0).
 
     Зачем отдельный путь: стрим слушает весь рынок (~3100 бумаг), и запись
     поштучно на бумагу давала на каждом такте flush сотни коротких транзакций —
     ядро просыпалось с лагом до 1.5с. Строк столько же, транзакция одна."""
     rows: list[tuple] = []
+    fx = fx or {}
     for isin, raw in chunks:
         face = faces.get(isin)
-        rows.extend(_tick_rows(isin, raw, {}, face) if face else _tick_rows(isin, raw, {}))
+        rate = fx.get(isin) or 1.0
+        rows.extend(_tick_rows(isin, raw, {}, face, rate) if face
+                    else _tick_rows(isin, raw, {}, _DEFAULT_FACE, rate))
     return _insert_ticks(rows)
 
 
@@ -277,6 +292,57 @@ def seed_watermarks() -> int:
             "INSERT OR IGNORE INTO tick_drain(isin,last_ts,updated_at) "
             "SELECT isin, MAX(ts), ? FROM trade_tick GROUP BY isin", (now,))
         return cur.rowcount or 0
+
+
+# ── курс валюты номинала ─────────────────────────────────────────────────────
+# Цена у Alor — процент от НОМИНАЛА, а у замещающих и юаневых выпусков номинал
+# выражен в валюте (FACEUNIT), хотя расчёты рублёвые. Рублёвый объём тика без
+# курса занижался в 11–86 раз, и такая сделка выпадала из ленты, фильтров и
+# порога записи потока.
+_RUB_UNITS = ("", "SUR", "RUB", "RUR")
+_FX_ALIAS = {"CNH": "CNY"}
+_UNITS_TTL = 6 * 3600         # валюта номинала меняться не может
+_FX_TTL_ARCH = 600            # курс — как у стрима
+_units: dict = {"at": 0.0, "map": {}}
+_fx: dict = {"at": 0.0, "rates": {}}
+
+
+async def face_units() -> dict:
+    """{isin: валюта номинала} по всему рынку — одним запросом к ISS."""
+    import time as _time
+    now = _time.monotonic()
+    if _units["map"] and now - _units["at"] < _UNITS_TTL:
+        return _units["map"]
+    from services.market_data import MarketDataService
+    listing = await MarketDataService.fetch_bond_listing()
+    m = {i: (v.get("face_unit") or "").upper() for i, v in (listing or {}).items()}
+    if m:                     # пустой ответ ISS не должен обнулять карту
+        _units["map"], _units["at"] = m, now
+    return _units["map"]
+
+
+async def face_fx(isin: str) -> float:
+    """Множитель номинала к рублю. 1.0 — рублёвая бумага или неизвестный курс:
+    промах даёт ЗАНИЖЕННЫЙ объём, а не потерянную сделку (в архив тик попадает
+    в любом случае, порогом режет только поток по бумагам вне юниверса)."""
+    import time as _time
+    unit = (await face_units()).get(isin) or ""
+    if unit in _RUB_UNITS:
+        return 1.0
+    now = _time.monotonic()
+    if not _fx["rates"] or now - _fx["at"] >= _FX_TTL_ARCH:
+        try:
+            from services import fx as fx_svc
+            rates = await fx_svc.get_fx_rates()
+            if rates:
+                _fx["rates"], _fx["at"] = rates, now
+        except Exception as e:
+            logger.warning("tick fx: %s", e)
+    rate = _fx["rates"].get(_FX_ALIAS.get(unit, unit))
+    if not rate:
+        logger.warning("tick %s: нет курса %s — объём в валюте номинала", isin, unit)
+        return 1.0
+    return float(rate)
 
 
 async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] = None,
@@ -334,14 +400,74 @@ async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] =
         if include_today:
             raw += await fetch_today(client, isin, headers)
     fallback = max(faces.values()) if faces else _DEFAULT_FACE
+    # курс валюты номинала: у рублёвых 1.0, у замещаек — курс СЕГОДНЯШНИЙ.
+    # Для исторического окна это приближение (курс дня сделки был другим), но
+    # порядок величины восстанавливается; точное значение приходит из ISS —
+    # при склейке лент побеждает block_trade с его VALUE (services/tape).
+    rate = await face_fx(isin)
     # вставка тысяч тиков — синхронный SQLite: на ликвидной бумаге executemany
     # держал event loop десятки мс, а демон зовёт drain по всему юниверсу
-    n = await asyncio.to_thread(upsert_ticks, isin, raw, faces, fallback)
+    n = await asyncio.to_thread(upsert_ticks, isin, raw, faces, fallback, rate)
     # знак двигаем ТОЛЬКО на полностью вычитанном окне — и даже если сделок в нём
     # не было: «тишина» тоже вычитана, иначе неликвид качал бы месяц вечно
     if complete:
         set_watermark(isin, to.strftime("%Y-%m-%d %H:%M:%S"))
     return n
+
+
+# ─────────────────────────── починка объёма ───────────────────────────
+
+# Расхождение тика с биржей: тик считается по номиналу (qty*face*price/100), и
+# два источника ошибки остаются даже после fx-множителя —
+#   • у амортизируемых живой поток берёт ТЕКУЩИЙ FACEVALUE из листинга ISS, а в
+#     день амортизации он ещё старый (замер 2026-08-31: 1094 сделки, до 2×);
+#   • у валютных номиналов курс берётся сегодняшний, а не курс дня сделки.
+# Первый писатель побеждает (INSERT OR IGNORE), поэтому дрейн уже записанное не
+# правит. Правда — VALUE самой биржи по тому же TRADENO из block_trade; берём
+# только безадресные и только рублёвые расчёты (у валютных расчётов VALUE
+# приходит в валюте и рублёвым объёмом не является).
+_SQL_REPAIR = """
+SELECT t.isin, t.trade_id, t.value AS tick_value, b.value AS iss_value
+FROM trade_tick t
+JOIN block_trade b ON b.trade_id = t.trade_id AND b.isin = t.isin
+WHERE t.ts >= ? AND t.ts < ?
+  AND b.market = 'bonds' AND (b.cur IS NULL OR b.cur = 'SUR')
+  AND b.value IS NOT NULL AND t.value IS NOT NULL AND t.value > 0
+  AND abs(b.value - t.value) / t.value > ?
+"""
+
+
+def repair_values(days: int = 3, tol: float = 0.01, dry_run: bool = False,
+                  since: Optional[str] = None) -> dict:
+    """Сверяет объём тиков с биржевым и чинит расхождения. По ДНЯМ: архив —
+    миллионы строк, а один UPDATE по всей таблице держит writer-лок минутами,
+    пока в неё пишет живой поток.
+
+    days — окно назад (since перекрывает его и берёт весь архив от даты).
+    Возвращает {rows, delta, days}: delta — на сколько рублей вырос учтённый
+    оборот, по нему видно масштаб проблемы в логе демона."""
+    frm = since or (date.today() - timedelta(days=max(days, 1))).isoformat()
+    with _connect() as c:
+        day_list = [r["d"] for r in c.execute(
+            "SELECT DISTINCT substr(ts,1,10) d FROM trade_tick WHERE ts >= ? "
+            "ORDER BY d", (frm,))]
+    rows = 0
+    delta = 0.0
+    for d in day_list:
+        nxt = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
+        with _connect() as c:
+            bad = c.execute(_SQL_REPAIR, (d, nxt, tol)).fetchall()
+        if not bad:
+            continue
+        rows += len(bad)
+        delta += sum((r["iss_value"] or 0) - (r["tick_value"] or 0) for r in bad)
+        if not dry_run:
+            with _lock, _connect() as c:
+                c.executemany(
+                    "UPDATE trade_tick SET value=? WHERE isin=? AND trade_id=?",
+                    [(r["iss_value"], r["isin"], r["trade_id"]) for r in bad])
+    return {"rows": rows, "delta": round(delta, 2), "days": len(day_list),
+            "dry_run": dry_run}
 
 
 # ─────────────────────────── чтение / агрегация ───────────────────────────

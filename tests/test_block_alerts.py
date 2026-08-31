@@ -250,16 +250,16 @@ def test_currency_face_tick_is_not_dropped_as_small():
     ts._faces["map"]["RU000USD001"] = 100.0        # $100 номинал
     ts._faces["unit"]["RU000USD001"] = "USD"
     ts._fx["rates"] = {"USD": 80.0, "RUB": 1.0}
-    val, fx_ok = ts._tick_value("RU000USD001", 100.0, 1000)
-    assert fx_ok and val == 8_000_000              # 1000 × $100 × 100% × 80
+    val, val_ok = ts._tick_value("RU000USD001", 100.0, 1000)
+    assert val_ok and val == 8_000_000              # 1000 × $100 × 100% × 80
 
     # курса нет — объём недостоверен: тик не режем порогом, но и не звоним
     ts._fx["rates"] = {"RUB": 1.0}
-    val, fx_ok = ts._tick_value("RU000USD001", 100.0, 1000)
-    assert not fx_ok and val == 100_000
+    val, val_ok = ts._tick_value("RU000USD001", 100.0, 1000)
+    assert not val_ok and val == 100_000
     chunks = [("RU000USD001", [{"id": 1, "price": 100.0, "qty": 1000,
                                 "time": _utc(1), "side": "buy", "board": "TQCB",
-                                "val": val, "fx_ok": fx_ok}])]
+                                "val": val, "val_ok": val_ok}])]
     assert ts._alert_rows(chunks, 50_000) == []
 
 

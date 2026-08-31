@@ -67,6 +67,7 @@ def test_small_trade_outside_universe_skipped(ts):
     """Вне юниверса пишем от порога: мелочь по ОФЗ-ПД в ленте не показывается
     (её нижняя планка 1 млн ₽), а архив от неё растёт кратно."""
     _pdb, mod = ts
+    mod._faces["map"] = {"RU000OTHER1": 1000.0}   # номинал известен — судим порогом
     mod._on_trade("RU000OTHER1", {"id": 1, "price": 100.0, "qty": 10,
                                   "time": "2026-08-12T09:15:00Z", "board": "TQOB"})
     assert mod._buf == {} and mod._stats["skipped_small"] == 1
@@ -110,3 +111,43 @@ def test_fixed_tick_goes_to_tape_and_live_count(ts, monkeypatch):
     assert seen == ["RU000FIXED1"], "живой счёт дня получил тик"
     assert len(mod._buf.get("RU000FIXED1") or []) == 1, "тик уехал в ленту/архив"
     assert mod._stats["skipped_small"] == 0
+
+
+def test_currency_face_value_in_rubles(ts):
+    """Замещайка: номинал в долларах, объём в архиве — рублёвый.
+
+    До фикса 2026-08-31 в trade_tick ложилось qty*face*price/100 БЕЗ курса, и
+    сделка на ~10 млн ₽ лежала как 118 тыс. — мимо фильтра ленты «от 1 млн» и
+    мимо порога записи потока."""
+    pdb, mod = ts
+    mod._faces["unit"] = {"RU000TEST01": "USD"}
+    mod._fx["rates"] = {"USD": 80.0}
+    _push(mod, 11, price=100.0, qty=2)
+    fx = mod._fx_for(["RU000TEST01"])
+    assert mod._flush_sync(list(mod._buf.items()), {"RU000TEST01": 1000.0}, fx) == 1
+    with pdb._connect() as c:
+        val = c.execute("SELECT value FROM trade_tick").fetchone()[0]
+    assert val == pytest.approx(2 * 1000.0 * 80.0)      # 2 бумаги по 1000 USD
+
+
+def test_no_face_in_map_is_not_cut_by_threshold(ts):
+    """Бумаги нет в карте номиналов — порог по ней не судим.
+
+    Считать по 1000 ₽ для баров можно, а вот резать таким объёмом запись нельзя:
+    выпуск с номиналом 200 000 ₽ терял бы сделки на десятки миллионов."""
+    _pdb, mod = ts
+    mod._faces["map"] = {}
+    mod._on_trade("RU000OTHER2", {"id": 12, "price": 100.0, "qty": 3,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
+    assert len(mod._buf.get("RU000OTHER2") or []) == 1
+    assert mod._stats["skipped_small"] == 0
+
+
+def test_known_small_trade_outside_universe_still_cut(ts):
+    """Номинал известен и объём вправду мелкий — порог работает как раньше."""
+    _pdb, mod = ts
+    mod._faces["map"] = {"RU000OTHER3": 1000.0}
+    mod._on_trade("RU000OTHER3", {"id": 13, "price": 100.0, "qty": 3,
+                                  "time": "2026-08-12T09:15:00Z", "board": "TQCB"})
+    assert not mod._buf.get("RU000OTHER3")
+    assert mod._stats["skipped_small"] == 1

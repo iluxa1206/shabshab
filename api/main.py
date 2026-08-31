@@ -877,6 +877,14 @@ async def block_trades_worker():
                     # полный поток рынка нужен только внутри дня
                     logger.info("block trades prune: %s",
                                 await run_bg(bt.prune))
+                    # и сверяем объём тиков с биржевым: тик считается по
+                    # номиналу, и в день амортизации живой поток берёт ещё
+                    # старый FACEVALUE (расхождение до 2×). Правда — VALUE
+                    # биржи по тому же TRADENO (services/trades_archive).
+                    from services import trades_archive as tarch
+                    fixed = await run_bg(tarch.repair_values, 3)
+                    if fixed["rows"]:
+                        logger.info("tick values repair: %s", fixed)
         except asyncio.CancelledError:
             raise
         except Exception as e:

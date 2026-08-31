@@ -105,6 +105,11 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp,
     # солвер по миллионам мелких принтов смысла нет, у них колонка пустая.
     # Раньше тут стоял безусловный NULL, и свежая крупная сделка ждала спреда
     # ~15 минут — до приезда той же строки из ISS.
+    # cur='SUR' у тика — не заглушка: объём в trade_tick СЧИТАЕТСЯ В РУБЛЯХ,
+    # включая замещайки (номинал в валюте домножается на курс, см.
+    # trades_archive._tick_rows). У block_trade поле означает другое — валюту
+    # РАСЧЁТОВ, и там VALUE приходит в ней же, поэтому нерублёвые из оборота
+    # исключаются.
     ticks = ("SELECT t.trade_id, t.isin, t.ts, t.price, t.qty, t.value, t.side, "
              "t.board, 'bonds' AS market, NULL AS yld, 'SUR' AS cur, NULL AS secid, "
              "t.y_idx_bps, t.dm_bps "

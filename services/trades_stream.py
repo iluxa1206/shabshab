@@ -170,12 +170,29 @@ async def _fx_map() -> dict:
     return _fx["rates"]
 
 
-def _flush_sync(chunks: list[tuple[str, list]], faces: dict) -> int:
+def _fx_for(isins) -> dict:
+    """{isin: курс валюты номинала} для бумаг такта. Рублёвых в карте нет —
+    множитель по умолчанию 1.0. Тот же расчёт, что у порога (_tick_value):
+    объём в АРХИВЕ обязан совпадать с тем, по которому режет порог, иначе
+    сделка по замещайке ложится заниженной в 11–86 раз (см. trades_archive)."""
+    out = {}
+    for isin in isins:
+        unit = (_faces["unit"].get(isin) or "").upper()
+        if unit in _RUB_UNITS:
+            continue
+        rate = _fx["rates"].get(_FX_ALIAS.get(unit, unit))
+        if rate:
+            out[isin] = float(rate)
+    return out
+
+
+def _flush_sync(chunks: list[tuple[str, list]], faces: dict,
+                fx: Optional[dict] = None) -> int:
     """Синхронная запись пачки (в to_thread) — одной транзакцией на весь такт:
     при рыночном охвате поштучная запись по бумаге держала ядро сотнями коротких
     транзакций (см. upsert_ticks_bulk)."""
     from services.trades_archive import upsert_ticks_bulk
-    return upsert_ticks_bulk(chunks, faces)
+    return upsert_ticks_bulk(chunks, faces, fx)
 
 
 # Колокольчик по безадресным сделкам живёт на ЭТОМ потоке, а не на ISS-ленте
@@ -202,7 +219,7 @@ def _alert_rows(chunks: list[tuple[str, list]], floor: float) -> list[dict]:
             val = t.get("val") or 0.0
             if val < floor or t.get("id") is None:
                 continue
-            if not t.get("fx_ok", True):
+            if not t.get("val_ok", True):
                 continue        # рублёвый объём недостоверен — звонить нечем
             ts = _msk_ts(str(t.get("time") or ""))
             if ts < old:
@@ -274,7 +291,8 @@ async def _flush_once() -> int:
         faces = await _faces_map()
         await _fx_map()     # курс валюты номинала — тем же тактом: без него
                             # порог режет замещайки как «мелочь» (_tick_value)
-        saved = await run_bg(_flush_sync, chunks, faces)
+        fx = _fx_for(isin for isin, _ in chunks)
+        saved = await run_bg(_flush_sync, chunks, faces, fx)
     except asyncio.CancelledError:
         # Отмена могла прийти УЖЕ ПОСЛЕ записи в потоке — тогда возврат в буфер
         # даст повтор, а не дубль: вставка идёт INSERT OR IGNORE по TRADENO.
@@ -409,7 +427,7 @@ _FX_ALIAS = {"CNH": "CNY"}
 
 
 def _tick_value(isin: str, price, qty) -> tuple[float, bool]:
-    """(рублёвый объём тика, курс известен) — цена идёт в % от номинала.
+    """(рублёвый объём тика, достоверен ли он) — цена идёт в % от номинала.
 
     Кэш номиналов пустой на старте (первый flush его и наливает) — тогда считаем
     по 1000 ₽: для порога этого достаточно, а промах в номинале даёт лишнюю
@@ -420,7 +438,13 @@ def _tick_value(isin: str, price, qty) -> tuple[float, bool]:
     выбрасывал такую сделку как мелочь — в ленту она попадала только ISS-дрейном
     с его 15 минутами. Курса нет — объём отдаём как есть со ФЛАГОМ False: тик
     важен для архива и баров, а вот звонить по недостоверному рублёвому объёму
-    нельзя (см. _alert_rows)."""
+    нельзя (см. _alert_rows).
+
+    Тот же флаг False идёт, когда номинала бумаги в карте НЕТ ВОВСЕ: считать её
+    по 1000 ₽ можно (порядок величины для баров), но резать таким объёмом порог
+    записи нельзя — выпуск с номиналом 200 000 ₽ терял бы так сделки на десятки
+    миллионов (см. вызов в _on_trade)."""
+    known = isin in _faces["map"]
     face = _faces["map"].get(isin) or 1000.0
     try:
         base = float(qty) * face * float(price) / 100.0
@@ -428,7 +452,7 @@ def _tick_value(isin: str, price, qty) -> tuple[float, bool]:
         return 0.0, True
     unit = (_faces["unit"].get(isin) or "").upper()
     if unit in _RUB_UNITS:
-        return base, True
+        return base, known
     rate = _fx["rates"].get(_FX_ALIAS.get(unit, unit))
     if not rate:
         _stats["no_fx"] += 1
@@ -441,7 +465,7 @@ def _on_trade(isin: str, data: dict) -> None:
     (тот же, что у REST alltrades: id/price/qty/time/side/board)."""
     if data.get("id") is None or data.get("price") is None or not data.get("qty"):
         return
-    val, fx_ok = _tick_value(isin, data.get("price"), data.get("qty"))
+    val, val_ok = _tick_value(isin, data.get("price"), data.get("qty"))
     # ЖИВОЙ СЧЁТ ДНЯ — до порога и по всем «своим» бумагам: средневзвес и оборот
     # витрины должны считать каждую сделку, иначе VWAP смещён, а оборот занижен.
     # Вне своих наборов — только то, за чем уже следит alor_ws (там поток обрезан
@@ -460,7 +484,7 @@ def _on_trade(isin: str, data: dict) -> None:
     # (bars.refresh_universe → trades_archive.drain по kinds=floater,fixed,
     # ~350 тыс. строк в день на проде), а вставка идёт INSERT OR IGNORE по
     # (isin, trade_id) — перехлёст потока и добора дублей не плодит.
-    if (isin not in _core and isin not in _fixed and _OTHER_MIN_RUB > 0 and fx_ok
+    if (isin not in _core and isin not in _fixed and _OTHER_MIN_RUB > 0 and val_ok
             and val < _OTHER_MIN_RUB):
         _stats["skipped_small"] += 1
         return
@@ -473,7 +497,7 @@ def _on_trade(isin: str, data: dict) -> None:
         # рублёвый объём уже посчитан — кладём рядом, чтобы очередь алертов
         # (см. _alert_rows) не считала его второй раз; trade_tick лишний ключ
         # игнорирует, у него объём пересчитывается по номиналу дня
-        "val": val, "fx_ok": fx_ok,
+        "val": val, "val_ok": val_ok,
     })
     _stats["ticks"] += 1
     _stats["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
