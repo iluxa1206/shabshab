@@ -370,7 +370,7 @@ export function DayRatesModal({ isin, onClose }) {
                 <thead>
                   <tr>
                     <th title="номер дня внутри купонного периода">#</th>
-                    <th className="left">День</th>
+                    <th className="left" title="день начисления дохода внутри купонного периода">Поставка</th>
                     <th className="left" title={`день начисления минус лаг (${lagLbl})`}>Наблюдение</th>
                     <th title="значение базы бумаги на дату наблюдения (с лагом фиксинга)">Ставка {baseLabel(d.base)} %</th>
                     <th title="дневная ставка RUONIA этого дня: факт ЦБ (на нерабочих — перенос последнего фиксинга), дальше ступень RUONIA-кривой">Ставка RUONIA %</th>
