@@ -531,7 +531,7 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
     frm = (date.today() - timedelta(days=max(days, 1))).isoformat()
     till = date.today().isoformat()
     out = {"isins": 0, "rows": 0, "delta": 0.0, "skipped_no_rate": 0,
-           "dry_run": dry_run}
+           "skipped_no_face": 0, "dry_run": dry_run}
 
     def _rows(isin):
         with _connect() as c:
@@ -553,13 +553,19 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
                 continue
             secid, brd = await resolve_market(isin, None)
             faces = await fetch_daily_face(mc, secid or isin, brd or "TQCB", frm, till)
+            if not faces:
+                # НОМИНАЛ НЕ ГАДАЕМ. Дефолт 1000 ₽ у бумаги с номиналом 100
+                # завысил бы объём в 10 раз — а это пересчёт УЖЕ записанного,
+                # где старое значение как минимум не хуже.
+                out["skipped_no_face"] += len(rows)
+                continue
             fixed = []
             for r in rows:
                 day = r["ts"][:10]
-                face = _on_day(faces, day, _DEFAULT_FACE)
+                face = _on_day(faces, day, 0.0)
                 rate = _on_day(rates, day, 0.0)
-                if not rate:
-                    out["skipped_no_rate"] += 1
+                if not rate or not face:
+                    out["skipped_no_rate" if not rate else "skipped_no_face"] += 1
                     continue
                 val = round(r["qty"] * face * r["price"] / 100 * rate, 2)
                 old = r["value"] or 0
