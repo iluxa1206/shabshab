@@ -9,6 +9,7 @@ import {
 import { fmt, RT_FILTER } from "../format.js";
 import { bookMode, eventTag, maturityShort, maturityTxt, reasonDelta, reasonTitle,
          sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
+import IsinCopy from "./IsinCopy.jsx";
 
 // значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
 const RATINGS = RT_FILTER;
@@ -1016,7 +1017,7 @@ export default function SignalsModule() {
                       (env-порог), а не заведённый пользователем фильтр */}
                   {h.filter_name
                     || (h.reason === "block" ? "крупная сделка по рынку" : "фильтр удалён")}
-                  {" · "}{h.isin}
+                  {" · "}<IsinCopy isin={h.isin} className="isin-copy-inl" />
                 </div>
               </div>
             ))}

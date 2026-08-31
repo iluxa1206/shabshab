@@ -11,6 +11,7 @@ import {
 import { fmt, baseLabel } from "../format.js";
 import { Brush } from "../charts/index.js";
 import { IconCalendar } from "./icons.jsx";
+import IsinCopy from "./IsinCopy.jsx";
 
 // Полноэкранный график выпуска (своя вкладка, /chart/:isin).
 // Сверху — строка параметров бумаги, ниже — график на всю высоту окна:
@@ -1329,7 +1330,7 @@ export default function ChartPage() {
           <button type="button" className="cp-back" onClick={goBack}
             title={canGoBack ? "Назад — туда, откуда пришли" : "К карточке выпуска"}>←</button>
           <span className="cp-name" title={row?.emitter_name || ""}>{name}</span>
-          <span className="cp-isin">{isin}</span>
+          <IsinCopy isin={isin} className="cp-isin" />
           {row?.rating && <span className="cp-rating">{row.rating}</span>}
           {/* карточка выпуска со стаканом — тот же Drawer, что в МОНИТОРЕ:
               он живёт вне Routes и открывается параметром ?isin= на любой

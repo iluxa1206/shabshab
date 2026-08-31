@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { fetchBondAudit, fetchCouponDays } from "../api.js";
 import { fmt, baseLabel } from "../format.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
+import IsinCopy from "./IsinCopy.jsx";
 
 // Паспорт бумаги: страница верификации расчётов. Каждая цифра карточки —
 // откуда взялась (источник + давность), как посчиталась (спека по слоям,
@@ -368,7 +369,7 @@ export default function BondAudit() {
       <div className="audit-head">
         <button className="btn" onClick={() => navigate(-1)}>← НАЗАД</button>
         <h2>ПАСПОРТ · {regName || isin}</h2>
-        <span className="mono muted">{isin}</span>
+        <IsinCopy isin={isin} className="isin-copy-inl mono muted" />
         {d && <span className="muted audit-gen">собрано {ts(d.generated_at)}</span>}
         <button className="btn" onClick={() => q.refetch()} disabled={q.isFetching}>
           {q.isFetching ? "СБОР…" : "ПЕРЕСОБРАТЬ"}

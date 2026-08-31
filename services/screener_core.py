@@ -946,7 +946,14 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         # объём «по нашим условиям» — метрика повторного сигнала, не отбора:
         # на попадание бумаги в набор она не влияет (это делают spread/money выше)
         money_ok = money_in_spread(ladder, row, side, lo, hi, face, accrued, isin)
+        # ЛУЧШАЯ ЛИ ЗАЯВКА: цена сигнала совпала с верхом стакана своей стороны.
+        # Заменяет счёт уровней в уведомлении: «3 ур» описывало механику набора,
+        # а стол спрашивает другое — стоит ли эта заявка первой в очереди.
+        top_px = row.get(side)
+        best_px = (price is not None and top_px is not None
+                   and abs(float(price) - float(top_px)) < 1e-9)
         out.append({"isin": isin, "name": u.get("name") or isin,
+                    "best": best_px,
                     "money_ok_rub": money_ok,
                     # спред может быть неизвестен, если его границы не заданы
                     # (фильтр «крупные заявки») и наклон Y-IDX не посчитался

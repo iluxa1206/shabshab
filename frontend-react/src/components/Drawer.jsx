@@ -9,6 +9,7 @@ import CashflowChart from "./CashflowChart.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
 import BondTrades from "./BondTrades.jsx";
+import IsinCopy from "./IsinCopy.jsx";
 
 function RefCell({ k, children }) {
   return (
@@ -400,7 +401,7 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
       <div className="section-title">Референс</div>
       <div className="ref-grid">
         <RefCell k="Эмитент / имя">{r.short_name}</RefCell>
-        <RefCell k="ISIN">{r.isin}</RefCell>
+        <RefCell k="ISIN"><IsinCopy isin={r.isin} className="isin-copy-inl" /></RefCell>
         <RefCell k="База">{baseLabel(r.base_rate_type) + (r.face_index ? " · индексируемый номинал" : "")}</RefCell>
         <RefCell k="Формула купона">
           <CouponFormula base={r.base_rate_type} spreadBps={r.spread_bps} formula={r.formula}
@@ -582,7 +583,7 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
               <div className="dh-title">
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
                 <span className="mono muted">
-                  {isin}
+                  <IsinCopy isin={isin} className="isin-copy-inl" />
                   {issueUrl(data?.reference?.cbonds_id, data?.reference?.moex_secid) && (
                     <a className="cat-ext"
                       title={data?.reference?.cbonds_id

@@ -362,12 +362,18 @@ td.mut { color: var(--mut); }
    строка рядом с именем — колонка INSTRUMENT и так режется многоточием.
    Паддинги ужаты как у двухэтажных ячеек котировок — высота строки не растёт. */
 .grid tbody td.name-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; }
-.isin-copy { display: block; margin-top: 1px; padding: 0; background: none; border: none;
-  font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0.02em;
-  color: var(--mut-2); cursor: pointer; }
+/* ISIN, копируемый по клику (components/IsinCopy) — база: кнопка, неотличимая
+   от текста, пока на неё не навели. Шрифт и отступы задаёт МЕСТО. */
+.isin-copy { padding: 0; background: none; border: none; cursor: pointer;
+             font: inherit; color: inherit; letter-spacing: inherit; text-align: inherit; }
 .isin-copy:hover { color: var(--fg); text-decoration: underline; }
 .isin-copy.ok { color: var(--up); text-decoration: none; }
 .isin-copy.err { color: var(--neg); text-decoration: none; }
+/* под именем выпуска в таблице — своя строка */
+.isin-copy-blk { display: block; margin-top: 1px; font: 10px var(--mono); color: var(--mut-2);
+                 letter-spacing: 0.04em; }
+/* в строке текста (карточка, график, паспорт, уведомление) */
+.isin-copy-inl { display: inline; }
 /* Колонка MATURITY в два этажа: погашение сверху, оферта под ним мелким серым
    (тот же кегль, что ISIN под именем). Паддинги ужаты — строка не растёт. */
 .grid tbody td.mat-cell,
@@ -1910,6 +1916,28 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
    строки читаются как пара, а не как «число и подпись» */
 .sb-vol { color: var(--mut); font-family: var(--mono); white-space: nowrap; }
 .sb-mode { color: var(--mut-2); }
+/* Червячок «best» у имени уведомления (components/BestWorm): worm on a string.
+   Тело в currentColor — красится темой; глаза и рот свои, иначе на тёмной теме
+   лицо исчезает. Волна бежит по телу от хвоста к голове, тушка покачивается. */
+.best-worm { vertical-align: -2px; margin-right: 4px; color: var(--up); }
+.best-worm .bw-seg, .best-worm .bw-head { fill: currentColor; }
+.best-worm .bw-eyew { fill: #fff; }
+.best-worm .bw-pup { fill: #16181c; }
+.best-worm .bw-mouth { stroke: #16181c; }
+.best-worm .bw-seg { animation: bw-wave 0.75s ease-in-out infinite; }
+.best-worm .bw-wig { animation: bw-waddle 1.4s ease-in-out infinite;
+                     transform-origin: 4px 12px; }
+@keyframes bw-wave { 0%, 100% { transform: translateY(0); }
+                     50% { transform: translateY(-2.4px); } }
+@keyframes bw-waddle { 0%, 100% { transform: rotate(-5deg); }
+                       50% { transform: rotate(5deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .best-worm .bw-seg, .best-worm .bw-wig { animation: none; }
+}
+/* имя уведомления — вправо: событий от разных фильтров в ленте вперемешку */
+.sb-filter { margin-left: auto; display: inline-flex; align-items: center; font-family: var(--mono); font-size: 10px;
+             color: var(--mut-2); letter-spacing: .04em; white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
 .sb-row-3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px;
             font-family: var(--mono); font-size: 9.5px; color: var(--mut-2);
             margin-top: 3px; letter-spacing: .04em; }

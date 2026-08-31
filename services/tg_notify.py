@@ -359,10 +359,13 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
             px.append(html.escape(str(m["rating"])))
         if money:
             px.append(f"<b>{money}</b>")
+        # Раньше здесь стоял счёт уровней набора («3 ур») — механика фильтра,
+        # а не новость. Отвечаем на вопрос, который задаёт стол: стоит ли эта
+        # заявка ПЕРВОЙ в очереди. Не первая — молчим, лишнего слова нет.
         if m.get("single_px") is not None:
             foot.append(f"одна заявка {_num(m['single_px'])}")
-        elif m.get("levels"):
-            foot.append(f"{m['levels']} ур")
+        if m.get("best"):
+            foot.append("best")
         # причина ДЕЛЬТОЙ («объём +6 %»): слово без величины не говорит,
         # стоит ли отрываться от текущего дела
         why = _reason_delta(m) or _REASON.get(m.get("reason") or "", "")

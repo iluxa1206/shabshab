@@ -5,7 +5,7 @@ import { fetchMarketTape, fetchBlockDays, fetchTapeIssuers, fetchTapeRatings,
          fetchTradeFlags, addTradeFlag, removeTradeFlag } from "../api.js";
 import { fmt, baseLabel, ratingColor, dmColor, yearsTo } from "../format.js";
 import RatingMenu from "./RatingMenu.jsx";
-import { copyText } from "../clipboard.js";
+import IsinCopyBase from "./IsinCopy.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
 import { IconCalendar, IconFlag } from "./icons.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
@@ -213,23 +213,10 @@ const BUCKET_KEYS = new Set(["AAA", "AA", "A", "BBB", "BELOW", "NR"]);
 
 const pick = (v, fallback) => (v === undefined || v === null ? fallback : v);
 
-/** ISIN с копированием по клику: в ленте он нужен, чтобы утащить бумагу в
- *  чужую систему, а выделять мышью в плотной таблице неудобно. */
+/** ISIN ленты: общий копирующий компонент, стиль места — моноширинная ячейка. */
 function IsinCell({ isin }) {
-  const [state, setState] = useState("");
   if (!isin) return <span className="dash">—</span>;
-  const onClick = async (e) => {
-    e.stopPropagation();
-    const ok = await copyText(isin);
-    setState(ok ? "ok" : "err");
-    setTimeout(() => setState(""), 1200);
-  };
-  return (
-    <button type="button" className={"tape-isin" + (state ? " " + state : "")}
-      onClick={onClick} title="Клик — скопировать ISIN">
-      {state === "ok" ? "скопирован" : state === "err" ? "не вышло" : isin}
-    </button>
-  );
+  return <IsinCopyBase isin={isin} className="tape-isin" title="Клик — скопировать ISIN" />;
 }
 
 /** Предпросмотр графика по наведению на кнопку «график»: мини-окошко со всеми

@@ -1,4 +1,6 @@
 import { fmt } from "../format.js";
+import IsinCopy from "./IsinCopy.jsx";
+import BestWorm from "./BestWorm.jsx";
 import { bookMode, eventMoney, eventTag, maturityShort, maturityTxt, reasonDelta,
          reasonTitle, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 
@@ -103,6 +105,14 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
             отрываться от дела; 900 млн и 5 млн — разные новости */}
         <Sep />
         <span className="sb-vol num">{money(eventMoney(e))} млн</span>
+        {/* имя уведомления прижато вправо: событий от разных фильтров в ленте
+            вперемешку, и «чьё это» — первый вопрос, а не сноска внизу */}
+        <span className="sb-filter">
+          {/* лучшая заявка — червячок у имени уведомления: метку видно раньше,
+              чем глаз дошёл до слова «best» во второй строке */}
+          {e.best && !isBlock && <BestWorm />}
+          {e.filter_name || filterName || (isBlock ? "крупная сделка" : "фильтр удалён")}
+        </span>
       </span>
 
       <span className="sb-row-2 num">
@@ -116,10 +126,7 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
       </span>
 
       <span className="sb-row-3">
-        {/* у блока filter_name пустой, когда звонило умолчание (env-порог),
-            а не заведённый пользователем фильтр */}
-        {e.filter_name || filterName || (isBlock ? "крупная сделка" : "фильтр удалён")}
-        <Sep />{e.isin}
+        <IsinCopy isin={e.isin} className="isin-copy-inl" />
       </span>
     </button>
   );

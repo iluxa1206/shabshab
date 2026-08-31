@@ -149,8 +149,25 @@ def test_book_line_layout():
     # срабатывания — там же, у имени фильтра.
     last = txt.strip().split("\n")[-1]
     assert last.startswith("<i>Тест 2</i> · оффер")
-    assert "1 ур" in last and "объём +6 %" in last
+    # счёт уровней набора («1 ур») убран: он описывал механику фильтра.
+    # Заявка не лучшая — про очередь молчим вовсе.
+    assert "ур" not in last and "объём +6 %" in last
     assert "📡" not in txt
+
+
+def test_book_best_mark():
+    """Лучшая заявка помечается словом best; не лучшая — ничем."""
+    def last_line(**kw):
+        m = {"isin": "RU000A109B33", "name": "Газпн3P13R", "val_bps": 171.0,
+             "price": 99.9, "money_rub": 1e6, "reason": "new"}
+        m.update(kw)
+        txt = _signal_text({"name": "Тест 3", "side": "ask", "kind": "book",
+                            "matches": [m]})
+        return txt.strip().split("\n")[-1]
+
+    assert "best" in last_line(best=True)
+    assert "best" not in last_line(best=False)
+    assert "best" not in last_line(levels=3)
 
 
 def test_trade_icons_by_side_and_ndm():

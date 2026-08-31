@@ -1,29 +1,16 @@
 import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { baseLabel, fmt, dmColor, ratingColor, yearsTo } from "../format.js";
-import { copyText } from "../clipboard.js";
+import IsinCopyBase from "./IsinCopy.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
 
 export const D = () => <span className="dash">—</span>;
 
-// ISIN под именем выпуска: клик копирует его в буфер. stopPropagation — иначе
-// клик уходит в строку и открывает карточку вместо копирования.
+// ISIN под именем выпуска: общий копирующий компонент (components/IsinCopy),
+// здесь только стиль места — своя строка под именем.
 export function IsinCopy({ isin }) {
-  const [state, setState] = useState(""); // "" | ok | err
-  if (!isin) return null;
-  const onClick = async (e) => {
-    e.stopPropagation();
-    const ok = await copyText(isin);
-    setState(ok ? "ok" : "err");
-    setTimeout(() => setState(""), 1200);
-  };
-  return (
-    <button type="button" className={"isin-copy" + (state ? " " + state : "")} onClick={onClick}
-      title={state === "err" ? "Не удалось скопировать" : `${isin} — скопировать`}>
-      {state === "ok" ? "скопировано" : state === "err" ? "не вышло" : isin}
-    </button>
-  );
+  return <IsinCopyBase isin={isin} className="isin-copy-blk" />;
 }
 
 // WS тикнул цену, но производные метрики (DM/SM/z/dirty/CHG/Y-IDX) ещё
