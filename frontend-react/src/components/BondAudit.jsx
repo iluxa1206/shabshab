@@ -203,6 +203,8 @@ const _idx = (v) => (v == null ? "—" : v.toFixed(8).replace(".", ","));
 // период уезжает в колонки (№ купона, его границы), чтобы файл открывался
 // сводной без чистки. Точка с запятой + запятая в дробях + BOM: Excel в
 // русской локали иначе кладёт всё в одну колонку и ест минусы.
+const _round = (v, d) => (v == null ? null : Number(v.toFixed(d)));
+
 const CSV_COLS = [
   ["isin", (r) => r.isin],
   ["coupon_n", (r) => r.n],
@@ -215,8 +217,8 @@ const CSV_COLS = [
   ["obs_date", (r) => r.obs_date],
   ["rate_pct", (r) => r.rate_pct],
   ["income_rub_per_1000", (r) => r.d_rub],
-  ["index_own", (r) => r.index],
-  ["index_ruonia_cbr", (r) => r.ru_index],
+  ["index_own", (r) => _round(r.index, 10)],
+  ["index_ruonia_cbr", (r) => _round(r.ru_index, 10)],
   ["delta_bps", (r) => r.d_bps],
   ["src", (r) => r.src],
   ["close_pct", (r) => r.close_pct],
@@ -228,8 +230,10 @@ function daysCsv(d, deltaOf) {
   for (const g of d.coupons) {
     g.rows.forEach((r, i) => flat.push({
       ...r, i, isin: d.isin, n: g.n, start: g.start, end: g.end, pay_date: g.pay_date,
-      d_rub: deltaOf(g.n, i),
-      d_bps: r.index != null && r.ru_index ? (r.index / r.ru_index - 1) * 10000 : null,
+      // округляем ЗДЕСЬ, а не в ячейке: сырой double даёт «0,3835616000000819»,
+      // и в Excel такой столбец нечитаем
+      d_rub: _round(deltaOf(g.n, i), 6),
+      d_bps: r.index != null && r.ru_index ? _round((r.index / r.ru_index - 1) * 10000, 3) : null,
     }));
   }
   const cell = (v) => {
