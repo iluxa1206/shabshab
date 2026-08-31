@@ -239,8 +239,14 @@ npm --prefix frontend-react test
   ЦБ), `archive_stats`. День фиксируется автоматически при каждом обновлении курса (дебаунс 10 мин),
   дыры за нерабочие дни сервиса добирает ночной такт.
 * `block_trades.py` — крупные сделки всего рынка (безадресные + РПС из ISS `market=ndm`):
-  `sweep()`, `backfill(days)`, `price_new_trades()`, `read_blocks`, `read_days`, `notify_blocks`, `prune`.
-* `tape.py` — единая лента: тики Alor + блоки ISS (`read_tape`, `tape_stats`).
+  `sweep()`, `backfill(days)`, `price_new_trades()`, `read_blocks`, `read_days`, `notify_blocks`, `prune`,
+  `board_ccy_map` (валюта расчётов по борду), `backfill_bond_days(days)` — дневные итоги безадресных
+  торгов всего рынка в `bond_day`, объём в рублях (валютные борды по курсу дня).
+* `tape.py` — единая лента: тики Alor + блоки ISS (`read_tape`, `tape_stats`, `market_turnover`).
+  `tape_stats` рядом с оборотом показанных сделок отдаёт `market_value` — ПОЛНЫЙ оборот тех же
+  бумаг по дневным итогам биржи (`bond_day`): вне витрин тик пишется от порога потока, и сумма
+  сделок там заведомо неполна. Под фильтрами по сумме/стороне/режиму поле пустое — сравнивать
+  отфильтрованное с полным нельзя.
 * `trade_yidx.py` — Y-IDX сделки: `enrich(rows)`, `for_price(isin, price)`.
 * `spread_history.py` — дневные снапшоты спред-метрик: `write_snapshot()`, `read_history(isin, days)`,
   `upsert_honest(...)`, `drop_stale_honest(...)`.

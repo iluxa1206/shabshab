@@ -249,6 +249,42 @@ def count_isin_trades(isin: str, frm: Optional[str] = None, till: Optional[str] 
         return c.execute(f"SELECT COUNT(*) FROM {sub}", args).fetchone()[0]
 
 
+def market_turnover(frm: Optional[str] = None, till: Optional[str] = None,
+                    isins: Optional[list[str]] = None,
+                    boards: Optional[list[str]] = None) -> dict:
+    """ПОЛНЫЙ биржевой оборот окна по дневным итогам ISS (bond_day).
+
+    Зачем рядом с оборотом ленты: сумма показанных сделок по рынку ВНЕ витрин
+    заведомо неполна — тик там пишется от порога TRADES_STREAM_MIN_RUB (замер
+    2026-08-28: 20,6 против 22,4 млрд ₽ по бумагам вне флоатеров и фиксов).
+    Дневной итог биржи закрывает ровно эту разницу, не раздувая архив сделок.
+
+    Даёт итог ПО БУМАГАМ выборки: фильтры по сумме сделки, стороне и режиму к
+    дневному агрегату неприменимы — в нём одна строка на бумагу, борд и день.
+    """
+    with _connect() as c:
+        tmp = _bind_isins(c, isins)
+        q = ("SELECT SUM(value) v, COUNT(DISTINCT isin) n, COUNT(DISTINCT date) d "
+             "FROM bond_day WHERE 1=1")
+        args: list = []
+        if frm:
+            q += " AND date >= ?"
+            args.append(frm[:10])
+        if till:
+            q += " AND date <= ?"
+            args.append(till[:10])
+        if boards:
+            q += f" AND board IN ({','.join('?' * len(boards))})"
+            args.extend(boards)
+        if tmp:
+            q += f" AND isin IN (SELECT isin FROM {_TMP})"
+        elif isins:
+            q += f" AND isin IN ({','.join('?' * len(isins))})"
+            args.extend(isins)
+        r = c.execute(q, args).fetchone()
+    return {"value": r["v"] or 0.0, "isins": r["n"] or 0, "days": r["d"] or 0}
+
+
 def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                min_value: float = 0, market: Optional[str] = None,
                boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
@@ -282,7 +318,15 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                          "UNION ALL SELECT MAX(ts) FROM trade_tick)").fetchone()
     n = tot["n"] or 0
     ndm_n = tot["nn"] or 0
+    # Полный биржевой оборот тех же бумаг за то же окно — только когда лента
+    # показывает ВСЕ сделки: с порогом суммы, стороной или выбранным режимом
+    # сравнивать «отфильтрованную сумму» с «оборотом биржи» бессмысленно, число
+    # читалось бы как потеря данных.
+    mkt = None
+    if not min_value and not max_value and not side and market != "ndm":
+        mkt = market_turnover(frm, till, isins, boards)
     return {"n": n, "value": tot["v"] or 0,
+            "market_value": (mkt or {}).get("value"),
             "buy_value": tot["bv"] or 0, "sell_value": tot["sv"] or 0,
             "by_market": {"bonds": {"n": n - ndm_n,
                                     "value": (tot["v"] or 0) - (tot["nv"] or 0)},

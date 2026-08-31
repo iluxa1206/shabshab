@@ -659,6 +659,102 @@ async def backfill_day(d: str, client: Optional[httpx.AsyncClient] = None) -> in
     return saved
 
 
+# ────────────────── дневные итоги безадресных торгов (весь рынок) ──────────────────
+
+def upsert_bond_days(rows: list[dict], secmap: dict, bccy: dict,
+                     rates: dict) -> int:
+    """Строки ISS history (market=bonds) → bond_day, объём в РУБЛЯХ.
+
+    rates — {(валюта, дата): курс}, собирается снаружи: у одной даты один курс
+    на все бумаги, а лезть в базу на каждую строку — это тысячи запросов."""
+    out = []
+    for r in rows:
+        sec, d, board = r.get("SECID"), r.get("TRADEDATE"), r.get("BOARDID")
+        val = r.get("VALUE")
+        if not sec or not d or not board or val is None:
+            continue
+        meta = secmap.get(sec)
+        if meta is None:               # не облигация / нет в суточном справочнике
+            continue
+        cur = bccy.get(board) or "SUR"
+        if cur != "SUR":
+            rate = rates.get((cur, d))
+            if not rate:
+                # без курса дня рублёвого объёма нет — строку пропускаем целиком,
+                # иначе юани лягут в рублёвую колонку (см. block_trade.cur)
+                continue
+            val = float(val) * rate
+        out.append((meta.get("isin") or sec, d, board, sec, r.get("NUMTRADES"),
+                    float(val), r.get("WAPRICE"), r.get("CLOSE"), r.get("VOLUME"),
+                    r.get("FACEVALUE") or meta.get("face"), cur))
+    if not out:
+        return 0
+    with _lock, _connect() as c:
+        cur_ = c.executemany(
+            "INSERT INTO bond_day(isin,date,board,secid,numtrades,value,waprice,"
+            "close,volume,face,cur) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(isin,date,board) DO UPDATE SET numtrades=excluded.numtrades,"
+            "value=excluded.value, waprice=excluded.waprice, close=excluded.close,"
+            "volume=excluded.volume, face=excluded.face, cur=excluded.cur", out)
+        return cur_.rowcount or 0
+
+
+async def backfill_bond_day(d: str, client: Optional[httpx.AsyncClient] = None) -> int:
+    """Дневные итоги безадресных торгов за одну дату (весь рынок, все борды)."""
+    from services.market_data import _moex_get
+    from services import fx as fx_svc
+    own = client is None
+    client = client or httpx.AsyncClient()
+    secmap = await secid_map(client)
+    bccy = await board_ccy_map(client)
+    rates = {(ccy, d): await run_bg(fx_svc.rate_on, ccy, d) for ccy in set(bccy.values())}
+    saved, start = 0, 0
+    try:
+        while True:
+            r = await _moex_get(
+                client, f"{_ISS}/history/engines/stock/markets/bonds/securities.json",
+                params={"date": d, "start": start, "iss.meta": "off",
+                        "iss.only": "history", "limit": _HIST_PAGE}, timeout=30.0)
+            if r is None or r.status_code != 200:
+                logger.warning("bond day %s: HTTP %s", d,
+                               r.status_code if r is not None else "timeout")
+                break
+            rows = _iss_rows(r.json(), "history")
+            if not rows:
+                break
+            saved += await run_bg(upsert_bond_days, rows, secmap, bccy, rates)
+            start += len(rows)
+            if len(rows) < _HIST_PAGE:
+                break
+    finally:
+        if own:
+            await client.aclose()
+    return saved
+
+
+def bond_days_present() -> set[str]:
+    with _connect() as c:
+        return {r[0] for r in c.execute("SELECT DISTINCT date FROM bond_day")}
+
+
+async def backfill_bond_days(days: int = 30, force: bool = False) -> dict:
+    """Догружает дневные итоги за окно назад. Уже собранные даты пропускает —
+    итог дня в ISS не меняется задним числом (force перечитывает всё)."""
+    have = set() if force else await run_bg(bond_days_present)
+    today = datetime.now(_MSK).date()
+    saved, days_done = 0, []
+    async with httpx.AsyncClient() as client:
+        for k in range(1, max(days, 1) + 1):
+            d = (today - timedelta(days=k)).isoformat()
+            if d in have:
+                continue
+            n = await backfill_bond_day(d, client)
+            if n:
+                saved += n
+                days_done.append(d)
+    return {"saved": saved, "days": days_done}
+
+
 def days_present() -> set[str]:
     with _connect() as c:
         return {r[0] for r in c.execute("SELECT DISTINCT date FROM block_day")}

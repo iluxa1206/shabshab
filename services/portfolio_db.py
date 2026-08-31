@@ -232,6 +232,32 @@ CREATE TABLE IF NOT EXISTS block_day(
 );
 CREATE INDEX IF NOT EXISTS ix_block_day_date ON block_day(date);
 
+-- Дневной итог БЕЗАДРЕСНЫХ торгов по бумаге и борду (ISS history, весь рынок).
+-- Зачем отдельно от поштучных сделок: живой поток пишет тик по каждой бумаге
+-- юниверса, а по остальному рынку — только от порога TRADES_STREAM_MIN_RUB, и
+-- оборот таких выпусков в ленте занижен (замер 2026-08-28: 20,6 против 22,4
+-- млрд ₽ по рынку вне витрин; у RU000A10FNA0 0,2 млн вместо 46,3 — весь его
+-- оборот набран сделками мельче порога). Полный поток всего рынка в тиках —
+-- это кратный рост архива на тесном диске VPS, а дневной итог биржи стоит
+-- десятки строк на бумагу в день и даёт ровно недостающее число.
+-- value — В РУБЛЯХ: на валютных бордах биржа отдаёт объём в валюте расчётов,
+-- домножаем на курс дня (services/fx), исходную валюту храним в cur.
+CREATE TABLE IF NOT EXISTS bond_day(
+  isin TEXT NOT NULL,
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD'
+  board TEXT NOT NULL,
+  secid TEXT,
+  numtrades INTEGER,
+  value REAL,                     -- руб за день по этому борду
+  waprice REAL,
+  close REAL,
+  volume REAL,                    -- бумаг
+  face REAL,
+  cur TEXT,                       -- валюта расчётов борда (SUR — рублёвый)
+  PRIMARY KEY(isin, date, board)
+);
+CREATE INDEX IF NOT EXISTS ix_bond_day_date ON bond_day(date);
+
 -- Курсор сквозной ленты: последний вычитанный TRADENO по рынку. Протухший
 -- курсор (вчерашний номер) безопасен — ISS на неизвестный tradeno отдаёт ленту
 -- с начала сессии, то есть деградирует до полного прохода, а не до дыры.

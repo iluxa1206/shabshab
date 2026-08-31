@@ -896,6 +896,14 @@ async def block_trades_worker():
                                     (await fx_svc.backfill_history(14))["archive"])
                     except Exception as e:
                         logger.warning("fx history: %s", e)
+                    # Дневные итоги безадресных торгов всего рынка. Курс дня уже
+                    # долит выше — валютные борды пересчитываются в рубли им, а
+                    # не сегодняшним. Порядок важен: без курса строка валютного
+                    # борда пропускается целиком.
+                    try:
+                        logger.info("bond days: %s", await bt.backfill_bond_days(30))
+                    except Exception as e:
+                        logger.warning("bond days: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:

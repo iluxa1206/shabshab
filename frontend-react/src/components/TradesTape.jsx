@@ -451,6 +451,16 @@ export default function TradesTape() {
     return ISIN_RE.test(s) ? s : null;
   }, [q]);
   const isinReq = qIsin;
+  // Текст (не ISIN) уезжает НА БЭК — с дебаунсом, чтобы каждая буква не
+  // запускала агрегат по всему окну. Раньше строка фильтровала уже загруженную
+  // страницу: поиск видел только первые 500 сделок, а итоги под таблицей
+  // считались по ним же.
+  const [qReq, setQReq] = useState(() => (sp.get("q") || "").trim());
+  useEffect(() => {
+    const t = setTimeout(() => setQReq(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+  const qText = qIsin ? undefined : (qReq || undefined);
   const scope = scopes.length === 1 ? scopes[0] : "market";
   const daysView = market === "ndm" && byDay;
   // окно периода одним объектом — уезжает и в ленту, и в дневной агрегат, и в
@@ -528,13 +538,15 @@ export default function TradesTape() {
     const req = daysView
       ? fetchBlockDays({ isin: isinReq, ...win, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
-                         ttmMax: num(ttmMax), rating: ratings, limit: PAGE }, ac.signal)
+                         ttmMax: num(ttmMax), rating: ratings, q: qText,
+                         limit: PAGE }, ac.signal)
         .then((d) => { setDayData(d); })
       : fetchMarketTape({ ...win, minValue, side, market, issuer: emitters,
                           isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
                           spreadMax: num(spreadMax), ttmMin: num(ttmMin),
                           ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
                           hideSubord: hideSub, hideAmort, flagged: onlyFlagged,
+                          q: qText,
                           isins: onlyWatch ? watch : undefined }, ac.signal)
         .then((d) => {
           setData(d); setPages([]); setMore(!!d.has_more);
@@ -545,9 +557,9 @@ export default function TradesTape() {
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
-  }, [minValue, side, market, daysView, emitters, isinReq, scopes, onlyWatch, onlyFlagged,
-      spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls, hideSub, hideAmort,
-      periodDays, dateFrom, dateTo, tick]);
+  }, [minValue, side, market, daysView, emitters, isinReq, qText, scopes, onlyWatch,
+      onlyFlagged, spreadMin, spreadMax, ttmMin, ttmMax, ratings, bases, cls,
+      hideSub, hideAmort, periodDays, dateFrom, dateTo, tick]);
 
   // Лайв: лента дотягивается сама. Опрос, а не WS — сделки приезжают фоновыми
   // демонами (тик Alor и лента ISS), поэтому в сокете не было бы ничего, чего
@@ -563,38 +575,14 @@ export default function TradesTape() {
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onShow); };
   }, [live]);
 
-  // текстовый поиск (не ISIN) — фильтр по уже загруженным строкам
-  const match = (r) => {
-    const s = qIsin ? "" : q.trim().toLowerCase();
-    if (!s) return true;
-    return (r.name || "").toLowerCase().includes(s) || r.isin.toLowerCase().includes(s)
-        || (r.emitter || "").toLowerCase().includes(s);
-  };
   const allRows = useMemo(
     () => [...(data?.trades || []), ...pages.flat()], [data, pages]);
-  const rows = useMemo(() => allRows.filter(match), [allRows, q, qIsin]);
-  const dayRows = useMemo(() => (dayData?.rows || []).filter(match), [dayData, q, qIsin]);
+  const rows = allRows;
+  const dayRows = dayData?.rows || [];
 
-  // Итоги. Пока фильтр серверный (ISIN/эмитент/спред/срок) — берём агрегат бэка:
-  // он посчитан по ВСЕМ сделкам окна, а не по срезанным лимитом. Как только
-  // включается локальный текстовый поиск — считаем по видимым строкам, иначе
-  // цифры не соответствовали бы таблице.
-  const local = !qIsin && q.trim() !== "";
-  const sum = useMemo(() => {
-    if (!local) return data?.summary || {};
-    let n = 0, value = 0, buy = 0, sell = 0, ndm = 0;
-    for (const r of rows) {
-      n += 1;
-      const v = (!r.cur || r.cur === "SUR") ? (r.value || 0) : 0;
-      value += v;
-      if (r.side === "buy") buy += r.value || 0;
-      if (r.side === "sell") sell += r.value || 0;
-      if (r.negotiated) ndm += r.value || 0;
-    }
-    return { n, value, buy_value: buy, sell_value: sell,
-             by_market: { ndm: { value: ndm } }, top: data?.summary?.top || [],
-             archive_till: data?.summary?.archive_till, partial: true };
-  }, [local, rows, data]);
+  // Итоги — всегда агрегат бэка: он посчитан по ВСЕМ сделкам окна под теми же
+  // фильтрами (включая текстовый поиск), а не по срезанным лимитом строкам.
+  const sum = data?.summary || {};
   const byM = sum.by_market || {};
 
   // Топ показываем ПОСЛЕДНИЙ ПОЛНЫЙ: как только лента сужена до одной бумаги,
@@ -606,11 +594,16 @@ export default function TradesTape() {
     if (!isinReq && t?.length) setTopList(t);
   }, [data, isinReq]);
 
+  // Итоги «по дням» — тот же принцип, что и у ленты: серверный агрегат по
+  // ВСЕМУ окну (лимит режет строки, но не итоги), и только текстовый поиск по
+  // видимым строкам переводит счётчики в локальный режим.
   const daySum = useMemo(() => {
+    const s = dayData?.summary;
+    if (s) return { n: s.n || 0, value: s.value || 0, trades: s.trades || 0 };
     let n = 0, value = 0, trades = 0;
     for (const r of dayRows) { n += 1; value += r.value || 0; trades += r.numtrades || 0; }
-    return { n, value, trades };
-  }, [dayRows]);
+    return { n, value, trades, partial: true };
+  }, [dayData, dayRows]);
 
   // Итоги окна уходят в ОБЩУЮ нижнюю полосу приложения (там же тема, даты,
   // часы) — своей строки у вкладки нет: две полосы подряд съедали высоту и
@@ -618,15 +611,28 @@ export default function TradesTape() {
   usePageStatus(daysView
     ? [
       isinReq && { k: "БУМАГА", v: dayRows[0]?.name || isinReq },
-      { k: "БУМАГО-ДНЕЙ", v: fmt.num(daySum.n, 0) },
+      { k: "БУМАГО-ДНЕЙ", v: fmt.num(daySum.n, 0),
+        title: "все бумаго-дни окна под фильтром" },
       { k: "СДЕЛОК", v: fmt.num(daySum.trades, 0) },
       { k: "ОБОРОТ", v: money(daySum.value), title: "млн ₽" },
+      { k: "ПОКАЗАНО", v: dayData?.summary?.n
+        ? `${fmt.num(dayRows.length, 0)}/${fmt.num(dayData.summary.n, 0)}`
+        : fmt.num(dayRows.length, 0),
+        title: "строк в таблице / всего под фильтром" },
     ]
     : [
       isinReq && { k: "БУМАГА", v: rows[0]?.name || isinReq },
-      { k: "СДЕЛОК", v: fmt.num(sum.n, 0),
-        title: sum.partial ? "итоги по видимым строкам (текстовый поиск)" : "все сделки окна" },
+      { k: "СДЕЛОК", v: fmt.num(sum.n, 0), title: "все сделки окна под фильтром" },
       { k: "ОБОРОТ", v: money(sum.value), title: "млн ₽, только рублёвые выпуски" },
+      // Биржевой оборот тех же бумаг — из дневных итогов ISS. Показываем ТОЛЬКО
+      // когда лента без порога и стороны (иначе сравнивалась бы отфильтрованная
+      // сумма с полной) и когда он заметно выше нашей: по бумагам вне витрин
+      // сделки пишутся от порога потока, и разница — это мелочь, которой у нас
+      // нет поштучно, а не потеря.
+      sum.market_value && sum.market_value > (sum.value || 0) * 1.01
+        && { k: "БИРЖА", v: money(sum.market_value), opt: true,
+             title: "полный оборот этих бумаг по дневным итогам MOEX, млн ₽ — "
+                    + "вне витрин поштучно пишутся только сделки от 1 млн ₽" },
       { k: "BUY", v: money(sum.buy_value), cls: "tape-buy", title: "млн ₽" },
       { k: "SELL", v: money(sum.sell_value), cls: "tape-sell", title: "млн ₽" },
       { k: "РПС", v: money(byM.ndm?.value), title: "оборот адресных режимов, млн ₽" },
@@ -656,7 +662,7 @@ export default function TradesTape() {
         ...win, minValue, side, market, issuer: emitters, isin: isinReq,
         scope, limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
         ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-        hideSubord: hideSub, hideAmort,
+        hideSubord: hideSub, hideAmort, q: qText,
         isins: onlyWatch ? watch : undefined,
         beforeTs: last.ts, beforeId: last.trade_id });
       setPages((ps) => [...ps, d.trades || []]);
