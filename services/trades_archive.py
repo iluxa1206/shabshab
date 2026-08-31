@@ -509,17 +509,23 @@ def repair_values(days: int = 3, tol: float = 0.01, dry_run: bool = False,
 
 async def repair_fx_values(days: int = 30, tol: float = 0.01,
                            isins: Optional[list] = None,
-                           dry_run: bool = False) -> dict:
-    """Пересчёт объёма УЖЕ ЗАПИСАННЫХ тиков валютных бумаг по курсу ДНЯ СДЕЛКИ.
+                           dry_run: bool = False,
+                           only_currency: bool = False) -> dict:
+    """Пересчёт объёма УЖЕ ЗАПИСАННЫХ тиков по номиналу и курсу ДНЯ СДЕЛКИ.
 
     Нужен там, где сверить с биржей нечем: ISS-архив (block_trade) начинается
-    позже тикового, и в этом окне объём остался посчитанным по курсу на момент
-    заливки. Формула полная, а не поправочный коэффициент: value = qty ×
-    номинал дня × цена% × курс дня — она не зависит от того, каким курсом
-    строку записали раньше.
+    позже тикового, а прошедшие дни в нём ужаты ретеншеном до крупных сделок.
+    Формула полная, а не поправочный коэффициент: value = qty × номинал дня ×
+    цена% × курс дня — она не зависит от того, чем строку записали раньше.
+
+    Чинит ОБА промаха: курс не того дня у валютных номиналов и устаревший
+    номинал у амортизируемых (живой поток берёт текущий FACEVALUE из листинга,
+    а в день амортизации он ещё старый — замер 2026-08-28: RU000A107AW3
+    посчитан по 500 ₽ при биржевых 250, оборот бумаги вдвое завышен).
 
     Строки, у которых ISS-двойник ЕСТЬ, не трогаем: биржевой VALUE точнее
-    любого нашего пересчёта, его ставит repair_values.
+    любого нашего пересчёта, его ставит repair_values. only_currency=True
+    ограничивает проход бумагами с валютным номиналом.
     """
     from services import fx as fx_svc
     from services.bars import fetch_daily_face
@@ -527,7 +533,7 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
 
     units = await face_units()
     pool = [i for i in (isins or units.keys())
-            if (units.get(i) or "") not in _RUB_UNITS]
+            if not only_currency or (units.get(i) or "") not in _RUB_UNITS]
     frm = (date.today() - timedelta(days=max(days, 1))).isoformat()
     till = date.today().isoformat()
     out = {"isins": 0, "rows": 0, "delta": 0.0, "skipped_no_rate": 0,
@@ -546,11 +552,15 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
             rows = await asyncio.to_thread(_rows, isin)
             if not rows:
                 continue
-            ccy = _FX_ALIAS.get(units[isin], units[isin])
-            rates = await asyncio.to_thread(fx_svc.rates_by_day, ccy, frm, till)
-            if not rates:
-                out["skipped_no_rate"] += len(rows)
-                continue
+            unit = units.get(isin) or ""
+            if unit in _RUB_UNITS:
+                rates = {}                      # рублёвый номинал: множитель 1.0
+            else:
+                ccy = _FX_ALIAS.get(unit, unit)
+                rates = await asyncio.to_thread(fx_svc.rates_by_day, ccy, frm, till)
+                if not rates:
+                    out["skipped_no_rate"] += len(rows)
+                    continue
             secid, brd = await resolve_market(isin, None)
             faces = await fetch_daily_face(mc, secid or isin, brd or "TQCB", frm, till)
             if not faces:
@@ -563,7 +573,7 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
             for r in rows:
                 day = r["ts"][:10]
                 face = _on_day(faces, day, 0.0)
-                rate = _on_day(rates, day, 0.0)
+                rate = 1.0 if unit in _RUB_UNITS else _on_day(rates, day, 0.0)
                 if not rate or not face:
                     out["skipped_no_rate" if not rate else "skipped_no_face"] += 1
                     continue

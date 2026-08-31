@@ -179,3 +179,57 @@ async def test_repair_currency_values_fixes_history(fx, monkeypatch):
         vals = dict(c.execute("SELECT trade_id, value FROM block_trade"))
     assert vals[1] == pytest.approx(126000.0)
     assert vals[2] == pytest.approx(126000.0)
+
+
+@pytest.mark.asyncio
+async def test_repair_fixes_stale_face_of_rouble_bond(fx, monkeypatch):
+    """Рублёвая амортизируемая бумага: живой поток записал объём по старому
+    номиналу (500 при биржевых 250) — пересчёт по номиналу дня это чинит."""
+    import importlib
+    import services.trades_archive as ta
+    importlib.reload(ta)
+    from datetime import date, timedelta
+    day = (date.today() - timedelta(days=1)).isoformat()
+    with ta._lock, ta._connect() as c:
+        c.execute("INSERT INTO trade_tick(isin,trade_id,ts,price,qty,value,side,board) "
+                  "VALUES('RU000RUB001',1,?,100.0,10,5000.0,'buy','TQCB')",
+                  (f"{day} 12:00:00",))
+
+    async def _units():
+        return {"RU000RUB001": "SUR"}
+
+    async def _faces(client, secid, board, frm, till):
+        return {day: 250.0}
+
+    async def _resolve(isin, board):
+        return isin, "TQCB"
+
+    monkeypatch.setattr(ta, "face_units", _units)
+    monkeypatch.setattr("services.bars.fetch_daily_face", _faces)
+    monkeypatch.setattr("services.backdate.resolve_market", _resolve)
+
+    res = await ta.repair_fx_values(days=3)
+    assert res["rows"] == 1
+    with ta._connect() as c:
+        assert c.execute("SELECT value FROM trade_tick").fetchone()[0] == pytest.approx(2500.0)
+
+
+@pytest.mark.asyncio
+async def test_only_currency_skips_rouble_bonds(fx, monkeypatch):
+    """Режим «только валютные» рублёвые выпуски не трогает."""
+    import importlib
+    import services.trades_archive as ta
+    importlib.reload(ta)
+    from datetime import date, timedelta
+    day = (date.today() - timedelta(days=1)).isoformat()
+    with ta._lock, ta._connect() as c:
+        c.execute("INSERT INTO trade_tick(isin,trade_id,ts,price,qty,value,side,board) "
+                  "VALUES('RU000RUB001',2,?,100.0,10,5000.0,'buy','TQCB')",
+                  (f"{day} 12:00:00",))
+
+    async def _units():
+        return {"RU000RUB001": "SUR"}
+
+    monkeypatch.setattr(ta, "face_units", _units)
+    res = await ta.repair_fx_values(days=3, only_currency=True)
+    assert res["rows"] == 0
