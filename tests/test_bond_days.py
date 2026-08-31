@@ -105,13 +105,24 @@ def test_tape_stats_reports_market_value(bt):
     assert st["market_value"] == pytest.approx(46_300_000.0)
 
 
-def test_tape_stats_hides_market_value_under_filters(bt):
-    """…но молчит под фильтрами: сравнивать отфильтрованную сумму с полным
-    оборотом биржи бессмысленно — число читалось бы как потеря данных."""
+def test_market_value_survives_trade_filters(bt):
+    """…в том числе под порогом суммы: он фильтрует СДЕЛКИ, а набор бумаг задают
+    охват и признаки выпуска. Умолчание вкладки — «от 10 млн», и обнуляться на
+    нём показатель не должен: он читается как «крупные сделки на X из Y оборота
+    этих бумаг»."""
     mod, tape, _fx = bt
     mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 46_300_000.0)], SECMAP, {}, {})
-    assert tape.tape_stats(frm="2026-08-28", min_value=1e6)["market_value"] is None
-    assert tape.tape_stats(frm="2026-08-28", side="buy")["market_value"] is None
+    assert tape.tape_stats(frm="2026-08-28", min_value=1e7)["market_value"] \
+        == pytest.approx(46_300_000.0)
+    assert tape.tape_stats(frm="2026-08-28", side="buy")["market_value"] \
+        == pytest.approx(46_300_000.0)
+
+
+def test_market_value_silent_for_negotiated(bt):
+    """Адресный режим: в дневных итогах биржи только безадресные торги."""
+    mod, tape, _fx = bt
+    mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 46_300_000.0)], SECMAP, {}, {})
+    assert tape.tape_stats(frm="2026-08-28", market="ndm")["market_value"] is None
 
 
 def test_traded_boards_from_history(bt):
