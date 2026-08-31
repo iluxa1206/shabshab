@@ -160,3 +160,37 @@ def test_traded_boards_ignores_stale_dates(bt):
                          SECMAP, {}, {})
     assert "TQCB" in mod._traded_boards()      # умолчание, история старая
     assert len(mod._traded_boards()) == 7
+
+
+@pytest.mark.asyncio
+async def test_negotiated_currency_board_converted(bt, monkeypatch):
+    """Адресный юаневый борд: дневной агрегат тоже приводится к рублям."""
+    mod, _tape, fx = bt
+    fx.save_rates("2026-08-28", {"CNY": 12.8})
+    rows = [_row("RU000A0000C3", "PTOY", 100_000.0)]
+    assert mod.upsert_days(rows, SECMAP, {"PTOY": "CNY"},
+                           {("CNY", "2026-08-28"): 12.8}) == 1
+    with mod._connect() as c:
+        assert c.execute("SELECT value FROM block_day").fetchone()[0] \
+            == pytest.approx(1_280_000.0)
+
+
+@pytest.mark.asyncio
+async def test_repair_currency_days_fixes_history(bt, monkeypatch):
+    """Уже записанные валютные агрегаты РПС чинятся курсом дня."""
+    mod, _tape, fx = bt
+    fx.save_rates("2026-08-28", {"CNY": 12.8})
+
+    async def _boards(client=None, force=False):
+        return {"PTOY": "CNY"}
+
+    monkeypatch.setattr(mod, "board_ccy_map", _boards)
+    with mod._lock, mod._connect() as c:
+        c.execute("INSERT INTO block_day(isin,date,board,secid,numtrades,value,"
+                  "waprice,volume,face) VALUES('RU000A0000C3','2026-08-28','PTOY',"
+                  "'RU000A0000C3',1,100000.0,100.0,10,10000.0)")
+    res = await mod.repair_currency_days()
+    assert res["rows"] == 1
+    with mod._connect() as c:
+        assert c.execute("SELECT value FROM block_day").fetchone()[0] \
+            == pytest.approx(1_280_000.0)

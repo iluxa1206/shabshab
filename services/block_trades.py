@@ -344,6 +344,47 @@ async def repair_currency_values(days: int = 60, dry_run: bool = False,
             "seen": len(rows), "dry_run": dry_run}
 
 
+async def repair_currency_days(dry_run: bool = False, tol: float = 0.2) -> dict:
+    """То же, что repair_currency_values, но для дневных РПС-агрегатов.
+
+    block_day писался без пересчёта валютных бордов вовсе, поэтому строки
+    «РПС с ЦК: Облигации (CNY)» и «Размещение (CNY)» лежат в юанях. Отличаем их
+    так же — сверкой с volume × номинал × цена% × курс дня."""
+    from services import fx as fx_svc
+    bccy = await board_ccy_map()
+    boards = sorted(b for b, c in bccy.items() if c != "SUR")
+    if not boards:
+        return {"rows": 0, "delta": 0.0, "skipped": 0, "dry_run": dry_run}
+    ph = ",".join("?" * len(boards))
+    with _connect() as c:
+        rows = c.execute(
+            f"SELECT isin, date, board, volume, waprice, face, value FROM block_day "
+            f"WHERE board IN ({ph}) AND value > 0 AND volume > 0 AND waprice > 0 "
+            f"AND face > 0", boards).fetchall()
+    fixed, skipped = [], 0
+    delta = 0.0
+    for r in rows:
+        rate = fx_svc.rate_on(bccy[r["board"]], r["date"])
+        if not rate:
+            skipped += 1
+            continue
+        exp_rub = r["volume"] * r["face"] * r["waprice"] / 100 * rate
+        if abs(r["value"] - exp_rub) / exp_rub <= tol:
+            continue                                    # уже рубли
+        if abs(r["value"] * rate - exp_rub) / exp_rub > tol:
+            skipped += 1
+            continue
+        val = round(r["value"] * rate, 2)
+        delta += val - r["value"]
+        fixed.append((val, r["isin"], r["date"], r["board"]))
+    if fixed and not dry_run:
+        with _lock, _connect() as c:
+            c.executemany("UPDATE block_day SET value=? WHERE isin=? AND date=? "
+                          "AND board=?", fixed)
+    return {"rows": len(fixed), "delta": round(delta, 2), "skipped": skipped,
+            "seen": len(rows), "dry_run": dry_run}
+
+
 async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
                        from_start: bool = False) -> dict:
     """Инкрементальный проход сквозной ленты рынка. Возвращает статистику.
@@ -613,8 +654,14 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
 
 # ────────────────────────── бэкфилл дневных агрегатов РПС ──────────────────────────
 
-def upsert_days(rows: list[dict], secmap: dict) -> int:
+def upsert_days(rows: list[dict], secmap: dict, bccy: Optional[dict] = None,
+                rates: Optional[dict] = None) -> int:
+    """Дневные РПС-агрегаты. Объём — в РУБЛЯХ: на валютных адресных бордах
+    («РПС с ЦК: Облигации (CNY)», «Размещение (CNY)») биржа отдаёт его в валюте
+    расчётов, домножаем на курс дня; без курса строку пропускаем."""
     out = []
+    bccy = bccy or {}
+    rates = rates or {}
     for r in rows:
         sec, d, board = r.get("SECID"), r.get("TRADEDATE"), r.get("BOARDID")
         if not sec or not d or not board:
@@ -622,8 +669,15 @@ def upsert_days(rows: list[dict], secmap: dict) -> int:
         if sec not in secmap:            # не облигация (в ndm живут и акции, и ПАИ)
             continue
         meta = secmap[sec]
+        val = r.get("VALUE")
+        cur = bccy.get(board)
+        if cur and cur != "SUR" and val is not None:
+            rate = rates.get((cur, d))
+            if not rate:
+                continue
+            val = float(val) * rate
         out.append((meta.get("isin") or sec, d, board, sec, r.get("NUMTRADES"),
-                    r.get("VALUE"), r.get("WAPRICE"), r.get("CLOSE"),
+                    val, r.get("WAPRICE"), r.get("CLOSE"),
                     r.get("VOLUME"), r.get("FACEVALUE") or meta.get("face")))
     if not out:
         return 0
@@ -643,6 +697,10 @@ async def backfill_day(d: str, client: Optional[httpx.AsyncClient] = None) -> in
     own = client is None
     client = client or httpx.AsyncClient()
     secmap = await secid_map(client)
+    bccy = await board_ccy_map(client)
+    from services import fx as fx_svc
+    rates = {(ccy, d): await run_bg(fx_svc.rate_on, ccy, d)
+             for ccy in set(bccy.values())}
     saved, start = 0, 0
     try:
         while True:
@@ -657,7 +715,7 @@ async def backfill_day(d: str, client: Optional[httpx.AsyncClient] = None) -> in
             rows = _iss_rows(r.json(), "history")
             if not rows:
                 break
-            saved += await run_bg(upsert_days, rows, secmap)
+            saved += await run_bg(upsert_days, rows, secmap, bccy, rates)
             start += len(rows)
             if len(rows) < _HIST_PAGE:
                 break
