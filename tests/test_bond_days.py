@@ -118,11 +118,24 @@ def test_market_value_survives_trade_filters(bt):
         == pytest.approx(46_300_000.0)
 
 
-def test_market_value_silent_for_negotiated(bt):
-    """Адресный режим: в дневных итогах биржи только безадресные торги."""
+def test_market_value_follows_selected_market(bt):
+    """Показатель считает ТЕ ЖЕ режимы, что показывает лента: безадресные из
+    bond_day, адресные из block_day. Иначе число рядом с оборотом сравнивалось
+    бы с другим множеством сделок — у флоатеров за 28.08 адресных 137 млрд
+    против 7,7 безадресных."""
     mod, tape, _fx = bt
     mod.upsert_bond_days([_row("RU000A0000A1", "TQCB", 46_300_000.0)], SECMAP, {}, {})
-    assert tape.tape_stats(frm="2026-08-28", market="ndm")["market_value"] is None
+    with mod._lock, mod._connect() as c:
+        c.execute("INSERT INTO block_day(isin,date,board,secid,numtrades,value) "
+                  "VALUES('RU000A0000A1','2026-08-28','PSOB','RU000A0000A1',2,"
+                  "137_000_000.0)")
+    assert tape.tape_stats(frm="2026-08-28", market="bonds")["market_value"] \
+        == pytest.approx(46_300_000.0)
+    assert tape.tape_stats(frm="2026-08-28", market="ndm")["market_value"] \
+        == pytest.approx(137_000_000.0)
+    # режим не выбран — лента показывает и то, и другое
+    assert tape.tape_stats(frm="2026-08-28")["market_value"] \
+        == pytest.approx(183_300_000.0)
 
 
 def test_traded_boards_from_history(bt):

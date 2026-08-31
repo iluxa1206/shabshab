@@ -251,8 +251,9 @@ def count_isin_trades(isin: str, frm: Optional[str] = None, till: Optional[str] 
 
 def market_turnover(frm: Optional[str] = None, till: Optional[str] = None,
                     isins: Optional[list[str]] = None,
-                    boards: Optional[list[str]] = None) -> dict:
-    """ПОЛНЫЙ биржевой оборот окна по дневным итогам ISS (bond_day).
+                    boards: Optional[list[str]] = None,
+                    market: Optional[str] = None) -> dict:
+    """ПОЛНЫЙ биржевой оборот окна по дневным итогам ISS.
 
     Зачем рядом с оборотом ленты: сумма показанных сделок по рынку ВНЕ витрин
     заведомо неполна — тик там пишется от порога TRADES_STREAM_MIN_RUB (замер
@@ -262,27 +263,39 @@ def market_turnover(frm: Optional[str] = None, till: Optional[str] = None,
     Даёт итог ПО БУМАГАМ выборки: фильтры по сумме сделки, стороне и режиму к
     дневному агрегату неприменимы — в нём одна строка на бумагу, борд и день.
     """
+    # Безадресные итоги в bond_day, адресные (РПС, размещения, выкупы) — в
+    # block_day. Складываем ровно те режимы, которые показывает лента: иначе
+    # число рядом с её оборотом сравнивается с другим множеством сделок (у
+    # флоатеров за 28.08 адресных 137 млрд против 7,7 безадресных — ошибиться
+    # тут значит соврать в 14 раз).
+    tables = {"bonds": ["bond_day"], "ndm": ["block_day"]}.get(
+        market, ["bond_day", "block_day"])
+    total, isin_set, day_set = 0.0, set(), set()
     with _connect() as c:
         tmp = _bind_isins(c, isins)
-        q = ("SELECT SUM(value) v, COUNT(DISTINCT isin) n, COUNT(DISTINCT date) d "
-             "FROM bond_day WHERE 1=1")
-        args: list = []
-        if frm:
-            q += " AND date >= ?"
-            args.append(frm[:10])
-        if till:
-            q += " AND date <= ?"
-            args.append(till[:10])
-        if boards:
-            q += f" AND board IN ({','.join('?' * len(boards))})"
-            args.extend(boards)
-        if tmp:
-            q += f" AND isin IN (SELECT isin FROM {_TMP})"
-        elif isins:
-            q += f" AND isin IN ({','.join('?' * len(isins))})"
-            args.extend(isins)
-        r = c.execute(q, args).fetchone()
-    return {"value": r["v"] or 0.0, "isins": r["n"] or 0, "days": r["d"] or 0}
+        for tbl in tables:
+            q = f"SELECT isin, date, SUM(value) v FROM {tbl} WHERE 1=1"
+            args: list = []
+            if frm:
+                q += " AND date >= ?"
+                args.append(frm[:10])
+            if till:
+                q += " AND date <= ?"
+                args.append(till[:10])
+            if boards:
+                q += f" AND board IN ({','.join('?' * len(boards))})"
+                args.extend(boards)
+            if tmp:
+                q += f" AND isin IN (SELECT isin FROM {_TMP})"
+            elif isins:
+                q += f" AND isin IN ({','.join('?' * len(isins))})"
+                args.extend(isins)
+            q += " GROUP BY isin, date"
+            for r in c.execute(q, args):
+                total += r["v"] or 0.0
+                isin_set.add(r["isin"])
+                day_set.add(r["date"])
+    return {"value": total, "isins": len(isin_set), "days": len(day_set)}
 
 
 def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
@@ -318,16 +331,15 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
                          "UNION ALL SELECT MAX(ts) FROM trade_tick)").fetchone()
     n = tot["n"] or 0
     ndm_n = tot["nn"] or 0
-    # Полный биржевой оборот ТЕХ ЖЕ БУМАГ за то же окно. Считается всегда, кроме
-    # выбора адресного режима: в дневных итогах биржи (bond_day) только
-    # безадресные торги, и рядом с лентой РПС это число значило бы другое.
+    # Полный биржевой оборот ТЕХ ЖЕ БУМАГ и ТЕХ ЖЕ РЕЖИМОВ за то же окно —
+    # из дневных итогов биржи (безадресные bond_day + адресные block_day).
     #
     # Порог суммы и сторону НЕ учитываем осознанно: они фильтруют сделки, а
     # набор бумаг задают охват, эмитент, рейтинг, срок — ими же ограничен и
     # агрегат. Поэтому при пороге «от 10 млн» (умолчание вкладки) показатель
     # читается как «крупные сделки на X из Y оборота этих бумаг», а без порога —
     # как прямая сверка с биржей.
-    mkt = None if market == "ndm" else market_turnover(frm, till, isins, boards)
+    mkt = market_turnover(frm, till, isins, boards, market)
     return {"n": n, "value": tot["v"] or 0,
             "market_value": (mkt or {}).get("value"),
             "buy_value": tot["bv"] or 0, "sell_value": tot["sv"] or 0,

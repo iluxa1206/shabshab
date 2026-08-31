@@ -631,8 +631,8 @@ export default function TradesTape() {
       // вне витрин пишутся только сделки от 1 млн ₽.
       sum.market_value > 0
         && { k: "БИРЖА", v: money(sum.market_value),
-             title: "полный оборот этих бумаг по дневным итогам MOEX, млн ₽; "
-                    + "лента показывает сделки под фильтром" },
+             title: "полный оборот этих бумаг и этих режимов по дневным итогам "
+                    + "MOEX, млн ₽; лента показывает сделки под фильтром" },
       { k: "BUY", v: money(sum.buy_value), cls: "tape-buy", title: "млн ₽" },
       { k: "SELL", v: money(sum.sell_value), cls: "tape-sell", title: "млн ₽" },
       { k: "РПС", v: money(byM.ndm?.value), title: "оборот адресных режимов, млн ₽" },

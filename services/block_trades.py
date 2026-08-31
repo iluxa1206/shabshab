@@ -105,33 +105,41 @@ async def board_ccy_map(client: Optional[httpx.AsyncClient] = None,
     """{BOARDID: валюта расчётов} — только для НЕрублёвых бордов.
 
     Источник — список бордов MOEX: валюта зашита в название («Т+: Облигации
-    (CNY) - безадрес.»). Кэш на сутки: борды заводят раз в годы."""
+    (CNY) - безадрес.»), кэш на сутки: борды заводят раз в годы.
+
+    Обходим ОБА рынка: адресные валютные режимы («РПС с ЦК: Облигации (CNY)»,
+    «Размещение (CNY)») живут в ndm, и по списку одного market=bonds их не
+    видно — их объём так и оставался бы в юанях под видом рублей."""
     today = date.today().isoformat()
     if not force and _board_ccy["at"] == today and _board_ccy["map"]:
         return _board_ccy["map"]
     from services.market_data import _moex_get
     own = client is None
     client = client or httpx.AsyncClient()
+    out = {}
     try:
-        r = await _moex_get(client, f"{_ISS}/engines/stock/markets/bonds/boards.json",
-                            params={"iss.meta": "off", "iss.only": "boards"},
-                            timeout=20.0)
+        for mkt in MARKETS:          # bonds — безадресные, ndm — РПС/размещения
+            r = await _moex_get(client, f"{_ISS}/engines/stock/markets/{mkt}/boards.json",
+                                params={"iss.meta": "off", "iss.only": "boards"},
+                                timeout=20.0)
+            if r is None or r.status_code != 200:
+                logger.warning("block: список бордов %s недоступен", mkt)
+                continue
+            b = (r.json() or {}).get("boards", {})
+            cols, rows = b.get("columns", []), b.get("data", [])
+            if not cols or "boardid" not in cols or "title" not in cols:
+                continue
+            bi, ti = cols.index("boardid"), cols.index("title")
+            for row in rows:
+                m = _BOARD_CCY_RE.search(row[ti] or "")
+                if m and row[bi]:
+                    out[row[bi]] = m.group(1)
     finally:
         if own:
             await client.aclose()
-    if r is None or r.status_code != 200:
-        logger.warning("block: список бордов недоступен, валюта расчётов по кэшу")
+    if not out:
+        logger.warning("block: валюта расчётов по кэшу")
         return _board_ccy["map"]
-    b = (r.json() or {}).get("boards", {})
-    cols, rows = b.get("columns", []), b.get("data", [])
-    if not cols or "boardid" not in cols or "title" not in cols:
-        return _board_ccy["map"]
-    bi, ti = cols.index("boardid"), cols.index("title")
-    out = {}
-    for row in rows:
-        m = _BOARD_CCY_RE.search(row[ti] or "")
-        if m and row[bi]:
-            out[row[bi]] = m.group(1)
     if out:
         _board_ccy["map"], _board_ccy["at"] = out, today
     return _board_ccy["map"]
