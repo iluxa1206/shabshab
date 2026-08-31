@@ -199,6 +199,59 @@ const _isOff = (iso) => {
 };
 const _idx = (v) => (v == null ? "—" : v.toFixed(8).replace(".", ","));
 
+// Выгрузка раскладки в CSV: ПЛОСКАЯ таблица дней, без строк-саммари купонов —
+// период уезжает в колонки (№ купона, его границы), чтобы файл открывался
+// сводной без чистки. Точка с запятой + запятая в дробях + BOM: Excel в
+// русской локали иначе кладёт всё в одну колонку и ест минусы.
+const CSV_COLS = [
+  ["isin", (r) => r.isin],
+  ["coupon_n", (r) => r.n],
+  ["coupon_start", (r) => r.start],
+  ["coupon_end", (r) => r.end],
+  ["pay_date", (r) => r.pay_date],
+  ["day_no", (r) => r.i + 1],
+  ["day", (r) => r.day],
+  ["weekday", (r) => _wd(r.day)],
+  ["obs_date", (r) => r.obs_date],
+  ["rate_pct", (r) => r.rate_pct],
+  ["income_rub_per_1000", (r) => r.d_rub],
+  ["index_own", (r) => r.index],
+  ["index_ruonia_cbr", (r) => r.ru_index],
+  ["delta_bps", (r) => r.d_bps],
+  ["src", (r) => r.src],
+  ["close_pct", (r) => r.close_pct],
+  ["y_idx_bps", (r) => r.y_idx_bps],
+];
+
+function daysCsv(d, deltaOf) {
+  const flat = [];
+  for (const g of d.coupons) {
+    g.rows.forEach((r, i) => flat.push({
+      ...r, i, isin: d.isin, n: g.n, start: g.start, end: g.end, pay_date: g.pay_date,
+      d_rub: deltaOf(g.n, i),
+      d_bps: r.index != null && r.ru_index ? (r.index / r.ru_index - 1) * 10000 : null,
+    }));
+  }
+  const cell = (v) => {
+    if (v == null) return "";
+    if (typeof v === "number") return String(v).replace(".", ",");
+    return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  return "\uFEFF" + [CSV_COLS.map(([h]) => h).join(";"),
+    ...flat.map((r) => CSV_COLS.map(([, f]) => cell(f(r))).join(";"))].join("\n");
+}
+
+function downloadCsv(text, name) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function DayGroup({ g, open, onToggle, lagLbl, marginBps, deltaOf }) {
   const mismatch = g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct;
   const nFwd = g.rows.length - g.n_fact;
@@ -309,6 +362,12 @@ export function DayRatesModal({ isin, onClose }) {
         <div className="daymodal-head">
           <b>Фиксинг по дням{d ? ` · ${d.coupons.length} куп. · ${d.n_days} дн` : ""}</b>
           <span className="dm-head-btns">
+            <button className="btn day-btn" disabled={!coupons.length}
+              title="Плоская таблица всех дней всех купонов, без строк-саммари"
+              onClick={() => downloadCsv(daysCsv(d, deltaOf),
+                `fixing_days_${isin}_${d.calc_date || ""}.csv`)}>
+              ⭳ CSV
+            </button>
             {coupons.length > 1 && (
               <button className="btn day-btn"
                 onClick={() => setOpenSet(allOpen ? new Set() : new Set(coupons.map((g) => g.n)))}>
