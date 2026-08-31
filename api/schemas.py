@@ -211,6 +211,7 @@ class CouponDayRow(BaseModel):
     y_idx_bps: Optional[float] = None   # Y-IDX as-of дня по этой цене (spread_daily)
     index: Optional[float] = None       # расчётный индекс базы, старт 1.0 на начало периода
                                         # (капитализация по рабочим дням, выходные простыми)
+    ru_rate_pct: Optional[float] = None # дневная ставка RUONIA (факт ЦБ / ступень кривой)
     ru_index: Optional[float] = None    # ЭТАЛОН: официальный накопленный индекс RUONIA ЦБ,
                                         # нормированный на первый день раскладки (старт 1.0);
                                         # за концом факта — путь роллирования базы Y-IDX

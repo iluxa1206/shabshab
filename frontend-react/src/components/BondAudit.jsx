@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { fetchBondAudit, fetchCouponDays } from "../api.js";
@@ -216,24 +216,18 @@ const CSV_COLS = [
   ["weekday", (r) => _wd(r.day)],
   ["obs_date", (r) => r.obs_date],
   ["rate_pct", (r) => r.rate_pct],
-  ["income_rub_per_1000", (r) => r.d_rub],
-  ["index_own", (r) => _round(r.index, 10)],
+  ["ruonia_rate_pct", (r) => r.ru_rate_pct],
   ["index_ruonia_cbr", (r) => _round(r.ru_index, 10)],
-  ["delta_bps", (r) => r.d_bps],
   ["src", (r) => r.src],
   ["close_pct", (r) => r.close_pct],
   ["y_idx_bps", (r) => r.y_idx_bps],
 ];
 
-function daysCsv(d, deltaOf) {
+function daysCsv(d) {
   const flat = [];
   for (const g of d.coupons) {
     g.rows.forEach((r, i) => flat.push({
       ...r, i, isin: d.isin, n: g.n, start: g.start, end: g.end, pay_date: g.pay_date,
-      // округляем ЗДЕСЬ, а не в ячейке: сырой double даёт «0,3835616000000819»,
-      // и в Excel такой столбец нечитаем
-      d_rub: _round(deltaOf(g.n, i), 6),
-      d_bps: r.index != null && r.ru_index ? _round((r.index / r.ru_index - 1) * 10000, 3) : null,
     }));
   }
   const cell = (v) => {
@@ -256,13 +250,13 @@ function downloadCsv(text, name) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function DayGroup({ g, open, onToggle, lagLbl, marginBps, deltaOf }) {
+function DayGroup({ g, open, onToggle, lagLbl, marginBps }) {
   const mismatch = g.projected_pct != null && g.mean_pct != null && g.projected_pct !== g.mean_pct;
   const nFwd = g.rows.length - g.n_fact;
   return (
     <>
       <tr className="daygroup" onClick={onToggle}>
-        <td className="left" colSpan={11}>
+        <td className="left" colSpan={9}>
           <div className="dg-head">
             <span className="dg-caret">{open ? "▾" : "▸"}</span>
             <b>Купон #{g.n}</b>
@@ -282,20 +276,10 @@ function DayGroup({ g, open, onToggle, lagLbl, marginBps, deltaOf }) {
               <span className="dg-chip" title="рост официального индекса RUONIA ЦБ за этот период (за концом факта — путь роллирования базы Y-IDX)">
                 RUONIA ЦБ <b>{fmt.pct(g.ru_index_rate_pct, 4)}%</b> год.</span>
             )}
-            {g.index_end != null && (
-              <span className="dg-chip" title="уровни индекса базы на границах периода">
-                индекс <b>{_idx(g.index_start)} → {_idx(g.index_end)}</b>
-                {g.index_rate_pct != null && <> = <b>{fmt.pct(g.index_rate_pct, 4)}%</b> год.</>}
-              </span>
-            )}
           </div>
         </td>
       </tr>
       {open && g.rows.map((r, i) => {
-        const dRub = deltaOf(g.n, i);
-        // расхождение с эталоном ЦБ накопленным итогом: у RUONIA-бумаги с лагом 0
-        // колонки обязаны совпасть, лаг/другая база разводят их предсказуемо
-        const dBps = r.index != null && r.ru_index ? (r.index / r.ru_index - 1) * 10000 : null;
         return (
           <tr key={g.n + "-" + i}
               className={(r.src === "fact" ? "past" : "") + (_isOff(r.day) ? " dayoff" : "")}>
@@ -303,11 +287,8 @@ function DayGroup({ g, open, onToggle, lagLbl, marginBps, deltaOf }) {
             <td className="left">{fmt.date(r.day)} <span className="dim">{_wd(r.day)}</span></td>
             <td className="left">{fmt.date(r.obs_date)} <span className="dim">{_wd(r.obs_date)}</span></td>
             <td>{r.rate_pct != null ? fmt.pct(r.rate_pct, 4) : "—"}</td>
-            <td title="доход базы за этот день на 1000 ₽ = прирост индекса × 1000">
-              {dRub != null ? dRub.toFixed(4).replace(".", ",") : "—"}</td>
-            <td className="mono-idx">{_idx(r.index)}</td>
+            <td>{r.ru_rate_pct != null ? fmt.pct(r.ru_rate_pct, 4) : "—"}</td>
             <td className="mono-idx">{_idx(r.ru_index)}</td>
-            <td className="dim">{dBps != null ? fmt.devBps(dBps) : "—"}</td>
             <td className="left">
               <span className={"src-badge " + (r.src === "fact" ? "src-fact" : "src-fwd")}>
                 {r.src === "fact" ? "ЦБ" : "фвд"}</span>
@@ -342,23 +323,6 @@ export function DayRatesModal({ isin, onClose }) {
   });
   const allOpen = coupons.length > 0 && coupons.every((g) => isOpen(g.n));
 
-  // прирост индекса за день = уровень СЛЕДУЮЩЕЙ строки − текущий. Индекс
-  // сквозной через купоны, поэтому последняя строка периода берёт первую строку
-  // следующего — разрыва на границе купонов нет.
-  const nextIndex = useMemo(() => {
-    const flat = [];
-    for (const g of coupons) g.rows.forEach((r, i) => flat.push([g.n + "-" + i, r.index]));
-    const m = new Map();
-    for (let k = 0; k < flat.length - 1; k++) m.set(flat[k][0], flat[k + 1][1]);
-    return m;
-  }, [coupons]);
-  const deltaOf = (n, i) => {
-    const g = coupons.find((c) => c.n === n);
-    const cur = g?.rows[i]?.index;
-    const nxt = nextIndex.get(n + "-" + i);
-    return cur != null && nxt != null ? (nxt - cur) * 1000 : null;
-  };
-
   const lagLbl = d ? `${d.spec?.lag ?? 0} ${d.spec?.lag_unit === "work" ? "раб." : "кал."} дн` : "";
   return (
     <div className="daymodal-overlay" onClick={onClose}>
@@ -368,7 +332,7 @@ export function DayRatesModal({ isin, onClose }) {
           <span className="dm-head-btns">
             <button className="btn day-btn" disabled={!coupons.length}
               title="Плоская таблица всех дней всех купонов, без строк-саммари"
-              onClick={() => downloadCsv(daysCsv(d, deltaOf),
+              onClick={() => downloadCsv(daysCsv(d),
                 `fixing_days_${isin}_${d.calc_date || ""}.csv`)}>
               ⭳ CSV
             </button>
@@ -408,11 +372,9 @@ export function DayRatesModal({ isin, onClose }) {
                     <th title="номер дня внутри купонного периода">#</th>
                     <th className="left">День</th>
                     <th className="left" title={`день начисления минус лаг (${lagLbl})`}>Наблюдение</th>
-                    <th title="значение базы на дату наблюдения">Ставка %</th>
-                    <th title="доход базы за этот день на 1000 ₽ номинала">Δ ₽/1000</th>
-                    <th title="накопленный индекс базы, сквозной через все купоны: старт 1,0">Индекс</th>
-                    <th title="ЭТАЛОН: официальный накопленный индекс RUONIA ЦБ, нормированный на первый день раскладки (старт 1,0). За концом факта ЦБ — путь роллирования, из которого считается доходность индекса в Y-IDX">RUONIA</th>
-                    <th title="расхождение расчётного индекса базы с эталоном RUONIA, накопленным итогом">Δ bps</th>
+                    <th title="значение базы бумаги на дату наблюдения (с лагом фиксинга)">Ставка {baseLabel(d.base)} %</th>
+                    <th title="дневная ставка RUONIA этого дня: факт ЦБ (на нерабочих — перенос последнего фиксинга), дальше ступень RUONIA-кривой">Ставка RUONIA %</th>
+                    <th title="официальный накопленный индекс RUONIA ЦБ, нормированный на первый день раскладки (старт 1,0). За концом факта — путь роллирования, из которого считается доходность индекса в Y-IDX">Индекс RUONIA</th>
                     <th className="left" title="ЦБ — опубликованный факт; фвд — форвардная ступень кривой">Ист.</th>
                     <th title="цена закрытия дня из spread_daily">Close %</th>
                     <th title="Y-IDX того дня из spread_daily — та же серия, что график «Динамика DM»">R-spread</th>
@@ -421,7 +383,7 @@ export function DayRatesModal({ isin, onClose }) {
                 <tbody>
                   {coupons.map((g) => (
                     <DayGroup key={g.n} g={g} open={isOpen(g.n)} onToggle={() => toggle(g.n)}
-                      lagLbl={lagLbl} marginBps={d.spec?.margin_bps} deltaOf={deltaOf} />
+                      lagLbl={lagLbl} marginBps={d.spec?.margin_bps} />
                   ))}
                 </tbody>
               </table>
@@ -429,9 +391,10 @@ export function DayRatesModal({ isin, onClose }) {
                 Серые строки — уже реализованный факт ЦБ, светлые — прогноз по кривой.
                 Подсветка фона — выходные (ставка переносится с последнего фиксинга).
                 Close / R-spread берутся из spread_daily — сверка раскладки с историческим
-                калькулятором спредов. Колонка RUONIA — официальный индекс ЦБ (за концом факта
-                продолжен путём роллирования, из которого считается доходность индекса в Y-IDX);
-                Δ bps — накопленное расхождение с расчётным индексом базы слева.
+                калькулятором спредов. Индекс RUONIA — официальный накопленный индекс ЦБ,
+                за концом факта продолженный путём роллирования, из которого считается
+                доходность индекса в Y-IDX: отношение его уровней на дату поставки и на
+                погашение, в степени 365/дней, и есть база Y-IDX.
               </div>
             </div>
           </>

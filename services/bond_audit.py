@@ -724,7 +724,7 @@ def _ruonia_ref_series(groups: list, ruonia_curve, calc_date: date) -> None:
     во фронте схлопывается в прочерки.
     """
     from core.valuation import _ruonia_path
-    from services.coupon_calib import ruonia_index_levels
+    from services.coupon_calib import ruonia_index_levels, index_history, _rate_at
 
     rows_all = [r for g in groups for r in g["rows"]]
     if not rows_all:
@@ -762,11 +762,42 @@ def _ruonia_ref_series(groups: list, ruonia_curve, calc_date: date) -> None:
             return None
         return (anchor_lvl / base_lvl) * path.growth_to(d)
 
+    # ДНЕВНАЯ СТАВКА RUONIA рядом с уровнем индекса: та, что начисляет доход
+    # ЭТОГО дня (факт ЦБ — с переносом последнего фиксинга на нерабочие дни,
+    # дальше — ступень RUONIA-кривой). Именно из неё растёт соседняя колонка,
+    # так что рост индекса за день проверяется в уме.
+    ru_hist = None
+    try:
+        ru_hist = index_history("RUONIA")
+    except Exception as e:
+        logger.warning(f"история RUONIA для эталона: {e}")
+
+    # край ФАКТА СТАВОК — свой, не край факта индекса: SOAP-выгрузка индекса
+    # отстаёт от дневного ряда RUONIA (а при сбое ЦБ живёт на кэше), и по краю
+    # индекса ставка подменялась форвардом при живом факте
+    ru_last = ru_hist[0][-1] if (ru_hist and ru_hist[0]) else None
+
+    def _ru_rate(d: date):
+        if ru_hist and ru_last and d <= ru_last:
+            v = _rate_at(ru_hist, d)
+            if v is not None:
+                return round(v, 4)
+        if ruonia_curve is None:
+            return None
+        try:
+            return round(ruonia_curve.daily_forward(d) * 100.0, 4)
+        except Exception:
+            return None
+
     for g in groups:
         for r in g["rows"]:
-            v = _norm(_parse_d(r["day"]))
+            day = _parse_d(r["day"])
+            v = _norm(day)
             if v is not None:
                 r["ru_index"] = round(v, 10)
+            rr = _ru_rate(day)
+            if rr is not None:
+                r["ru_rate_pct"] = rr
         s_d, e_d = _parse_d(g["start"]), _parse_d(g["end"])
         lo = _norm(_parse_d(g["rows"][0]["day"])) if g["rows"] else None
         hi = _norm(e_d)
