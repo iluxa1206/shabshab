@@ -867,14 +867,17 @@ async def snapshot_bond_day_today(client: Optional[httpx.AsyncClient] = None) ->
         cur = bccy.get(board) or "SUR"
         # VALTODAY_RUR — рублёвый эквивалент от самой биржи; на рублёвом борде
         # он равен VALTODAY, а на валютном избавляет от нашего курса
-        val = row[g.get("VALTODAY_RUR")] if "VALTODAY_RUR" in g else None
+        val = row[g["VALTODAY_RUR"]] if "VALTODAY_RUR" in g else None
         if not val:
-            val = row[g["VALTODAY"]] if cur == "SUR" else None
+            val = row[g["VALTODAY"]] if cur == "SUR" and "VALTODAY" in g else None
         if not val:
             continue
-        out.append((meta.get("isin") or sec, day, board, sec, row[g.get("NUMTRADES")],
-                    float(val), row[g.get("WAPRICE")], row[g.get("LAST")],
-                    row[g.get("VOLTODAY")], meta.get("face"), cur))
+        # колонку, которой ISS не прислал, читаем как пустую: row[None] упал бы
+        # TypeError и уронил весь снимок из-за одного отсутствующего поля
+        col = lambda n: row[g[n]] if n in g else None
+        out.append((meta.get("isin") or sec, day, board, sec, col("NUMTRADES"),
+                    float(val), col("WAPRICE"), col("LAST"),
+                    col("VOLTODAY"), meta.get("face"), cur))
     if not out:
         return 0
 

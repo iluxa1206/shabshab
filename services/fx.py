@@ -359,12 +359,14 @@ async def backfill_history(days: int = 400) -> dict:
             got[ccy] = hist
             for day, rate in hist.items():
                 saved += save_rates(day, {ccy: rate}, {ccy: "tom"})
-        # ЦБ — вторым заходом и только по валютам, где MOEX не дал ничего
-        # (неликвидная пара, сбой ISS). Он же покрывает выходные своим
-        # официальным курсом, но ступеньку с TOM мы предпочитаем не плодить.
+        # ЦБ — вторым заходом, по ДНЯМ, которых у MOEX нет. Валюту целиком он
+        # закрывает, когда пара неликвидна (EUR TOM не торгуется вовсе), но
+        # дыры бывают и точечные: USD TOM не давал WAPRICE до февраля 2026,
+        # и по одному признаку «MOEX что-то отдал» вся прошлая история USD
+        # осталась бы пустой. Уже записанные дни не трогаем — ступеньку между
+        # биржевым и официальным курсом внутри одного ряда плодить незачем.
         for ccy, vid in _CBR_IDS.items():
-            if got.get(ccy):
-                continue
+            have_days = set((got.get(ccy) or {}))
             try:
                 r = await client.get(CBR_DYNAMIC_URL, timeout=20, follow_redirects=True,
                                      headers={"User-Agent": _UA},
@@ -377,6 +379,8 @@ async def backfill_history(days: int = 400) -> dict:
                 logger.warning("fx backfill cbr %s: %s", ccy, e)
                 continue
             for day, rate in hist.items():
+                if day in have_days:
+                    continue
                 saved += save_rates(day, {ccy: rate}, {ccy: "cbr"})
     return {"saved": saved, "from": frm.isoformat(), "till": till.isoformat(),
             "archive": archive_stats()}
