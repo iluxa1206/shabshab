@@ -10,6 +10,7 @@ EUR_RUB__TOM): LAST → WAPRICE → PREVPRICE. Кэш память TTL 60с — 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import xml.etree.ElementTree as ET
@@ -167,7 +168,7 @@ async def get_fx() -> dict:
         data = {"rates": rates, "source": source, "label": label or "?"}
         _mem.update({"ts": now, "data": data})
         _save_disk(data)
-        _remember(rates, source)
+        await _remember(rates, source)
         return data
 
     # stale: диск → память → голый рубль
@@ -200,23 +201,29 @@ MOEX_HISTORY_URL = ("https://iss.moex.com/iss/history/engines/currency/markets/s
 _UA = "Mozilla/5.0 (compatible; floaters-desk/1.0)"
 
 
-def _remember(rates: Dict[str, float], source: Dict[str, str]) -> None:
+async def _remember(rates: Dict[str, float], source: Dict[str, str]) -> None:
     """Кладёт сегодняшний курс в архив. Дебаунс по времени: get_fx зовётся
     десятками раз в минуту, а запись нужна раз в несколько минут — день всё
     равно перезаписывается последним значением.
 
-    Ошибку записи глотаем: курс для расчётов уже получен, а падать из-за
-    занятой базы слой котировок не должен."""
+    Запись — В ПОТОКЕ: SQLite синхронный, а базу непрерывно пишет живой поток
+    тиков; прямой вызов из корутины держал бы event loop до 10 секунд (столько
+    ждёт замка соединение), то есть ровно тот лаг ядра, за которым следит
+    сторож в api.main.
+
+    Ошибку глотаем: курс для расчётов уже получен, а падать из-за занятой базы
+    слой котировок не должен."""
     now = time.monotonic()
     today = date.today().isoformat()
     if _arch["day"] == today and now - _arch["at"] < _ARCHIVE_MIN_SEC:
         return
+    # знак ставим ДО записи: иначе десяток параллельных вызовов get_fx уйдёт в
+    # поток одновременно, и дебаунс перестанет что-либо ограничивать
+    _arch.update({"at": now, "day": today})
     try:
-        save_rates(today, rates, source)
+        await asyncio.to_thread(save_rates, today, rates, source)
     except Exception as e:
         logger.warning("fx archive: %s", e)
-        return
-    _arch.update({"at": now, "day": today})
 
 
 def save_rates(day: str, rates: Dict[str, float],

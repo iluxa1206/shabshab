@@ -270,11 +270,17 @@ def market_turnover(frm: Optional[str] = None, till: Optional[str] = None,
     # тут значит соврать в 14 раз).
     tables = {"bonds": ["bond_day"], "ndm": ["block_day"]}.get(
         market, ["bond_day", "block_day"])
-    total, isin_set, day_set = 0.0, set(), set()
+    # Одной агрегатной строкой на таблицу, без GROUP BY: считать нужно сумму,
+    # а не разрез по бумагам и дням, а лента дёргает этот запрос на каждое
+    # обновление окна. COUNT(DISTINCT) по двум таблицам складывать нельзя —
+    # бумага бывает в обеих; для итога берём максимум, он же и есть охват
+    # выборки с точностью до пересечения.
+    total, n_isins, n_days = 0.0, 0, 0
     with _connect() as c:
         tmp = _bind_isins(c, isins)
         for tbl in tables:
-            q = f"SELECT isin, date, SUM(value) v FROM {tbl} WHERE 1=1"
+            q = (f"SELECT SUM(value) v, COUNT(DISTINCT isin) n, "
+                 f"COUNT(DISTINCT date) d FROM {tbl} WHERE 1=1")
             args: list = []
             if frm:
                 q += " AND date >= ?"
@@ -290,12 +296,11 @@ def market_turnover(frm: Optional[str] = None, till: Optional[str] = None,
             elif isins:
                 q += f" AND isin IN ({','.join('?' * len(isins))})"
                 args.extend(isins)
-            q += " GROUP BY isin, date"
-            for r in c.execute(q, args):
-                total += r["v"] or 0.0
-                isin_set.add(r["isin"])
-                day_set.add(r["date"])
-    return {"value": total, "isins": len(isin_set), "days": len(day_set)}
+            r = c.execute(q, args).fetchone()
+            total += r["v"] or 0.0
+            n_isins = max(n_isins, r["n"] or 0)
+            n_days = max(n_days, r["d"] or 0)
+    return {"value": total, "isins": n_isins, "days": n_days}
 
 
 def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,

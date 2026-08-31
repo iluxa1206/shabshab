@@ -265,8 +265,15 @@ def upsert_trades(rows: list[dict], market: str, secmap: dict,
             continue
         ts = _ts(r)
         val = float(val)
-        cur = bccy.get(r.get("BOARDID")) or meta.get("cur")
-        if cur and cur != "SUR":
+        # ВАЛЮТА ТОЛЬКО ПО БОРДУ. Справочник бумаги для этого непригоден: у
+        # XS0114288789 (RUS-30) CURRENCYID='USD' — он снят с валютного борда
+        # TQOD, а сделка идёт на рублёвом TQCB, где биржа уже отдаёт VALUE в
+        # рублях. Доверять справочнику значило домножить рублёвую сумму на курс
+        # (замер: 3456 ₽ вместо 40,4). Карта бордов пуста (ISS недоступен) —
+        # не конвертируем вовсе: помечаем валютой справочника, такие строки
+        # везде исключаются из рублёвых итогов.
+        cur = (bccy.get(r.get("BOARDID")) or "SUR") if bccy else meta.get("cur")
+        if bccy and cur and cur != "SUR":
             key = (cur, ts[:10])
             if key not in rate_cache:
                 rate_cache[key] = fx_svc.rate_on(cur, ts[:10])

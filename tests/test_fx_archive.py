@@ -54,13 +54,15 @@ def test_rates_by_day_carries_edge_value(fx):
     assert m["2026-07-31"] == pytest.approx(79.0)
 
 
-def test_remember_debounced(fx, monkeypatch):
-    """get_fx зовётся десятками раз в минуту — архив пишем реже."""
+@pytest.mark.asyncio
+async def test_remember_debounced(fx, monkeypatch):
+    """get_fx зовётся десятками раз в минуту — архив пишем реже. Сама запись
+    уходит в поток: SQLite синхронный, а базу непрерывно пишет поток тиков."""
     calls = []
     monkeypatch.setattr(fx, "save_rates",
                         lambda day, rates, source=None: calls.append(day))
-    fx._remember({"USD": 85.0}, {})
-    fx._remember({"USD": 85.1}, {})
+    await fx._remember({"USD": 85.0}, {})
+    await fx._remember({"USD": 85.1}, {})
     assert len(calls) == 1
 
 

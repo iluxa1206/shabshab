@@ -194,3 +194,38 @@ async def test_repair_currency_days_fixes_history(bt, monkeypatch):
     with mod._connect() as c:
         assert c.execute("SELECT value FROM block_day").fetchone()[0] \
             == pytest.approx(1_280_000.0)
+
+
+@pytest.mark.asyncio
+async def test_currency_taken_from_board_not_security(bt, monkeypatch):
+    """Валюта расчётов — только по БОРДУ. У XS0114288789 (RUS-30) в справочнике
+    CURRENCYID='USD' (снят с валютного борда TQOD), но сделка на рублёвом TQCB
+    приходит уже в рублях: доверие справочнику домножало её на курс — 3456 ₽
+    вместо 40,4."""
+    mod, _tape, fx = bt
+    fx.save_rates("2026-08-31", {"USD": 85.6})
+    secmap = {"XS0114288789": {"isin": "XS0114288789", "face": 0.04, "cur": "USD"}}
+    rows = [{"TRADENO": 1, "SECID": "XS0114288789", "BOARDID": "TQCB",
+             "TRADEDATE": "2026-08-31", "TRADETIME": "12:00:00",
+             "PRICE": 100.95, "QUANTITY": 1, "VALUE": 40.38, "BUYSELL": "B"}]
+    assert mod.upsert_trades(rows, "bonds", secmap, {"TQOD": "USD"})[0] == 1
+    with mod._connect() as c:
+        r = dict(c.execute("SELECT value, cur FROM block_trade").fetchone())
+    assert r["value"] == pytest.approx(40.38) and r["cur"] == "SUR"
+
+
+@pytest.mark.asyncio
+async def test_no_board_map_means_no_conversion(bt):
+    """Карта бордов недоступна (ISS молчит) — не конвертируем вовсе: сумма
+    остаётся как пришла и помечается валютой справочника, а такие строки везде
+    исключаются из рублёвых итогов."""
+    mod, _tape, fx = bt
+    fx.save_rates("2026-08-31", {"CNY": 12.8})
+    secmap = {"RU000A0000C3": {"isin": "RU000A0000C3", "face": 10000.0, "cur": "CNY"}}
+    rows = [{"TRADENO": 2, "SECID": "RU000A0000C3", "BOARDID": "TQOY",
+             "TRADEDATE": "2026-08-31", "TRADETIME": "12:00:00",
+             "PRICE": 100.0, "QUANTITY": 1, "VALUE": 10000.0, "BUYSELL": "B"}]
+    assert mod.upsert_trades(rows, "bonds", secmap, {})[0] == 1
+    with mod._connect() as c:
+        r = dict(c.execute("SELECT value, cur FROM block_trade").fetchone())
+    assert r["value"] == pytest.approx(10000.0) and r["cur"] == "CNY"
