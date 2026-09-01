@@ -17,12 +17,13 @@ async def get_primary_calendar():
     только когда обе цифры с одной кривой.
 
     Сбой прайсинга не роняет витрину: строки уедут без model, таблица покажет
-    ориентир организатора текстом — как до появления колонки.""" 
+    ориентир организатора текстом — как до появления колонки."""
     from services.primary_calendar import get_calendar
     from services.primary_pricing import price_rows_cached
     data = await get_calendar()
     try:
-        data["rows"] = await price_rows_cached(data["rows"])
+        models = await price_rows_cached(data["rows"])
+        data["rows"] = [{**r, "model": m} for r, m in zip(data["rows"], models)]
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("первичка: спреды не посчитаны: %s", e)

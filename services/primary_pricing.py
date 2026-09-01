@@ -188,9 +188,13 @@ async def price_row(row: dict) -> dict | None:
     }
 
 
-async def price_rows(rows: list[dict]) -> list[dict]:
-    """Спреды всей выгрузки. Строки независимы — считаем разом; движок ходит
-    только в day-кэши кривых, сети здесь нет."""
+async def price_rows(rows: list[dict]) -> list[dict | None]:
+    """Спреды всей выгрузки — СПИСОК РАСЧЁТОВ в порядке строк, а не сами строки.
+
+    Модуль намеренно не собирает витрину: строки живут своей жизнью (метка
+    «новое» пересчитывается на каждый запрос от сегодняшней даты), и если
+    склеить их здесь, мемо ниже заморозило бы вчерашнюю метку вместе с
+    расчётом. Склейка — на вызывающей стороне."""
     results = await asyncio.gather(*(price_row(r) for r in rows),
                                    return_exceptions=True)
     out = []
@@ -198,11 +202,11 @@ async def price_rows(rows: list[dict]) -> list[dict]:
         if isinstance(res, Exception):
             logger.warning("первичка %s: %s", r.get("issuer"), res)
             res = None
-        out.append({**r, "model": res})
+        out.append(res)
     return out
 
 
-_cache: dict = {"key": None, "rows": None}
+_cache: dict = {"key": None, "models": None}
 _lock = asyncio.Lock()
 
 
@@ -222,15 +226,16 @@ def _key(rows: list[dict]) -> tuple:
             hashlib.sha1(src.encode()).hexdigest()[:16])
 
 
-async def price_rows_cached(rows: list[dict]) -> list[dict]:
+async def price_rows_cached(rows: list[dict]) -> list[dict | None]:
     """То же, но с мемо: полный прогон ~80 мс чистого CPU на event loop, а
-    выгрузка меняется раз в сутки и кривые — раз в котировку."""
+    выгрузка меняется раз в сутки и кривые — раз в котировку. Кэшируются ТОЛЬКО
+    расчёты — см. price_rows о том, почему не строки."""
     key = _key(rows)
-    if _cache["key"] == key and _cache["rows"] is not None:
-        return _cache["rows"]
+    if _cache["key"] == key and _cache["models"] is not None:
+        return _cache["models"]
     async with _lock:
-        if _cache["key"] == key and _cache["rows"] is not None:
-            return _cache["rows"]
+        if _cache["key"] == key and _cache["models"] is not None:
+            return _cache["models"]
         out = await price_rows(rows)
-        _cache["key"], _cache["rows"] = key, out
+        _cache["key"], _cache["models"] = key, out
         return out
