@@ -1,6 +1,15 @@
-"""Общий слой стакана: построение per-level metrics_fn(price) под тип бумаги
+"""Общий слой стакана: построение per-level метрик под тип бумаги
 (флоатер: Y-IDX+DM+YTM, Y-IDX — первичная метрика; фикс: YTM+g-спред).
-Переиспользуют роут /api/orderbook и фоновый монитор алертов — один источник расчёта."""
+Переиспользуют роут /api/orderbook и фоновый монитор алертов — один источник расчёта.
+
+ДВА ИНТЕРФЕЙСА НА ОДНОМ КОНТЕКСТЕ:
+  • build_levels_fn → levels_fn(СПИСОК цен) — основной. Поток, кривая и base leg
+    от цены не зависят, поэтому вся лестница считается ОДНИМ проходом: замер
+    28.08.2026 — 0,5 мс на цену против 33 мс за отдельный reprice_at_price
+    (×65). Лестница на 60 уровней стоила 2 с, причём в event loop.
+  • build_metrics_fn → metrics_fn(ОДНА цена) — совместимость для потребителей,
+    которые считают цены поштучно с собственным мемо (лента сделок).
+"""
 import os
 import logging
 from datetime import date
@@ -11,10 +20,20 @@ from services.exceptions import NotFoundException
 logger = logging.getLogger(__name__)
 
 
-async def build_metrics_fn(isin: str, kind: str = "floater"):
-    """→ (metrics_fn, calc_date, face). metrics_fn(price) даёт
-    {yield_pct, dm_bps?, g_spread_bps?} под тип бумаги. Тёплый контекст строится
-    один раз на выпуск, далее reprice по уровням без I/O. Бросает NotFoundException."""
+def _px(p) -> float:
+    """Ключ цены уровня. 4 знака — как у y_idx_many и fixed_side_metrics: цены
+    приходят из стакана Alor и из шага лестницы, ключи обязаны совпадать."""
+    return round(float(p), 4)
+
+
+async def build_levels_fn(isin: str, kind: str = "floater", horizon: str = "auto"):
+    """→ (levels_fn, calc_date, face). levels_fn(prices) даёт {цена: метрики}
+    ОДНИМ проходом по бумаге. Тёплый контекст строится один раз на выпуск, далее
+    счёт без I/O. Бросает NotFoundException.
+
+    horizon — «auto» (правило цены НА КАЖДОМ уровне: цена уровня своя, значит и
+    решение «сдам на оферту / держу до погашения» своё) либо явный ключ свитчера
+    карточки."""
     if kind == "fixed":
         from services import fixed_income as fi
         uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
@@ -28,35 +47,85 @@ async def build_metrics_fn(isin: str, kind: str = "floater"):
         calc_date = cd or rd or date.today()
         face = row.get("face")
 
-        def metrics_fn(price):
-            m = fi.compute_fixed_row(row, full_sched, g, calc_date, price_override=price)
-            return {"g_spread_bps": m.get("g_spread_bps"), "yield_pct": m.get("ytm")}
-        return metrics_fn, calc_date, face
+        def levels_fn(prices):
+            # у фикса батч уже есть — тот же, которым витрина считает стороны
+            got = fi.fixed_side_metrics(row, full_sched, g, calc_date,
+                                        [p for p in prices if p is not None])
+            return {p: {"g_spread_bps": (got.get(_px(p)) or {}).get("g_spread_bps"),
+                        "yield_pct": (got.get(_px(p)) or {}).get("ytm")}
+                    for p in prices if p is not None}
+        return levels_fn, calc_date, face
 
     # флоатер
     from services.paths import cache_path as _cache_path
-    from services.bond_details import load_reprice_ctx, reprice_at_price
+    from services.bond_details import load_reprice_ctx
     cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     ctx = await load_reprice_ctx(isin, cache)
     face = getattr(ctx["ref_obj"], "face_value", None)
 
-    def metrics_fn(price):
-        # горизонт уровня — по правилу цены (как в /orderbook и в карточке),
-        # рядом кладём второй горизонт: свитчер «погашение ↔ оферта» на графике
-        # переключается по готовым числам, без пересчёта
-        from services.valuation import horizon_pair
-        m = reprice_at_price(ctx, price)
-        h, alt, alt_key = horizon_pair(m)
-        return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
-                "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
-                "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
-                "horizon": h.get("horizon"),
-                "y_idx_alt_bps": alt.get("yield_over_index_bps"),
-                "alt_horizon": alt.get("horizon") if alt else None}
-    return metrics_fn, ctx["calc_date"], face
+    def levels_fn(prices):
+        """Все уровни ОДНИМ calculate_valuation_metrics: поток, кривая и base leg
+        от цены не зависят и строятся один раз, на цену остаётся XIRR и солвер DM.
+        Поштучный reprice на уровень стоил ×65 (замер 28.08.2026)."""
+        from services.valuation import (calculate_valuation_metrics, horizon_at_price,
+                                        alt_horizon)
+        want = []
+        for p in prices or []:
+            if p is None:
+                continue
+            k = _px(p)
+            if k > 0 and k not in want:
+                want.append(k)
+        if not want:
+            return {}
+        try:
+            m = calculate_valuation_metrics(
+                ctx["ref_obj"], want[0], ctx["curve"], ctx["calc_date"],
+                accrued_override=ctx["accrued_live"], periods=ctx["periods"],
+                amorts=ctx["amorts"], offers=ctx["offers"],
+                ruonia_curve=ctx.get("ruonia_curve"),
+                accrued_date=ctx.get("accrued_date"),
+                alt_prices=want, alt_dm=True)
+        except Exception as e:
+            logger.debug("levels %s: %s", isin, e)
+            return {}
+        hzs = m.get("horizons") or {}
+        out = {}
+        for k in want:
+            hz = horizon_at_price(k, m) if horizon in (None, "", "auto") else horizon
+            if hz not in hzs:
+                hz = "maturity"
+            h = hzs.get(hz) or {}
+            alt_key = alt_horizon(hz, hzs)
+            alt = hzs.get(alt_key) or {}
+            out[k] = {
+                "y_idx_bps": (h.get("y_idx_by_price") or {}).get(k),
+                "yield_pct": (h.get("ytm_by_price") or {}).get(k),
+                "dm_bps": (h.get("dm_by_price") or {}).get(k),
+                "horizon": hz,
+                # спред ко ВТОРОМУ горизонту едет рядом: свитчер «погашение ↔
+                # оферта» переключает готовое число, без пересчёта
+                "y_idx_alt_bps": (alt.get("y_idx_by_price") or {}).get(k),
+                "alt_horizon": alt_key,
+            }
+        return out
+    return levels_fn, ctx["calc_date"], face
 
-# Потолок синтетических уровней лестницы: каждый новый уровень — это reprice по
-# своей цене (в WS они кэшируются по цене, в HTTP считаются заново).
+
+async def build_metrics_fn(isin: str, kind: str = "floater", horizon: str = "auto"):
+    """→ (metrics_fn, calc_date, face) — ОДНА цена за вызов, поверх levels_fn.
+
+    Для потребителей с собственным мемо по ценам (лента сделок). Считающим
+    лестницу целиком нужен levels_fn: там батч дешевле в десятки раз."""
+    levels_fn, calc_date, face = await build_levels_fn(isin, kind, horizon)
+
+    def metrics_fn(price):
+        return levels_fn([price]).get(_px(price), {})
+    return metrics_fn, calc_date, face
+
+
+# Потолок синтетических уровней лестницы: цены считаются батчем (levels_fn), но
+# сам поток на уровень всё же XIRR + солвер DM — держим лестницу в границах.
 MAX_LADDER = 60
 
 
@@ -72,6 +141,22 @@ def build_ladder(raw_bids, raw_asks, level_fn, max_levels: int = MAX_LADDER):
     режим «только заявки» в карточке гасил WS-подписку, роняя обновление стакана
     с 800 мс до 3 с поллинга.
     """
+    plan = ladder_plan(raw_bids, raw_asks, max_levels)
+    if plan is None:
+        return None
+    bids, asks = [], []
+    for price, qty in plan["levels"]:
+        lvl = level_fn(price, qty)
+        (asks if price > plan["mid"] else bids).append(lvl)
+    return bids, asks
+
+
+def ladder_plan(raw_bids, raw_asks, max_levels: int = MAX_LADDER):
+    """Сетка уровней лестницы БЕЗ метрик: {"levels": [(цена, объём|None), ...],
+    "mid": цена деления сторон}.
+
+    Отдельно от build_ladder, потому что цены надо знать ДО расчёта: метрики
+    считаются на весь список одним проходом (levels_fn), а не по уровню за раз."""
     if not (raw_bids or raw_asks):
         return None
     prices = sorted({p for p, _ in list(raw_bids) + list(raw_asks)})
@@ -87,9 +172,8 @@ def build_ladder(raw_bids, raw_asks, level_fn, max_levels: int = MAX_LADDER):
     best_ask = min((p for p, _ in raw_asks), default=None)
     mid = ((best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None
            else (best_bid if best_bid is not None else best_ask))
-    bids, asks = [], []
+    levels = []
     for i in range(nsteps + 1):
         price = round(lo + i * step, 4)
-        lvl = level_fn(price, qty_at.get(price))
-        (asks if price > mid else bids).append(lvl)
-    return bids, asks
+        levels.append((price, qty_at.get(price)))
+    return {"levels": levels, "mid": mid}

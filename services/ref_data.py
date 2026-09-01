@@ -46,35 +46,155 @@ def _cell_iso(v) -> Optional[str]:
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", str(v).strip())
     return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
 
-# Имена колонок в bondsearch-выгрузке (сопоставление по заголовку, не по индексу)
+# Имена колонок в bondsearch-выгрузке. Сопоставление по ЗАГОЛОВКУ, не по индексу:
+# выгрузка меняет состав и порядок колонок от версии к версии. Заголовок
+# нормализуется (регистр/пробелы/пунктуация/ё), поэтому «Мин. торг. лот/Номинал»
+# и «Мин торг лот / номинал» — одно и то же. Значение — список алиасов, первый
+# найденный побеждает. Свой формат выгрузки подключается БЕЗ правки кода: файл
+# bondsearch_columns.json рядом с xlsx ({"ключ": "Заголовок в моём файле", ...})
+# — его алиасы встают ПЕРЕД встроенными (см. _load_col_overrides).
 _COL = {
-    "isin": ["ISIN"],
-    "name": ["Бумага", "Название"],
+    "isin": ["ISIN", "ISIN код"],
+    "name": ["Бумага", "Название", "Наименование"],
     "base": ["Базовая ставка", "Базовый индекс (для FRN)"],
+    # ВНИМАНИЕ: значение колонки трактуется как ПРОЦЕНТЫ (×100 → bps). Алиас,
+    # который в чужом файле может оказаться в базисных пунктах («Спред, бп»),
+    # сюда добавлять нельзя — ошибка будет тихой, в 100 раз.
     "margin": ["Маржа", "Премия/Дисконт к базовому индексу (для FRN)"],
-    "day_count": ["Метод расчета НКД"],
+    "day_count": ["Метод расчета НКД", "Базис НКД"],
     "freq": ["Периодичность купона", "Купон (раз/год)"],
     "var_type": ["Тип переменной ставки купона"],
+    "rate_type": ["Тип ставки"],          # Плавающая | Фиксированная | Смешанная
     "put": ["Оферта (put)"],
+    "call": ["Оферта (call)"],
     "coupon_text": ["Купон"],   # текст формулы из проспекта: режим фиксинга + лаг
-    "maturity": ["Погашение"],
-    "issue": ["Начало начисления купонов", "Начало обращения"],
+    "maturity": ["Погашение", "Дата погашения"],
+    "issue": ["Начало начисления купонов", "Начало обращения", "Дата размещения"],
     "face": ["Мин. торг. лот / Номинал", "Номинал"],
     "cbonds_id": ["Cbonds ID"],   # для прямой ссылки cbonds.ru/bonds/{id}/
+    "amort": ["Амортизация"],
+    "face_index": ["Индексация номинала"],   # линкер: по индексу растёт НОМИНАЛ
+    "status": ["Статус"],                    # В обращении | Погашена | ...
+    # рейтинги агентств: для свежего выпуска corpbonds молчит неделями, а
+    # выгрузка рейтинг уже знает
+    "rt_acra": ["Рейтинг эмитента АКРА"],
+    "rt_expert": ["Рейтинг эмитента Эксперт РА"],
+    "rt_nkr": ["Рейтинг эмитента НКР"],
+    "rt_nra": ["Рейтинг эмитента НРА"],
 }
+
+# Файл-оверрайд карты колонок (свой формат выгрузки без правки кода)
+_COL_OVERRIDE_FILE = os.path.join(_DIR, "bondsearch_columns.json")
+
+
+def _norm_hdr(s) -> str:
+    """Заголовок → канон: нижний регистр, ё→е, без пунктуации и лишних пробелов."""
+    t = str(s or "").lower().replace("\u0451", "\u0435")
+    t = re.sub(r"[^0-9a-z\u0430-\u044f]+", " ", t)
+    return t.strip()
+
+
+def _load_col_overrides() -> Dict[str, list]:
+    """{ключ: [заголовки]} из bondsearch_columns.json (если есть). Ошибку файла
+    не поднимаем — карта колонок не должна ронять загрузку справочника."""
+    try:
+        with open(_COL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    out: Dict[str, list] = {}
+    for k, v in (raw or {}).items():
+        if k.startswith("_"):        # комментарии вида "_README" в самом файле
+            continue
+        if k not in _COL:
+            logger.warning("bondsearch_columns.json: неизвестный ключ «%s» — пропущен", k)
+            continue
+        out[k] = [v] if isinstance(v, str) else list(v or [])
+    return out
+
 
 _cbonds_cache: Optional[Dict[str, dict]] = None
 _manual_cache: Optional[Dict[str, dict]] = None
 
 
 def _hdr_index(headers: list) -> Dict[str, int]:
+    """{ключ _COL: индекс колонки} по нормализованным заголовкам файла.
+    Оверрайды из bondsearch_columns.json идут первыми; дальше — встроенные
+    алиасы; в самом конце — мягкий поиск «заголовок начинается с алиаса»
+    (выгрузка любит дописывать хвосты вида «, %» и «, бп»)."""
+    norm = [_norm_hdr(h) for h in headers]
+    ov = _load_col_overrides()
     idx = {}
     for key, names in _COL.items():
-        for nm in names:
-            if nm in headers:
-                idx[key] = headers.index(nm)
+        cands = [_norm_hdr(n) for n in (ov.get(key, []) + names)]
+        for nm in cands:
+            if nm in norm:
+                idx[key] = norm.index(nm)
+                break
+        if key in idx:
+            continue
+        for nm in cands:
+            # ЕДИНСТВЕННОЕ совпадение по префиксу: в выгрузке рядом живут «Купон»
+            # и «Купон привязан к инфляции», «ISIN» и «ISIN 144A». Если точной
+            # колонки нет, а префиксу отвечают двое — молча взять первую значит
+            # подсунуть в формулу купона «Нет». Неоднозначность = не сопоставили
+            # (лечится алиасом в bondsearch_columns.json).
+            hits = [i for i, h in enumerate(norm) if nm and h.startswith(nm)]
+            if len(hits) == 1:
+                idx[key] = hits[0]
                 break
     return idx
+
+
+def _cell_str(row, ix, key) -> Optional[str]:
+    """Ячейка по ключу карты колонок → строка (пустое/прочерк → None)."""
+    i = ix.get(key)
+    if i is None or i >= len(row):
+        return None
+    v = row[i]
+    if v is None:
+        return None
+    t = str(v).strip()
+    return t if t and t != "-" else None
+
+
+def _cell_date(row, ix, key) -> Optional[str]:
+    """Ячейка-дата по ключу карты колонок → ISO (короткая строка — не IndexError)."""
+    i = ix.get(key)
+    return _cell_iso(row[i]) if i is not None and i < len(row) else None
+
+
+def _yes(v: Optional[str]) -> Optional[bool]:
+    """«Да»/«Нет» выгрузки → bool (пусто → None, «не знаем»)."""
+    if v is None:
+        return None
+    t = v.lower()
+    return True if t.startswith(("да", "yes")) else (False if t.startswith(("нет", "no")) else None)
+
+
+# Порядок агентств для сводного рейтинга выпуска: берём первый непустой.
+_RATING_KEYS = ("rt_acra", "rt_expert", "rt_nkr", "rt_nra")
+
+
+# Шкала после нормализации: грейд + необязательная ступень. Всё, что не легло
+# в неё (Withdrawn, «-», выдумка), рейтингом НЕ считаем — иначе мусор уезжает в
+# реестр, а оттуда в фильтры витрин отдельной кнопкой.
+_RATING_RE = re.compile(r"^(AAA|AA|A|BBB|BB|B|CCC|CC|C|D)([+-])?$")
+# Суффиксы/префиксы агентств: «ruAA-», «AA-(RU)», «AA-|ru|», «AA-.ru» — одно и
+# то же значение, записанное четырьмя способами (в выгрузке встречаются все).
+_RATING_TRIM_RE = re.compile(r"\|RU\||\(RU\)|\.RU$|^RU", re.I)
+
+
+def _pick_rating(row, ix) -> Optional[str]:
+    """Сводный рейтинг эмитента из колонок агентств (первый распознанный)."""
+    for k in _RATING_KEYS:
+        raw = _cell_str(row, ix, k)
+        if not raw:
+            continue
+        t = _RATING_TRIM_RE.sub("", raw.strip()).strip().upper()
+        if _RATING_RE.match(t):
+            return t
+    return None
 
 
 def _to_float(v) -> Optional[float]:
@@ -158,6 +278,17 @@ def load_cbonds(path: Optional[str] = None) -> Dict[str, dict]:
             "face_value": _to_float(row[ix["face"]]) if ix.get("face") is not None else None,
             "cbonds_id": (int(row[ix["cbonds_id"]]) if ix.get("cbonds_id") is not None
                           and row[ix["cbonds_id"]] not in (None, "") else None),
+            # ниже — контекст выпуска: в прайсинге не участвует, читается
+            # отчётом по свежим выпускам и Справочником. rating из выгрузки
+            # заполняет ТОЛЬКО пропуск (см. sync_from_sources): файл — снимок,
+            # живой драйн рейтингов им перебивать нельзя
+            "rate_type": _cell_str(row, ix, "rate_type"),
+            "amort": _yes(_cell_str(row, ix, "amort")),
+            "face_index_raw": _cell_str(row, ix, "face_index"),
+            "status": _cell_str(row, ix, "status"),
+            "put_date": _cell_date(row, ix, "put"),
+            "call_date": _cell_date(row, ix, "call"),
+            "rating": _pick_rating(row, ix),
         }
     if path is None or path == _latest_cbonds_file():
         _cbonds_cache = out

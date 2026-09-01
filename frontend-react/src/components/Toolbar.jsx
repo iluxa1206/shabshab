@@ -2,13 +2,14 @@ import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import { IconCoins, IconLink, IconSearch, IconTwoWay, IconUnlink, IconX } from "./icons.jsx";
 import { RT_COLOR as RTCOLOR } from "../format.js";
+import RatingMenu from "./RatingMenu.jsx";
 
 const RATINGS = [
   ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
 ];
 
 export default function Toolbar({
-  onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating,
+  onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating, ratingOpts,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
@@ -89,7 +90,9 @@ export default function Toolbar({
         </button>
       </div>
 
-      {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет */}
+      {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет.
+          Чипы держат КРУПНУЮ шкалу; ступени (AA+/AA−) — в меню «▾» справа,
+          чтобы ряд фильтра не разъезжался от появления подрейтингов. */}
       <div className="fgroup">
         {RATINGS.map(([v, l]) => (
           <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")}
@@ -98,6 +101,7 @@ export default function Toolbar({
               : { color: RTCOLOR[v] }}
             onClick={() => toggleRating(v)}>{l}</button>
         ))}
+        <RatingMenu options={ratingOpts} sel={ratingsSel} onToggle={toggleRating} />
       </div>
 
       {/* группа: ликвидность — только бумаги с обеими сторонами стакана */}

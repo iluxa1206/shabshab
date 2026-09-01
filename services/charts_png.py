@@ -34,6 +34,10 @@ UP = (53, 192, 127)          # сужение спреда / приток — з
 DOWN = (226, 86, 77)         # расширение — красный
 ACCENT = (90, 169, 230)
 ACCENT2 = (163, 132, 232)
+# Линии поверх баров: цвет баров для них не годится — линия сливается со своим
+# же столбиком. Тёплые тона на холодной заливке видно в обоих случаях.
+LINE1 = (240, 196, 96)
+LINE2 = (236, 130, 180)
 
 # Шрифты ищем по списку: в контейнере DejaVu (fonts-dejavu-core в Dockerfile),
 # на маке — системные. Оба с кириллицей; без неё подписи превратятся в квадраты.
@@ -156,38 +160,64 @@ def _money(v: float) -> str:
 
 
 # ── сюжет 1: движения спреда ───────────────────────────────────────────────
-def movers(rows: List[dict], title: str, subtitle: str = "") -> bytes:
-    """Диверг-бары Δ Y-IDX: расширение вправо красным, сужение влево зелёным.
+def _diverg_panel(c: "Canvas", rows: List[dict], box, name_px: float = 150,
+                  label_size: int = 14, fill: float = 0.92,
+                  labels_right: bool = False) -> None:
+    """Одна панель диверг-баров в заданной рамке (left, right, top, bottom).
 
-    Ноль по центру, а не слева: за день важно не «на сколько уехали» вообще, а
-    в какую сторону — и разложенные по обе стороны от оси бумаги читаются одним
-    взглядом, без чтения знаков.
-
-    rows: [{name, delta_bps, y_bps}] — уже отсортированные, как рисовать."""
-    c = Canvas(title, subtitle)
-    if not rows:
-        c.text((32, H / 2), "нет данных за день", 18, MUTED)
-        return c.png()
-    left, right, top, bottom = 190, W - 90, c.top, H - 40
+    Вынесено из `movers`, потому что панелей стало две: флоатеры и фиксы
+    считаются РАЗНЫМИ метриками (Y-IDX против g-спреда), и общий масштаб
+    вместе с общим рейтингом смешивал бы два рынка в один список."""
+    left, right, top, bottom = box
     mid = (left + right) / 2
     span = max(abs(r["delta_bps"]) for r in rows) or 1.0
-    step = (bottom - top) / len(rows)
+    step = (bottom - top) / max(1, len(rows))
     bar_h = min(24.0, step * 0.62)
     c.line([(mid, top - 8), (mid, bottom + 6)], GRID, 1)
     for i, r in enumerate(rows):
         y = top + step * i + step / 2
         d = float(r["delta_bps"])
-        w = abs(d) / span * (mid - left - 12)
+        # fill < 1 оставляет место подписи со стороны бара: в узкой колонке
+        # парного сюжета полноразмерный бар упирался в имя выпуска
+        w = abs(d) / span * (mid - left - 12) * fill
         color = DOWN if d > 0 else UP
         x0, x1 = (mid, mid + w) if d > 0 else (mid - w, mid)
         c.rect((x0, y - bar_h / 2, x1, y + bar_h / 2), color, radius=3)
-        c.text((left - 12, y), _fit(str(r["name"]), 15, 150), 15, TEXT, anchor="rm")
+        c.text((left - 12, y), _fit(str(r["name"]), label_size + 1, name_px),
+               label_size + 1, TEXT, anchor="rm")
         # значение — со стороны бара, чтобы взгляд не возвращался к центру
         label = f"{d:+.0f}"
         if r.get("y_bps") is not None:
             label += f"  ({r['y_bps']:.0f})"
-        c.text((x1 + 10 if d > 0 else x0 - 10, y), label, 14, MUTED,
-               anchor="lm" if d > 0 else "rm")
+        # Серия: «третий день подряд в одну сторону» отличает тренд от разового
+        # прыжка на одной сделке — ради этого числа и заводили историю.
+        if (r.get("streak") or 0) >= 2:
+            label += f"  ·  {int(r['streak'])}д"
+        if labels_right:
+            # В узкой колонке подпись «наружу» уезжала на имя выпуска. Держим
+            # все числа СПРАВА: у расширения — за концом бара, у сужения — сразу
+            # за осью (слева от неё бар, справа пусто). Знак называют сторона и
+            # цвет бара, число его только уточняет.
+            c.text((x1 + 10 if d > 0 else mid + 10, y), label, label_size, MUTED,
+                   anchor="lm")
+        else:
+            c.text((x1 + 10 if d > 0 else x0 - 10, y), label, label_size, MUTED,
+                   anchor="lm" if d > 0 else "rm")
+
+
+def movers(rows: List[dict], title: str, subtitle: str = "") -> bytes:
+    """Диверг-бары Δ спреда: расширение вправо красным, сужение влево зелёным.
+
+    Ноль по центру, а не слева: за день важно не «на сколько уехали» вообще, а
+    в какую сторону — и разложенные по обе стороны от оси бумаги читаются одним
+    взглядом, без чтения знаков.
+
+    rows: [{name, delta_bps, y_bps, streak}] — уже отсортированные."""
+    c = Canvas(title, subtitle)
+    if not rows:
+        c.text((32, H / 2), "нет данных за день", 18, MUTED)
+        return c.png()
+    _diverg_panel(c, rows, (190, W - 130, c.top, H - 40))
     return c.png()
 
 
@@ -203,19 +233,26 @@ def turnover(rows: List[dict], title: str, subtitle: str = "") -> bytes:
         return c.png()
     # правое поле под хвост «943 млн ₽ · 656 сд»: он длиннее, чем кажется, и
     # у самого длинного бара уезжал за край картинки
-    left, right, top, bottom = 190, W - 250, c.top, H - 40
+    left, right, top, bottom = 190, W - 250, c.top, H - 46
     top_val = max(r["value"] for r in rows) or 1.0
     step = (bottom - top) / len(rows)
     bar_h = min(26.0, step * 0.62)
     for i, r in enumerate(rows):
         y = top + step * i + step / 2
         w = float(r["value"]) / top_val * (right - left)
-        c.rect((left, y - bar_h / 2, left + w, y + bar_h / 2), ACCENT, radius=3)
+        # Рубль оборота одинаков на обоих рынках, поэтому рейтинг общий — но
+        # цвет сразу говорит, чей это оборот, без чтения имён.
+        c.rect((left, y - bar_h / 2, left + w, y + bar_h / 2),
+               ACCENT2 if r.get("kind") == "fixed" else ACCENT, radius=3)
         c.text((left - 12, y), _fit(str(r["name"]), 15, 150), 15, TEXT, anchor="rm")
         tail = f"{_money(float(r['value']))} {rub()}"
         if r.get("trades"):
             tail += f"  ·  {int(r['trades'])} сд"
         c.text((left + w + 10, y), tail, 14, MUTED, anchor="lm")
+    c.rect((left, H - 26, left + 18, H - 20), ACCENT, radius=2)
+    c.text((left + 26, H - 23), "флоатеры", 13, MUTED)
+    c.rect((left + 140, H - 26, left + 158, H - 20), ACCENT2, radius=2)
+    c.text((left + 166, H - 23), "фиксы", 13, MUTED)
     return c.png()
 
 
@@ -233,7 +270,18 @@ def curve(series: List[dict], labels: List[str], title: str,
     if not pts or len(labels) < 2:
         c.text((32, H / 2), "архив кривой ещё не покрывает эти даты", 18, MUTED)
         return c.png()
-    left, right, top, bottom = 70, W - 40, c.top + 10, H - 60
+    # Нижняя панель — сдвиг кривой в бп. Две ломаные, легшие друг на друга,
+    # глазом не вычитаются: «на сколько уехала ставка» — отдельный вопрос, и
+    # ради него мы и показываем срез недельной давности.
+    delta = None
+    if len(pts) == 2:
+        a, b = pts[0]["values"], pts[1]["values"]
+        delta = [None if (x is None or y is None) else (y - x) * 100
+                 for x, y in zip(a, b)]
+        if not any(d is not None for d in delta):
+            delta = None
+    panel = 132 if delta else 0
+    left, right, top, bottom = 70, W - 40, c.top + 10, H - 60 - panel
     vals = [v for s in pts for v in s["values"] if v is not None]
     lo, hi = min(vals), max(vals)
     pad = max(0.05, (hi - lo) * 0.15)
@@ -263,6 +311,24 @@ def curve(series: List[dict], labels: List[str], title: str,
         y = top + 6 + j * 22
         c.rect((right - 150, y - 3, right - 132, y + 3), s["color"], radius=2)
         c.text((right - 124, y), str(s["label"]), 14, TEXT)
+    if delta:
+        d_top, d_bottom = bottom + 46, H - 34
+        span = max(abs(d) for d in delta if d is not None) or 1.0
+        zero = (d_top + d_bottom) / 2
+        c.line([(left, zero), (right, zero)], GRID, 1)
+        c.text((left - 10, zero), "0", 12, MUTED, anchor="rm")
+        c.text((left - 10, d_top), f"+{span:.0f}", 12, MUTED, anchor="rm")
+        bw = (right - left) / len(labels) * 0.44
+        for i, d in enumerate(delta):
+            if d is None:
+                continue
+            x = px(i)
+            h = abs(d) / span * (zero - d_top)
+            y0, y1 = (zero - h, zero) if d > 0 else (zero, zero + h)
+            c.rect((x - bw / 2, y0, x + bw / 2, y1),
+                   DOWN if d > 0 else UP, radius=2)
+        # справа: слева на этой высоте идут подписи теноров основного поля
+        c.text((right, d_top - 16), "сдвиг за период, бп", 13, MUTED, anchor="rm")
     return c.png()
 
 
@@ -307,4 +373,306 @@ def payments(days: List[dict], title: str, subtitle: str = "") -> bytes:
     c.text((left + 26, H - 23), "купоны", 13, MUTED)
     c.rect((left + 110, H - 26, left + 128, H - 20), ACCENT2, radius=2)
     c.text((left + 136, H - 23), "погашения и амортизация", 13, MUTED)
+    return c.png()
+
+
+# ── сюжет 5: крупные сделки ────────────────────────────────────────────────
+def blocks(rows: List[dict], title: str, subtitle: str = "") -> bytes:
+    """Бары по сумме сделки: адресные (РПС) лиловым, безадресные синим.
+
+    Поштучно, а не суммой по бумаге: новость дня — «кто-то переложил миллиард
+    одним тикетом», и агрегат по выпуску ровно это и стирает.
+
+    rows: [{name, value, price, market, time, y_bps}] — отсортированные."""
+    c = Canvas(title, subtitle)
+    if not rows:
+        c.text((32, H / 2), "крупных сделок не было", 18, MUTED)
+        return c.png()
+    left, right, top, bottom = 210, W - 260, c.top, H - 46
+    top_val = max(r["value"] for r in rows) or 1.0
+    step = (bottom - top) / len(rows)
+    bar_h = min(24.0, step * 0.62)
+    for i, r in enumerate(rows):
+        y = top + step * i + step / 2
+        w = float(r["value"]) / top_val * (right - left)
+        rps = (r.get("market") or "") == "ndm"
+        c.rect((left, y - bar_h / 2, left + w, y + bar_h / 2),
+               ACCENT2 if rps else ACCENT, radius=3)
+        name = str(r.get("name") or "")
+        if r.get("time"):
+            name = f"{r['time']}  {name}"
+        c.text((left - 12, y), _fit(name, 15, 170), 15, TEXT, anchor="rm")
+        tail = f"{_money(float(r['value']))} {rub()}"
+        if r.get("price") is not None:
+            tail += f"  ·  {float(r['price']):.2f}".replace(".", ",")
+        if r.get("y_bps") is not None:
+            tail += f"  ·  {float(r['y_bps']):.0f} бп"
+        c.text((left + w + 10, y), tail, 14, MUTED, anchor="lm")
+    c.rect((left, H - 26, left + 18, H - 20), ACCENT, radius=2)
+    c.text((left + 26, H - 23), "безадресные", 13, MUTED)
+    c.rect((left + 160, H - 26, left + 178, H - 20), ACCENT2, radius=2)
+    c.text((left + 186, H - 23), "адресные (РПС)", 13, MUTED)
+    return c.png()
+
+
+# ── сюжет 6: широта движения ───────────────────────────────────────────────
+def _hist_panel(c: "Canvas", deltas: List[float], box, label: str = "",
+                axis_size: int = 13) -> None:
+    """Одна гистограмма Δ в рамке (left, right, top, bottom) со своей шкалой.
+
+    Своя шкала у каждой панели — обязательна: фиксы за день ходят на единицы
+    базисных пунктов, флоатеры на сотни, и общий масштаб превратил бы один из
+    рынков в плоскую полосу."""
+    left, right, top, bottom = box
+    wide = sum(1 for d in deltas if d > 0)
+    tight = sum(1 for d in deltas if d < 0)
+    # Хвост режем по 95-му перцентилю: одна бумага на +900 бп растягивает шкалу
+    # так, что вся масса рынка складывается в один столбик у нуля.
+    srt = sorted(abs(d) for d in deltas)
+    cap = srt[int(len(srt) * 0.95)] if len(srt) > 20 else (srt[-1] if srt else 1.0)
+    cap = max(cap, 10.0)
+    nb = 21                                  # нечётное: у нуля свой центральный бин
+    step_bps = (2 * cap) / nb
+    bins = [0] * nb
+    for d in deltas:
+        k = int((min(max(d, -cap), cap) + cap) / step_bps)
+        bins[min(nb - 1, max(0, k))] += 1
+    hi = max(bins) or 1
+    bw = (right - left) / nb
+    for k in range(3):
+        v = hi * k / 2
+        y = bottom - (v / hi) * (bottom - top)
+        c.line([(left, y), (right, y)], GRID, 1)
+        c.text((left - 10, y), f"{v:.0f}", axis_size, MUTED, anchor="rm")
+    for i, n in enumerate(bins):
+        if not n:
+            continue
+        x0 = left + bw * i + bw * 0.15
+        x1 = left + bw * (i + 1) - bw * 0.15
+        h = n / hi * (bottom - top)
+        centre = -cap + step_bps * (i + 0.5)
+        color = DOWN if centre > 0 else (UP if centre < 0 else MUTED)
+        c.rect((x0, bottom - h, x1, bottom), color, radius=2)
+    mid = left + (right - left) / 2
+    c.line([(mid, top - 4), (mid, bottom + 4)], GRID, 1)
+    # «и дальше»: крайние бины вбирают весь хвост — без пометки они читались бы
+    # как «ровно −79», хотя там сидят и −900
+    c.text((left, bottom + 18), f"≤ −{cap:.0f} бп", axis_size, MUTED, anchor="lm")
+    c.text((mid, bottom + 18), "0", axis_size, MUTED, anchor="mm")
+    c.text((right, bottom + 18), f"≥ +{cap:.0f} бп", axis_size, MUTED, anchor="rm")
+    if label:
+        c.text((left, top - 14), label, 14, MUTED)
+    c.text((mid + 60, top - 14), f"шире: {wide}", 14, DOWN)
+    c.text((mid + 190, top - 14), f"уже: {tight}", 14, UP)
+    c.text((right, top - 14), f"бумаг: {len(deltas)}", 13, MUTED, anchor="rm")
+
+
+def breadth(deltas: List[float], title: str, subtitle: str = "") -> bytes:
+    """Гистограмма Δ спреда по всему торговавшемуся рынку — одной панелью."""
+    c = Canvas(title, subtitle)
+    if not deltas:
+        c.text((32, H / 2), "нет данных за день", 18, MUTED)
+        return c.png()
+    _hist_panel(c, deltas, (70, W - 30, c.top + 30, H - 64))
+    return c.png()
+
+
+# ── сюжет 7: карта рынка ───────────────────────────────────────────────────
+def scatter(points: List[dict], title: str, subtitle: str = "",
+            x_label: str = "лет до погашения", y_label: str = "премия, бп",
+            legend: bool = True) -> bytes:
+    """Премия против срока: точка — выпуск, размер — оборот, цвет — тип.
+
+    Плоский список «кто где стоит» такую картину не даёт: здесь сразу видно и
+    наклон рынка по сроку, и выбросы, которые сидят вне облака.
+
+    points: [{x, y, v, kind, name}] — kind 'floater'|'fixed'."""
+    c = Canvas(title, subtitle)
+    pts = [p for p in points if p.get("x") is not None and p.get("y") is not None]
+    if not pts:
+        c.text((32, H / 2), "нет данных за день", 18, MUTED)
+        return c.png()
+    left, right, top, bottom = 76, W - 30, c.top + 10, H - 64
+    # Шкала по премии — до 95-го перцентиля. Десяток бумаг на 2000+ бп (дефолтные
+    # истории и экзотика) растягивают ось так, что весь рынок ложится в одну
+    # полоску у нуля; их считаем и выносим в подпись, а не в масштаб.
+    ys_all = sorted(p["y"] for p in pts)
+    y_cap = ys_all[int(len(ys_all) * 0.95)] if len(ys_all) > 20 else ys_all[-1]
+    hidden = [p for p in pts if p["y"] > y_cap]
+    pts = [p for p in pts if p["y"] <= y_cap]
+    if not pts:
+        c.text((32, H / 2), "нет данных за день", 18, MUTED)
+        return c.png()
+    xs = [p["x"] for p in pts]
+    ys = [p["y"] for p in pts]
+    x_lo, x_hi = 0.0, max(xs) or 1.0
+    y_lo, y_hi = min(ys), max(ys)
+    pad = max(10.0, (y_hi - y_lo) * 0.1)
+    y_lo, y_hi = y_lo - pad, y_hi + pad
+    v_hi = max((p.get("v") or 0) for p in pts) or 1.0
+
+    def px(x: float) -> float:
+        return left + (x - x_lo) / (x_hi - x_lo or 1) * (right - left)
+
+    def py(y: float) -> float:
+        return bottom - (y - y_lo) / (y_hi - y_lo or 1) * (bottom - top)
+
+    # подпись оси — НАД полем слева: сбоку она не помещается между краем
+    # картинки и цифрами шкалы, и первое слово срезалось
+    c.text((left - 6, top - 16), y_label, 13, MUTED)
+    for k in range(5):
+        v = y_lo + (y_hi - y_lo) * k / 4
+        y = py(v)
+        c.line([(left, y), (right, y)], GRID, 1)
+        c.text((left - 10, y), f"{v:.0f}", 13, MUTED, anchor="rm")
+    for k in range(6):
+        x = x_lo + (x_hi - x_lo) * k / 5
+        c.text((px(x), bottom + 20), f"{x:.1f}".replace(".", ","), 13, MUTED,
+               anchor="mm")
+    for p in pts:
+        # Радиус по КОРНЮ оборота: линейный размер превращает миллиардную бумагу
+        # в пятно на пол-графика, а всё остальное — в пыль.
+        r = 3.0 + 11.0 * ((p.get("v") or 0) / v_hi) ** 0.5
+        c.dot((px(p["x"]), py(p["y"])), r,
+              ACCENT if p.get("kind") != "fixed" else ACCENT2)
+    # Подписываем только самые крупные: имена всех точек слипаются в кашу
+    for p in sorted(pts, key=lambda p: p.get("v") or 0, reverse=True)[:5]:
+        x, y = px(p["x"]), py(p["y"])
+        name = _fit(str(p.get("name") or ""), 13, 130)
+        # у правого края подпись уходила за картинку — разворачиваем влево
+        if x > right - 150:
+            c.text((x - 12, y - 12), name, 13, TEXT, anchor="rm")
+        else:
+            c.text((x + 12, y - 12), name, 13, TEXT)
+    c.text((left, bottom + 42), x_label, 13, MUTED)
+    if hidden:
+        c.text((right, top + 6), f"вне шкалы: {len(hidden)} бумаг(и) выше "
+                                 f"{y_cap:.0f} бп", 13, MUTED, anchor="rm")
+    if legend:
+        c.rect((right - 300, H - 26, right - 282, H - 20), ACCENT, radius=2)
+        c.text((right - 274, H - 23), "флоатеры", 13, MUTED)
+        c.rect((right - 160, H - 26, right - 142, H - 20), ACCENT2, radius=2)
+        c.text((right - 134, H - 23), "фиксы", 13, MUTED)
+    return c.png()
+
+
+# ── сюжет 8: премия по рейтингам ───────────────────────────────────────────
+def grouped(cats: List[str], series: List[dict], title: str, subtitle: str = "",
+            value_fmt: str = "{:.0f}") -> bytes:
+    """Сгруппированные бары по категориям (рейтинговым бакетам).
+
+    Медиана, а не среднее, считается вызывающим — здесь только рисуем: в
+    бакете из десятка бумаг один выброс сдвигает среднее на сотню бп.
+
+    series: [{label, color, values:[float|None]}] — длиной с cats."""
+    c = Canvas(title, subtitle)
+    live = [s for s in series if any(v is not None for v in s["values"])]
+    if not cats or not live:
+        c.text((32, H / 2), "рейтингов на сегодня нет", 18, MUTED)
+        return c.png()
+    left, right, top, bottom = 80, W - 30, c.top + 20, H - 64
+    vals = [v for s in live for v in s["values"] if v is not None]
+    hi = max(vals + [0]) or 1.0
+    lo = min(vals + [0])
+    step = (right - left) / len(cats)
+    gw = step * 0.66 / len(live)
+
+    def py(v: float) -> float:
+        return bottom - (v - lo) / ((hi - lo) or 1) * (bottom - top)
+
+    for k in range(4):
+        v = lo + (hi - lo) * k / 3
+        y = py(v)
+        c.line([(left, y), (right, y)], GRID, 1)
+        c.text((left - 10, y), value_fmt.format(v), 13, MUTED, anchor="rm")
+    for i, cat in enumerate(cats):
+        x0 = left + step * i + step * 0.17
+        for j, s in enumerate(live):
+            v = s["values"][i]
+            if v is None:
+                continue
+            bx = x0 + gw * j
+            c.rect((bx, py(v), bx + gw * 0.86, py(lo)), s["color"], radius=3)
+            c.text((bx + gw * 0.43, py(v) - 12), value_fmt.format(v), 12, TEXT,
+                   anchor="mm")
+        c.text((left + step * i + step / 2, bottom + 20), str(cat), 14, TEXT,
+               anchor="mm")
+    for j, s in enumerate(live):
+        c.rect((left + j * 200, H - 26, left + j * 200 + 18, H - 20),
+               s["color"], radius=2)
+        c.text((left + j * 200 + 26, H - 23), str(s["label"]), 13, MUTED)
+    return c.png()
+
+
+# ── сюжет 9: профиль торгов ────────────────────────────────────────────────
+def profile(bars: List[dict], title: str, subtitle: str = "",
+            bar_label: str = "оборот") -> bytes:
+    """Оборот стеком (флоатеры + фиксы) и медианная премия двумя линиями.
+
+    Две шкалы в одной картинке оправданы вопросом: «в какие часы шли деньги и
+    что в это время делала премия». Рынки разведены по цвету и по линиям —
+    складывать Y-IDX флоатера с g-спредом фикса в одну медиану нельзя, а вот
+    деньги складываются: рубль оборота везде рубль.
+
+    bars: [{label, v_float, v_fixed, y_float, y_fixed}]."""
+    c = Canvas(title, subtitle)
+    tot = [float(b.get("v_float") or 0) + float(b.get("v_fixed") or 0) for b in bars]
+    if not bars or not any(tot):
+        c.text((32, H / 2), "торгов не было", 18, MUTED)
+        return c.png()
+    left, right, top, bottom = 80, W - 80, c.top + 20, H - 64
+    hi = max(tot) or 1.0
+    step = (right - left) / len(bars)
+    bw = min(52.0, step * 0.6)
+    for k in range(4):
+        v = hi * k / 3
+        y = bottom - (v / hi) * (bottom - top)
+        c.line([(left, y), (right, y)], GRID, 1)
+        c.text((left - 10, y), _money(v), 13, MUTED, anchor="rm")
+    for i, b in enumerate(bars):
+        x = left + step * i + step / 2
+        h_f = float(b.get("v_float") or 0) / hi * (bottom - top)
+        h_x = float(b.get("v_fixed") or 0) / hi * (bottom - top)
+        if h_f:
+            c.rect((x - bw / 2, bottom - h_f, x + bw / 2, bottom), ACCENT, radius=3)
+        if h_x:
+            c.rect((x - bw / 2, bottom - h_f - h_x, x + bw / 2, bottom - h_f),
+                   ACCENT2, radius=3)
+        c.text((x, bottom + 20), str(b.get("label") or ""), 13, MUTED, anchor="mm")
+    # Линии премии — в СВОИХ координатах, общая шкала на обе: обе метрики в бп
+    # и одного порядка, а раздельные оси на одной картинке никто не читает.
+    ys = [b[k] for b in bars for k in ("y_float", "y_fixed") if b.get(k) is not None]
+    if len(ys) >= 2:
+        y_lo, y_hi = min(ys), max(ys)
+        pad = max(2.0, (y_hi - y_lo) * 0.2)
+        y_lo, y_hi = y_lo - pad, y_hi + pad
+        for key, color in (("y_float", LINE1), ("y_fixed", LINE2)):
+            xy = [(left + step * i + step / 2,
+                   bottom - (b[key] - y_lo) / (y_hi - y_lo) * (bottom - top))
+                  for i, b in enumerate(bars) if b.get(key) is not None]
+            if len(xy) < 2:
+                continue
+            c.line(xy, color, 3)
+            for pt in xy:
+                c.dot(pt, 3.5, color)
+        c.text((right + 10, bottom - (bottom - top)), f"{y_hi:.0f}", 13, MUTED,
+               anchor="lm")
+        c.text((right + 10, bottom), f"{y_lo:.0f}", 13, MUTED, anchor="lm")
+    # Легенда — только по тем сериям, что реально нарисованы: в альбоме одного
+    # рынка вторая пара всегда пуста, и «фиксы» под флоатерным профилем
+    # выглядели бы потерянными данными.
+    legend = []
+    if any(b.get("v_float") for b in bars):
+        legend.append((ACCENT, f"{bar_label}: флоатеры"))
+    if any(b.get("v_fixed") for b in bars):
+        legend.append((ACCENT2, f"{bar_label}: фиксы"))
+    if any(b.get("y_float") is not None for b in bars):
+        legend.append((LINE1, "медиана Y-IDX"))
+    if any(b.get("y_fixed") is not None for b in bars):
+        legend.append((LINE2, "медиана g-спреда"))
+    x = left
+    for color, text in legend:
+        c.rect((x, H - 26, x + 18, H - 20), color, radius=2)
+        c.text((x + 26, H - 23), text, 13, MUTED)
+        x += 40 + _font(13).getlength(text) / SS
     return c.png()

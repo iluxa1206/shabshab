@@ -114,6 +114,10 @@ export const adminDeleteTgLink = (uid) =>
 // --- Реестр инструментов (admin): ревью новых бумаг + ручной ввод параметров ---
 export const fetchUnreviewedInstruments = () => request("/api/instruments/unreviewed");
 
+// Свежие выпуски (моложе окна новизны) — очередь ручной проверки параметров;
+// n = значок на кнопке «Справочник»
+export const fetchNewIssues = () => request("/api/instruments/new-issues");
+
 export const fetchInstrument = (isin) =>
   request(`/api/instruments/${encodeURIComponent(isin)}`);
 
@@ -293,7 +297,7 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   spreadMin, spreadMax, ttmMin, ttmMax, rating,
                                   base, cls, hideSubord, hideAmort,
                                   beforeTs, beforeId, isins, maxValue, flagged,
-                                  dateFrom, dateTo } = {},
+                                  dateFrom, dateTo, q } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   // произвольное окно календаря: заданное начало побеждает days на бэке
@@ -326,6 +330,9 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
   // только отмеченные флажком: бэк отдаёт снимки сделок, остальные фильтры
   // ленты к ним не применяются (см. api/routes/trades.tape)
   if (flagged) p.set("flagged", "1");
+  // текстовый поиск (имя/эмитент/ISIN) — серверный: иначе он видел бы только
+  // загруженную страницу, а итоги считались бы по всему окну
+  if (q) p.set("q", q);
   return request(`/api/trades?${p}`, { signal });
 };
 
@@ -343,8 +350,10 @@ export const removeTradeFlag = (tradeId) =>
 export const fetchTapeIssuers = () =>
   request("/api/trades/issuers").then((d) => d.issuers || []);
 
+// {ratings: ступени (AA+/AA/AA−…), buckets: грейды (AAA/AA/A/BBB/BELOW/NR)}
 export const fetchTapeRatings = () =>
-  request("/api/trades/ratings").then((d) => d.ratings || []);
+  request("/api/trades/ratings").then((d) => ({
+    ratings: d.ratings || [], buckets: d.buckets || [] }));
 
 export const fetchTapeBoards = (days = 30) =>
   request(`/api/trades/boards?days=${days}`).then((d) => d.boards || []);
@@ -364,7 +373,7 @@ export const fetchBlocksByIsin = (isin, { days = 90, minValue = 0, limit = 500,
 // дневные РПС-агрегаты: единственное, что ISS отдаёт за дни до старта сбора
 export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
                                  scope, issuer, ttmMin, ttmMax, rating,
-                                 dateFrom, dateTo } = {}, signal) => {
+                                 dateFrom, dateTo, q } = {}, signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit });
   if (dateFrom) p.set("date_from", dateFrom);
   if (dateTo) p.set("date_to", dateTo);
@@ -375,6 +384,7 @@ export const fetchBlockDays = ({ isin, days = 30, minValue = 0, limit = 1000,
   for (const [k, v] of [["ttm_min", ttmMin], ["ttm_max", ttmMax]]) {
     if (v != null && v !== "") p.set(k, v);
   }
+  if (q) p.set("q", q);
   return request(`/api/blocks/days?${p}`, { signal });
 };
 
@@ -407,7 +417,15 @@ export const fetchFixed = ({ volBid = 0, volAsk = 0 } = {}) => {
 };
 // Котировки фиксов (цена/стакан/средневзвес/оборот) — лёгкий ответ, такт 5с.
 // Метрики (YTM/g-спред) в него не входят: они живут своим циклом в /api/fixed.
-export const fetchFixedQuotes = () => request("/api/fixed/quotes");
+// volBid/volAsk — размеры тикета: цена набора и её g-спред/YTM едут тем же
+// тактом 5 с, а не раз в минуту вместе со списком витрины (см. fetchQuotes).
+export const fetchFixedQuotes = (volBid = 0, volAsk = 0) => {
+  const p = new URLSearchParams();
+  if (volBid > 0) p.set("vol_bid", String(Math.round(volBid)));
+  if (volAsk > 0) p.set("vol_ask", String(Math.round(volAsk)));
+  const qs = p.toString();
+  return request(`/api/fixed/quotes${qs ? `?${qs}` : ""}`);
+};
 export const fetchFixedDetails = (isin) => request(`/api/fixed/${encodeURIComponent(isin)}`);
 
 // Калькулятор кастомной облигации: метрики по введённым параметрам (купон/
@@ -452,7 +470,16 @@ export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater
 // Котировки всего рынка одним запросом (цена, верх стакана, средневзвес дня,
 // оборот) — тянутся тактом 5с для бумаг вне избранного. По избранному те же
 // поля приходят push'ем через WS и авторитетнее.
-export const fetchQuotes = (signal) => request("/api/bonds/quotes", { signal });
+// volBid/volAsk — размеры тикета: тем же тактом приезжают цена набора и её
+// Y-IDX (vol_bid_px/vol_bid_y/…), поэтому прочерк, который движок посчитал уже
+// после загрузки таблицы, заполняется через такт, а не по F5.
+export const fetchQuotes = (signal, volBid = 0, volAsk = 0) => {
+  const p = new URLSearchParams();
+  if (volBid > 0) p.set("vol_bid", String(Math.round(volBid)));
+  if (volAsk > 0) p.set("vol_ask", String(Math.round(volAsk)));
+  const qs = p.toString();
+  return request(`/api/bonds/quotes${qs ? `?${qs}` : ""}`, { signal });
+};
 
 // WebSocket live-котировок. onQuote(isin, data), где data — частичный патч
 // строки: {last_price_pct, bid, ask, bid_qty, ask_qty, vwap_pct, vwap_volume}.

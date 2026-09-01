@@ -40,15 +40,11 @@ async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]
 _MAX_LADDER = 60   # потолок синтетических уровней (bounds reprice-компьют)
 
 
-def _level(metrics_fn, price, qty):
-    """Один уровень стакана → OrderbookLevel под цену уровня. metrics_fn(price)
-    возвращает {yield_pct, dm_bps?, g_spread_bps?} — набор зависит от типа бумаги
-    (флоатер: DM+YTM; фикс: YTM+g-спред). Тёплый контекст внутри metrics_fn."""
-    m = {}
-    try:
-        m = metrics_fn(price) or {}
-    except Exception:
-        pass
+def _level(got: dict, price, qty):
+    """Один уровень стакана → OrderbookLevel. Метрики берутся из ГОТОВОГО батча
+    (services.orderbook_svc.build_levels_fn): набор полей зависит от типа бумаги
+    (флоатер: Y-IDX+DM+YTM; фикс: YTM+g-спред)."""
+    m = got.get(round(float(price), 4)) or {}
     return OrderbookLevel(price_pct=price, quantity=qty, yield_pct=m.get("yield_pct"),
                           dm_bps=m.get("dm_bps"), y_idx_bps=m.get("y_idx_bps"),
                           g_spread_bps=m.get("g_spread_bps"))
@@ -83,47 +79,14 @@ async def get_orderbook(
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
 
-    # 2. Тёплый контекст пересчёта на выпуск (один раз) → metrics_fn(price) по
-    # уровням без I/O. Флоатер: reprice_at_price → DM (disc_margin) + YTM. Фикс:
-    # compute_fixed_row(price_override) → g-спред + YTM (тот же путь, что карточка).
-    if kind == "fixed":
-        from services import fixed_income as fi
-        from services.market_data import market_cache
-        uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
-        row = next((u for u in uni if u.get("isin") == isin), None)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Bond not found")
-        secid = row.get("secid") or isin
-        full_sched = await MarketDataService.fetch_bond_schedule_full(secid)
-        _r, _k, cd, rd = await MarketDataService.get_curves()
-        _ek, _eu, g = await MarketDataService.get_zspread_ctx()
-        calc_date = cd or rd or date.today()
-
-        def metrics_fn(price):
-            m = fi.compute_fixed_row(row, full_sched, g, calc_date, price_override=price)
-            return {"g_spread_bps": m.get("g_spread_bps"), "yield_pct": m.get("ytm")}
-    else:
-        cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
-        from services.bond_details import load_reprice_ctx, reprice_at_price
-        try:
-            ctx = await load_reprice_ctx(isin, cache)
-        except NotFoundException:
-            raise HTTPException(status_code=404, detail="Bond not found")
-        calc_date = ctx["calc_date"]
-
-        def metrics_fn(price):
-            # уровень стакана прайсится к тому же горизонту, что и карточка:
-            # правило цены применяется НА КАЖДОМ уровне (цена уровня своя, а
-            # значит и решение «сдам на оферту / держу до погашения» своё)
-            from services.valuation import pick_horizon
-            m = reprice_at_price(ctx, price)
-            h = pick_horizon(m, horizon)
-            # поля берём из выбранного горизонта, откат на верхнеуровневые (они
-            # всегда к погашению) — только если горизонта в ответе нет
-            return {"dm_bps": h.get("disc_margin_bps", m.get("disc_margin_bps")),
-                    "yield_pct": h.get("yield_xirr_pct", m.get("yield_xirr_pct")),
-                    "y_idx_bps": h.get("yield_over_index_bps", m.get("yield_over_index_bps")),
-                    "horizon": h.get("horizon")}
+    # 2. Тёплый контекст пересчёта на выпуск (один раз) → levels_fn(цены) считает
+    # ВСЕ уровни одним проходом, без I/O. Тот же слой, что у WS-потока и ленты:
+    # флоатер — Y-IDX+DM+YTM к горизонту уровня, фикс — YTM+g-спред.
+    from services.orderbook_svc import build_levels_fn
+    try:
+        levels_fn, calc_date, _face = await build_levels_fn(isin, kind, horizon)
+    except NotFoundException:
+        raise HTTPException(status_code=404, detail="Bond not found")
 
     # 3. Fetch Snapshot
     snapshot = await fetch_alor_orderbook_snapshot(isin, depth)
@@ -147,19 +110,31 @@ async def get_orderbook(
     raw_asks = [(e["price"], e.get("volume")) for e in snapshot.get("asks", [])[:depth]
                 if e.get("price") is not None]
 
-    ladder = None
+    # 5. Уровни к расчёту: в режиме «все уровни» — вся лестница (метрики и на
+    # пустых ценах, для анализа «при какой цене спред станет X»), иначе только
+    # цены с заявками. Сетку лестницы строит та же функция, что у WS-потока.
+    plan = None
     if full:
-        # «Все уровни»: лестница с метриками даже на пустых ценах — для анализа
-        # «при какой цене спред станет X». Строится общей функцией, той же, что
-        # у WS-потока (services.orderbook_svc.build_ladder).
-        from services.orderbook_svc import build_ladder
-        ladder = build_ladder(raw_bids, raw_asks,
-                              lambda p, q: _level(metrics_fn, p, q))
-    if ladder is not None:
-        processed_bids, processed_asks = ladder
+        from services.orderbook_svc import ladder_plan
+        plan = ladder_plan(raw_bids, raw_asks)
+    prices = ([p for p, _q in plan["levels"]] if plan
+              else [p for p, _q in raw_bids] + [p for p, _q in raw_asks])
+
+    # СЧЁТ — В ПОТОКЕ ИСПОЛНИТЕЛЯ, НЕ В EVENT LOOP. Лестница на 60 уровней это
+    # XIRR и солвер DM на каждый уровень: даже батчем (один поток на бумагу
+    # вместо одного на цену, ×65 по замеру 28.08.2026) счёт остаётся
+    # процессорным, а карточка поллит ручку раз в 15 с при живом WS и раз в 3 с
+    # без него — в цикле это лаг всего сервера.
+    from services.heavy import run_heavy
+    got = await run_heavy(levels_fn, prices) or {}
+
+    if plan is not None:
+        processed_bids, processed_asks = [], []
+        for p, q in plan["levels"]:
+            (processed_asks if p > plan["mid"] else processed_bids).append(_level(got, p, q))
     else:
-        processed_bids = [_level(metrics_fn, p, q) for p, q in raw_bids]
-        processed_asks = [_level(metrics_fn, p, q) for p, q in raw_asks]
+        processed_bids = [_level(got, p, q) for p, q in raw_bids]
+        processed_asks = [_level(got, p, q) for p, q in raw_asks]
 
     return OrderbookResponse(
         isin=isin,

@@ -60,7 +60,7 @@ def _reason_delta(m: dict) -> str:
         pct = f"{(cur - prev) / abs(prev) * 100.0:+.0f}".replace("-", "−")
         # прежнее значение зачёркнутым: видно, откуда пришли, и не надо считать
         # проценты в уме от текущего числа
-        return f"объём {pct} % (<s>{_compact(prev)}</s>)"
+        return f"объём {pct} % (<s>{_money_m(prev)}</s>)"
     if r == "spread":
         prev, cur = m.get("prev_val_bps"), m.get("val_bps")
         if prev is None or cur is None:
@@ -164,10 +164,14 @@ def _num(v: Optional[float], digits: int = 2) -> str:
 
 
 def _fmt_money(v: Optional[float]) -> str:
+    """Деньги ВСЕГДА в миллионах рублей — единица одна на все суммы.
+
+    Смешанные единицы («300 тыс ₽» рядом с «26,1 млн ₽») заставляют читать
+    подпись, а не число: в ленте сообщений суммы сравнивают глазом по колонке
+    цифр. Мелочь показываем дробью миллиона («0,3 млн ₽»), не тысячами."""
     if not v:
         return ""
-    return (f"{_num(v / 1e6, 1)} млн ₽" if v >= 1e6
-            else f"{_num(v / 1e3, 0)} тыс ₽")
+    return f"{_num(v / 1e6, 1 if abs(v) >= 1e6 else 2)} млн ₽"
 
 
 def _fmt_years(y: Optional[float]) -> str:
@@ -187,7 +191,8 @@ _NDM_ICON = "🤝"
 
 
 def _compact(v: Optional[float]) -> str:
-    """«1м», «26,1м», «300к» — порядок суммы без валюты, для тесных мест."""
+    """«1м», «26,1м», «300к» — порядок ШТУК без единицы, для тесных мест.
+    Для денег — _money_m: там единица всегда миллион (см. ниже)."""
     if not v:
         return "0"
     unit, scaled = ("м", v / 1e6) if abs(v) >= 1e6 else ("к", v / 1e3)
@@ -195,13 +200,27 @@ def _compact(v: Optional[float]) -> str:
     return (txt[:-2] if txt.endswith(",0") else txt) + unit
 
 
+def _money_m(v: Optional[float]) -> str:
+    """Сумма в МИЛЛИОНАХ без валюты: «1м», «26,1м», «0,3м».
+
+    Единица одна на любую сумму — «300к» рядом с «26,1м» читается как число
+    того же порядка, и мелкий лот в ленте выглядел крупным. Ниже миллиона —
+    две десятых знака, иначе 40 тыс превращаются в «0,0м»."""
+    if not v:
+        return "0"
+    txt = _num(v / 1e6, 1 if abs(v) >= 1e6 else 2)
+    if "," in txt:                # «1,0м»/«0,30м» читаются хуже, чем «1м»/«0,3м»
+        txt = txt.rstrip("0").rstrip(",")
+    return txt + "м"
+
+
 def _short_money(v: Optional[float]) -> str:
-    """Деньги коротко: «1м ₽», «26,1м ₽», «300к ₽». В строке сигнала важен
+    """Деньги коротко: «1м ₽», «26,1м ₽», «0,3м ₽». В строке сигнала важен
     порядок суммы, а не копейки — длинное «26,1 млн ₽» съедает место у цифр,
     ради которых сообщение и открывают."""
     if not v:
         return ""
-    return f"{_compact(v)} ₽"      # «1,0м» читается хуже, чем «1м» — см. _compact
+    return f"{_money_m(v)} ₽"
 
 
 def _hhmmss(m: dict) -> str:
@@ -311,7 +330,7 @@ def _fmt_threshold(v: Optional[float]) -> str:
     """Порог объёма из настроек фильтра: «>1м». Он в строке нужен, чтобы
     сравнивать фактический объём с тем, на что подписан — без него «8,2м» не
     говорит, насколько сильно рынок перекрыл условие."""
-    return f">{_compact(v)}" if v else ""
+    return f">{_money_m(v)}" if v else ""
 
 
 def _match_parts(m: dict, kind: str, side: Optional[str] = None,
@@ -509,7 +528,7 @@ def _breakdown(ms: List[dict]) -> str:
     if len(ms) < 2:
         return ""
     vals = sorted((x.get("money_rub") or 0 for x in ms), reverse=True)
-    shown = [_compact(v) for v in vals[:MAX_MATCHES]]
+    shown = [_money_m(v) for v in vals[:MAX_MATCHES]]
     if len(vals) > MAX_MATCHES:
         shown.append(f"…ещё {len(vals) - MAX_MATCHES}")
     return f"<i>{len(ms)} {_trades_word(len(ms))} · " + " · ".join(shown) + "</i>"

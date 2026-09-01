@@ -26,25 +26,34 @@ _NEG_TTL = 86400          # промах corpbonds (404/ошибка) — рет
                           # в начале списка и не доходит до остальных
 _cache: Optional[dict] = None
 
-# порядок проверки: длинные грейды раньше коротких (BBB до BB до B)
-_ORDER = ["AAA", "BBB", "AA", "BB", "A", "B"]
 _BUCKETS = {"AAA", "AA", "A", "BBB", "BB", "B"}
+# Суффиксы/префиксы агентства: «ruAA-», «AA-(RU)», «AA-|ru|», «AA-.ru» — одно
+# значение, записанное четырьмя способами (в выгрузках встречаются все).
+_RT_TRIM = re.compile(r"\|RU\||\(RU\)|\.RU$|^RU", re.I)
+# Шкала: грейд + необязательная СТУПЕНЬ (+/−). Строгий матч, а не «выкинем
+# лишнее»: прежняя реализация чистила всё не-[A-D] и превращала «Withdrawn» в
+# «DA» → бакет B, то есть бумага с ОТОЗВАННЫМ рейтингом ехала в самый рисковый
+# грейд вместо NR.
+_RT_SCALE = re.compile(r"^(AAA|AA|A|BBB|BB|B|CCC|CC|C|D)([+-])?$")
+
+
+def rating_norm(raw: Optional[str]) -> str:
+    """«НКР A» / «АКРА AA-(RU)» / «ruBBB+» → значение шкалы СО СТУПЕНЬЮ («BBB+»).
+    Нераспознанное (Withdrawn, мусор, пусто) → "" — это «рейтинга нет»."""
+    if not raw:
+        return ""
+    t = _RT_TRIM.sub("", str(raw).strip()).upper()
+    t = re.sub(r"[^A-D+-]", "", t)      # кириллица-агентство, пробелы, точки
+    return t if _RT_SCALE.match(t) else ""
 
 
 def rating_to_bucket(raw: Optional[str]) -> str:
-    """«НКР A» / «АКРА AA-(RU)» / «ruBBB+» → бакет AAA…B, иначе NR.
-    Кириллицу-агентство и суффиксы (RU/+/−) отбрасываем, берём латинский грейд."""
-    if not raw:
-        return "NR"
-    t = re.sub(r"[^A-D]", "", raw.upper().replace("RU", ""))
-    if not t:
-        return "NR"
-    for b in _ORDER:
-        if t.startswith(b):
-            return b if b in _BUCKETS else "B"
-    if t[0] in ("C", "D"):
-        return "B"   # ниже B — распихиваем в самый рисковый бакет
-    return "NR"
+    """Значение шкалы → ГРЕЙД AAA…B (ступень +/− схлопывается), иначе NR.
+    Ниже B (CCC/CC/C/D) — тот же глубокий хай-йилд, отдельной корзины нет."""
+    core = rating_norm(raw).rstrip("+-")
+    if core in _BUCKETS:
+        return core
+    return "B" if core in ("CCC", "CC", "C", "D") else "NR"
 
 
 def _load() -> dict:

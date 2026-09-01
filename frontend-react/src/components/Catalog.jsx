@@ -87,6 +87,9 @@ export default function Catalog({ user }) {
   // тип купона разошёлся со smart-lab: наш вывод о базе проверен ЧУЖИМИ данными
   const [slBadOnly, setSlBadOnly] = useState(false);
   const [floatersOnly, setFloatersOnly] = useState(true);
+  // свежие выпуски (issue_date/first_seen моложе NEW_ISSUE_DAYS): их параметры
+  // источники доливают неделями — строки подсвечены, фильтр даёт очередь проверки
+  const [newOnly, setNewOnly] = useState(false);
   const [editIsin, setEditIsin] = useState(null);
   const [importMsg, setImportMsg] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -110,9 +113,13 @@ export default function Catalog({ user }) {
     enabled: isAdmin,
   });
 
+  // ISIN свежих выпусков без подтверждения (сервер считает по NEW_ISSUE_DAYS)
+  const newSet = useMemo(() => new Set(q.data?.new_issues || []), [q.data]);
+
   const rows = useMemo(() => {
     let items = q.data?.items || [];
     if (missOnly) items = items.filter((r) => !r.priceable);
+    if (newOnly) items = items.filter((r) => newSet.has(r.isin));
     // спека расходится с фактом выплат: неверный лаг/окно/режим
     if (specBadOnly) items = items.filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD");
     if (slBadOnly) items = items.filter((r) => r.sl_mismatch);
@@ -121,7 +128,7 @@ export default function Catalog({ user }) {
       r.isin.toLowerCase().includes(s) || (r.short_name || "").toLowerCase().includes(s));
     if (specBadOnly) items = [...items].sort((a, b) => (b.spec_err_pp || 0) - (a.spec_err_pp || 0));
     return items;
-  }, [q.data, missOnly, specBadOnly, slBadOnly, query]);
+  }, [q.data, missOnly, specBadOnly, slBadOnly, newOnly, newSet, query]);
 
   const specBadCount = useMemo(
     () => (q.data?.items || []).filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD").length,
@@ -159,6 +166,12 @@ export default function Catalog({ user }) {
           {cnt && <span className="admin-badge">{cnt.priceable}/{cnt.floaters} прайсуемы</span>}
           {cnt?.incomplete > 0 && <span className="admin-badge admin-warn">{cnt.incomplete} без параметров</span>}
           {cnt?.suspect > 0 && <span className="admin-badge admin-warn">{cnt.suspect} подозрит. маржа</span>}
+          {newSet.size > 0 && (
+            <span className="admin-badge admin-new"
+              title={`Выпуски моложе ${q.data?.new_issue_days || 30} дней без подтверждения параметров — проверить руками`}>
+              {newSet.size} новых выпусков
+            </span>
+          )}
           {cnt?.offer_reset > 0 && (
             <span className="admin-badge admin-warn"
               title="Ставка уже менялась на прошлой оферте, впереди ещё одна, а поток к ней не режется — проверь cut_at_offer">
@@ -204,6 +217,17 @@ export default function Catalog({ user }) {
             onClick={() => setSlBadOnly(!slBadOnly)}
             title="Тип купона расходится с внешним источником (smart-lab): наш вывод о базе проверен не нашими данными">
             тип купона спорный{slBadCount ? ` (${slBadCount})` : ""}
+          </button>
+          <button className={"chip-btn" + (newOnly ? " on" : "")}
+            onClick={() => {
+              // «только флоатеры» — это base IN (KEYRATE,RUONIA) НА СЕРВЕРЕ, а у
+              // свежего выпуска базы как раз может не быть: с включённым фильтром
+              // очередь проверки прятала бы ровно тех, ради кого она заведена
+              if (!newOnly) setFloatersOnly(false);
+              setNewOnly(!newOnly);
+            }}
+            title="Выпуски моложе окна новизны, параметры которых ещё не подтверждены вручную (снимает «только флоатеры» — у свежей бумаги базы может не быть)">
+            новые выпуски{newSet.size ? ` (${newSet.size})` : ""}
           </button>
           <button className={"chip-btn" + (floatersOnly ? " on" : "")} onClick={() => setFloatersOnly(!floatersOnly)}>
             только флоатеры
@@ -251,7 +275,7 @@ export default function Catalog({ user }) {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <RowWithEdit key={r.isin} r={r}
+                <RowWithEdit key={r.isin} r={r} isNew={newSet.has(r.isin)}
                   editing={editIsin === r.isin}
                   onEdit={() => setEditIsin(editIsin === r.isin ? null : r.isin)}
                   onSaved={() => { setEditIsin(null); invalidate(); }} />
@@ -265,7 +289,7 @@ export default function Catalog({ user }) {
   );
 }
 
-function RowWithEdit({ r, editing, onEdit, onSaved }) {
+function RowWithEdit({ r, isNew, editing, onEdit, onSaved }) {
   const qc = useQueryClient();
   const review = useMutation({
     mutationFn: () => markInstrumentReviewed(r.isin),
@@ -288,7 +312,7 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
   };
   return (
     <>
-      <tr className={r.priceable ? "" : "cat-row-incomplete"}>
+      <tr className={(r.priceable ? "" : "cat-row-incomplete") + (isNew ? " cat-row-new" : "")}>
         <td className="cat-isin">
           {r.isin}
           {cbondsUrl(r.cbonds_id) && (
@@ -298,6 +322,7 @@ function RowWithEdit({ r, editing, onEdit, onSaved }) {
           )}
           {r.manual_locked ? <span className="cat-lock" title="ручной lock — sync не затрёт">🔒</span> : null}
           {!r.reviewed ? <span className="cat-new" title="новая, не подтверждена">•</span> : null}
+          {isNew ? <span className="cat-fresh" title="свежий выпуск — параметры источники доливают неделями, проверь руками">NEW</span> : null}
         </td>
         {COLS.map(([k]) => <td key={k}><Cell col={k} val={r[k]} row={r} /></td>)}
         <td className="admin-actions">

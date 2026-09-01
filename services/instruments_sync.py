@@ -101,9 +101,16 @@ async def sync_instruments() -> dict:
     # непрайсуемые — ради формулы купона из карточки биржи (COUPON_BENCHMARK);
     # квота отдельная, иначе бэклог 400+ вытеснит добор issue_date насовсем
     incompl = reg.isins_incomplete_newest_first()[:_MAX_SECMASTER_INCOMPLETE]
+    # НОЧНАЯ ПОДГОТОВКА К ТОРГОВОМУ ДНЮ: выпуски младше NEW_ISSUE_DAYS идут в
+    # голову очереди справочника MOEX каждый прогон, даже если их уже спрашивали.
+    # Карточка биржи у свежей бумаги дозаполняется в первые дни (COUPON_BENCHMARK,
+    # частота, номинал), а общая очередь длиной в бэклог до неё не доходит.
+    fresh_new = [i for i in reg.new_issue_isins()
+                 if not (reg.get(i) or {}).get("base")][:_MAX_SECMASTER_NEW]
     picked = set(no_mat) | set(incompl)
+    picked |= set(fresh_new)
     no_issue = [i for i in reg.isins_missing_issue_date() if i not in picked]
-    missing = (no_mat + incompl + no_issue)[:_MAX_SECMASTER_PER_RUN]
+    missing = list(dict.fromkeys(fresh_new + no_mat + incompl + no_issue))[:_MAX_SECMASTER_PER_RUN]
     enriched = 0
     exotic: list[tuple[str, str]] = []
     if missing:
@@ -194,7 +201,13 @@ async def sync_instruments() -> dict:
                                         _CORPBONDS_QUOTA_CALL, parser_ver=PARSER_VERSION)
                    + reg.enrich_pending([c["isin"] for c in reg.list_call_dates_missing()],
                                         _CORPBONDS_QUOTA_CALL_DATES, parser_ver=PARSER_VERSION))
-        targets = list(dict.fromkeys(targets))[:_MAX_CORPBONDS_PER_RUN]
+        # свежие выпуски без базы — в голову среза (см. fresh_new выше): их
+        # страница на corpbonds появляется с задержкой, и попытка каждый день
+        # дешевле, чем бумага без параметров на всю неделю размещения
+        # шаг 3 мог уже закрыть базу из карточки MOEX — такие в corpbonds не идут
+        still_blind = [i for i in fresh_new if not (reg.get(i) or {}).get("base")]
+        targets = list(dict.fromkeys(
+            still_blind[:_CORPBONDS_QUOTA_NEW] + targets))[:_MAX_CORPBONDS_PER_RUN]
         if targets:
             cb = await enrich_registry(targets, apply=True, delay=0.6)
             cb_stats = cb.get("stats", {})
@@ -267,7 +280,16 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("smart-lab audit failed: %s", e)
 
+    # итог ночной подготовки: сколько свежих выпусков ушло в день без параметров
+    # (их надо проверить руками — Справочник, фильтр «новые»)
+    new_rows = reg.list_new_issues()
+    new_blind = [r["isin"] for r in new_rows if not r["priceable"]]
+    if new_blind:
+        logger.warning("НОВЫЕ ВЫПУСКИ без параметров (%d): %s — проверить в Справочнике",
+                       len(new_blind), ", ".join(new_blind[:15]))
+
     stats.update({"discovered": discovered, "enriched": enriched, "retired": retired,
+                  "new_issues": len(new_rows), "new_issues_blind": len(new_blind),
                   "inferred": inf_stats.get("filled", 0),
                   "sl_checked": sl_stats.get("checked", 0),
                   "sl_mismatch": sl_stats.get("mismatch", 0),
@@ -291,10 +313,14 @@ async def sync_instruments() -> dict:
 
 _MAX_INFER_PER_RUN = 40       # калибровок базы/маржи по истории купонов за прогон
 _MAX_DISCOVERY_PER_RUN = 80   # bondization-проверок новых ISIN за прогон (rate-limit)
-_MAX_CORPBONDS_PER_RUN = 80   # запросов к corpbonds.ru за прогон (внешний сайт)
+_MAX_CORPBONDS_PER_RUN = 95   # запросов к corpbonds.ru за прогон (внешний сайт).
+                              # Σ квот классов (80) + квота свежих выпусков (15):
+                              # иначе новые в голове среза выбивали бы за край
+                              # последний класс (даты колла) целиком.
 _MAX_SECMASTER_PER_RUN = 150  # запросов в справочник MOEX за прогон (ПОШТУЧНО:
                               # /iss/securities/{isin}.json, батча у ISS нет)
 _MAX_SECMASTER_INCOMPLETE = 60   # из них — на непрайсуемые (свежие выпуски вперёд)
+_MAX_SECMASTER_NEW = 40          # выпуски младше NEW_ISSUE_DAYS без базы — вне ротации
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
 # большой incomplete не вытеснял остальные за срез
 _CORPBONDS_QUOTA_INCOMPLETE = 30
@@ -309,6 +335,10 @@ _CORPBONDS_QUOTA_CALL = 10
 # колл не может стать горизонтом прайсинга. Разово их закрывает
 # scripts/backfill_call_dates.py, эта квота лишь поддерживает — класс иссякает.
 _CORPBONDS_QUOTA_CALL_DATES = 10
+# свежие выпуски (моложе NEW_ISSUE_DAYS) без базы — вне negative-кэша, пробуем
+# каждый прогон. Своя квота, а не весь список: срез targets[:cap] общий, и 40
+# «новых» вытеснили бы за край классы очереди целиком.
+_CORPBONDS_QUOTA_NEW = 15
 
 
 async def infer_missing_params(cap: int = _MAX_INFER_PER_RUN, reg=None) -> dict:

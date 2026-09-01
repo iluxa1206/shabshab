@@ -194,9 +194,14 @@ async def websocket_market_endpoint(websocket: WebSocket):
                 # регистрация через /api/bonds протухала бы у того, кто просто
                 # держит вкладку открытой.
                 if action == "vol-sizes":
-                    from services.universe_stream import register_vol_sizes
+                    from services.universe_stream import (register_vol_sizes,
+                                                          flush_vol_sizes)
                     sizes = payload.get("sizes")
                     register_vol_sizes(sizes if isinstance(sizes, list) else [])
+                    # РАЗДАЧА СПРЕДОВ СРАЗУ, не на такте движка: спред на объём
+                    # снимается с готовой сетки цен, весь рынок — десятки мс.
+                    # Отдельной задачей, чтобы сокет не ждал тяжёлый пул.
+                    asyncio.create_task(flush_vol_sizes())
                     continue
                 # сигналы адресуются аккаунтом (isin не нужен): адресат берётся
                 # из сессии хендшейка, из сообщения клиента — никогда

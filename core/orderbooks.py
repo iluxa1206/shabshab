@@ -33,8 +33,17 @@ def _levels(raw) -> list:
     return out
 
 
+# Глубина подписки и сжатие — ОДНОЙ ПАРОЙ. Alor пускает depth>20 только на
+# соединении с permessage-deflate («The orderbook subscription with the depth
+# more than 20 is allowed only with enabled compression», подписка отбивается
+# молча — в ответе на подписку нет поля data). Поэтому WS_DEPTH и WS_COMPRESS
+# импортируются вместе везде, где подписываются на стакан.
+WS_DEPTH = 50           # уровней на сторону
+WS_COMPRESS = 15        # окно permessage-deflate для aiohttp.ws_connect
+
+
 async def get_orderbooks_dict(access_token: str, exchange: str, isins: List[str],
-                              depth: int = 20, timeout: float = 8.0) -> Dict[str, dict]:
+                              depth: int = WS_DEPTH, timeout: float = 8.0) -> Dict[str, dict]:
     """{isin: {"b": [[price_pct, qty], ...], "a": [...]}} — снимок стакана на бумагу.
 
     Пустой стакан (неликвид без заявок) тоже попадает в результат: пустые списки —
@@ -48,7 +57,7 @@ async def get_orderbooks_dict(access_token: str, exchange: str, isins: List[str]
 
     async with aiohttp.ClientSession(timeout=_WS_TIMEOUT) as session:
         try:
-            async with session.ws_connect(_WS_URL, heartbeat=20) as ws:
+            async with session.ws_connect(_WS_URL, heartbeat=20, compress=WS_COMPRESS) as ws:
                 for guid, isin in guid_isin.items():
                     await ws.send_json({
                         "opcode": "OrderBookGetAndSubscribe", "code": isin,

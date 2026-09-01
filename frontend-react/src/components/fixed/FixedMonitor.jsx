@@ -100,6 +100,18 @@ export function applyPatch(cur, q) {
   return n;
 }
 
+/** Числа набора на объём из ответа котировок (плоские ключи vol_bid_px/…) — в
+ *  поля строки витрины. Пусто значит «движок ещё не посчитал»: прежнее число не
+ *  трогаем, его гасит перезагрузка списка при смене размера. */
+export function applyVolQuote(row, it) {
+  for (const side of ["bid", "ask"]) {
+    const px = it[`vol_${side}_px`], g = it[`vol_${side}_g`], y = it[`vol_${side}_ytm`];
+    if (px != null) row[`vol_${side}_price_pct`] = px;
+    if (g != null) row[`g_spread_vol_${side}_bps`] = g;
+    if (y != null) row[`ytm_vol_${side}`] = y;
+  }
+}
+
 /** Поверхностное сравнение строк: одинаковый набор ключей и значений. */
 function sameRow(a, b) {
   if (!a || !b) return false;
@@ -237,7 +249,11 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     queryFn: () => fetchFixed({ volBid, volAsk }),
     staleTime: 30_000, refetchInterval: 60_000, placeholderData: (prev) => prev,
   });
-  const quotesQ = useQuery({ queryKey: ["fixed-quotes"], queryFn: fetchFixedQuotes,
+  // размер тикета — часть ключа: числа набора от прошлого размера относятся к
+  // прошлому фильтру
+  const quotesQ = useQuery({
+    queryKey: ["fixed-quotes", volBid, volAsk],
+    queryFn: () => fetchFixedQuotes(volBid, volAsk),
     refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS });
 
   // Лестницы стаканов — только когда фильтр по объёму включён: ответ тяжёлый
@@ -330,7 +346,12 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       const fresh = live && Date.now() - (tsRef.current[b.isin] || 0) < LIVE_FRESH_MS;
       // Бумага на стриме цены из снапшота не берёт: push свежее, снапшот
       // откатил бы строку назад (то же правило, что у флоатеров, quotesMerge).
-      const it = fresh ? null : q.get(b.isin);
+      const qi = q.get(b.isin);
+      // ЧИСЛА НАБОРА НА ОБЪЁМ — метрика движка, а не цена: у бумаги НА СТРИМЕ
+      // их патч не несёт (см. applyPatch), а список витрины обновляется раз в
+      // минуту — без этого прочерк в колонках бида и оффера жил всё это время.
+      if (qi) applyVolQuote(row, qi);
+      const it = fresh ? null : qi;
       if (it) {
         applyPrice(row, "last_price_pct", it.last, ["ytm", "g_spread_bps", "z_spread_bps",
           "dirty", "cur_yield", "mod_dur", "mac_dur", "convexity", "dv01"]);

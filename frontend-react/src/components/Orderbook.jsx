@@ -68,7 +68,7 @@ function Level({ lvl, side, face, isFixed, fill }) {
 export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, sigPx,
                                     volBid = 0, volAsk = 0, horizon = "auto", onClose }) {
   const isFixed = kind === "fixed";
-  const [depth, setDepth] = useState(20);
+  const [depth, setDepth] = useState(50);
   const [full, setFull] = useState(false);
 
   // WS-стакан (реал-тайм) — приоритет над HTTP-поллингом. Только в режиме
@@ -117,9 +117,9 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // горизонт, которого в потоке нет, по-прежнему обслуживает HTTP.
   const wsProbe = wsSrc?.bids?.[0] || wsSrc?.asks?.[0] || null;
   const swapAlt = horizon !== "auto" && horizon === wsProbe?.alt_horizon;
-  // Поток отдаёт 20 уровней (потолок Alor без сжатия) — на 30/50 его не хватает,
-  // такие глубины обслуживает HTTP.
-  const wsDeepEnough = depth <= 20;
+  // Поток отдаёт 50 уровней (Alor пускает такую глубину на сжатом соединении —
+  // см. core/orderbooks.WS_DEPTH), то есть покрывает весь селектор.
+  const wsDeepEnough = depth <= 50;
   const wsUsable = wsLive && wsDeepEnough
     && (horizon === "auto" || horizon === wsProbe?.horizon || swapAlt);
   const pickAlt = (rows) => (rows || []).map((l) => (

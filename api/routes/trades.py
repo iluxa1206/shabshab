@@ -37,19 +37,36 @@ router = APIRouter()
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 
+# Правило грейда — ОДНО на весь бэкенд (services.ratings): ступень (+/−) — это
+# уровень ВНУТРИ грейда, и чип «AA» обязан забирать AA, AA+ и AA− разом.
+from services.ratings import rating_norm, rating_to_bucket as rating_bucket  # noqa: E402
+
+
 def _rating_isins(labels: dict, isins: Optional[list[str]],
                   rating: Optional[list[str]]) -> Optional[list[str]]:
-    """Сузить охват рейтингами (в реестре они грубые: AAA/AA/A/BBB/BB/B).
-    Бумаги без рейтинга под фильтр не попадают — рейтинг неизвестен, а не любой."""
+    """Сузить охват рейтингами. В выборе живут ДВА вида ключей:
+    ГРЕЙД (AAA/AA/A/BBB/BELOW/NR — чипы) и КОНКРЕТНАЯ СТУПЕНЬ (AA+, AA−, … —
+    меню «▾ все рейтинги»). Грейд забирает всю группу: «AA» = AA, AA+, AA−.
+    BELOW — «BB↓», всё ниже BBB. Бумаги без рейтинга попадают только под NR:
+    рейтинг неизвестен, а не любой."""
     want = {r.strip().upper() for r in (rating or []) if r and r.strip()}
     if not want:
         return isins
     nr = "NR" in want          # NR — «без рейтинга», отдельный бакет, как в СПИСКЕ
+    below = "BELOW" in want
     pool = isins if isins is not None else labels.keys()
     out = []
     for i in pool:
-        rt = ((labels.get(i) or {}).get("rating") or "").strip().upper()
-        if (rt in want) or (nr and not rt):
+        raw = (labels.get(i) or {}).get("rating")
+        exact, b = rating_norm(raw), rating_bucket(raw)
+        # «NR» — не только пустое поле: Withdrawn и любая нераспознанная запись
+        # это тоже «рейтинга нет». Иначе такая бумага не ловилась НИ ОДНИМ
+        # чипом и пропадала из ленты при любом выборе рейтинга.
+        if b == "NR":
+            if nr:
+                out.append(i)
+            continue
+        if b in want or exact in want or (below and b in ("BB", "B")):
             out.append(i)
     return out
 
@@ -117,6 +134,27 @@ def _flag_isins(labels: dict, isins: Optional[list[str]], bases: Optional[list[s
                 continue
         keep.append(i)
     return keep
+
+
+def _search_isins(labels: dict, moex: dict, isins: Optional[list[str]],
+                  q: Optional[str]) -> Optional[list[str]]:
+    """Сузить охват текстовым поиском — ПОДСТРОКА по имени, эмитенту, ISIN.
+
+    Поиск серверный, а не по загруженной странице: иначе строка «ГТЛК» видела
+    бы только первые 500 сделок окна, а итоги под ней считались бы по ним же.
+    Имена берём из реестра и из суточного справочника ISS (рынок шире реестра);
+    бумага, которой нет ни там, ни там, находится только по своему ISIN."""
+    s = (q or "").strip().lower()
+    if not s:
+        return isins
+    pool = isins if isins is not None else (labels.keys() | moex.keys())
+    out = []
+    for i in pool:
+        lb = labels.get(i) or {}
+        name = (lb.get("name") or moex.get(i) or "").lower()
+        if s in name or s in i.lower() or s in (lb.get("emitter") or "").lower():
+            out.append(i)
+    return out
 
 
 def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict) -> None:
@@ -218,6 +256,7 @@ async def tape(
     cls: Optional[list[str]] = Query(None, description="класс: OFZ | CORP"),
     hide_subord: bool = Query(False, description="убрать суборды и перпы"),
     hide_amort: bool = Query(False, description="убрать амортизируемые выпуски"),
+    q: Optional[str] = Query(None, description="поиск по имени/эмитенту/ISIN (подстрока)"),
     before_ts: Optional[str] = Query(None, description="курсор пагинации: ts последней показанной сделки"),
     before_id: Optional[int] = Query(None, description="курсор пагинации: её trade_id"),
     limit: int = Query(500, ge=1, le=20000),
@@ -249,6 +288,9 @@ async def tape(
             rows = [r for r in rows if r["isin"] == isin]
         labels = await asyncio.to_thread(_labels)
         moex = await asyncio.to_thread(_moex_names)
+        if (q or "").strip():
+            keep = set(_search_isins(labels, moex, [r["isin"] for r in rows], q) or [])
+            rows = [r for r in rows if r["isin"] in keep]
         from services.market_data import MarketDataService as _MD
         from services import bars as _bars
         um = _MD.universe_metrics() or {}
@@ -273,6 +315,8 @@ async def tape(
     # секундами (замер на проде: до 2.2с) — в event loop это встало бы ВСЁ
     # приложение, включая WS-пуши. Отсюда и ниже — только через to_thread.
     labels = await asyncio.to_thread(_labels)
+    # имена ISS нужны и разметке строк, и текстовому поиску (рынок шире реестра)
+    moex = await asyncio.to_thread(_moex_names)
     watch = [i.strip().upper() for i in (isins or []) if i and i.strip()]
     isins: Optional[list[str]] = None
     if isin:
@@ -309,11 +353,13 @@ async def tape(
             _rating_isins(labels, _ttm_isins(labels, isins, ttm_min, ttm_max, um), rating),
             base, hide_subord, hide_amort, cls,
             _moex_secids() if cls else None)
+        # текстовый поиск — последним: он режет уже суженный охват
+        isins = _search_isins(labels, moex, isins, q)
         if isins is not None and not isins:
             return {"from": None, "trades": [], "scope": scope,
                     "summary": {"n": 0, "value": 0, "buy_value": 0, "sell_value": 0,
                                 "by_market": {}, "top": [], "archive_till": None},
-                    "warning": "под фильтры срока/рейтинга бумаг нет"}
+                    "warning": "под фильтры поиска/срока/рейтинга бумаг нет"}
 
     frm = date_from or (date.today() - timedelta(days=days - 1)).isoformat()
     till = date_to
@@ -332,7 +378,6 @@ async def tape(
                           market=market, boards=board, isins=isins,
                           y_min=spread_min, y_max=spread_max, max_value=max_value)
         if not before_ts else asyncio.sleep(0, result={}))
-    moex = await asyncio.to_thread(_moex_names)
     # Оферты: дата и вид ближайшей — из метрик юниверса um (там же, откуда их
     # берёт МОНИТОР), call-опцион — из реестра. Маркеры p/c рядом с датой оферты.
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.
@@ -385,17 +430,34 @@ async def boards(days: int = Query(30, ge=1, le=400)):
 async def ratings():
     """Рейтинги для фильтра — из справочников (в реестре шкала грубая:
     AAA/AA/A/BBB/BB/B), с числом бумаг на грейд. Порядок — от старшего."""
-    counts: dict[str, int] = {}
+    counts: dict[str, int] = {}       # по СТУПЕНЯМ (AA+, AA, AA−) — меню «▾»
+    buckets: dict[str, int] = {}      # по ГРЕЙДАМ (AAA/AA/A/BBB/BELOW/NR) — чипы
     for v in (await asyncio.to_thread(_labels)).values():
-        rt = (v.get("rating") or "").strip().upper()
+        b = rating_bucket(v.get("rating"))
         # NR — отдельный бакет «рейтинга нет», как в МОНИТОРЕ: без него такие
-        # бумаги нельзя ни выбрать, ни понять, сколько их
-        counts[rt or "NR"] = counts.get(rt or "NR", 0) + 1
-    order = {r: i for i, r in enumerate(
+        # бумаги нельзя ни выбрать, ни понять, сколько их. Withdrawn и прочие
+        # нераспознанные записи туда же — в меню им не место.
+        rt = rating_norm(v.get("rating")) if b != "NR" else "NR"
+        counts[rt] = counts.get(rt, 0) + 1
+        key = "BELOW" if b in ("BB", "B") else b
+        buckets[key] = buckets.get(key, 0) + 1
+    grade = {r: i for i, r in enumerate(
         ("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D", "NR"))}
-    items = [{"name": k, "count": v} for k, v in counts.items()]
-    items.sort(key=lambda x: (order.get(x["name"], 99), x["name"]))
-    return {"ratings": items}
+
+    def _key(name: str):
+        # порядок: грейд по шкале, внутри грейда ступень + → без → −
+        core = name.rstrip("+-")
+        step = 0 if name.endswith("+") else (2 if name.endswith("-") else 1)
+        return (grade.get(core, 98), step, name)
+
+    items = sorted(({"name": k, "count": v} for k, v in counts.items()),
+                   key=lambda x: _key(x["name"]))
+    border = {"AAA": 0, "AA": 1, "A": 2, "BBB": 3, "BELOW": 4, "NR": 5}
+    bucket_items = sorted(({"name": k, "count": v} for k, v in buckets.items()),
+                          key=lambda x: border.get(x["name"], 9))
+    # ratings — полный список ступеней (совместимость + меню «▾»),
+    # buckets — крупные грейды для чипов
+    return {"ratings": items, "buckets": bucket_items}
 
 
 @router.get("/issuers", tags=["Trades"])

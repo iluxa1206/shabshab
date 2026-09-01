@@ -1,5 +1,7 @@
 import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { fetchNewIssues } from "../api.js";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
@@ -28,16 +30,37 @@ const currentType = (p) =>
     : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
     : p.startsWith("/status") ? "status" : "floaters";
 
-function TypeMenu({ type, isAdmin }) {
-  const items = TYPES.filter((t) => !t.admin || isAdmin);
+function TypeMenu({ type, isAdmin, features }) {
+  // Выключенный слой (services/feature_flags → /api/meta.features) исчезает из
+  // меню целиком: пустая витрина хуже отсутствующей. Флага нет — считаем, что
+  // слой включён, иначе старый бэк прятал бы рабочие вкладки.
+  const items = TYPES.filter((t) => (!t.admin || isAdmin)
+    && (t.id !== "fixed" || features?.fixed !== false));
   const cur = items.find((t) => t.id === type) || items[0];
+  // счётчик свежих выпусков без подтверждённых параметров: значок висит на самой
+  // кнопке меню, чтобы «надо чекнуть новые» было видно с любой вкладки
+  const nq = useQuery({
+    queryKey: ["admin", "new-issues"],
+    queryFn: fetchNewIssues,
+    enabled: isAdmin,
+    refetchInterval: 10 * 60 * 1000,
+    staleTime: 5 * 60 * 1000,
+  });
+  const n = isAdmin ? (nq.data?.n || 0) : 0;
+  const nTitle = `${n} новых выпусков без подтверждённых параметров — Справочник`;
   return (
     <div className="type-menu">
-      <button type="button" className="seg-btn type-btn" aria-haspopup="true">{cur.label} ▾</button>
+      <button type="button" className="seg-btn type-btn" aria-haspopup="true">
+        {cur.label} ▾
+        {n > 0 && <span className="nav-badge" title={nTitle}>{n}</span>}
+      </button>
       <div className="type-drop" role="menu">
         {items.map((t) => (
           <NavLink key={t.id} to={t.home} role="menuitem"
-            className={"type-opt" + (t.id === type ? " on" : "")}>{t.label}</NavLink>
+            className={"type-opt" + (t.id === type ? " on" : "")}>
+            {t.label}
+            {t.id === "reference" && n > 0 && <span className="nav-badge" title={nTitle}>{n}</span>}
+          </NavLink>
         ))}
       </div>
     </div>
@@ -49,14 +72,14 @@ const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 // extra — слот для инструментов раздела в самой верхней панели (сейчас там живёт
 // «Аналитика» флоатеров): панель фильтров ниже — про отбор строк, а окна поверх
 // таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
-export default function Topbar({ user, onLogout, onOpenSettings, extra }) {
+export default function Topbar({ user, onLogout, onOpenSettings, extra, features }) {
   const type = currentType(useLocation().pathname);
   const sub = SUBNAV[type] || [];
   return (
     <header className="menubar">
       <div className="brand-row">
         <span className="wordmark">DESK</span>
-        <TypeMenu type={type} isAdmin={user?.role === "admin"} />
+        <TypeMenu type={type} isAdmin={user?.role === "admin"} features={features} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
             {sub.map(([to, label]) => (

@@ -235,6 +235,7 @@ async def days_agg(
     ttm_min: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга от, лет"),
     ttm_max: Optional[float] = Query(None, ge=0, description="срок до горизонта прайсинга до, лет"),
     rating: Optional[list[str]] = Query(None, description="рейтинги (можно повторять)"),
+    q: Optional[str] = Query(None, description="поиск по имени/эмитенту/ISIN (подстрока)"),
     limit: int = Query(1000, ge=1, le=20000),
 ):
     """Дневные РПС-обороты (ISS history market=ndm).
@@ -248,9 +249,10 @@ async def days_agg(
     if scope not in SCOPES:
         raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
     date_from, date_to = _win(date_from, date_to)
-    from api.routes.trades import _rating_isins, _ttm_isins
+    from api.routes.trades import _rating_isins, _search_isins, _ttm_isins
     from services import block_trades as bt
     labels = await asyncio.to_thread(_labels)
+    moex = await asyncio.to_thread(_moex_names)
     isins: Optional[list[str]] = None
     if not isin:
         if issuer:
@@ -265,19 +267,33 @@ async def days_agg(
             _ttm_isins(labels, isins, ttm_min, ttm_max,
                        MarketDataService.universe_metrics() or {}),
             rating)
+        # текстовый поиск — на бэке, как и в ленте: иначе итоги окна считались бы
+        # по всем бумагам, а таблица показывала бы найденные
+        isins = _search_isins(labels, moex, isins, q)
         if isins is not None and not isins:
-            return {"from": None, "days": days, "rows": []}
+            return {"from": None, "days": days, "rows": [], "has_more": False,
+                    "summary": {"n": 0, "value": 0, "trades": 0, "top": [],
+                                "archive_till": None}}
     frm = date_from or (date.today() - timedelta(days=days)).isoformat()
-    rows = await asyncio.to_thread(bt.read_days, isin=isin, frm=frm, till=date_to,
-                                   min_value=min_value, limit=limit, isins=isins)
-    moex = await asyncio.to_thread(_moex_names)
+    # строки и итоги независимы — читаем параллельно, как в ленте: итоги
+    # считаются по ВСЕМУ окну, лимит режет только показанные строки
+    rows, summary = await asyncio.gather(
+        asyncio.to_thread(bt.read_days, isin=isin, frm=frm, till=date_to,
+                          min_value=min_value, limit=limit, isins=isins),
+        asyncio.to_thread(bt.days_stats, isin=isin, frm=frm, till=date_to,
+                          min_value=min_value, isins=isins))
     for r in rows:
         lb = labels.get(r["isin"]) or {}
         r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
         r["emitter"] = lb.get("emitter")
         r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
         r["board_short"] = board_short(r.get("board"))
-    return {"from": frm, "till": date_to, "days": days, "rows": rows}
+    for t in summary.get("top") or []:
+        lb = labels.get(t["isin"]) or {}
+        t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]
+        t["emitter"] = lb.get("emitter")
+    return {"from": frm, "till": date_to, "days": days, "rows": rows,
+            "has_more": len(rows) >= limit, "summary": summary}
 
 
 @router.get("/{isin}", tags=["Blocks"])

@@ -266,11 +266,34 @@ npm --prefix frontend-react test
   как канал доставки: клиент Bot API, привязка чата к веб-аккаунту (заявка на `/start` →
   одобрение админом на сайте), очередь алертов + буфер сигналов, PNG-рендер стакана (Pillow).
   Своей настройки у бота нет — алерты и фильтры заводятся на сайте.
-* `tg_digest.py` / `charts_png.py` — вечерний «разбор дня» (19:30 МСК, `DIGEST_AT`):
-  альбом из четырёх PNG (движения премии, обороты, своп-кривая КС, выплаты вперёд)
-  одним `sendMediaGroup`. Картинки рисуются примитивами Pillow (`Canvas`, `movers`,
-  `turnover`, `curve`, `payments`) — без matplotlib и браузера; в контейнере нужен
-  `fonts-dejavu-core`. Ручной вызов — команда бота `/digest` (только в свой чат).
+* `tg_digest.py` / `charts_png.py` / `tg_links.py` — вечерний «разбор дня» (19:30 МСК,
+  `DIGEST_AT`): по альбому НА КЛАСС рынка (`DIGEST_SCOPES=floater,fixed`), один
+  за другим, каждый — свой `sendMediaGroup` из 7–9 PNG (движения премии, широта
+  движения, обороты, крупные сделки, карта «срок × премия», премия по
+  рейтингам, профиль дня; у флоатеров ещё своп-кривая КС со сдвигом в бп и
+  выплаты вперёд — календарь строится по универсу флоатеров, а КС к фиксам
+  отношения не имеет). В конце одно сообщение с url-кнопками на страницы
+  дашборда (у медиагруппы своей клавиатуры не бывает). Валютных бумаг
+  (FACEUNIT ≠ SUR) в свёртке нет вовсе — их не собирает стрим, третий альбом
+  ждёт отдельной задачи. Картинки рисуются примитивами Pillow (`Canvas`, `movers_split`,
+  `breadth_split`, `turnover`, `blocks`, `scatter`, `grouped`, `profile`,
+  `curve`, `payments`) — без matplotlib и браузера; в контейнере нужен
+  `fonts-dejavu-core`. **Рынки не смешиваются**: Y-IDX флоатера и g-спред фикса
+  меряют премию по-разному, поэтому каждый класс получает собственный альбом со
+  своими шкалами, своим топом движений и своей метрикой в подписи; лента блоков
+  фильтруется по классу через свёртку дня (у `block_trade` своего `kind` нет). Имена бумаг резолвятся реестр → суточный справочник ISS
+  (`block_trades.secid_map`, прогревается перед сборкой): реестр знает только
+  флоатеры, и без второго источника весь слой ФИКСОВ выпадал из альбома.
+  Рейтинговые бакеты — из кэша `ratings` (реестр проставляет рейтинг лишь
+  флоатерам). Санитары премии `DIGEST_SANE_MIN`…`DIGEST_SANE_SPREAD` отсекают
+  структурные ноты с мусорным g-спредом. В подписи — ссылки на график выпуска (`tg_links.bond`),
+  копируемые ISIN, серия движения («3-й день подряд») и ЛИЧНАЯ строка сигналов
+  чата за день (картинки общие, подпись пересобирается на каждый чат).
+  По пятницам (`DIGEST_WEEKLY_DAY=4`) вместо дневного уходит недельный разбор:
+  движения к прошлой неделе (`DIGEST_WEEK_SESSIONS` торговых сессий), обороты
+  суммой за неделю, свежие выпуски в подписи. Первичка из рейтинга сделок
+  выброшена (`DIGEST_SKIP_PLACEMENT`) — РПС по 100,00 в день размещения не
+  новость. Ручной вызов — команды бота `/digest` и `/week` (только в свой чат).
 * `progress.py` — реестр фоновых задач для страницы СТАТУС: `start/advance/finish/snapshot`.
 * `portfolio_db.init_db()` — схема `data/portfolio.db` (идемпотентно + аддитивные миграции).
 * `paths.py` — `cache_path(name)`, `atomic_write_json(path, obj)`.
@@ -445,6 +468,15 @@ npm --prefix frontend-react test
 * **Telegram**: `TG_BOT_TOKEN`, `TG_WEBHOOK_SECRET`, `TG_WEBHOOK_URL`, `TG_SITE_URL`,
   `TG_SIGNAL_FLUSH_SEC` (30 — период слива буфера сигналов),
   `TG_API_IP` (обход IPv6-only DNS на VPS).
+* **Дайджест**: `DIGEST_ENABLED`, `DIGEST_AT` (19:30 МСК), `DIGEST_SCOPES`
+  (`floater,fixed` — по альбому на класс), `DIGEST_WEEKLY`(1),
+  `DIGEST_WEEKLY_DAY` (4 — пятница), `DIGEST_WEEK_SESSIONS` (5),
+  `DIGEST_MIN_VALUE`, `DIGEST_MOVERS`, `DIGEST_TURNOVER_TOP`, `DIGEST_BLOCKS_TOP`,
+  `DIGEST_BLOCKS_PER_ISIN`, `DIGEST_SKIP_PLACEMENT`, `DIGEST_STREAK_DAYS`,
+  `DIGEST_PAYMENT_DAYS`, `DIGEST_PAYMENT_DAYS_WEEK`, `DIGEST_NEW_ISSUES`,
+  `DIGEST_CURVE_BACK`, `DIGEST_SANE_SPREAD`, `DIGEST_SANE_MIN`,
+  `DIGEST_SANE_DELTA`, `DIGEST_THIN_SHARE` (доля максимума, ниже которой
+  интервал профиля теряет медиану премии).
 * **Такты воркеров**: `QUOTES_POLL_INTERVAL`, `SIGNALS_INTERVAL`, `DEPTH_POLL_INTERVAL`,
   `BLOCK_POLL_INTERVAL`, `BARS_WORKER`(0/1), `BARS_WORKER_DAYS`, `BLOCK_WORKER`, `TRADES_STREAM`,
   `DEPTH_STREAM`, `TRADES_STREAM_FLUSH`.

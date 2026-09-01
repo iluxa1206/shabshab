@@ -12,11 +12,12 @@ import logging
 import time
 from typing import Dict, List
 
+from core.orderbooks import WS_DEPTH
 from services.market_data import market_cache
 
 logger = logging.getLogger(__name__)
 
-_DEPTH_LEVELS = 20      # уровней на сторону в снимке
+_DEPTH_LEVELS = WS_DEPTH   # уровней на сторону в снимке (см. core.orderbooks)
 _STALE_SEC = 900        # снимок старше 15 мин наружу не отдаём (лучше пусто, чем врать)
 
 

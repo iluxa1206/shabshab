@@ -22,16 +22,18 @@ import time
 import aiohttp
 
 from auth import alor_token, REFRESH_TOKEN, BASE_API
+from core.orderbooks import WS_DEPTH, WS_COMPRESS
 
 logger = logging.getLogger(__name__)
 
 _WS_URL = BASE_API.replace("https://", "wss://") + "/ws"
-# Глубина подписки. ПОТОЛОК БЕЗ СЖАТИЯ — 20: на 50 Alor отвечал «400 The
-# orderbook subscription with the depth more than 20 is allowed only with
-# enabled compression», подписка отклонялась КАЖДЫЙ раз, и стакан карточки молча
-# жил на HTTP-поллинге 3 с. Ошибка терялась вместе с ответами на подписку (у них
-# нет поля data), поэтому в логах не было ни строки.
-_DEPTH = 20
+# Глубина подписки — 50, и она ДЕРЖИТСЯ НА СЖАТИИ соединения: без
+# permessage-deflate Alor отбивает «400 The orderbook subscription with the
+# depth more than 20 is allowed only with enabled compression» на КАЖДУЮ
+# подписку, а ошибка теряется вместе с прочими ответами на подписку (у них нет
+# поля data) — в логах ни строки, стакан карточки молча живёт на HTTP-поллинге
+# 3 с. Снимать compress у ws_connect ниже нельзя, не опустив _DEPTH до 20.
+_DEPTH = WS_DEPTH
 _FREQ_MS = 800         # серверный троттл Alor: не чаще раза в 800мс на бумагу
 # Потолок бумаг с живым VWAP (подписка AllTrades на бумагу), звёздочек можно
 # наставить до 300 (_MAX_SUBS_PER_CLIENT). Сверх потолка средневзвес бумаги —
@@ -44,12 +46,12 @@ _UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
 
 
 class _Sub:
-    __slots__ = ("guid", "kind", "metrics_fn", "face", "ctx_ts", "memo", "_logged")
+    __slots__ = ("guid", "kind", "levels_fn", "face", "ctx_ts", "memo", "_logged")
 
     def __init__(self, guid):
         self.guid = guid
         self.kind = None
-        self.metrics_fn = None
+        self.levels_fn = None
         self.face = None
         self.ctx_ts = 0.0
         self.memo = {}     # price -> {yield_pct, dm_bps, g_spread_bps}
@@ -63,79 +65,99 @@ async def _detect_kind(isin: str) -> str:
 
 async def _ensure_ctx(sub: _Sub, isin: str) -> None:
     now = time.time()
-    if sub.metrics_fn is not None and now - sub.ctx_ts < _CTX_TTL:
+    if sub.levels_fn is not None and now - sub.ctx_ts < _CTX_TTL:
         return
-    from services.orderbook_svc import build_metrics_fn
+    from services.orderbook_svc import build_levels_fn
     if sub.kind is None:
         sub.kind = await _detect_kind(isin)
     try:
-        sub.metrics_fn, _cd, sub.face = await build_metrics_fn(isin, sub.kind)
+        sub.levels_fn, _cd, sub.face = await build_levels_fn(isin, sub.kind)
         sub.ctx_ts = now
         sub.memo = {}     # ctx пересобран → memo невалиден
     except Exception as e:
         logger.debug(f"alor_ws ctx {isin}: {e}")
 
 
+def _px(p) -> float:
+    return round(float(p), 4)
+
+
+async def _fill_memo(sub: _Sub, prices) -> None:
+    """Досчитать НЕДОСТАЮЩИЕ цены — одним батчем и в потоке исполнителя.
+
+    Тик повторяет цены, поэтому в установившемся режиме досчитывать нечего.
+    А вот первый пуш и первый после пересборки контекста считают всю книгу
+    разом: батч на бумагу вместо расчёта на цену (×65, замер 28.08.2026), и не
+    в event loop — иначе лестница на 60 уровней встаёт поперёк всего сервера."""
+    if not sub.levels_fn:
+        for p in prices:
+            sub.memo.setdefault(_px(p), {})
+        return
+    missing = []
+    for p in prices:
+        k = _px(p)
+        if k not in sub.memo and k not in missing:
+            missing.append(k)
+    if not missing:
+        return
+    from services.heavy import run_heavy
+    try:
+        got = await run_heavy(sub.levels_fn, missing) or {}
+    except Exception as e:
+        logger.debug("alor_ws levels: %s", e)
+        got = {}
+    for k in missing:
+        sub.memo[k] = got.get(k) or {}
+
+
+def _row(sub: _Sub, price, qty) -> dict:
+    m = sub.memo.get(_px(price)) or {}
+    return {"price_pct": price, "quantity": qty, "yield_pct": m.get("yield_pct"),
+            "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
+            "g_spread_bps": m.get("g_spread_bps"),
+            # спред ко ВТОРОМУ горизонту едет рядом: свитчер карточки
+            # («погашение ↔ оферта») переключает готовое число, и ручной
+            # выбор больше не гасит подписку в пользу поллинга
+            "y_idx_alt_bps": m.get("y_idx_alt_bps"),
+            "alt_horizon": m.get("alt_horizon"),
+            "horizon": m.get("horizon")}
+
+
+def _pairs(rows) -> list:
+    return [(e["price"], e.get("volume")) for e in (rows or [])
+            if e.get("price") is not None]
+
+
 def _levels(sub: _Sub, raw) -> list:
-    out = []
-    for e in raw or []:
-        p, q = e.get("price"), e.get("volume")
-        if p is None:
-            continue
-        m = sub.memo.get(p)
-        if m is None:
-            if sub.metrics_fn:
-                try:
-                    m = sub.metrics_fn(p)
-                except Exception:
-                    m = {}
-            else:
-                m = {}
-            sub.memo[p] = m or {}
-            m = sub.memo[p]
-        out.append({"price_pct": p, "quantity": q, "yield_pct": m.get("yield_pct"),
-                    "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
-                    "g_spread_bps": m.get("g_spread_bps"),
-                    # спред ко ВТОРОМУ горизонту едет рядом: свитчер карточки
-                    # («погашение ↔ оферта») переключает готовое число, и ручной
-                    # выбор больше не гасит подписку в пользу поллинга
-                    "y_idx_alt_bps": m.get("y_idx_alt_bps"),
-                    "alt_horizon": m.get("alt_horizon"),
-                    "horizon": m.get("horizon")})
-    return out
+    """Уровни С ЗАЯВКАМИ. Метрики — из memo, который заполнен _fill_memo."""
+    return [_row(sub, p, q) for p, q in _pairs(raw)]
+
+
+def ladder_prices(raw_bids, raw_asks) -> list:
+    """Цены синтетической лестницы — чтобы досчитать их тем же батчем, что и
+    уровни с заявками. Пустой список, если лестницу строить не из чего."""
+    from services.orderbook_svc import ladder_plan
+    try:
+        plan = ladder_plan(_pairs(raw_bids), _pairs(raw_asks))
+    except Exception:
+        return []
+    return [p for p, _q in (plan or {}).get("levels", [])]
 
 
 def _ladder(sub: _Sub, raw_bids, raw_asks):
     """Полная лестница цен с метриками на пустых уровнях — то же, что HTTP-режим
-    «все уровни». Считается общей функцией; цены кэшируются в sub.memo, поэтому
-    после прогрева стоит почти ноль."""
-    from services.orderbook_svc import build_ladder
-    pairs = lambda rows: [(e["price"], e.get("volume")) for e in (rows or [])
-                          if e.get("price") is not None]
-
-    def _one(price, qty):
-        m = sub.memo.get(price)
-        if m is None:
-            try:
-                m = sub.metrics_fn(price) if sub.metrics_fn else {}
-            except Exception:
-                m = {}
-            sub.memo[price] = m or {}
-            m = sub.memo[price]
-        return {"price_pct": price, "quantity": qty, "yield_pct": m.get("yield_pct"),
-                "dm_bps": m.get("dm_bps"), "y_idx_bps": m.get("y_idx_bps"),
-                "g_spread_bps": m.get("g_spread_bps"),
-                "y_idx_alt_bps": m.get("y_idx_alt_bps"),
-                "alt_horizon": m.get("alt_horizon"), "horizon": m.get("horizon")}
-
+    «все уровни». Сетку строит общая функция, метрики берутся из memo."""
+    from services.orderbook_svc import ladder_plan
     try:
-        res = build_ladder(pairs(raw_bids), pairs(raw_asks), _one)
+        plan = ladder_plan(_pairs(raw_bids), _pairs(raw_asks))
     except Exception as e:
         logger.debug("alor_ws ladder: %s", e)
         return None
-    if not res:
+    if not plan:
         return None
-    bids, asks = res
+    bids, asks = [], []
+    for price, qty in plan["levels"]:
+        (asks if price > plan["mid"] else bids).append(_row(sub, price, qty))
     return {"bids": sorted(bids, key=lambda x: x["price_pct"], reverse=True),
             "asks": sorted(asks, key=lambda x: x["price_pct"])}
 
@@ -167,7 +189,8 @@ async def alor_orderbook_ws():
                 await asyncio.sleep(10)
                 continue
             async with aiohttp.ClientSession() as sess:
-                async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
+                async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15,
+                                           compress=WS_COMPRESS) as ws:
                     up_at = time.monotonic()
                     subs = {}        # isin -> _Sub (стакан с reprice уровней)
                     trades = {}      # isin -> guid (поток сделок → живой VWAP)
@@ -282,6 +305,13 @@ async def alor_orderbook_ws():
                                 if not manager.orderbook_subscriptions.get(isin):
                                     continue
                                 await _ensure_ctx(sub, isin)
+                                # ЦЕНЫ СЧИТАЕМ ОДНИМ БАТЧЕМ на пуш: и уровни с
+                                # заявками, и синтетические уровни лестницы —
+                                # это цены одной бумаги, поток и база у них общие
+                                _lp = ladder_prices(data.get("bids"), data.get("asks"))
+                                await _fill_memo(sub, [p for p, _q in _pairs(data.get("bids"))]
+                                                 + [p for p, _q in _pairs(data.get("asks"))]
+                                                 + _lp)
                                 out = {
                                     "orderbook": {"bids": _levels(sub, data.get("bids")),
                                                   "asks": _levels(sub, data.get("asks"))},

@@ -122,3 +122,21 @@ describe("фильтр по объёму на витрине фиксов", () =
     expect(applyVolume(ROW, LADDER, 900_000_000, 0, "and", FIXED_VOL_FIELDS)).toBeNull();
   });
 });
+
+describe("числа набора из котировок (такт 5 с)", () => {
+  it("цена набора и её g-спред/YTM ложатся в строку", async () => {
+    const { applyVolQuote } = await import("./FixedMonitor.jsx");
+    const row = { isin: "RU000A1FIX01" };
+    applyVolQuote(row, { vol_bid_px: 99.1, vol_bid_g: 135, vol_bid_ytm: 16.2 });
+    expect(row.vol_bid_price_pct).toBe(99.1);
+    expect(row.g_spread_vol_bid_bps).toBe(135);
+    expect(row.ytm_vol_bid).toBe(16.2);
+  });
+
+  it("движок ещё не посчитал — прежнее число в строке не трогаем", async () => {
+    const { applyVolQuote } = await import("./FixedMonitor.jsx");
+    const row = { g_spread_vol_ask_bps: 90 };
+    applyVolQuote(row, { vol_ask_px: null });
+    expect(row.g_spread_vol_ask_bps).toBe(90);
+  });
+});

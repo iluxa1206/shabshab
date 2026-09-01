@@ -15,7 +15,10 @@ describe("рейтинговый бакет", () => {
     expect(ratingBucket("D")).toBe("B");
     expect(ratingBucket("")).toBe("NR");
     expect(ratingBucket(null)).toBe("NR");
-    expect(ratingBucket("ruAA")).toBe("NR");
+    // Суффикс агентства — это формат записи, а не другой рейтинг: выгрузка
+    // отдаёт «ruAA» / «AA(RU)» / «AA|ru|» вперемешку, и раньше все они уезжали
+    // в NR (бумага с рейтингом показывалась как «без рейтинга»).
+    expect(ratingBucket("ruAA")).toBe("AA");
   });
 
   it("чип «BB↓» ловит ровно то, что бакет считает ниже BBB", () => {
@@ -43,5 +46,25 @@ describe("срок в годах", () => {
     expect(yearsToNum("2000-01-01")).toBeLessThan(0);
     expect(yearsToNum(null)).toBe(null);
     expect(yearsToNum("не дата")).toBe(null);
+  });
+});
+
+describe("ступени рейтинга (+/−)", () => {
+  it("ступень и суффикс агентства не выкидывают бумагу в NR", () => {
+    for (const r of ["AA-", "ruAA-", "AA-(RU)", "AA-|ru|", "AA+", "AA.ru"]) {
+      expect(ratingBucket(r)).toBe("AA");
+    }
+    expect(ratingBucket("BBB+")).toBe("BBB");
+    expect(ratingBucket("CCC-")).toBe("B");
+    expect(ratingBucket("WITHDRAWN")).toBe("NR");
+  });
+
+  it("выбор бакета забирает всю группу, выбор ступени — только её", () => {
+    expect(ratingMatches("AA-", ["AA"])).toBe(true);
+    expect(ratingMatches("AA+", ["AA"])).toBe(true);
+    expect(ratingMatches("AA-", ["AA-"])).toBe(true);
+    expect(ratingMatches("AA+", ["AA-"])).toBe(false);
+    expect(ratingMatches("BB-", ["BELOW"])).toBe(true);
+    expect(ratingMatches("AAA", ["BELOW"])).toBe(false);
   });
 });

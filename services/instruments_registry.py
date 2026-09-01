@@ -1310,6 +1310,46 @@ def list_unreviewed() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# Окно «новый выпуск» для ручной проверки в Справочнике: бумага считается новой,
+# пока с даты размещения (или, если её нет, с первого появления в реестре) прошло
+# не больше стольких дней. Шире окна перепопыток обогащения (_FRESH_ISSUE_DAYS):
+# параметры свежего выпуска дозревают в источниках неделями, а глаз админа нужен
+# всё это время.
+NEW_ISSUE_DAYS = 30
+
+
+def list_new_issues(days: int = NEW_ISSUE_DAYS, unchecked_only: bool = False) -> list[dict]:
+    """Свежие выпуски — кандидаты на ручную проверку параметров.
+
+    «Свежий» = issue_date не старше days (фолбэк — first_seen: у бумаг без даты
+    размещения единственный признак новизны — день, когда её нашла дискавери).
+    unchecked_only=True оставляет только те, что админ ещё не подтвердил
+    (reviewed=0) — это и есть счётчик на кнопке «Справочник».
+    """
+    _ensure()
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM instruments WHERE active=1 "
+            "AND COALESCE(substr(issue_date,1,10), substr(first_seen,1,10)) >= ? "
+            "ORDER BY COALESCE(issue_date, first_seen) DESC", (cutoff,)).fetchall()
+    out = []
+    for r in rows:
+        if unchecked_only and r["reviewed"]:
+            continue
+        out.append({"isin": r["isin"], "short_name": r["short_name"], "base": r["base"],
+                    "margin_bps": r["margin_bps"], "maturity_date": r["maturity_date"],
+                    "issue_date": r["issue_date"], "first_seen": r["first_seen"],
+                    "source": r["source"], "reviewed": bool(r["reviewed"]),
+                    "priceable": is_priceable(r)})
+    return out
+
+
+def new_issue_isins(days: int = NEW_ISSUE_DAYS) -> list[str]:
+    """ISIN свежих выпусков, новые первыми — приоритет очередям обогащения."""
+    return [r["isin"] for r in list_new_issues(days)]
+
+
 def sync_from_sources(nrd_items: list[dict] | None = None,
                       cbonds: dict | None = None,
                       manual: dict | None = None) -> dict:
@@ -1365,7 +1405,12 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
             "day_count": cb.get("day_count"),
             "var_type": cb.get("var_type"),
             "coupon_text": cb.get("coupon_text"),   # формула купона (для СПРАВОЧНИКа + проспект-парс)
-            "rating": n.get("rating"),
+            # рейтинг: выгрузка знает свежий выпуск раньше corpbonds/НРД, но
+            # это СНИМОК на дату файла — им нельзя перебивать живой драйн
+            # (set_rating), иначе понижение рейтинга откатывалось бы каждым
+            # синком до следующей выгрузки. Только заполнение пропуска.
+            "rating": n.get("rating") or (cb.get("rating")
+                                          if not (get(isin) or {}).get("rating") else None),
         }
         res = upsert(row, source="cbonds" if cb else "nrd_frozen")
         stats[res if res in stats else "updated"] = stats.get(res, 0) + 1
@@ -1638,6 +1683,10 @@ def count() -> dict:
         suspect = c.execute(
             "SELECT COUNT(*) FROM instruments WHERE active=1 AND margin_check_pp IS NOT NULL "
             "AND ABS(margin_check_pp) > ?", (_SUSPECT_PP,)).fetchone()[0]
+    new_unchecked = len(list_new_issues(unchecked_only=True))
     return {"total": total, "floaters": floaters, "unreviewed": unrev,
             "priceable": priceable, "incomplete": floaters - priceable,
-            "suspect": suspect, "offer_reset": len(list_offer_reset())}
+            "suspect": suspect, "offer_reset": len(list_offer_reset()),
+            # свежие выпуски без подтверждения параметров — значок на кнопке
+            # «Справочник» и фильтр «новые» на самой странице
+            "new_issues": new_unchecked}

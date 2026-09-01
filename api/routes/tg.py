@@ -5,7 +5,8 @@
 секрет-заголовок X-Telegram-Bot-Api-Secret-Token (env TG_WEBHOOK_SECRET) плюс
 статус привязки в tg_users. Команды бота — только чтение и пауза доставки:
   /start — заявка на доступ, /signals — последние события,
-  /digest — разбор дня альбомом картинок,
+  /digest — разбор дня альбомами картинок (флоатеры и фиксы),
+  /week — итоги недели,
   /mute, /unmute, /status, /custom, /help
 """
 import asyncio
@@ -20,12 +21,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel
 
 from api.routes.auth import require_admin
-from services import auth_users, signals, telegram, tg_targets, tg_users
+from services import auth_users, signals, telegram, tg_links, tg_targets, tg_users
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_SITE_URL = os.getenv("TG_SITE_URL", "https://assetallocator.ru/desk/")
+_SITE_URL = tg_links.site()
 
 # Фоновые задачи команд (см. /digest): держим ссылки, иначе GC убьёт их молча.
 _bg_tasks: set = set()
@@ -34,7 +35,9 @@ _HELP = (
     "<b>Что умеет бот</b>\n"
     "Сигналы рынка настраиваются на сайте — сюда приходят их копии.\n\n"
     "/signals — последние сигналы\n"
-    "/digest — разбор дня: движения, обороты, кривая, выплаты\n"
+    "/digest — разбор дня: движения, обороты, крупные сделки, кривая, выплаты\n"
+    "    отдельным классом: <code>/digest флоатеры</code>, <code>/digest фиксы</code>\n"
+    "/week — то же самое в недельном окне\n"
     "/custom — свои эмодзи для маркеров\n"
     "/chats — каналы для доставки (перешлите сюда пост из канала)\n"
     "/mute, /unmute — пауза доставки\n"
@@ -55,7 +58,8 @@ def _fmt_event(e: dict) -> str:
         bits.append(f"{e['price']:.2f}")
     if e.get("money_rub"):
         v = e["money_rub"]
-        bits.append(f"{v / 1e6:.1f} млн ₽" if v >= 1e6 else f"{v / 1e3:.0f} тыс ₽")
+        # деньги везде в миллионах — одна единица на все суммы (tg_notify._money_m)
+        bits.append(f"{v / 1e6:.{1 if abs(v) >= 1e6 else 2}f} млн ₽")
     ts = (e.get("fired_at") or "")[11:16]
     return f"• {ts} <b>{name}</b> — " + ", ".join(bits)
 
@@ -201,17 +205,32 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
                     if ok else "Такого адресата нет.")
         return _targets_text(email)
 
-    if text.startswith("/digest"):
-        # Ручной вызов вечернего альбома: тем же составом, что уходит в 19:30,
+    if text.startswith("/digest") or text.startswith("/week"):
+        # Ручной вызов вечернего разбора: тем же составом, что уходит в 19:30,
         # но ТОЛЬКО в свой чат — команда для «посмотреть сейчас», а не рассылка.
         from services import tg_digest
-        # Альбом собирается секунды (четыре рендера + календарь), а ответить
+        mode = "week" if text.startswith("/week") else "day"
+        # Аргументом — класс рынка: «/digest фиксы» шлёт один альбом вместо
+        # всех. Без аргумента идут все классы подряд, как вечером.
+        arg = (text.split() + [""])[1].lower().strip("/")
+        aliases = {"float": "floater", "floaters": "floater", "флоатеры": "floater",
+                   "фло": "floater", "fixed": "fixed", "фиксы": "fixed",
+                   "фикс": "fixed"}
+        scopes = [aliases[arg]] if arg in aliases else None
+        if arg and scopes is None:
+            return ("Не понял класс. Так: <code>/digest флоатеры</code> или "
+                    "<code>/digest фиксы</code>; без аргумента придут оба.")
+        # Альбом собирается секунды (девять рендеров + календарь), а ответить
         # на команду надо сразу — поэтому фоном. Ссылку держим в множестве:
         # без неё сборщик мусора вправе убить задачу на полпути.
-        t = asyncio.create_task(tg_digest.send_digest([chat_id]))
+        t = asyncio.create_task(tg_digest.send_digest([chat_id], mode=mode,
+                                                     scopes=scopes))
         _bg_tasks.add(t)
         t.add_done_callback(_bg_tasks.discard)
-        return "📊 Собираю разбор дня — альбом придёт следом."
+        what = "итоги недели" if mode == "week" else "разбор дня"
+        which = (tg_digest.SCOPES[scopes[0]]["title"].lower() if scopes
+                 else "флоатеры и фиксы")
+        return f"📊 Собираю {what} ({which}) — альбомы придут следом."
 
     if text.startswith("/status"):
         u = tg_users.get(uid) or {}

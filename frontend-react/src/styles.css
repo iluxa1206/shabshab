@@ -177,7 +177,11 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 
 /* --- Селектор типа облигаций (первая кнопка меню, hover-дропдаун) --- */
 .type-menu { position: relative; display: inline-flex; }
-.type-btn { border: 1px solid var(--line-2); font-weight: 700; }
+.type-btn { border: 1px solid var(--line-2); font-weight: 700; position: relative; }
+/* значок «есть что чекнуть» на кнопке меню и в пункте «Справочник» */
+.nav-badge { display: inline-block; margin-left: 5px; min-width: 14px; padding: 0 4px;
+  font-size: 9px; line-height: 14px; font-weight: 700; text-align: center;
+  border-radius: 7px; background: var(--accent); color: var(--bg); vertical-align: middle; }
 .type-drop { position: absolute; top: 100%; left: 0; z-index: 40; display: none;
   flex-direction: column; min-width: 130px; background: var(--bg);
   border: 1px solid var(--line-2); box-shadow: 0 6px 18px rgba(0,0,0,.18); }
@@ -1154,6 +1158,32 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-tgl-btn.on { background: var(--accent); color: var(--bg); }
 
 /* ── Меню выбора столбцов (дропдаун) ── */
+/* «▾ все рейтинги»: чипы держат крупную шкалу, ступени (AA+/AA−) — здесь */
+.rtmenu { position: relative; display: inline-flex; }
+.rtmenu-btn { padding-left: 6px; padding-right: 6px; }
+.rtmenu-pop {
+  position: absolute; top: 100%; left: 0; z-index: 40; margin-top: 4px;
+  min-width: 150px; max-height: 340px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--fg);
+}
+.rtmenu-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 10px; border-bottom: 1px solid var(--line-2);
+  font-size: 10px; letter-spacing: 0.08em; color: var(--mut);
+}
+.rtmenu-list { display: flex; flex-direction: column; }
+.rtmenu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 10px; border: none; border-bottom: 1px solid var(--line);
+  background: transparent; cursor: pointer; font-family: var(--mono); font-size: 12px;
+}
+.rtmenu-item:hover { background: var(--line); }
+.rtmenu-item.on { background: var(--fg); }
+.rtmenu-item.on .rtmenu-name, .rtmenu-item.on .rtmenu-cnt { color: var(--bg); }
+/* ступень уже покрыта выбранным грейдом — видно, почему она в выдаче */
+.rtmenu-item.via { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+.rtmenu-cnt { color: var(--mut-2); font-size: 10px; }
+
 .colmenu { position: relative; display: inline-flex; }
 .colmenu-pop {
   position: absolute; top: 100%; right: 0; z-index: 40; margin-top: 4px;
@@ -1388,6 +1418,13 @@ body.col-resizing * { cursor: col-resize !important; }
 .cat-miss { color: var(--mut-2); }
 .cat-req { color: var(--neg); font-weight: 700; }
 .cat-row-incomplete { background: color-mix(in srgb, var(--neg) 8%, transparent); }
+/* свежий выпуск: параметры источники доливают неделями — строка подсвечена,
+   пока админ не подтвердит (кнопка «Ок») */
+.cat-row-new { box-shadow: inset 3px 0 0 var(--accent); }
+.cat-row-new.cat-row-incomplete { background: color-mix(in srgb, var(--neg) 8%, transparent); }
+.cat-fresh { margin-left: 4px; font-size: 9px; font-weight: 700; letter-spacing: .5px;
+  padding: 0 4px; border-radius: 6px; background: var(--accent); color: var(--bg); }
+.admin-new { background: var(--accent); color: var(--bg); font-weight: 700; }
 .cat-count { padding: 4px 8px; font-size: 11px; }
 .cat-errs { margin: 4px 0 0; padding-left: 18px; font-size: 11px; }
 

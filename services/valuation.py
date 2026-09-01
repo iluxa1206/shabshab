@@ -69,6 +69,7 @@ def calculate_valuation_metrics(
     offers=None,
     ruonia_curve: DiscountCurve = None,
     alt_prices=None,
+    alt_dm: bool = False,
     accrued_basis: str = "settle",
     accrued_date=None,
 ) -> Dict[str, Any]:
@@ -93,9 +94,16 @@ def calculate_valuation_metrics(
               value (зафикс. рублёвая сумма купона) прокидывается в DM-cashflow,
               чтобы текущий/прошлый купон брался фактом, а не перепрогнозом.
     amorts — график амортизаций MOEX [{date, value},...] для DM амортизируемых бумаг.
-    alt_prices — доп. чистые цены (напр. bid/ask верха стакана): для каждой считаем
-              ТОЛЬКО Y-IDX (XIRR по УЖЕ построенному потоку − та же база RUONIA) →
-              "y_idx_by_price": {price: bps}. Дёшево: поток и base leg не пересобираются.
+    alt_prices — доп. чистые цены (напр. bid/ask верха стакана, лестница стакана):
+              для каждой считаем Y-IDX и YTM (XIRR по УЖЕ построенному потоку −
+              та же база RUONIA) → в блоке горизонта "y_idx_by_price": {price: bps}
+              и "ytm_by_price": {price: %}. Дёшево: поток и base leg не пересобираются
+              (замер 28.08.2026: 0,5 мс на цену против 33 мс за отдельный
+              reprice_at_price — поштучный путь пересобирает поток на КАЖДУЮ цену).
+    alt_dm — считать по alt_prices ещё и discount margin ("dm_by_price"). Отдельным
+              флагом: DM — это свой солвер на каждую цену поверх flat-потока, и
+              витрине (три цены на бумагу по всему рынку) он не нужен, а лестнице
+              стакана нужен в подсказке уровня.
     Returns a dictionary suitable for formatting by Pydantic.
     """
     # Бумага гасится не позже даты расчётов T+1: покупателю не достаётся ни одного
@@ -304,7 +312,13 @@ def calculate_valuation_metrics(
 
     # Y-IDX на альтернативных ценах (bid/ask): поток cfs и base leg от цены не
     # зависят — меняется только dirty на входе XIRR. Реюз, а не пересчёт модели.
+    #
+    # YTM цены снимается ТУТ ЖЕ (_y — это и есть доходность уровня): раньше он
+    # выбрасывался, и потребителю уровня приходилось звать отдельный reprice на
+    # цену ради одной колонки — ×65 к стоимости лестницы стакана.
     y_idx_by_price: Dict[float, Any] = {}
+    ytm_by_price: Dict[float, Any] = {}
+    dirty_by_price: Dict[float, Any] = {}     # для DM по alt-ценам (см. alt_dm)
     for _p in (alt_prices or []):
         if _p is None or index_yield is None:
             continue
@@ -312,13 +326,17 @@ def calculate_valuation_metrics(
             _dirty = dirty_price_rub(_pricing_face, _p, accrued)
             if _dirty is None or _dirty <= 0 or _dirty > _future_sum * 1.0005:
                 y_idx_by_price[_p] = None      # та же отсечка «гарант. убыток», что для mid
+                ytm_by_price[_p] = None
                 continue
             _y = xirr_yield_pct(_dirty, cfs, calc_date)
+            dirty_by_price[_p] = _dirty
+            ytm_by_price[_p] = round(_y, 4) if _y is not None else None
             y_idx_by_price[_p] = (round((_y - index_yield) * 100.0)
                                   if _y is not None else None)
         except Exception as e:
             logger.warning(f"alt-price Y-IDX error {bond.isin} @{_p}: {e}")
             y_idx_by_price[_p] = None
+            ytm_by_price[_p] = None
 
 
     # SIMPLE MARGIN (наш sm_bps): дисконт по форвард-кривей+спред. Воспроизводит
@@ -335,6 +353,7 @@ def calculate_valuation_metrics(
     # ТЕКУЩЕМ уровне (из зафикс. купона), money-market дисконт (L+DM). Воспроизводит
     # НРД discount_margin (med −20, m|Δ|≈47bps; остаток — их проприетарная машина).
     disc_margin_bps = None
+    dm_by_price: Dict[float, Any] = {}
     try:
         L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
                               amorts=amorts, base=bond.base, hist=hist_pairs)
@@ -347,6 +366,17 @@ def calculate_valuation_metrics(
                                                    face_grow_fn=face_grow_fn,
                                                    warnings_out=warnings)
             disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
+            # DM по alt-ценам — солвер поверх ТОГО ЖЕ flat-потока: пересборки нет,
+            # платим только за поиск корня на цену (см. alt_dm)
+            if alt_dm:
+                for _p in (alt_prices or []):
+                    _d = dirty_by_price.get(_p)
+                    try:
+                        dm_by_price[_p] = (solve_discount_margin_bps(flat_cfs, calc_date, _d, L)
+                                           if _d is not None else None)
+                    except Exception as e:
+                        logger.warning(f"alt-price DM error {bond.isin} @{_p}: {e}")
+                        dm_by_price[_p] = None
     except Exception as e:
         logger.warning(f"Discount margin error for {bond.isin}: {e}")
 
@@ -389,6 +419,10 @@ def calculate_valuation_metrics(
     yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
     y_idx_by_price = {p: _sane_bps(v, warnings, "yield_over_index_alt")
                       for p, v in y_idx_by_price.items()}
+    # alt-цены проходят ТУ ЖЕ отсечку, что и цена расчёта: уровень стакана — это
+    # такое же число наружу, и мусор в нём ничем не лучше мусора в строке
+    ytm_by_price = {p: _sane_pct(v, warnings, "yield_alt") for p, v in ytm_by_price.items()}
+    dm_by_price = {p: _sane_bps(v, warnings, "disc_margin_alt") for p, v in dm_by_price.items()}
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
@@ -440,6 +474,7 @@ def calculate_valuation_metrics(
         sm_h = (solve_simple_margin_bps(bond, curve, cfs_h, calc_date, dirty_rub)
                 if curve else None)
         dm_h = None
+        flat_cfs_h = None        # им же считается DM alt-цен (см. alt_dm ниже)
         L_h = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
                                amorts=amorts, base=bond.base, hist=hist_pairs)
         if L_h is not None:
@@ -460,6 +495,9 @@ def calculate_valuation_metrics(
         # Y-IDX горизонта на альтернативных ценах (bid/ask/проба наклона): поток и
         # base leg от цены не зависят — меняется только dirty на входе XIRR.
         y_idx_alt_h = {}
+        ytm_alt_h = {}
+        dm_alt_h = {}
+        _dirty_alt_h = {}
         _fut_h = sum(cf.amount_rub for cf in cfs_h if cf.pay_date > calc_date)
         for _p in (alt_prices or []):
             if _p is None or idx_y_h is None:
@@ -468,16 +506,35 @@ def calculate_valuation_metrics(
                 _d = dirty_price_rub(_pricing_face, _p, accrued)
                 if _d is None or _d <= 0 or _d > _fut_h * 1.0005:
                     y_idx_alt_h[_p] = None
+                    ytm_alt_h[_p] = None
                     continue
                 _y = xirr_yield_pct(_d, cfs_h, calc_date)
+                _dirty_alt_h[_p] = _d
+                ytm_alt_h[_p] = (_sane_pct(round(_y, 4), warnings, "yield_alt_horizon")
+                                 if _y is not None else None)
                 y_idx_alt_h[_p] = (_sane_bps(round((_y - idx_y_h) * 100.0), warnings,
                                              "yield_over_index_alt_horizon")
                                    if _y is not None else None)
             except Exception as e:
                 logger.warning(f"alt-price horizon Y-IDX error {bond.isin} @{_p}: {e}")
                 y_idx_alt_h[_p] = None
+                ytm_alt_h[_p] = None
+        # DM alt-цен к ЭТОМУ горизонту — по flat-потоку горизонта (flat_cfs_h),
+        # он уже построен выше ради dm_h; без alt_dm не платим вовсе
+        if alt_dm and L_h is not None and flat_cfs_h is not None:
+            for _p in (alt_prices or []):
+                _d = _dirty_alt_h.get(_p)
+                try:
+                    dm_alt_h[_p] = (_sane_bps(solve_discount_margin_bps(flat_cfs_h, calc_date,
+                                                                        _d, L_h),
+                                              warnings, "disc_margin_alt_horizon")
+                                    if _d is not None else None)
+                except Exception as e:
+                    logger.warning(f"alt-price horizon DM error {bond.isin} @{_p}: {e}")
+                    dm_alt_h[_p] = None
         return {
             "y_idx_by_price": y_idx_alt_h,
+            "ytm_by_price": ytm_alt_h, "dm_by_price": dm_alt_h,
             "date": cut,
             **_dur_block(cfs_h, dirty_rub),
             "price_pct": _opp(offers, cut),
@@ -498,6 +555,7 @@ def calculate_valuation_metrics(
         "date": _mat_end, "price_pct": 100.0,
         **_dur_block(cfs, dirty_rub),
         "y_idx_by_price": y_idx_by_price,
+        "ytm_by_price": ytm_by_price, "dm_by_price": dm_by_price,
         "sm_bps": sm_bps, "disc_margin_bps": disc_margin_bps,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,

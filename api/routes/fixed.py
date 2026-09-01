@@ -113,7 +113,10 @@ async def get_fixed(
 
 
 @router.get("/quotes", tags=["Fixed"])
-async def get_fixed_quotes():
+async def get_fixed_quotes(
+    vol_bid: float = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её g-спред"),
+    vol_ask: float = Query(None, description="Тикет на оффере, ₽"),
+):
     """Котировки фиксов одним компактным ответом — витрина тянет их тактом 5с.
 
     Отдаёт только то, что двигается внутри дня: цену сделки, верх стакана,
@@ -121,6 +124,12 @@ async def get_fixed_quotes():
     и здесь не дублируются: универс фиксов пересобирается раз в час, а цена
     обязана быть свежей — источник тот же board-снапшот MOEX, который держит
     свежим quotes_poller (сети на запрос нет).
+
+    vol_bid/vol_ask — размеры тикета из фильтра по объёму. Цена набора и её
+    g-спред/YTM едут ЭТИМ ЖЕ ТАКТОМ: сам список витрины обновляется раз в
+    минуту, а движок считает бумаги пачками, и прочерк в колонках бида и оффера
+    висел до минуты после включения фильтра. Заодно продлевает регистрацию
+    размера в движке.
 
     ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
     """
@@ -131,6 +140,10 @@ async def get_fixed_quotes():
     from services import live_quotes
     uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
     snap = await MarketDataService.fetch_board_snapshot()
+    if vol_bid or vol_ask:
+        from services.universe_stream import register_vol_sizes
+        register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
+    fm = market_cache.get("fixed_metrics") or {} if (vol_bid or vol_ask) else {}
     items = []
     for u in uni:
         v = snap.get(u["isin"])
@@ -147,6 +160,19 @@ async def get_fixed_quotes():
                       # оборот — больший из двух: свой счёт полон только при живом
                       # стриме, биржевой VALTODAY отстаёт
                       "vol": max(v.get("vol") or 0, lv.get("val_today") or 0) or None})
+        m = fm.get(u["isin"])
+        if m:
+            # плоскими ключами: размер известен из запроса (см. bonds.get_quotes)
+            px_map = m.get("vol_px") or {}
+            g_map = m.get("g_spread_vol") or {}
+            y_map = m.get("ytm_vol") or {}
+            for side, size in (("bid", vol_bid), ("ask", vol_ask)):
+                if not size:
+                    continue
+                key = f"{side}:{float(size):.0f}"
+                for suffix, src in (("px", px_map), ("g", g_map), ("ytm", y_map)):
+                    if src.get(key) is not None:
+                        items[-1][f"vol_{side}_{suffix}"] = src[key]
     return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 
 

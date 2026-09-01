@@ -46,6 +46,16 @@ def email_for(tg_user_id: int) -> Optional[str]:
     return row.get("email") or None
 
 
+def email_for_chat(chat_id: int) -> Optional[str]:
+    """Веб-аккаунт по НОМЕРУ ЧАТА. В личке chat_id == tg_user_id, но рассылки
+    (дайджест) знают только адресата, и искать по нему надёжнее, чем считать
+    равенство id гарантией."""
+    with _connect() as c:
+        r = c.execute("SELECT email FROM tg_users WHERE chat_id=? "
+                      "AND status='approved'", (chat_id,)).fetchone()
+    return (r["email"] or None) if r else None
+
+
 def is_allowed(tg_user_id: int) -> bool:
     row = get(tg_user_id)
     return bool(row and row.get("status") == "approved" and row.get("email"))

@@ -343,7 +343,10 @@ async def get_payments_calendar(
 
 
 @router.get("/quotes", tags=["Bonds"])
-async def get_quotes():
+async def get_quotes(
+    vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
+    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽")
+):
     """Котировки всего рынка одним компактным ответом — фронт тянет их тактом 5с.
 
     Отдаёт то, что двигается внутри дня: цену последней сделки, верх стакана,
@@ -355,9 +358,20 @@ async def get_quotes():
     те же поля push'ем через WS, и они авторитетнее: приходят от Alor без
     задержки биржевого снапшота.
 
+    vol_bid/vol_ask — размеры тикета, которые сейчас смотрят в таблице. Цена
+    набора и её Y-IDX едут ТЕМ ЖЕ ТАКТОМ 5 с, а не только при перезагрузке
+    таблицы: движок считает бумаги пачками (сетка, очередь сторон, догрев), и
+    число, появившееся через такт после включения фильтра, раньше доезжало до
+    строки лишь со следующим полным запросом /api/bonds. Заодно продлевает
+    регистрацию размера в движке — пока вкладка опрашивает котировки, размер
+    заведомо активен.
+
     ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
     """
     from services.market_data import market_cache
+    if vol_bid or vol_ask:
+        from services.universe_stream import register_vol_sizes
+        register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
     snap = await MarketDataService.fetch_board_snapshot()
     # Y-IDX — из событийного движка (universe_stream): он пересчитывает метрики
     # по факту сделки, поэтому спред у торгуемых бумаг здесь живой, а не
@@ -384,6 +398,19 @@ async def get_quotes():
         # хуже точного числа пятисекундной давности (27.08.2026).
         if m and m.get("yoi_wap") is not None:
             it["yoi_wap"] = m["yoi_wap"]
+        if m and (vol_bid or vol_ask):
+            # ключ размера строится ЗДЕСЬ, а наружу поля едут плоскими
+            # (vol_bid_px/vol_bid_y): размер известен из самого запроса, и
+            # тащить его в каждую строку ответа незачем
+            px_map, y_map = m.get("vol_px") or {}, m.get("yoi_vol") or {}
+            for side, size in (("bid", vol_bid), ("ask", vol_ask)):
+                if not size:
+                    continue
+                key = f"{side}:{float(size):.0f}"
+                if px_map.get(key) is not None:
+                    it[f"vol_{side}_px"] = px_map[key]
+                if y_map.get(key) is not None:
+                    it[f"vol_{side}_y"] = y_map[key]
         items.append(it)
     return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
 

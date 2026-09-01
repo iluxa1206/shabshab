@@ -9,7 +9,7 @@ import io
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,68 @@ _XLSX_EDITABLE = ("short_name", "base", "margin_bps", "maturity_date",
 _XLSX_INT = {"margin_bps", "coupon_period_days", "coupons_per_year", "fixing_lag",
              "avg_window_days", "compounded"}
 _XLSX_FLOAT = {"face_value", "cap_pct", "floor_pct"}
+
+# Русские/внешние заголовки, принимаемые импортом наравне с техническими именами
+# полей. Ключ — поле реестра, значения — как колонку могут назвать в чужом файле
+# (заголовки страницы СПРАВОЧНИК, выгрузка bondsearch). Заголовок нормализуется
+# (регистр/пунктуация/пробелы/ё), поэтому «Маржа, бп» = «маржа бп».
+# Чтобы принять ещё один формат — допиши сюда алиас, парсер не трогается.
+_XLSX_ALIASES = {
+    "isin": ["ISIN", "ISIN код"],
+    "short_name": ["Название", "Бумага", "Наименование"],
+    "base": ["База", "Базовая ставка", "Базовый индекс (для FRN)"],
+    # ТОЛЬКО «бп»: в bondsearch колонка «Маржа» — ПРОЦЕНТЫ (2.5), и её алиас
+    # тихо записал бы 2 bps. Такой файл заводится через
+    # scripts/enrich_from_bondsearch.py, который переводит единицы.
+    "margin_bps": ["Маржа, бп", "Спред, бп"],
+    "maturity_date": ["Погашение", "Дата погашения"],
+    "issue_date": ["Эмиссия", "Начало обращения", "Дата размещения",
+                   "Начало начисления купонов"],
+    "coupon_period_days": ["Период, дн"],
+    "coupons_per_year": ["Куп/год", "Периодичность купона"],
+    "day_count": ["Метод расчета НКД", "Базис НКД"],
+    "face_value": ["Номинал", "Мин. торг. лот / Номинал"],
+    "coupon_mode": ["Режим (БД)", "Режим"],
+    "fixing_lag": ["Лаг (БД)", "Лаг"],
+    "fixing_lag_unit": ["Ед. лага"],
+    "avg_window_days": ["Окно, дн", "Окно"],
+    "compounded": ["Капит."],
+    "cap_pct": ["Кэп %", "Кэп"],
+    "floor_pct": ["Флор %", "Флор"],
+    "var_type": ["Тип ставки", "Тип переменной ставки купона"],
+    "coupon_text": ["Формула", "Текст формулы"],
+    "margin_schedule": ["Лесенка маржи"],
+    "face_index": ["Индекс номинала"],
+}
+
+
+def _norm_hdr(v) -> str:
+    """Заголовок колонки → канон: нижний регистр, ё→е, без пунктуации."""
+    t = str(v or "").lower().replace("ё", "е")
+    return re.sub(r"[^0-9a-zа-я]+", " ", t).strip()
+
+
+def _header_index(header) -> dict:
+    """{поле реестра: индекс колонки} по заголовкам файла.
+
+    Сначала техническое имя поля (шаблон экспорта), затем алиасы из
+    _XLSX_ALIASES — так один и тот же импорт съедает и наш round-trip, и чужую
+    выгрузку с русскими шапками."""
+    norm = {}
+    for i, h in enumerate(header):
+        k = _norm_hdr(h)
+        if k and k not in norm:
+            norm[k] = i
+    idx = {}
+    for field in ("isin",) + _XLSX_EDITABLE:
+        cands = [field] + _XLSX_ALIASES.get(field, [])
+        for nm in cands:
+            hit = norm.get(_norm_hdr(nm))
+            if hit is not None:
+                idx[field] = hit
+                break
+    return idx
+
 
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
@@ -143,6 +205,17 @@ async def unreviewed(_admin: dict = Depends(require_admin)):
             "count": reg.count()}
 
 
+@router.get("/new-issues", tags=["Instruments"])
+async def new_issues(days: int = Query(0, ge=0, le=365),
+                     _admin: dict = Depends(require_admin)):
+    """Свежие выпуски (моложе NEW_ISSUE_DAYS) — очередь ручной проверки параметров.
+    n — счётчик неподтверждённых, он же значок на кнопке «Справочник»."""
+    rows = reg.list_new_issues(days or reg.NEW_ISSUE_DAYS)
+    return {"items": rows, "days": days or reg.NEW_ISSUE_DAYS,
+            "n": sum(1 for r in rows if not r["reviewed"]),
+            "blind": sum(1 for r in rows if not r["priceable"])}
+
+
 @router.get("/catalog", tags=["Instruments"])
 async def catalog(only_active: bool = True, floaters_only: bool = False,
                   _admin: dict = Depends(require_admin)):
@@ -154,9 +227,15 @@ async def catalog(only_active: bool = True, floaters_only: bool = False,
     cb = load_cbonds()
     for it in items:
         it["cbonds_id"] = (cb.get(it["isin"]) or {}).get("cbonds_id")
-    # прайсуемые с будущей офертой без спеки поведения (var_type/cut_at_offer):
-    # горизонт по дефолту «до погашения», админ должен видеть кандидатов
+    # свежие выпуски: подсветка строк + фильтр «новые» — параметры такой бумаги
+    # источники доливают неделями, глаз админа обязателен
+    new_rows = reg.list_new_issues()
+    # offers_no_spec — прайсуемые с будущей офертой без спеки поведения
+    # (var_type/cut_at_offer): горизонт по дефолту «до погашения», админ должен
+    # видеть кандидатов
     return {"items": items, "count": reg.count(),
+            "new_issues": [r["isin"] for r in new_rows if not r["reviewed"]],
+            "new_issue_days": reg.NEW_ISSUE_DAYS,
             "offers_no_spec": _offers_no_spec(),
             "spec_mismatch": [r["isin"] for r in reg.list_spec_mismatch()],
             # тип купона разошёлся с внешним источником (smart-lab): наш вывод о
@@ -279,8 +358,8 @@ async def catalog_import(file: UploadFile = File(...), _admin: dict = Depends(re
     header = next(rows, None)
     if not header:
         raise HTTPException(status_code=422, detail="Пустой файл")
-    # индексы колонок по заголовку (регистронезависимо)
-    idx = {str(h).strip().lower(): i for i, h in enumerate(header) if h is not None}
+    # индексы колонок по заголовку: техническое имя поля ИЛИ русский алиас
+    idx = _header_index(header)
     if "isin" not in idx:
         raise HTTPException(status_code=422, detail="Нет колонки ISIN")
 

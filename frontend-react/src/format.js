@@ -105,19 +105,58 @@ export const RT_BUCKET_COLOR = {
   BB: "var(--rt-bb)", B: "var(--rt-b)", NR: "var(--mut-2)",
 };
 
-export function ratingBucket(rating) {
-  const r = (rating || "").trim().toUpperCase();
-  if (!r) return "NR";
-  if (RT_BUCKETS.includes(r) && r !== "NR") return r;
-  return /^(CCC|CC|C|D)$/.test(r) ? "B" : "NR";
+// Рейтинг без модификатора и суффикса агентства: «ruAA-» / «AA-(RU)» / «AA-|ru|»
+// → «AA». Модификатор (+/−) — это ступень ВНУТРИ грейда, отдельной корзины у
+// неё нет: без срезки «AA-» не попадал ни в один бакет и уезжал в NR — бумага
+// с рейтингом показывалась как «без рейтинга».
+export function ratingNorm(rating) {
+  return (rating || "").trim().toUpperCase()
+    .replace(/\|RU\|/g, "").replace(/\(RU\)/g, "").replace(/\.RU$/, "")
+    .replace(/^RU/, "").trim();
 }
 
-// Подходит ли рейтинг под выбор чипов фильтра (AAA / AA / A / BBB / BELOW / NR).
-// BELOW — «BB↓», то есть любой бакет ниже BBB.
+export function ratingBucket(rating) {
+  const r = ratingNorm(rating);
+  if (!r) return "NR";
+  const core = r.replace(/[+\u2212-]+$/, "");     // AA- → AA, BBB+ → BBB
+  if (RT_BUCKETS.includes(core) && core !== "NR") return core;
+  return /^(CCC|CC|C|D)$/.test(core) ? "B" : "NR";
+}
+
+// Подходит ли рейтинг под выбор фильтра. В выборе живут ДВА вида ключей:
+// бакет (AAA / AA / A / BBB / BELOW / NR — чипы) и КОНКРЕТНЫЙ рейтинг со
+// ступенью (AA+, AA-, … — меню «▾ все рейтинги»). Бакет забирает всю группу:
+// «AA» = AA, AA+, AA−. BELOW — «BB↓», любой бакет ниже BBB.
 export function ratingMatches(rating, sel) {
   if (!sel || !sel.length) return true;
   const b = ratingBucket(rating);
-  return sel.some((k) => (k === "BELOW" ? b === "BB" || b === "B" : k === b));
+  const exact = ratingNorm(rating);
+  return sel.some((k) => (k === "BELOW" ? b === "BB" || b === "B"
+    : k === b || (exact && k === exact)));
+}
+
+// Порядок ступеней в меню «▾ все рейтинги»: грейд по шкале, внутри грейда
+// «+» → без модификатора → «−».
+const RT_GRADE_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"];
+
+/** Список ступеней с числом бумаг из набора рейтингов: [{name, count}]. */
+export function ratingOptions(ratings) {
+  const counts = new Map();
+  for (const raw of ratings || []) {
+    const name = ratingBucket(raw) === "NR" ? "NR" : ratingNorm(raw);
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const key = (n) => {
+    const core = n.replace(/[+-]+$/, "");
+    const step = n.endsWith("+") ? 0 : n.endsWith("-") ? 2 : 1;
+    const g = RT_GRADE_ORDER.indexOf(core);
+    return [g < 0 ? 98 : g, step, n];
+  };
+  return [...counts.entries()].map(([name, count]) => ({ name, count }))
+    .sort((a, b) => {
+      const [ga, sa, na] = key(a.name); const [gb, sb, nb] = key(b.name);
+      return ga - gb || sa - sb || na.localeCompare(nb);
+    });
 }
 
 // Цвет КОНКРЕТНОГО рейтинга: всё ниже BBB схлопывается в бакет BELOW (в фильтре

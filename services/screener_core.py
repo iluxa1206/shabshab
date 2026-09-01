@@ -16,9 +16,12 @@ import time
 from datetime import date
 from typing import Dict, Iterable, List, Optional
 
+from services.ratings import rating_to_bucket
+
 logger = logging.getLogger(__name__)
 
-# рейтинги, встречающиеся в реестре (без модификаторов +/-)
+# Селектор работает КРУПНОЙ шкалой (грейды). Ступени (+/−) из реестра
+# схлопываются rating_to_bucket — «AA» выбирает и AA, и AA+, и AA−.
 RATINGS = ["AAA", "AA", "A", "BBB", "BB", "B"]
 
 # Субординация — по названию бумаги: отдельного признака в реестре нет (ни MOEX,
@@ -345,7 +348,10 @@ def selected(u: dict, params: dict) -> bool:
     sel_r, sel_e, sel_i = params["ratings"], params["emitters"], params["isins"]
     if not (sel_r or sel_e or sel_i):
         return True
-    if sel_r and (u.get("rating") or "").strip().upper() in sel_r:
+    # По ГРЕЙДУ, а не по строке: в реестре у бумаги может стоять ступень
+    # («AA-»), а селектор сигналов/бота работает крупной шкалой (RATINGS) —
+    # точное сравнение молча выкидывало такие бумаги из отбора.
+    if sel_r and rating_to_bucket(u.get("rating")) in sel_r:
         return True
     if sel_e and (u.get("emitter_name") or "").strip() in sel_e:
         return True

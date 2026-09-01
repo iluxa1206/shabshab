@@ -2,11 +2,11 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
-import { mergeStreamedQuote } from "./quotesMerge.js";
+import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { makeBondFilter } from "./search.js";
-import { ratingMatches, yearsToIso } from "./format.js";
+import { ratingMatches, ratingOptions, yearsToIso } from "./format.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
@@ -532,7 +532,10 @@ function Dashboard() {
   // своим циклом бэкенд, поэтому у неизбранных бумаг спред может отставать от
   // цены на такт поллера юниверса.
   const quotesQ = useQuery({
-    queryKey: ["quotes"], queryFn: ({ signal }) => fetchQuotes(signal),
+    // размер тикета — часть ключа: со сменой размера прежние числа набора
+    // относятся к прошлому фильтру, и переиспользовать их нельзя
+    queryKey: ["quotes", volSize(volBid), volSize(volAsk)],
+    queryFn: ({ signal }) => fetchQuotes(signal, volSize(volBid), volSize(volAsk)),
     refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS - 1000,
   });
   useEffect(() => {
@@ -565,9 +568,8 @@ function Dashboard() {
           && (q.bid == null || q.bid === b.bid_price_pct)
           && (q.ask == null || q.ask === b.ask_price_pct)
           && (q.wap == null || q.wap === b.wap_price_pct)
-          && (q.yoi_wap == null || q.yoi_wap === b.y_idx_wap_bps)
           && (q.vol == null || q.vol === b.val_today)
-          && (q.yoi == null || q.yoi === b.yield_over_index_bps);
+          && !quoteChanges(b, q, QUOTE_METRIC_FIELDS);
         if (same) return b;              // без изменений — не трогаем ссылку
         touched = true;
         // снимаем метку live: дальше в строке цифры снапшота, и подпись
@@ -584,11 +586,14 @@ function Dashboard() {
         applySideQuote(b, n, "bid", q.bid);
         applySideQuote(b, n, "ask", q.ask);
         if (q.wap != null) n.wap_price_pct = q.wap;
-        if (q.yoi_wap != null) n.y_idx_wap_bps = q.yoi_wap;
         if (q.vol != null) n.val_today = q.vol;
-        // Y-IDX от событийного движка: спред торгуемой бумаги обновляется по
-        // факту сделки, а не раз в 10 минут поллером
-        if (q.yoi != null) n.yield_over_index_bps = q.yoi;
+        // РАСЧЁТНЫЕ поля от событийного движка (Y-IDX по сделке и средневзвесу,
+        // цена набора на объём и её спред): спред торгуемой бумаги обновляется
+        // по факту сделки, а не раз в 10 минут поллером, а число набора —
+        // тактом движка, а не перезагрузкой таблицы
+        for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
+          if (q[k] != null) n[field] = q[k];
+        }
         return n;
       });
       return touched ? next : prev;      // ничего не поменялось — без ререндера
@@ -605,6 +610,11 @@ function Dashboard() {
     enabled: volOn, staleTime: 10000,
   });
   const depth = depthQ.data?.items;
+
+  // Ступени рейтинга, реально встречающиеся в юниверсе (AA+, AA−, …) — меню «▾»
+  // рядом с чипами грейдов. Считаем ДО фильтров: список не должен схлопываться
+  // от собственного выбора.
+  const ratingOpts = useMemo(() => ratingOptions(bonds.map((b) => b.rating)), [bonds]);
 
   const filtered = useMemo(() => {
     let rows = bonds.slice();
@@ -786,7 +796,7 @@ function Dashboard() {
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
-        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)}
+        ratingsSel={ratingsSel} toggleRating={toggleIn(setRatingsSel)} ratingOpts={ratingOpts}
         clearBases={() => setBasesSel([])}
         issuers={issuers} emittersSel={emittersSel} toggleEmitter={toggleIn(setEmittersSel)}
         clearEmitters={() => setEmittersSel([])}
