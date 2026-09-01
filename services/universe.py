@@ -68,11 +68,17 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 calc_date: date, prev_date: Optional[str] = None,
                 bid: Optional[float] = None, ask: Optional[float] = None,
                 accrued_date: Optional[str] = None,
-                wap: Optional[float] = None) -> dict:
+                wap: Optional[float] = None,
+                flows_cache: Optional[dict] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
     вызывающий (фон — board snapshot + кэш поллера; watch — live-цена +
-    per-isin snapshot); расчётная логика одна."""
+    per-isin snapshot); расчётная логика одна.
+
+    flows_cache — словарь ЭТОЙ бумаги под кэш потоков (см.
+    valuation.calculate_valuation_metrics). График платежей от цены не зависит,
+    а пересобирался на каждую новую цену; владелец кэша чистит его на смене
+    дня, кривых и правке Справочника."""
     isin = u["isin"]
     base = u.get("base_rate_type", "UNKNOWN")
     coupons_full = full.get("coupons") or []
@@ -152,6 +158,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
                                             with_margins=MARGINS_IN_UNIVERSE,
+                                            flows_cache=flows_cache,
                                             alt_prices=[p for p in (bid, ask, wap) if p] + _probe)
             # ГОРИЗОНТ ПРАЙСИНГА по правилу цены (services.valuation._preferred_horizon):
             # цена ниже цены пут-выкупа → бумага торгуется к оферте, выше цены

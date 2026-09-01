@@ -939,3 +939,28 @@ def test_save_snapshot_now_uses_last_ctx(monkeypatch):
             market_cache.pop("universe_metrics", None)
         else:
             market_cache["universe_metrics"] = prev_um
+
+
+def test_flow_cache_is_dropped_on_new_curves_and_edits():
+    """Кэш потоков живёт ровно столько же, сколько кэш уровней.
+
+    Поток строится НА КРИВОЙ и по спеке купона из Справочника: сменился день,
+    пересобрались кривые или отредактировали параметры бумаги — платежи другие,
+    и держать старые нельзя. Регресс тут стоил бы дорого: строка молча считалась
+    бы по вчерашнему графику."""
+    us._flow_cache["RU000A100001"] = {("main", 200): ([], [])}
+    us._flow_cache["RU000A100002"] = {("main", 200): ([], [])}
+
+    # точечная правка Справочника — только своя бумага
+    us.invalidate_params("RU000A100001")
+    assert "RU000A100001" not in us._flow_cache
+    assert "RU000A100002" in us._flow_cache
+
+    # массовая правка (импорт xlsx) — весь кэш
+    us.invalidate_params()
+    assert us._flow_cache == {}
+
+    # смена кривых/дня
+    us._flow_cache["RU000A100003"] = {("main", 200): ([], [])}
+    us._check_version(("2026-09-02", "curves-x"))
+    assert us._flow_cache == {}

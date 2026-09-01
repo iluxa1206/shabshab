@@ -202,6 +202,13 @@ _SLOW_BOND_MS = float(os.getenv("UNIVERSE_SLOW_BOND_MS", "700"))
 # остаётся в целях и после захода, и без потолка догрев перебирал бы один и тот
 # же список весь бюджет такта.
 _WARM_MAX_SLICES = int(os.getenv("UNIVERSE_WARM_SLICES", "8"))
+# КЭШ ПОТОКОВ: isin → {ключ горизонта: (платежи, предупреждения сборки)}.
+# График платежей от ЦЕНЫ не зависит — цена входит только в dirty и в солверы, —
+# но пересобирался на каждую новую цену: 35 мс у тридцатилетнего ипотечного
+# агента, дважды за пересчёт (погашение и оферта). Живёт ровно столько же,
+# сколько кэш уровней: чистится на смене дня/кривых (_check_version) и на правке
+# Справочника (invalidate_params).
+_flow_cache: Dict[str, dict] = {}
 _yoi_grid: Dict[str, tuple] = {}   # isin → (epoch, [узлы], {узел: бп})
 _grid_builds = 0                   # построений сетки с прошлой сводки
 _grid_budget = 0                   # остаток построений сетки в текущем такте
@@ -904,6 +911,7 @@ def invalidate_params(isin: Optional[str] = None) -> None:
     if isin:
         for k in [k for k in _level_memo if k[0] == isin]:
             _level_memo.pop(k, None)
+        _flow_cache.pop(isin, None)
         _eval_ctx.pop(isin, None)
         _yoi_cache.pop(isin, None)
         _yoi_grid.pop(isin, None)
@@ -912,6 +920,7 @@ def invalidate_params(isin: Optional[str] = None) -> None:
             _dirty.add(isin)
     else:
         _level_memo.clear()
+        _flow_cache.clear()
         _eval_ctx.clear()
         _grid_cold.clear()
         _yoi_cache.clear()
@@ -1508,6 +1517,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
                 ref = build_ref(u, isin, ctx["cache"], ctx["secs"])
                 row = enrich(
                     u, ref, ctx["full_by"].get(isin) or {},
+                    flows_cache=_flow_cache.setdefault(isin, {}),
                     last=px, prev=snap.get("prev"), accrued=snap.get("accrued"),
                     prev_date=snap.get("prev_date"),
                     accrued_date=snap.get("accrued_date"),
@@ -1625,6 +1635,8 @@ def _check_version(version: tuple, ctx: Optional[dict] = None) -> None:
     if version != _memo_version:
         same_day = bool(_memo_version) and _memo_version[0] == version[0]
         _level_memo.clear()
+        # поток строится НА КРИВОЙ: сменилась она или день — платежи другие
+        _flow_cache.clear()
         # КОНТЕКСТ РАСЧЁТА КРИВОЙ НЕ ПРИНАДЛЕЖИТ. От неё в нём зависит одна
         # ССЫЛКА, всё остальное (ref_obj, график купонов, амортизации, оферты,
         # НКД) собрано из реестра и MOEX и на новой кривой ровно то же. Раньше
@@ -1883,7 +1895,7 @@ async def metrics_worker() -> None:
                 global _depth_msgs
                 logger.info("metrics engine: %d строк/мин (%.1fс, %.0fмс/шт) · "
                             "сторон %d/мин (%.1fс, %.0fмс/шт, пачка %d) · "
-                            "memo %d (hit %d / miss %d) · ctx %d · сетки %d (+%d/мин, холодных %d) · "
+                            "memo %d (hit %d / miss %d) · потоки %d · ctx %d · сетки %d (+%d/мин, холодных %d) · "
                             "dirty %d (+%d сторон) · прочерков %d · "
                             "depth-пушей %d/мин (%d бумаг)",
                             done_since_log, full_ms / 1000.0,
@@ -1891,6 +1903,7 @@ async def metrics_worker() -> None:
                             sides_since_log, sides_ms / 1000.0,
                             sides_ms / max(1, sides_since_log), _sides_batch(),
                             len(_level_memo), _memo_hits, _memo_misses,
+                            len(_flow_cache),
                             len(_eval_ctx), len(_yoi_grid), _grid_builds, len(_grid_cold),
                             len(_dirty), len(_sides_dirty), _blank_sides_count(),
                             _depth_msgs, len(_depth_streamed))

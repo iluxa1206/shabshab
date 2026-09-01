@@ -1,6 +1,6 @@
 from datetime import date
 from functools import partial
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from core.forwards import DiscountCurve
 from core.valuation import (
@@ -73,10 +73,20 @@ def calculate_valuation_metrics(
     accrued_basis: str = "settle",
     accrued_date=None,
     with_margins: bool = True,
+    flows_cache: Optional[Dict[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
     accrued_override — НКД из MOEX (приоритет над стейл-кэшем).
+    flows_cache — словарь бумаги под КЭШ ПОТОКОВ (владеет вызывающий, см.
+              universe_stream._flow_cache). Поток от ЦЕНЫ не зависит: цена
+              входит только в dirty и в солверы, а сам график платежей задан
+              расписанием, кривой и спекой купона. При этом пересобирался он на
+              каждую новую цену — 35 мс у тридцатилетнего ипотечного агента,
+              дважды за пересчёт (горизонт погашения и горизонт оферты).
+              Ключ версии держит вызывающий: он чистит словарь на смене дня,
+              кривых и правке Справочника.
+
     with_margins=False — не считать SIMPLE и DISCOUNT MARGIN (sm_bps,
               disc_margin_bps и их версии по горизонтам). Замер 01.09.2026: на
               них уходит 78–92 % расчёта бумаги (у тридцатилетнего ипотечного
@@ -267,12 +277,33 @@ def calculate_valuation_metrics(
     except Exception:
         pass
 
+    def _flows(key, build):
+        """Поток по ключу: из кэша бумаги либо построить и запомнить.
+
+        Предупреждения сборки запоминаются ВМЕСТЕ с потоком и подмешиваются на
+        каждом попадании — иначе строка «спека фиксинга потеряна» появлялась бы
+        только при первом расчёте и пропадала при следующей цене."""
+        if flows_cache is None:
+            return build(warnings)
+        hit = flows_cache.get(key)
+        if hit is not None:
+            warnings.extend(hit[1])
+            return list(hit[0])
+        local: List[str] = []
+        got = build(local)
+        warnings.extend(local)
+        flows_cache[key] = (list(got or []), local)
+        return got
+
     # DM считается по cfs с реальным спредом: value зафикс. купонов сохраняем
     # (факт MOEX), амортизации учитываем.
-    cfs = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
-                                      explicit_periods=periods, amorts=amorts, offers=offers,
-                                      index_pct_fn=index_pct_fn, face_grow_fn=face_grow_fn,
-                                      warnings_out=warnings)
+    cfs = _flows(
+        ("main", bond.spread_issue_bps),
+        lambda w: build_cashflows_with_spread(
+            bond, curve, calc_date, bond.spread_issue_bps,
+            explicit_periods=periods, amorts=amorts, offers=offers,
+            index_pct_fn=index_pct_fn, face_grow_fn=face_grow_fn,
+            warnings_out=w))
 
     # ГАРАНТИРОВАННЫЙ НОМИНАЛЬНЫЙ УБЫТОК: dirty > Σ всех будущих потоков (даже без
     # дисконта). Держать до погашения = точно потерять деньги → цена явно битая
@@ -373,12 +404,13 @@ def calculate_valuation_metrics(
              if (with_margins or alt_dm) else None)
         if L is not None:
             flat = FlatForwardCurve(calc_date, L)
-            flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
-                                                   explicit_periods=periods, amorts=amorts,
-                                                   offers=offers,
-                                                   index_pct_fn=index_pct_fn,
-                                                   face_grow_fn=face_grow_fn,
-                                                   warnings_out=warnings)
+            flat_cfs = _flows(
+                ("flat", round(L, 6)),
+                lambda w: build_cashflows_with_spread(
+                    bond, flat, calc_date, bond.spread_issue_bps,
+                    explicit_periods=periods, amorts=amorts, offers=offers,
+                    index_pct_fn=index_pct_fn, face_grow_fn=face_grow_fn,
+                    warnings_out=w))
             if with_margins:
                 disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date,
                                                             dirty_rub, L)
@@ -478,12 +510,13 @@ def calculate_valuation_metrics(
         поток режется к cut с выкупом остатка по цене оферты, база Y-IDX
         (роллирование RUONIA) — тоже до cut, иначе спред сравнивал бы бумагу с
         депозитом другого срока."""
-        cfs_h = build_cashflows_with_spread(bond, curve, calc_date, bond.spread_issue_bps,
-                                            explicit_periods=periods, amorts=amorts,
-                                            offers=offers, cut_date=cut,
-                                            index_pct_fn=index_pct_fn,
-                                            face_grow_fn=face_grow_fn,
-                                            warnings_out=warnings)
+        cfs_h = _flows(
+            ("cut", cut),
+            lambda w: build_cashflows_with_spread(
+                bond, curve, calc_date, bond.spread_issue_bps,
+                explicit_periods=periods, amorts=amorts, offers=offers,
+                cut_date=cut, index_pct_fn=index_pct_fn,
+                face_grow_fn=face_grow_fn, warnings_out=w))
         if not cfs_h:
             return None
         y_h = xirr_yield_pct(dirty_rub, cfs_h, calc_date)
@@ -497,12 +530,13 @@ def calculate_valuation_metrics(
                if (with_margins or alt_dm) else None)
         if L_h is not None:
             flat_h = FlatForwardCurve(calc_date, L_h)
-            flat_cfs_h = build_cashflows_with_spread(bond, flat_h, calc_date, bond.spread_issue_bps,
-                                                     explicit_periods=periods, amorts=amorts,
-                                                     offers=offers, cut_date=cut,
-                                                     index_pct_fn=index_pct_fn,
-                                                   face_grow_fn=face_grow_fn,
-                                                   warnings_out=warnings)
+            flat_cfs_h = _flows(
+                ("cut_flat", cut, round(L_h, 6)),
+                lambda w: build_cashflows_with_spread(
+                    bond, flat_h, calc_date, bond.spread_issue_bps,
+                    explicit_periods=periods, amorts=amorts, offers=offers,
+                    cut_date=cut, index_pct_fn=index_pct_fn,
+                    face_grow_fn=face_grow_fn, warnings_out=w))
             if with_margins:
                 dm_h = solve_discount_margin_bps(flat_cfs_h, calc_date, dirty_rub, L_h)
         idx_y_h = None

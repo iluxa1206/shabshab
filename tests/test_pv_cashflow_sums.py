@@ -168,3 +168,54 @@ def test_margins_can_be_switched_off(keyrate_curve, ruonia_curve, calc_date,
     assert lean["yield_over_index_bps"] == full["yield_over_index_bps"]
     assert lean["yield_xirr_pct"] == full["yield_xirr_pct"]
     assert lean["dirty_price_rub"] == full["dirty_price_rub"]
+
+
+def test_flows_cache_reuses_stream_and_keeps_numbers(keyrate_curve, ruonia_curve,
+                                                     calc_date, flat_index_15,
+                                                     monkeypatch):
+    """Поток строится ОДИН раз на бумагу, а не на каждую цену.
+
+    Цена входит в расчёт только через dirty и солверы — сам график платежей от
+    неё не зависит. Пересборка стоила 35 мс у тридцатилетнего ипотечного агента
+    и повторялась на каждом движении цены; числа при этом обязаны остаться теми
+    же до бита."""
+    from conftest import make_bond, quarterly_periods
+    from core.valuation import settle_date
+    import services.valuation as sv
+
+    monkeypatch.setattr(
+        "services.valuation._index_provider",
+        lambda base, warnings, calc_date=None: (flat_index_15[0],
+                                                list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150, accrued=0.0)
+    periods = quarterly_periods(settle_date(calc_date), bond.maturity_date)
+
+    builds = []
+    real_build = sv.build_cashflows_with_spread
+
+    def counting_build(*a, **kw):
+        builds.append(1)
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(sv, "build_cashflows_with_spread", counting_build)
+    kw = dict(accrued_override=0.0, periods=periods, ruonia_curve=ruonia_curve)
+
+    cache: dict = {}
+    a = sv.calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                       flows_cache=cache, **kw)
+    first = len(builds)
+    assert first > 0 and cache, "первый расчёт строит поток и кладёт его в кэш"
+
+    # ВТОРАЯ ЦЕНА той же бумаги — поток из кэша, ни одной пересборки
+    b = sv.calculate_valuation_metrics(bond, 99.5, keyrate_curve, calc_date,
+                                       flows_cache=cache, **kw)
+    assert len(builds) == first, "поток пересобрался на новой цене"
+
+    # без кэша числа те же — кэш не меняет расчёт, только его цену
+    c = sv.calculate_valuation_metrics(bond, 99.5, keyrate_curve, calc_date, **kw)
+    for k in ("yield_over_index_bps", "yield_xirr_pct", "dirty_price_rub",
+              "sm_bps", "disc_margin_bps"):
+        assert b[k] == c[k], k
+    assert a["yield_over_index_bps"] != b["yield_over_index_bps"], "цена всё же влияет"
+    # предупреждения сборки не теряются на попадании в кэш
+    assert set(c["warnings"]) <= set(b["warnings"])
