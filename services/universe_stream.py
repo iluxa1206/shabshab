@@ -168,6 +168,13 @@ _WARM_BUDGET_SEC = float(os.getenv("UNIVERSE_WARM_BUDGET_SEC", "3.0"))
 # продышаться между кусками: суммарная скорость прогрева та же, отзывчивость
 # на порядок лучше.
 _WARM_SLICE_SEC = float(os.getenv("UNIVERSE_WARM_SLICE_SEC", "0.4"))
+# Тот же слайс для ЖИВОГО пересчёта. Пачка полного пересчёта (60 бумаг × ~140
+# мс) занимала ядро на восемь секунд одним заходом — именно она, а не догрев,
+# давала лаги в 3 с после рестарта, когда очередь набита всем рынком.
+_HEAVY_SLICE_SEC = float(os.getenv("UNIVERSE_HEAVY_SLICE_SEC", "0.4"))
+# Сколько такта отдаём живому пересчёту. Остаток идёт сторонам и догреву;
+# недосчитанное возвращается в очередь и продолжится следующим тактом.
+_FULL_BUDGET_SEC = float(os.getenv("UNIVERSE_FULL_BUDGET_SEC", "2.5"))
 # Потолок заходов за такт. Слайсы режут время, а этот счётчик — страховка от
 # холостого кружения: бумага, которой сетка не строится (нет узлов, нет книги),
 # остаётся в целях и после захода, и без потолка догрев перебирал бы один и тот
@@ -1412,12 +1419,19 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
     return n
 
 
-def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
+def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = None,
+            pending: Optional[list] = None) -> Dict[str, dict]:
     """Синхронный счёт батча (в to_thread). batch = [(isin, quote)].
 
     Кэш уровней: цена уже считалась сегодня на этой версии кривых → строка из
     памяти, enrich не зовём. Патчим только то, что живёт вне уровня: bid/ask и
-    их Y-IDX (батчем по методике, см. _fill_side_metrics), оборот."""
+    их Y-IDX (батчем по методике, см. _fill_side_metrics), оборот.
+
+    deadline — граница ОДНОГО захода в heavy: счёт держит GIL, и пока идёт
+    пачка, event loop не просыпается вовсе (60 бумаг × 140 мс = восемь секунд
+    молчания сайта). Недосчитанные ISIN складываются в pending — вызывающий
+    вернёт их в очередь, а не потеряет. Первая бумага считается всегда, иначе
+    очередь не двигалась бы вовсе."""
     global _memo_hits, _memo_misses
     if enrich is None:
         from services.universe import enrich_bond, build_universe_ref
@@ -1426,7 +1440,11 @@ def _crunch(batch: list, ctx: dict, enrich=None) -> Dict[str, dict]:
     else:                       # тестовая инъекция
         build_ref = lambda u, isin, cache, secs: None
     out: Dict[str, dict] = {}
-    for isin, q in batch:
+    for idx, (isin, q) in enumerate(batch):
+        if deadline is not None and out and time.monotonic() >= deadline:
+            if pending is not None:
+                pending.extend(i for i, _ in batch[idx:])
+            break
         px = q.get("last_price")
         u = ctx["uni_by"].get(isin)
         if u is None:
@@ -1749,14 +1767,30 @@ async def metrics_worker() -> None:
                     return_exceptions=True)
                 ctx["full_by"] = {i: ({} if isinstance(f, Exception) else f or {})
                                   for i, f in zip(take, fulls)}
-                batch = [(i, _last_quote.get(i) or {}) for i in take]
-                _t0 = time.perf_counter()
-                rows = await run_heavy(_crunch, batch, ctx)
-                full_ms += (time.perf_counter() - _t0) * 1000.0
-                if rows:
-                    _store_rows(market_cache, rows)
-                    done_since_log += len(rows)
-                    await _push_metrics(wsmod, rows)
+                # СЛАЙСАМИ: бюджет тот же, но между заходами управление
+                # возвращается петле (см. _HEAVY_SLICE_SEC). Иначе пачка держит
+                # GIL целиком, и всё это время сайт не отвечает.
+                rest = [(i, _last_quote.get(i) or {}) for i in take]
+                while rest:
+                    pend: list = []
+                    _t0 = time.perf_counter()
+                    rows = await run_heavy(
+                        _crunch, rest, ctx,
+                        deadline=time.monotonic() + _HEAVY_SLICE_SEC, pending=pend)
+                    full_ms += (time.perf_counter() - _t0) * 1000.0
+                    if rows:
+                        _store_rows(market_cache, rows)
+                        done_since_log += len(rows)
+                        await _push_metrics(wsmod, rows)
+                    if not pend:
+                        break
+                    # такт не резиновый: остаток очереди досчитаем следующим,
+                    # иначе стороны и догрев не получат времени вовсе
+                    if time.monotonic() - _tick0 >= _FULL_BUDGET_SEC:
+                        _dirty.update(pend)      # вернули в очередь, не потеряли
+                        break
+                    quotes = dict(rest)
+                    rest = [(i, quotes.get(i) or {}) for i in pend]
             # ДЕШЁВАЯ ОЧЕРЕДЬ: у этих бумаг сдвинулись только стороны стакана —
             # уровень цены сделки прежний, пересчитываем ТОЛЬКО Y-IDX сторон и
             # средневзвеса (~13 мс на бумагу). Без этого точное число стороны

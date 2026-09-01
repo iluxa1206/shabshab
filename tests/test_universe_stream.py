@@ -793,3 +793,28 @@ def test_warm_ctx_stops_at_deadline(monkeypatch):
     finally:
         for i in isins:
             us._eval_ctx.pop(i, None)
+
+
+def test_crunch_stops_at_deadline_and_returns_pending():
+    """Живой пересчёт тоже режется по времени.
+
+    Пачка полного пересчёта (60 бумаг × ~140 мс) держала GIL восемь секунд —
+    сторож писал «лаг 3с», а запросы витрины ждали столько же. Недосчитанные
+    обязаны вернуться вызывающему: очередь _dirty их уже отдала, и потерять
+    здесь значит оставить бумагу с прочерком до следующей сделки."""
+    uni = {"RU000A10000%d" % i: {"isin": "RU000A10000%d" % i} for i in range(4)}
+    ctx = _ctx(uni)
+    calls = []
+    pend: list = []
+    batch = [(i, {"last_price": 100.0}) for i in uni]
+
+    rows = us._crunch(batch, ctx, enrich=_enrich_counter(calls),
+                      deadline=time.monotonic() - 1, pending=pend)
+    # первая бумага считается всегда, остальные — в pending
+    assert len(rows) == 1
+    assert pend == [i for i, _ in batch[1:]]
+
+    # без границы считается весь батч, pending пуст — прежнее поведение цело
+    pend.clear()
+    rows2 = us._crunch(batch, ctx, enrich=_enrich_counter(calls), pending=pend)
+    assert len(rows2) == len(batch) and pend == []
