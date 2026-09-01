@@ -1,7 +1,7 @@
 """Калькулятор кастомной облигации: синтетика графика купонов и НКД."""
 from datetime import date
 
-from api.routes.calc import build_custom_schedule, _accrued, _shift_months
+from services.custom_bond import build_custom_schedule, _accrued, _shift_months
 from core.valuation import settle_date
 from services.fixed_income import fixed_metrics_from_schedule
 

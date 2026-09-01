@@ -14,7 +14,7 @@ from datetime import date
 
 import pytest
 
-from api.routes.calc import build_custom_schedule, _accrued
+from services.custom_bond import build_custom_schedule, _accrued
 from core.valuation import settle_date
 from services import fixed_income as fi
 

@@ -1451,3 +1451,26 @@ class MarketDataService:
     @classmethod
     def get_excel_db(cls, dir_path: str) -> Dict[str, dict]:
         return get_local_excel_db(dir_path)
+
+
+def curves_fingerprint(market_cache: dict) -> str:
+    """Отпечаток кривых ПО СОДЕРЖИМОМУ, а не по времени пересборки.
+
+    Раньше версией служил curves_ts, а он меняется на КАЖДОЙ пересборке — и
+    когда rates_date отстаёт от сегодня, пересборка идёт раз в 15 минут даже из
+    того же кэша ставок («Loaded rates from cache» в логах). Кэш уровней,
+    контексты расчёта и сетки сбрасывались вместе с ним: прод 28.08.2026 —
+    ctx 530 → 7 в 18:17 на неизменившихся котировках, memo hit 46 / miss 753 за
+    весь день. Одинаковые котировки — одинаковая кривая, сбрасывать нечего."""
+    import hashlib
+    try:
+        parts = []
+        for key in ("ois_quotes", "irs_quotes"):
+            for q in (market_cache.get(key) or []):
+                parts.append((q.name, q.tenor, q.value, str(q.date)))
+        if not parts:
+            raise ValueError("нет котировок")
+        return hashlib.sha1(repr(parts).encode()).hexdigest()[:16]
+    except Exception:
+        # отпечаток не собрался — поведение прежнее: версия по времени сборки
+        return f"ts:{market_cache.get('curves_ts') or 0}"
