@@ -5,9 +5,19 @@ import { useState } from "react";
 import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import "./styles.css";
 
+// ПОГАШЕНИЕ обязательно: ось X панели — срок до горизонта прайсинга
+// (src/horizon.js), и без даты бумага на график не попадёт вовсе. Срок берём
+// длиннее спред-дюрации: у флоатера она короче срока на купонный поток.
+const isoIn = (yrs) => {
+  const d = new Date();
+  d.setDate(d.getDate() + Math.round(yrs * 365.25));
+  return d.toISOString().slice(0, 10);
+};
+
 const B = (isin, name, emitter, rating, y, dur, refix) => ({
   isin, short_name: name, emitter_name: emitter, rating,
   yield_over_index_bps: y, disc_margin_bps: y - 8, spread_dur_yrs: dur, days_to_refix: refix,
+  maturity_date: isoIn(dur * 1.25), preferred_horizon: "maturity",
 });
 
 const rows = [

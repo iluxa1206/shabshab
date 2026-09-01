@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { fetchYidxHistory } from "../api.js";
+import { horizonYears } from "../horizon.js";
 import {
   linearScale, niceTicks, linePath, GridY, XTicks,
   MeasuredSvg, ChartFrame, dateTickIdx, tickLabel, spanDays,
@@ -100,21 +101,28 @@ const padFull = (pad, full) => (full ? {
   b: pad.b == null ? pad.b : Math.round(pad.b * 1.25),
 } : pad);
 
-// ── Scatter: Y-IDX vs spread duration, цвет = рейтинг ──
+// ── Scatter: Y-IDX vs СРОК, цвет = рейтинг ──
+// По оси X срок до ГОРИЗОНТА (оферта, если рынок прайсит к ней, иначе
+// погашение) — то же число, что подсвечено синим в колонке MATURITY и по
+// которому отбирает окно срока. Раньше стояла спред-дюрация: она короче срока
+// на купонный поток, читается не как «сколько сидеть в бумаге», и точка
+// уезжала влево тем сильнее, чем выше купон, — сравнивать выпуски по ней на
+// глаз нельзя.
 // focus: активный фильтр {type,key} — попавшие под него точки ярче, прочие гаснут;
 // клик по точке ставит/снимает фильтр по эмитенту
 function ScatterYidx({ rows, focus, onPick, height, full }) {
   const pts = rows
     .map((b) => ({ b, z: yval(b) }))
-    .filter(({ b, z }) => b.spread_dur_yrs != null && z != null)
-    .map(({ b, z }) => ({ x: b.spread_dur_yrs, y: z, r: norm(b.rating), isin: b.isin, name: b.short_name, iss: emKey(b) }));
+    .map(({ b, z }) => ({ b, z, yrs: horizonYears(b) }))
+    .filter(({ yrs, z }) => yrs != null && z != null)
+    .map(({ b, z, yrs }) => ({ x: yrs, y: z, r: norm(b.rating), isin: b.isin, name: b.short_name, iss: emKey(b) }));
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const [xlo, xmax] = padDomain(pts.map((p) => p.x));
-  const xmin = Math.max(0, xlo);   // дюрация отрицательной не бывает
+  const xmin = Math.max(0, xlo);   // срок отрицательным не бывает
   const [ymin, ymax] = padDomain(pts.map((p) => p.y));
   const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.iss === focus.key : p.r === focus.key);
   return (
-    <MeasuredSvg height={height} label="R-spread vs spread duration">
+    <MeasuredSvg height={height} label="R-spread vs срок до погашения или оферты">
       {({ W, H, bind }) => {
         const P = padFull(SC_PAD, full);
         const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
@@ -137,7 +145,7 @@ function ScatterYidx({ rows, focus, onPick, height, full }) {
                     `${p.name}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.r}`)} />
               );
             })}
-            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
               transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
           </>
@@ -153,17 +161,17 @@ function ScatterIssuer({ rows, focus, onPick, height, full }) {
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const zs = bonds.map(yval).filter((v) => v != null);
-    const ds = bonds.map((b) => b.spread_dur_yrs).filter((v) => v != null);
+    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null);
     if (!zs.length || !ds.length) continue;
     pts.push({ x: median(ds), y: median(zs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
   }
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const [xlo, xmax] = padDomain(pts.map((p) => p.x));
-  const xmin = Math.max(0, xlo);   // дюрация отрицательной не бывает
+  const xmin = Math.max(0, xlo);   // срок отрицательным не бывает
   const [ymin, ymax] = padDomain(pts.map((p) => p.y));
   const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.name === focus.key : p.r === focus.key);
   return (
-    <MeasuredSvg height={height} label="R-spread vs spread duration по эмитентам">
+    <MeasuredSvg height={height} label="R-spread vs срок по эмитентам">
       {({ W, H, bind }) => {
         const P = padFull(SC_PAD, full);
         const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
@@ -186,7 +194,7 @@ function ScatterIssuer({ rows, focus, onPick, height, full }) {
                     `${trunc(p.name, 22)}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.n} шт`)} />
               );
             })}
-            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">спред-дюрация →</text>
+            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
               transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
           </>
@@ -258,11 +266,13 @@ function IssuerDetail({ rows, issuer, onClear }) {
       <span className="an-sel-name" title={issuer}>{issuer}</span>
       {bonds.map((b) => {
         const z = yval(b);
-        const shown = z != null && b.spread_dur_yrs != null;
-        const why = b.yield_over_index_bps == null ? "нет R-spread (нет цены)" : z == null ? "R-spread вне бэнда" : "нет дюрации";
+        const yrs = horizonYears(b);
+        const shown = z != null && yrs != null;
+        const why = b.yield_over_index_bps == null ? "нет R-spread (нет цены)"
+          : z == null ? "R-spread вне бэнда" : "нет срока (перп или дыра в справочнике)";
         return (
           <span key={b.isin} className={"an-sel-chip" + (shown ? "" : " off")}
-            title={shown ? `${b.short_name}: R-spread ${Math.round(z)} bps · ${fmt.yrs(b.spread_dur_yrs)}` : `${b.short_name}: не на графике — ${why}`}>
+            title={shown ? `${b.short_name}: R-spread ${Math.round(z)} bps · ${fmt.yrs(yrs)}` : `${b.short_name}: не на графике — ${why}`}>
             {b.short_name}{shown ? ` ${Math.round(z)}` : " ✕"}
           </span>
         );
@@ -584,9 +594,9 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
 
   return (
     <section className={"analytics" + (full ? " has-full" : "")}>
-      <AnCard title="R-spread vs SPREAD DURATION" ctl={aggCtl} {...fullBtn("scatter")}
-        hint={byIss ? "спред по средневзвесу дня · точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
-                    : "спред по средневзвесу дня · точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
+      <AnCard title="R-spread vs СРОК" ctl={aggCtl} {...fullBtn("scatter")}
+        hint={byIss ? "спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
+                    : "спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
         {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />
                : <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />}
         {focus?.type === "issuer" && <IssuerDetail rows={rows} issuer={focus.key} onClear={() => set(null)} />}

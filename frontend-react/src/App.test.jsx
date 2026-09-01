@@ -74,6 +74,13 @@ const FIXED = {
   has_amort: false, price_thin: false, price_stale: false,
 };
 
+// Фикс, чей срок определяет ОФЕРТА: гасится через одиннадцать лет, но поток
+// обрывается через два — по сроку он идёт раньше пятилетнего соседа.
+const FIXED_PUT = {
+  ...FIXED, isin: "RU000A100005", name: "ОФЗ 26998", secid: "SU26998RMFS1",
+  maturity_date: inYears(11), put_date: inYears(2),
+};
+
 /** Ответ на запрос по URL. Неизвестное — пустой объект: тест про рендер, не про данные. */
 function replyFor(url) {
   if (url.includes("/api/me")) return USER;
@@ -82,7 +89,8 @@ function replyFor(url) {
   if (url.includes("/api/bonds/quotes")) return { ts: null, n: 0, items: [] };
   if (url.includes("/api/orderbook/depth/all")) return { depth: {} };
   if (url.includes("/api/fixed/quotes")) return { ts: null, n: 0, items: [] };
-  if (url.includes("/api/fixed")) return { items: [FIXED], total: 1, calc_date: "2026-08-27" };
+  if (url.includes("/api/fixed"))
+    return { items: [FIXED, FIXED_PUT], total: 2, calc_date: "2026-08-27" };
   if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27",
                                            features: { fixed: FIXED_ON } };
   if (url.includes("/api/signals")) return [];
@@ -176,7 +184,8 @@ describe("монтирование приложения", () => {
     for (const th of ["BID", "OFFER", "G-SPRD", "YTM", "ADV"]) {
       expect((await screen.findAllByText(th)).length).toBeGreaterThan(0);
     }
-    expect(screen.getByTitle("Watchlist")).toBeTruthy();
+    // строк в витрине несколько — звёздочка watchlist есть у каждой
+    expect(screen.getAllByTitle("Watchlist").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Столбцы")).toBeTruthy();
 
     const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
@@ -217,6 +226,20 @@ describe("монтирование приложения", () => {
       expect(names.map((n) => (n.match(/ТЕСТ \dР-\d+/) || [])[0]).filter(Boolean))
         .toEqual(["ТЕСТ 1Р-01", "ТЕСТ 2Р-02", "ТЕСТ 3Р-03"]);
     });
+  });
+
+  it("срок фикса меряется до оферты — фильтр и сортировка", async () => {
+    // У фикса выбора нет: поток обрывается на оферте, метрики посчитаны к ней.
+    // Значит и окно срока, и порядок строк обязаны мерить её, а не погашение —
+    // ровно то же правило, что в мониторе флоатеров (src/horizon.js).
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/fixed?fxmyt=3");   // до 3 лет
+    stubNetwork();
+    render(<App />);
+    // бумага с офертой через 2 года остаётся, пятилетняя без оферты — нет
+    expect(await screen.findByText(/ОФЗ 26998/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/ОФЗ 26999/)).toBeNull());
+    window.history.pushState({}, "", back);
   });
 
   it("фильтры фиксов поднимаются из ссылки", async () => {

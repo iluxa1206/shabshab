@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../../api.js";
 import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
 import { filterBonds } from "../../search.js";
+import { horizonDate } from "../../horizon.js";
 import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
 import { sideProgress } from "../../spreadProgress.js";
 import { usePageStatus } from "../../pageStatus.jsx";
@@ -405,7 +406,9 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     if (twoSided) r = r.filter((b) => b.bid != null && b.ask != null);
     // Окно срока — до ГОРИЗОНТА, к которому посчитаны метрики строки: оферта,
     // если поток обрезан на ней (put_date), иначе погашение.
-    const hzDate = (b) => b.put_date || b.maturity_date;
+    // срок — до той даты, к которой посчитаны метрики строки (у фикса поток
+    // обрывается на оферте). Правило общее с монитором флоатеров, см. horizon.js
+    const hzDate = horizonDate;
     const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
     if (Number.isFinite(mFrom)) {
       const cut = yearsToIso(mFrom);
@@ -428,7 +431,11 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
     r.sort((a, b) => {
-      const x = a[key], y = b[key];
+      // СРОК сортируется по горизонту — по той же дате, к которой посчитаны
+      // метрики строки и по которой отбирает окно срока (см. horizon.js).
+      // По дате погашения список спорил бы с числом, подсвеченным в строке.
+      const x = key === "maturity_date" ? hzDate(a) : a[key];
+      const y = key === "maturity_date" ? hzDate(b) : b[key];
       if (x == null && y == null) return 0;
       if (x == null) return 1;
       if (y == null) return -1;
