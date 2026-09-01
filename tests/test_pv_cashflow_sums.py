@@ -107,3 +107,32 @@ def test_level_dm_is_off_by_default(monkeypatch):
 
     monkeypatch.delenv("ORDERBOOK_LEVEL_DM")
     importlib.reload(orderbook_svc)
+
+
+def test_snapshot_is_written_in_chunks(tmp_path, monkeypatch):
+    """Снимок спредов пишется ПАЧКАМИ и не переписывается при каждом старте.
+
+    Две тысячи строк одной транзакцией держали поток на секунды (сторож лага
+    01.09.2026 — 4,8 с со стеком write_snapshot), причём стартовый снимок падал
+    ровно на прогрев: деплоев за день несколько, а снимок за дату один.
+    """
+    import services.portfolio_db as pdb
+    monkeypatch.setattr(pdb, "DB_PATH", tmp_path / "p.db")
+    pdb.init_db()
+
+    from services import spread_history as sh
+    from services.market_data import market_cache
+
+    monkeypatch.setattr(sh, "_SNAP_CHUNK", 3)
+    market_cache["universe_metrics"] = {
+        f"RU000A10{i:04d}": {"last": 100.0, "yoi": 150 + i, "horizon": "maturity"}
+        for i in range(7)
+    }
+    market_cache["fixed_metrics"] = {}
+    try:
+        assert sh.has_snapshot() is False
+        assert sh.write_snapshot() == 7          # пачками по 3 — строки все на месте
+        assert sh.has_snapshot() is True
+    finally:
+        market_cache.pop("universe_metrics", None)
+        market_cache.pop("fixed_metrics", None)

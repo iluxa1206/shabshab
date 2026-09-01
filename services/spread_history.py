@@ -3,12 +3,32 @@
 candle-оценки (историч. цена × текущая модель) — точные значения на дату, с
 реальной кривой/НКД/сроком того дня. Копится вперёд, идемпотентно per (isin,date)."""
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
 
 logger = logging.getLogger(__name__)
+
+# Сколько строк снимка пишем одной транзакцией (см. write_snapshot).
+_SNAP_CHUNK = int(os.getenv("SPREAD_SNAP_CHUNK", "400"))
+
+
+def has_snapshot(d=None) -> bool:
+    """Есть ли уже снимок за эту дату. Нужен старту: снапшоттер пишет снимок
+    через минуту после подъёма, а деплоев за день бывает несколько — и каждый
+    заново перемалывал две тысячи строк ровно тогда, когда движок и так занят
+    прогревом. Дневной снимок всё равно перезапишется в 19:00."""
+    d = d or date.today().isoformat()
+    try:
+        with _connect() as c:
+            return bool(c.execute(
+                "SELECT 1 FROM spread_daily WHERE date=? AND src='snap' LIMIT 1",
+                (d,)).fetchone())
+    except Exception as e:
+        logger.warning("has_snapshot: %s", e)
+        return False
 
 _MSK_OFFSET = 3  # часы
 
@@ -52,11 +72,16 @@ def write_snapshot() -> int:
             or r[6] is not None or r[8] is not None]
     if not rows:
         return 0
-    with _lock, _connect() as c:
-        c.executemany(
-            "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
-            "g_spread_bps,z_bps,ytm,y_idx,src,horizon,y_idx_alt,alt_horizon) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    # ПАЧКАМИ: снимок это две тысячи строк с INSERT OR REPLACE по индексу, и
+    # одной транзакцией он держал поток на секунды (сторож лага 01.09.2026 —
+    # 4,8 с со стеком write_snapshot). Между пачками поток отпускает GIL, и
+    # ядро успевает обслужить запросы.
+    for i in range(0, len(rows), _SNAP_CHUNK):
+        with _lock, _connect() as c:
+            c.executemany(
+                "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
+                "g_spread_bps,z_bps,ytm,y_idx,src,horizon,y_idx_alt,alt_horizon) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows[i:i + _SNAP_CHUNK])
     logger.info("spread snapshot %s: %d строк", d, len(rows))
     return len(rows)
 

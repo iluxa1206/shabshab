@@ -799,14 +799,20 @@ async def spread_snapshotter():
     """Дневной снапшот спред-метрик (точная история). Разово при старте (если
     метрики прогреты) + каждый день ~19:00 МСК (после основной сессии, метрики
     свежие). Идемпотентно per (isin,date)."""
-    from services.spread_history import write_snapshot
+    from services.spread_history import has_snapshot, write_snapshot
     from services.market_data import market_cache
-    # стартовый снапшот: ждём прогрева метрик (ретрай до ~5мин), затем пишем
+    # СТАРТОВЫЙ снапшот — только если снимка за сегодня ещё нет. Деплоев за день
+    # бывает несколько, и каждый перемалывал две тысячи строк ровно тогда, когда
+    # движок занят прогревом всего рынка (сторож ловил на этом лаг 4,8 с).
+    # Дневной снимок всё равно перезапишется штатно в 19:00.
     for _ in range(10):
         await asyncio.sleep(30)
         if market_cache.get("universe_metrics") or market_cache.get("fixed_metrics"):
             try:
-                await run_bg(write_snapshot)
+                if await run_bg(has_snapshot):
+                    logger.info("spread snapshot: за сегодня уже есть — старт пропускает")
+                else:
+                    await run_bg(write_snapshot)
             except Exception as e:
                 logger.warning(f"spread snapshot (startup) error: {e}")
             break
