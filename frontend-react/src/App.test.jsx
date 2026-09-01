@@ -13,7 +13,7 @@
  * править каждый раз, когда в приложении появляется новый вызов.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App.jsx";
 
 const USER = { email: "smoke@test", role: "admin", is_admin: true };
@@ -31,6 +31,32 @@ const BOND = {
   index_yield_pct: 16.4, yield_over_index_bps: 180, wap_price_pct: 100.15,
   preferred_horizon: "maturity", rating: "AA", emitter_name: "ТЕСТ ЭМИТЕНТ",
   is_ofz: false, has_amort: false,
+};
+
+// Даты СЧИТАЕМ ОТ СЕГОДНЯ: окно срока меряется в годах от текущей даты, и
+// зашитые «2029-05-16» через год стали бы значить другой срок — тест начал бы
+// падать сам по себе.
+const inYears = (y) => {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() + Math.floor(y), d.getMonth() + Math.round((y % 1) * 12), 1);
+  return d.toISOString().slice(0, 10);
+};
+
+// Бумага, чей СРОК определяет оферта, а не погашение: правило цены выбрало пут
+// (preferred_horizon), поэтому по сроку она стоит рядом с двухлетками, хотя
+// гасится через одиннадцать лет.
+const BOND_PUT = {
+  ...BOND, isin: "RU000A100003", short_name: "ТЕСТ 2Р-02",
+  maturity_date: inYears(11), offer_date: inYears(2.5), offer_kind: "put",
+  preferred_horizon: "put",
+};
+
+// Бумага без оферты и с дальним погашением — нужна, чтобы порядок по сроку
+// отличался от порядка по дате погашения: по горизонту она идёт ПОСЛЕ бумаги с
+// офертой, по погашению — раньше неё.
+const BOND_LONG = {
+  ...BOND, isin: "RU000A100004", short_name: "ТЕСТ 3Р-03",
+  maturity_date: inYears(5), offer_date: null, preferred_horizon: "maturity",
 };
 
 // Слой фиксов включён/выключен (см. services/feature_flags → /api/meta.features).
@@ -51,7 +77,8 @@ const FIXED = {
 /** Ответ на запрос по URL. Неизвестное — пустой объект: тест про рендер, не про данные. */
 function replyFor(url) {
   if (url.includes("/api/me")) return USER;
-  if (url.includes("/api/bonds?universe")) return { items: [BOND], total: 1, limit: 2000, offset: 0 };
+  if (url.includes("/api/bonds?universe"))
+    return { items: [BOND, BOND_PUT, BOND_LONG], total: 3, limit: 2000, offset: 0 };
   if (url.includes("/api/bonds/quotes")) return { ts: null, n: 0, items: [] };
   if (url.includes("/api/orderbook/depth/all")) return { depth: {} };
   if (url.includes("/api/fixed/quotes")) return { ts: null, n: 0, items: [] };
@@ -83,7 +110,15 @@ function stubNetwork() {
   return calls;
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); FIXED_ON = true; });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  FIXED_ON = true;
+  // Витрина помнит фильтры между заходами (localStorage), а хранилище в тестах
+  // одно на файл: без чистки окно срока из соседнего теста доезжало сюда и
+  // резало таблицу ещё до первой проверки.
+  try { localStorage.clear(); } catch { /* приватный режим */ }
+});
 
 describe("монтирование приложения", () => {
   it("гость видит форму входа", async () => {
@@ -148,6 +183,40 @@ describe("монтирование приложения", () => {
     expect(fatal).toEqual([]);
     spy.mockRestore();
     window.history.pushState({}, "", back);
+  });
+
+  it("окно срока меряет горизонт прайсинга, а не погашение", async () => {
+    // Бумага с офертой через 2,5 года и погашением через одиннадцать: метрики
+    // строки посчитаны к оферте (синие годы в колонке MATURITY), значит и
+    // «срок» у неё этот. По дате погашения окно «2–3 года» выкинуло бы её, и
+    // фильтр спорил бы с числом, которое сам же показывает.
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/floaters?myf=2&myt=3");
+    stubNetwork();
+    render(<App />);
+    expect(await screen.findByText(/ТЕСТ 2Р-02/)).toBeTruthy();
+    // соседняя бумага гасится через год — в окно «от 2 лет» не попадает
+    await waitFor(() => expect(screen.queryByText(/ТЕСТ 1Р-01/)).toBeNull());
+    window.history.pushState({}, "", back);
+  });
+
+  it("сортировка MATURITY идёт по горизонту, а не по дате погашения", async () => {
+    // 1Р-01 гасится через год, 2Р-02 прайсится к оферте через 2,5 года и
+    // гасится через одиннадцать, 3Р-03 гасится через пять. По СРОКУ порядок
+    // 1 → 2 → 3; по дате погашения он был бы 1 → 3 → 2, и колонка спорила бы с
+    // числом, которое сама же подсвечивает синим.
+    stubNetwork();
+    render(<App />);
+    await screen.findByText(/ТЕСТ 2Р-02/);
+    fireEvent.click(screen.getByText("MATURITY"));
+    await waitFor(() => {
+      const names = [...document.querySelectorAll(".bond-name")]
+        .map((n) => n.textContent);
+      // в имени рядом стоят класс и рейтинг («КОРПТЕСТ 2Р-02(AA)») — берём
+      // только сам тикер
+      expect(names.map((n) => (n.match(/ТЕСТ \dР-\d+/) || [])[0]).filter(Boolean))
+        .toEqual(["ТЕСТ 1Р-01", "ТЕСТ 2Р-02", "ТЕСТ 3Р-03"]);
+    });
   });
 
   it("фильтры фиксов поднимаются из ссылки", async () => {

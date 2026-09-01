@@ -7,6 +7,7 @@ import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { sideProgress } from "./spreadProgress.js";
 import { filterBonds } from "./search.js";
+import { horizonDate } from "./horizon.js";
 import { ratingMatches, ratingOptions, yearsToIso } from "./format.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
@@ -641,8 +642,7 @@ function Dashboard() {
     // Границы переводим в даты-отсечки и сравниваем ISO-строки. Строки без даты
     // (перп/дыра в справочнике) при заданной границе прячем — иначе они молча
     // пролезают в любой срок.
-    const hzDate = (b) => ((b.preferred_horizon === "put" || b.preferred_horizon === "call")
-      && b.offer_date) || b.maturity_date;
+    const hzDate = horizonDate;      // общее правило: см. src/horizon.js
     const mFrom = parseFloat(matFrom), mTo = parseFloat(matTo);
     if (Number.isFinite(mFrom)) {
       const cut = yearsToIso(mFrom);
@@ -677,7 +677,12 @@ function Dashboard() {
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
     rows.sort((a, b) => {
-      let x = a[key], y = b[key];
+      // СРОК сортируется по горизонту прайсинга — по той же дате, что подсвечена
+      // в строке синим и по которой отбирает окно срока. По дате погашения
+      // список спорил сам с собой: бумага с офертой через 2,7 года стояла в
+      // хвосте среди одиннадцатилетних, хотя её метрики посчитаны к оферте.
+      let x = key === "maturity_date" ? hzDate(a) : a[key];
+      let y = key === "maturity_date" ? hzDate(b) : b[key];
       if (x == null && y == null) return 0;
       if (x == null) return 1;
       if (y == null) return -1;
