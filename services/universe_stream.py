@@ -209,6 +209,12 @@ _WARM_MAX_SLICES = int(os.getenv("UNIVERSE_WARM_SLICES", "8"))
 # сколько кэш уровней: чистится на смене дня/кривых (_check_version) и на правке
 # Справочника (invalidate_params).
 _flow_cache: Dict[str, dict] = {}
+# Потолок кэша потоков В ПЛАТЕЖАХ, а не в бумагах: тридцатилетний ипотечный
+# агент держит 370 платежей, обычная трёхлетка — тринадцать, и «шестьсот бумаг»
+# ничего не говорит о памяти. Превышение — сброс целиком: следующий такт
+# наполнит заново, это дешевле, чем сложная политика вытеснения на кэше, живущем
+# один торговый день.
+_FLOW_CACHE_MAX_ITEMS = int(os.getenv("UNIVERSE_FLOW_CACHE_ITEMS", "400000"))
 _yoi_grid: Dict[str, tuple] = {}   # isin → (epoch, [узлы], {узел: бп})
 _grid_builds = 0                   # построений сетки с прошлой сводки
 _grid_budget = 0                   # остаток построений сетки в текущем такте
@@ -927,6 +933,20 @@ def invalidate_params(isin: Optional[str] = None) -> None:
         _yoi_grid.clear()
         _yoi_cache_epoch += 1
         _dirty.update(_last_quote.keys())
+
+
+def _flow_cache_items() -> int:
+    """Сколько платежей лежит в кэше потоков — мера его веса в памяти."""
+    return sum(len(v[0]) for d in _flow_cache.values() for v in d.values())
+
+
+def _trim_flow_cache() -> None:
+    """Сброс кэша потоков, если он перерос потолок (см. _FLOW_CACHE_MAX_ITEMS)."""
+    n = _flow_cache_items()
+    if n > _FLOW_CACHE_MAX_ITEMS:
+        logger.warning("кэш потоков разросся (%d платежей, %d бумаг) — сбрасываю",
+                       n, len(_flow_cache))
+        _flow_cache.clear()
 
 
 def _px_key(px: float) -> float:
@@ -1893,9 +1913,11 @@ async def metrics_worker() -> None:
             # режиме, который и надо мерить
             if (done_since_log or sides_since_log) and time.time() - last_log >= 60:
                 global _depth_msgs
+                _flow_items = _flow_cache_items()
                 logger.info("metrics engine: %d строк/мин (%.1fс, %.0fмс/шт) · "
                             "сторон %d/мин (%.1fс, %.0fмс/шт, пачка %d) · "
-                            "memo %d (hit %d / miss %d) · потоки %d · ctx %d · сетки %d (+%d/мин, холодных %d) · "
+                            "memo %d (hit %d / miss %d) · потоки %d (%dк платежей) · "
+                            "ctx %d · сетки %d (+%d/мин, холодных %d) · "
                             "dirty %d (+%d сторон) · прочерков %d · "
                             "depth-пушей %d/мин (%d бумаг)",
                             done_since_log, full_ms / 1000.0,
@@ -1903,7 +1925,7 @@ async def metrics_worker() -> None:
                             sides_since_log, sides_ms / 1000.0,
                             sides_ms / max(1, sides_since_log), _sides_batch(),
                             len(_level_memo), _memo_hits, _memo_misses,
-                            len(_flow_cache),
+                            len(_flow_cache), _flow_items // 1000,
                             len(_eval_ctx), len(_yoi_grid), _grid_builds, len(_grid_cold),
                             len(_dirty), len(_sides_dirty), _blank_sides_count(),
                             _depth_msgs, len(_depth_streamed))
@@ -1913,6 +1935,7 @@ async def metrics_worker() -> None:
                 full_ms = sides_ms = 0.0
                 _depth_msgs = 0
                 last_log = time.time()
+                _trim_flow_cache()      # раз в минуту — дешевле, чем на записи
             # СТРАХОВКА ВОЛНЫ: размер тикета мог прийти не по сокету (ручка
             # /api/bonds) — там задачу никто не заводит.
             if _vol_wave_pending:

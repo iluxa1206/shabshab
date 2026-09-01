@@ -964,3 +964,28 @@ def test_flow_cache_is_dropped_on_new_curves_and_edits():
     us._flow_cache["RU000A100003"] = {("main", 200): ([], [])}
     us._check_version(("2026-09-02", "curves-x"))
     assert us._flow_cache == {}
+
+
+def test_flow_cache_has_a_ceiling():
+    """У кэша потоков есть потолок В ПЛАТЕЖАХ.
+
+    «Шестьсот бумаг» ничего не говорит о памяти: тридцатилетний ипотечный агент
+    держит 370 платежей, обычная трёхлетка — тринадцать. Перерос потолок —
+    сбрасываем целиком: следующий такт наполнит заново, и это дешевле сложной
+    политики вытеснения на кэше, живущем один торговый день."""
+    us._flow_cache.clear()
+    us._flow_cache["RU000A100001"] = {("main", 200): ([0] * 300, [])}
+    us._flow_cache["RU000A100002"] = {("cut", "2030-01-01"): ([0] * 100, [])}
+    assert us._flow_cache_items() == 400
+
+    us._trim_flow_cache()                      # потолок по умолчанию высоко
+    assert len(us._flow_cache) == 2
+
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(us, "_FLOW_CACHE_MAX_ITEMS", 399)
+    try:
+        us._trim_flow_cache()
+        assert us._flow_cache == {}
+    finally:
+        mp.undo()
