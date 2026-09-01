@@ -145,6 +145,10 @@ _GRID_WARM_BATCH = int(os.getenv("UNIVERSE_GRID_WARM", "25"))
 # батчем альт-цен (см. _fill_side_metrics), сетка нужна СЛЕДУЮЩЕМУ размеру.
 # Поэтому строим её с потолком на такт, а остальным достроит догрев.
 _GRID_BUILD_PER_TICK = int(os.getenv("UNIVERSE_GRID_BUILD_TICK", "12"))
+# Сколько прочерков в сторонах добираем за такт (см. _blank_side_targets).
+# Дешёвая ветка стоит ~13–35 мс на бумагу, и очередь такта всё равно ограничена
+# _MAX_SIDES_BATCH — добор кладём в неё только когда живой поток её не занял.
+_BLANK_SIDES_BATCH = int(os.getenv("UNIVERSE_BLANK_SIDES", "40"))
 # Пауза перед повтором у бумаг, которым сетку строить не из чего (нет пуша
 # котировки, книга пустая, расчёт не сошёлся). Без неё они вечно занимали
 # первые места в догреве: он берёт первые N из _eval_ctx, каждый такт
@@ -973,12 +977,20 @@ def _grid_nodes_if_needed(isin: str, sides: dict, wap, vol_px: dict) -> list:
     return nodes
 
 
-def _has_book(isin: str) -> bool:
+def _has_book(isin: str, book: Optional[dict] = None) -> bool:
     """В слое глубины есть хоть одна сторона книги — этого хватает и сетке, и
-    цене набора (котировочный пуш им не нужен)."""
-    from services import depth as depth_svc
-    lad = depth_svc.get_depth().get(isin) or {}
+    цене набора (котировочный пуш им не нужен).
+
+    book передаётся СНАРУЖИ, когда проверок много подряд: get_depth() отсеивает
+    протухшие шарды и на этом пересобирает словарь всего рынка — звать его в
+    цикле по универсу значит платить за эту пересборку сотни раз за такт."""
+    lad = (book if book is not None else _depth_snapshot()).get(isin) or {}
     return bool(lad.get("a") or lad.get("b"))
+
+
+def _depth_snapshot() -> dict:
+    from services import depth as depth_svc
+    return depth_svc.get_depth()
 
 
 def _grid_warm_targets(limit: int) -> list:
@@ -986,13 +998,14 @@ def _grid_warm_targets(limit: int) -> list:
     нет или она от прошлой кривой. ФИКСЫ мимо — у них своя ветка расчёта."""
     out = []
     now = time.monotonic()
+    book = _depth_snapshot()      # один снимок на весь обход (см. _has_book)
     for isin in _eval_ctx:
         if isin in _fixed_isins:
             continue
         g = _yoi_grid.get(isin)
         if g and g[0] == _yoi_cache_epoch:
             continue
-        if not _last_quote.get(isin) and not _has_book(isin):
+        if not _last_quote.get(isin) and not _has_book(isin, book):
             continue          # ни котировки, ни книги — сетку строить не из чего
         if now - _grid_cold.get(isin, 0.0) < _GRID_RETRY_SEC:
             continue          # недавно не вышло — не занимать квоту такта
@@ -1018,6 +1031,7 @@ def warm_grids(isins: list, board: Optional[dict] = None) -> int:
     from services.yidx_exact import y_idx_many
     from services import live_quotes as _lq
     board = board or {}
+    book = _depth_snapshot()      # один снимок на пачку (см. _has_book)
     n = 0
     for isin in isins:
         ev = _eval_ctx.get(isin)
@@ -1028,7 +1042,7 @@ def warm_grids(isins: list, board: Optional[dict] = None) -> int:
         # пуш котировки у застывшей бумаги может не прийти за день ни разу —
         # раньше такая бумага не получала сетку вовсе и на каждый размер тикета
         # уезжала в очередь движка.
-        if not q and not _has_book(isin):
+        if not q and not _has_book(isin, book):
             continue
         sides = _sides_of(q or {})
         wap = (_lq.get(isin) or {}).get("vwap_pct") or (board.get(isin) or {}).get("waprice")
@@ -1191,16 +1205,61 @@ def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     for isin in isins:
         row = um.get(isin)
-        q = _last_quote.get(isin)
-        if not row or not q or isin not in _eval_ctx:
+        if not row or isin not in _eval_ctx:
             continue
+        snap = board.get(isin, {}) or {}
+        q = _last_quote.get(isin)
+        # КОТИРОВОЧНЫЙ ПУШ НЕ ОБЯЗАТЕЛЕН: стороны берём из биржевого снапшота,
+        # когда пуша по бумаге сегодня не было. Раньше такая бумага молча
+        # пропускалась — цена стороны в строке стояла (снапшот её даёт), а спред
+        # к ней оставался прочерком до конца дня.
+        if q is None:
+            q = {"bid": snap.get("bid"), "ask": snap.get("ask")}
         row = dict(row)
         sides = _sides_of(q)
         for side, v in sides.items():
             row[side] = v
-        _fill_side_metrics(row, isin, sides, board.get(isin, {}) or {})
+        _fill_side_metrics(row, isin, sides, snap)
         out[isin] = row
     return out
+
+
+def _blank_side_targets(board: dict, limit: int) -> list:
+    """Бумаги, у которых ЦЕНА стороны есть, а СПРЕДА к ней нет.
+
+    Спред стороны считает движок, и заказывает этот расчёт только событие:
+    сделка (полный пересчёт) или движение верха стакана (дешёвая очередь). По
+    бумаге, с которой за сессию не случилось ни того ни другого, строка так и
+    остаётся с прочерком — а цена стороны в ней есть, потому что приходит
+    биржевым снапшотом. До 27.08.2026 дыру закрывал браузер: он дорисовывал
+    спред наклоном от якоря. Наклон убран (число было неверным), и прочерк стал
+    виден — сюда и приходили жалобы «спреды в биде и оффере не грузятся».
+
+    Контекст расчёта обязателен: без него считать нечем, такие бумаги ждут
+    своей очереди в догреве контекстов."""
+    out = []
+    um = _market_cache_um()
+    for isin in _eval_ctx:
+        if isin in _fixed_isins or isin in _sides_dirty:
+            continue
+        row = um.get(isin)
+        if not row:
+            continue
+        snap = board.get(isin, {}) or {}
+        q = _last_quote.get(isin) or {}
+        for side in ("bid", "ask"):
+            px = q.get(side) if q.get(side) is not None else snap.get(side)
+            if (px or 0) > 0 and row.get("yoi_" + side) is None:
+                out.append(isin)
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _market_cache_um() -> dict:
+    from services.market_data import market_cache
+    return market_cache.get("universe_metrics") or {}
 
 
 def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
@@ -1555,6 +1614,14 @@ async def _warm_pass(ctx: dict, wsmod, market_cache: dict, tick0: float) -> None
     # сеток не выполнялся НИ РАЗУ — рынок так и жил без сеток, а каждая волна
     # размера тикета оплачивала их заново по дорогой ветке. Поэтому при съеденном
     # бюджете греем урезанной пачкой, а не выходим.
+    # ДОБОР ПРОЧЕРКОВ: бумаги, у которых цена стороны есть, а спреда нет (см.
+    # _blank_side_targets). Ставим их в очередь сторон низким приоритетом —
+    # живой поток остаётся первым, а хвост рынка перестаёт ждать события,
+    # которого может не случиться за весь день.
+    if _sides_dirty.__len__() < _MAX_SIDES_BATCH:
+        for isin in _blank_side_targets(ctx["board"], _BLANK_SIDES_BATCH):
+            _queue_sides(isin, _SIDES_PRIO_WAVE)
+
     batch = _GRID_WARM_BATCH if left() > 0 else max(1, _GRID_WARM_BATCH // 5)
     targets = _grid_warm_targets(batch)
     if not targets:

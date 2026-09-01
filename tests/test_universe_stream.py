@@ -666,3 +666,62 @@ def test_curves_rebuild_keeps_eval_ctx():
         assert us._eval_ctx == {}
     finally:
         us._eval_ctx.clear(); us._yoi_grid.clear(); us._memo_version = None
+
+
+def test_blank_sides_get_queued_and_counted(monkeypatch):
+    """ПРОЧЕРК В СТОРОНЕ — работа для движка, а не приговор.
+
+    Спред стороны считает движок, и заказывает расчёт только событие: сделка
+    или движение верха стакана. По бумаге, с которой за сессию не случилось ни
+    того ни другого, цена стороны в строке есть (её даёт биржевой снапшот), а
+    спред остаётся прочерком до конца дня — до 27.08.2026 дыру закрывал наклон
+    в браузере, и с его уходом она стала видна пользователям."""
+    from services.market_data import market_cache
+    us._eval_ctx.clear(); us._sides_dirty.clear(); us._last_quote.clear()
+    prev = market_cache.get("universe_metrics")
+    try:
+        market_cache["universe_metrics"] = {
+            "RU000A100001": {"yoi_bid": None, "yoi_ask": None},   # ждёт движок
+            "RU000A100002": {"yoi_bid": 200, "yoi_ask": 190},     # посчитана
+            "RU000A100003": {"yoi_bid": None, "yoi_ask": None},   # сторон нет вовсе
+        }
+        for i in ("RU000A100001", "RU000A100002", "RU000A100003"):
+            us._eval_ctx[i] = {"isin": i}
+        board = {"RU000A100001": {"bid": 99.0, "ask": 101.0},
+                 "RU000A100002": {"bid": 99.5, "ask": 100.5},
+                 "RU000A100003": {"bid": None, "ask": None}}
+        assert us._blank_side_targets(board, 10) == ["RU000A100001"]
+    finally:
+        us._eval_ctx.clear(); us._sides_dirty.clear()
+        if prev is None:
+            market_cache.pop("universe_metrics", None)
+        else:
+            market_cache["universe_metrics"] = prev
+
+
+def test_recrunch_sides_uses_board_when_no_push(monkeypatch):
+    """Стороны берутся из биржевого снапшота, когда котировочного пуша по бумаге
+    сегодня не было: раньше такая бумага молча пропускалась и жила с прочерком."""
+    from services.market_data import market_cache
+    seen = {}
+
+    def fake_fill(row, isin, sides, snap):
+        seen["sides"] = dict(sides)
+        row["yoi_bid"] = 210
+
+    monkeypatch.setattr(us, "_fill_side_metrics", fake_fill)
+    us._eval_ctx.clear(); us._last_quote.clear()
+    prev = market_cache.get("universe_metrics")
+    try:
+        market_cache["universe_metrics"] = {"RU000A100001": {"isin": "RU000A100001"}}
+        us._eval_ctx["RU000A100001"] = {"isin": "RU000A100001"}
+        rows = us.recrunch_sides(["RU000A100001"],
+                                 {"RU000A100001": {"bid": 99.0, "ask": 101.0}})
+        assert seen["sides"] == {"bid": 99.0, "ask": 101.0}
+        assert rows["RU000A100001"]["yoi_bid"] == 210
+    finally:
+        us._eval_ctx.clear()
+        if prev is None:
+            market_cache.pop("universe_metrics", None)
+        else:
+            market_cache["universe_metrics"] = prev
