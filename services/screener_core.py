@@ -40,6 +40,12 @@ PARAM_DEFAULTS = {
     "ratings": [],          # ['AAA','AA'] — ИЛИ
     "emitters": [],         # ['Газпром капитал'] — ИЛИ, точное имя из реестра
     "isins": [],            # ['RU000A10AU99'] — ИЛИ
+    # ИСКЛЮЧЕНИЯ: бьют включение всегда. Пара к селекторам выше и стоят рядом с
+    # ними в форме вторым столбцом: «весь рынок, кроме этого эмитента» и «мой
+    # список, но без вот этой бумаги» — обычные запросы стола, а описать их
+    # белым списком из полусотни имён невозможно.
+    "emitters_ex": [],
+    "isins_ex": [],
     "issuer": "all",        # all | ofz (только ОФЗ) | corp (без ОФЗ)
     "side": "ask",          # 'ask' — оффер (можно купить) | 'bid' — бид (продать)
     "spread_min": None,     # Y-IDX бп, нижняя граница диапазона
@@ -55,6 +61,17 @@ PARAM_DEFAULTS = {
     # того, кто следит за уровнем спреда, это шум. Первое попадание («заявка»)
     # приходит в любом случае — это не повтор.
     "repeat_on_money": True,
+    # ТОЛЬКО УЛУЧШЕНИЕ. Заявку двигают: поставили, сняли, вернули на другую
+    # цену — и каждый шаг звонил заново, хотя новости в нём нет. В этом режиме
+    # по бумаге держится ПЛАНКА лучшего спреда (см. signals.detect_events), и
+    # следующее сообщение уходит, только когда рынок её побил: для оффера это
+    # спред ВЫШЕ рекорда, для бида — НИЖЕ. Повтор по объёму при этом молчит:
+    # долив в стакан — не улучшение цены.
+    "improve_only": True,
+    # Порог ШТУК для мини-стакана в телеграме: уровни мельче не печатаются, а
+    # лестница добирается более глубокими. Только показ — спред и объём фильтра
+    # считаются по полной книге (иначе сменился бы смысл самих условий).
+    "book_min_qty": None,
 }
 
 MAX_SELECTOR_ITEMS = 50
@@ -128,15 +145,24 @@ def issuer_ok(u: dict, params: dict) -> bool:
     return is_ofz(u) if who == "ofz" else not is_ofz(u)
 
 
-def normalize_params(raw: dict) -> dict:
-    raw = raw or {}
-    p = dict(PARAM_DEFAULTS)
+def _scope(raw: dict, p: dict) -> None:
+    """Отбор бумаг: рейтинги/эмитенты/выпуски + их исключения. Разбор общий у
+    book- и block-фильтра — «крупняк в моих эмитентах, кроме вот этой бумаги»
+    описывается одними и теми же чипами в обеих формах."""
     p["ratings"] = _str_list(raw.get("ratings"), "ratings", upper=True)
     p["emitters"] = _str_list(raw.get("emitters"), "emitters")
     p["isins"] = _str_list(raw.get("isins"), "isins", upper=True)
+    p["emitters_ex"] = _str_list(raw.get("emitters_ex"), "emitters_ex")
+    p["isins_ex"] = _str_list(raw.get("isins_ex"), "isins_ex", upper=True)
     for r in p["ratings"]:
         if r not in RATINGS:
             raise FilterError(f"rating: {' '.join(RATINGS)}")
+
+
+def normalize_params(raw: dict) -> dict:
+    raw = raw or {}
+    p = dict(PARAM_DEFAULTS)
+    _scope(raw, p)
     p["side"] = raw.get("side") or "ask"
     if p["side"] not in ("ask", "bid"):
         raise FilterError("side: ask | bid")
@@ -144,8 +170,14 @@ def normalize_params(raw: dict) -> dict:
     p["hide_subord"] = bool(raw.get("hide_subord"))
     p["repeat_on_money"] = (True if raw.get("repeat_on_money") is None
                             else bool(raw.get("repeat_on_money")))
+    p["improve_only"] = (True if raw.get("improve_only") is None
+                         else bool(raw.get("improve_only")))
     _floats(raw, p, ("spread_min", "spread_max", "min_money_rub",
-                     "years_min", "years_max"))
+                     "years_min", "years_max", "book_min_qty"))
+    if p["book_min_qty"] is not None:
+        if p["book_min_qty"] < 0:
+            raise FilterError("Порог штук: неотрицательное число")
+        p["book_min_qty"] = p["book_min_qty"] or None
     if p["min_money_rub"] is not None and p["min_money_rub"] <= 0:
         raise FilterError("min_money_rub: положительное число")
     p["money_mode"] = raw.get("money_mode") or "book"
@@ -175,6 +207,8 @@ BLOCK_PARAM_DEFAULTS = {
     "ratings": [],
     "emitters": [],
     "isins": [],
+    "emitters_ex": [],            # исключения — см. PARAM_DEFAULTS
+    "isins_ex": [],
     "issuer": "all",              # all | ofz | corp — как в фильтре стакана
     "bases": [],                  # KEYRATE/RUONIA/FIXED, пусто = любая база
     "min_value_rub": 100_000_000.0,
@@ -196,13 +230,8 @@ BLOCK_BASES = ["KEYRATE", "RUONIA", "FIXED"]
 def normalize_block_params(raw: dict) -> dict:
     raw = raw or {}
     p = dict(BLOCK_PARAM_DEFAULTS)
-    p["ratings"] = _str_list(raw.get("ratings"), "ratings", upper=True)
-    p["emitters"] = _str_list(raw.get("emitters"), "emitters")
-    p["isins"] = _str_list(raw.get("isins"), "isins", upper=True)
+    _scope(raw, p)
     p["bases"] = _str_list(raw.get("bases"), "bases", upper=True)
-    for r in p["ratings"]:
-        if r not in RATINGS:
-            raise FilterError(f"rating: {' '.join(RATINGS)}")
     for b in p["bases"]:
         if b not in BLOCK_BASES:
             raise FilterError(f"base: {' '.join(BLOCK_BASES)}")
@@ -344,7 +373,17 @@ def years_ok(yrs: Optional[float], params: dict) -> bool:
 
 def selected(u: dict, params: dict) -> bool:
     """Отбор бумаги селекторами: рейтинг ИЛИ эмитент ИЛИ ISIN. Ни одного
-    селектора не задано → весь рынок."""
+    селектора не задано → весь рынок.
+
+    ИСКЛЮЧЕНИЯ проверяются ПЕРВЫМИ и бьют любое включение: «эти эмитенты, но
+    без вот этой бумаги» иначе не описать — в белом списке она сидит по
+    эмитенту, и убрать её оттуда нечем."""
+    ex_e = params.get("emitters_ex") or []
+    ex_i = params.get("isins_ex") or []
+    if ex_i and (u.get("isin") or "").strip().upper() in ex_i:
+        return False
+    if ex_e and (u.get("emitter_name") or "").strip() in ex_e:
+        return False
     sel_r, sel_e, sel_i = params["ratings"], params["emitters"], params["isins"]
     if not (sel_r or sel_e or sel_i):
         return True
@@ -494,7 +533,8 @@ def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
 
 def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
                   accrued: float = 0.0, levels: int = 4,
-                  isin: Optional[str] = None) -> dict:
+                  isin: Optional[str] = None,
+                  min_qty: Optional[float] = None) -> dict:
     """Лестница стакана НА МОМЕНТ СОБЫТИЯ: по levels уровней с каждой стороны,
     у каждого — цена, деньги и Y-IDX.
 
@@ -505,9 +545,31 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     Y-IDX уровня считается ТЕМ ЖЕ путём, что число в шапке события — батчем по
     методике на тёплом контексте. Раньше здесь стоял наклон y_idx_at, и
     лестница жила своей арифметикой: 21.08.2026 РусГид2Р01 приехал с 181 bps в
-    шапке и 103 на том же уровне в стакане."""
+    шапке и 103 на том же уровне в стакане.
+
+    min_qty — порог ШТУК настройки алерта: уровни мельче в лестницу не
+    попадают, а их место занимают более глубокие (levels уровней остаётся
+    levels). Это ТОЛЬКО показ: спред и объём фильтра считаются по полной книге,
+    иначе порог менял бы смысл самих условий. Заявка на три бумаги в стакане
+    стоит, но читателю сообщения не говорит ничего, а строку занимает."""
     d = depth_side or {}
-    pxs = [_px(l) for key in ("a", "b") for l in (d.get(key) or [])[:levels]]
+
+    def side_levels(key: str) -> list:
+        """levels уровней стороны ПОСЛЕ отсева мелочи — считая от лучшей цены.
+        Обрезаем после фильтра, а не до: иначе одна копеечная заявка на верху
+        съедала бы строку лестницы."""
+        out = []
+        for lvl in (d.get(key) or []):
+            q = _qty(lvl)
+            if min_qty and (q is None or q < min_qty):
+                continue
+            out.append(lvl)
+            if len(out) >= levels:
+                break
+        return out
+
+    shown = {key: side_levels(key) for key in ("a", "b")}
+    pxs = [_px(l) for key in ("a", "b") for l in shown[key]]
     exact_map = exact_y_idx_map(isin, pxs)
 
     def level_y(px: float, side: str) -> Optional[float]:
@@ -516,7 +578,7 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
 
     def side_rows(key: str, best_first: bool) -> list:
         out = []
-        for lvl in (d.get(key) or [])[:levels]:
+        for lvl in shown[key]:
             px, qty = _px(lvl), _qty(lvl)
             if px is None or qty is None:
                 continue

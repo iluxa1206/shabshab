@@ -337,6 +337,19 @@ CREATE TABLE IF NOT EXISTS tg_targets(
 );
 CREATE INDEX IF NOT EXISTS ix_tg_targets_user ON tg_targets(user_email);
 
+-- СТОП-ЛИСТ бумаги в чате (команда /stop в боте). Бумага, которую сегодня
+-- разбирают по кусочку весь день, забивает чат — а выключать ради неё весь
+-- фильтр значит ослепнуть по остальному рынку. Глушится только ДОСТАВКА в
+-- этот чат: событие пишется в ленту и уходит в браузер как обычно, поэтому
+-- история и /daystat остаются целыми. Живёт до конца торгового дня (МСК).
+CREATE TABLE IF NOT EXISTS tg_mute_isin(
+  chat_id INTEGER NOT NULL,
+  isin TEXT NOT NULL,
+  until TEXT NOT NULL,        -- ISO UTC: до полуночи МСК
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(chat_id, isin)
+);
+
 -- Текущее состояние набора: последние метрики бумаги, попадающей под фильтр.
 -- Ровно с ним сравнивается каждый тик, чтобы поймать шевеление метрики.
 -- Строка ПЕРЕЖИВАЕТ выход бумаги из набора (см. last_seen_at): стакан
@@ -352,6 +365,7 @@ CREATE TABLE IF NOT EXISTS signal_state(
   last_seen_at TEXT,      -- когда бумага последний раз была В НАБОРЕ
   last_event_at TEXT,     -- когда по ней последний раз звонило (кулдаун)
   last_reason TEXT,       -- по какой причине звонило: кулдаун гасит ПОВТОР ТОЙ ЖЕ
+  best_val_bps REAL,      -- планка режима «только улучшение»: лучший спред за жизнь строки
   updated_at TEXT NOT NULL,
   PRIMARY KEY(filter_id, isin)
 );
@@ -448,6 +462,9 @@ _MIGRATIONS = [
     "ALTER TABLE signal_state ADD COLUMN last_seen_at TEXT",
     "ALTER TABLE signal_state ADD COLUMN last_event_at TEXT",
     "ALTER TABLE signal_state ADD COLUMN last_reason TEXT",
+    # ПЛАНКА режима «только улучшение» (см. signals.detect_events): лучший
+    # спред бумаги за время её жизни в наборе. Молчим, пока рынок его не побил.
+    "ALTER TABLE signal_state ADD COLUMN best_val_bps REAL",
     "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
     # деньги ПО ЦЕНЕ СИГНАЛА (весь уровень стакана, а не набранный лимит и не

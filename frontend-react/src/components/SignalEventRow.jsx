@@ -1,8 +1,9 @@
 import { fmt } from "../format.js";
 import IsinCopy from "./IsinCopy.jsx";
 import BestWorm from "./BestWorm.jsx";
-import { bookMode, eventMoney, eventTag, maturityShort, maturityTxt, reasonDelta,
-         reasonTitle, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
+import { bookMode, eventMoney, eventTag, maturityShort, maturityTxt, moveTone,
+         reasonDelta, reasonTitle, reasonTone, sideInfo, tradeMode,
+         tradeTone } from "../signalFormat.js";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
 const money = (v) => (v == null ? "—" : fmt.mln(v));
@@ -26,12 +27,18 @@ const timeOf = (iso) => {
   } catch { return ""; }
 };
 
-/** Дельта к прошлому значению: показываем, НАСКОЛЬКО шевельнулось. */
-export function Delta({ prev, cur, digits = 0, suffix = "" }) {
+/** Дельта к прошлому значению: показываем, НАСКОЛЬКО шевельнулось.
+ *
+ *  Цвет — по СТОРОНЕ, за которой следит фильтр (signalFormat.moveTone), а не
+ *  по знаку: у оффера рост спреда и падение цены — в нашу пользу, у бида
+ *  наоборот. Раньше красили знак, и на оффере зелёным горело ровно то, что
+ *  покупателю плохо. Метрика без стороны (what/side не переданы) остаётся на
+ *  старом правиле «рост зелёный». */
+export function Delta({ prev, cur, digits = 0, suffix = "", what, side }) {
   if (prev == null || cur == null) return null;
   const d = cur - prev;
   if (!d) return null;
-  const cls = d > 0 ? "pos" : "neg";
+  const cls = moveTone(what, side, d) || (d > 0 ? "pos" : "neg");
   return (
     <span className={"sb-delta " + cls}>
       {d > 0 ? "+" : "−"}{fmt.num(Math.abs(d), digits)}{suffix}
@@ -97,7 +104,8 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
             <b className="sb-val num" title="R-spread: IRR − доходность роллирования RUONIA">
               {fmt.num(e.val_bps, 0)} бп
               {/* единица уже названа рядом — дельта идёт голым числом */}
-              <Delta prev={e.prev_val_bps} cur={e.val_bps} />
+              <Delta prev={e.prev_val_bps} cur={e.val_bps}
+                what="spread" side={e.side} />
             </b>
           </>
         )}
@@ -119,10 +127,12 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
         <span className="sb-time">{timeOf(e.fired_at || e.ts)}</span>
         <Sep />
         <span className="sb-px">{fmt.num(e.price, 2)}%</span>
-        <Delta prev={e.prev_price} cur={e.price} digits={2} />
+        <Delta prev={e.prev_price} cur={e.price} digits={2}
+          what="price" side={e.side} />
         {mode && <><Sep /><span className="sb-mode">{mode}</span></>}
         {why && <><Sep />
-          <span className="sb-why" title={reasonTitle(e)}>{why}</span></>}
+          <span className={"sb-why " + (reasonTone(e) || "")}
+            title={reasonTitle(e)}>{why}</span></>}
       </span>
 
       <span className="sb-row-3">

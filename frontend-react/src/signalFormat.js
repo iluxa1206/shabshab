@@ -152,6 +152,43 @@ export function eventMoney(e) {
   return e.level_money_rub ?? e.money_ok_rub ?? e.money_rub ?? null;
 }
 
+/**
+ * ТОН движения: "pos" — рынок сдвинулся в нашу пользу, "neg" — против, null —
+ * красить нечего (сделка, первое попадание, нулевая дельта).
+ *
+ * Хорошо/плохо читается ПО СТОРОНЕ, а не по знаку. Смотрим офферы (покупаем):
+ * спред вырос — за ту же бумагу дают больше, цена упала — берём дешевле, и то
+ * и другое зелёное. Смотрим биды (продаём) — зеркально. Объём вне этой
+ * симметрии: чем больше денег стоит по устраивающей цене, тем лучше обеим
+ * сторонам.
+ *
+ * Раньше знак красился напрямую (рост зелёный, падение красное), и у оффера
+ * зелёным горело ровно то, что для покупателя плохо.
+ */
+const UP_IS_GOOD = {
+  "spread:ask": true, "spread:bid": false,
+  "price:ask": false, "price:bid": true,
+  "money:ask": true, "money:bid": true,
+};
+
+export function moveTone(reason, side, delta) {
+  if (!delta) return null;
+  const good = UP_IS_GOOD[`${reason}:${side || "ask"}`];
+  if (good == null) return null;
+  return (delta > 0) === good ? "pos" : "neg";
+}
+
+/** Тон дельты САМОГО события: причина и сторона берутся из строки ленты. */
+export function reasonTone(e) {
+  if (!e || e.reason === "block" || e.reason === "new") return null;
+  const f = { spread: ["val_bps", "prev_val_bps"], price: ["price", "prev_price"],
+              money: ["money_ok_rub", "prev_money_ok_rub"] }[e.reason];
+  if (!f) return null;
+  const cur = e[f[0]], prev = e[f[1]];
+  if (cur == null || prev == null) return null;
+  return moveTone(e.reason, e.side, cur - prev);
+}
+
 export function reasonDelta(e) {
   if (!e || e.reason === "block") return null;
   if (e.reason === "new") return "попала под условия";

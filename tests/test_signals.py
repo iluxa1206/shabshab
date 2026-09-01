@@ -1236,3 +1236,188 @@ def test_years_left_accepts_datetime_string():
     assert core.years_left("2027-04-08 00:00:00", today) == core.years_left("2027-04-08", today)
     assert core.years_left("2027-04-08T00:00:00", today) is not None
     assert core.years_left(None, today) is None
+
+
+# --- режим «только улучшение»: планка лучшего спреда ---
+
+def test_improve_only_waits_for_a_record(monkeypatch):
+    """Заявку двигают туда-обратно — молчим; побили рекорд — звоним.
+
+    Оффер: улучшение — спред ВЫШЕ планки. Возврат на прежний уровень (и любое
+    движение вниз) новостью не считается: за бумагу дают не больше, чем уже
+    давали."""
+    uni, metrics, depth = _market()
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "планка", {"spread_min": 100, "isins": ["RU000A0000A1"]})
+    p = f["params"]
+
+    def fire():
+        ms = core.evaluate(p, uni, metrics, depth)
+        return [e["reason"] for e in signals.detect_events(
+            f["id"], USER, "ask", 10, ms, None, improve_only=True)]
+
+    assert fire() == ["new"]                       # первое попадание — всегда
+
+    metrics["RU000A0000A1"]["yoi_ask"] = 340.0     # +60 бп — рекорд побит
+    assert fire() == ["spread"]
+
+    metrics["RU000A0000A1"]["yoi_ask"] = 300.0     # заявку сдвинули обратно
+    assert fire() == []
+    metrics["RU000A0000A1"]["yoi_ask"] = 335.0     # вернули почти на рекорд
+    assert fire() == []
+
+    metrics["RU000A0000A1"]["yoi_ask"] = 350.0     # дали больше, чем давали
+    assert fire() == ["spread"]
+
+
+def test_improve_only_is_mirrored_for_bid(monkeypatch):
+    """На биде улучшение зеркально: чем НИЖЕ спред, тем дороже у нас берут."""
+    uni, metrics, depth = _market()
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "бид", {"spread_min": 100, "isins": ["RU000A0000A1"],
+                                     "side": "bid"})
+    p = f["params"]
+
+    def fire():
+        ms = core.evaluate(p, uni, metrics, depth)
+        return [e["reason"] for e in signals.detect_events(
+            f["id"], USER, "bid", 10, ms, None, improve_only=True)]
+
+    assert fire() == ["new"]
+    metrics["RU000A0000A1"]["yoi_bid"] = 360.0     # спред вырос — нам хуже
+    assert fire() == []
+    metrics["RU000A0000A1"]["yoi_bid"] = 250.0     # ниже старта — улучшение
+    assert fire() == ["spread"]
+
+
+def test_improve_only_ignores_volume(monkeypatch):
+    """Долив объёма — не улучшение цены: в режиме планки он молчит."""
+    uni, metrics, depth = _market()
+    _stub_exact_map(monkeypatch, metrics)
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "объём", {"spread_min": 100, "isins": ["RU000A0000A1"]})
+    p = f["params"]
+    signals.detect_events(f["id"], USER, "ask", 10,
+                          core.evaluate(p, uni, metrics, depth), None, improve_only=True)
+
+    depth["RU000A0000A1"]["a"] = [[100.2, 6000], [100.4, 5000]]
+    assert signals.detect_events(f["id"], USER, "ask", 10,
+                                 core.evaluate(p, uni, metrics, depth), None,
+                                 improve_only=True) == []
+
+
+def test_improve_only_resets_after_grace(monkeypatch):
+    """Бумага ушла из набора надолго — планка обнуляется вместе с историей:
+    вернувшаяся заявка звонит как новая, а не сверяется со старым рекордом."""
+    uni, metrics, depth = _market()
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "сброс", {"spread_min": 100, "isins": ["RU000A0000A1"]})
+    p = f["params"]
+    ms = core.evaluate(p, uni, metrics, depth)
+    signals.detect_events(f["id"], USER, "ask", 10, ms, None, improve_only=True)
+    metrics["RU000A0000A1"]["yoi_ask"] = 400.0     # рекорд 400
+    signals.detect_events(f["id"], USER, "ask", 10,
+                          core.evaluate(p, uni, metrics, depth), None, improve_only=True)
+
+    monkeypatch.setattr(signals, "RETURN_GRACE_MIN", 0.0)
+    signals.detect_events(f["id"], USER, "ask", 10, [], None, improve_only=True)
+    metrics["RU000A0000A1"]["yoi_ask"] = 280.0     # хуже старого рекорда
+    ev = signals.detect_events(f["id"], USER, "ask", 10,
+                               core.evaluate(p, uni, metrics, depth), None,
+                               improve_only=True)
+    assert [e["reason"] for e in ev] == ["new"]
+
+    # и планка теперь считается от нового уровня: 300 > 280 + порог
+    monkeypatch.setattr(signals, "RETURN_GRACE_MIN", 30.0)
+    metrics["RU000A0000A1"]["yoi_ask"] = 300.0
+    ev2 = signals.detect_events(f["id"], USER, "ask", 10,
+                                core.evaluate(p, uni, metrics, depth), None,
+                                improve_only=True)
+    assert [e["reason"] for e in ev2] == ["spread"]
+
+
+def test_improve_only_on_by_default_for_old_filters():
+    """Фильтр, заведённый до режима планки, всё равно получает его: ключа в
+    сохранённых params нет, а шуметь он должен не больше нового."""
+    assert core.normalize_params({"spread_min": 100})["improve_only"] is True
+    assert core.normalize_params({"spread_min": 100,
+                                  "improve_only": False})["improve_only"] is False
+
+
+# --- исключения отбора ---
+
+def test_exclusions_beat_selectors():
+    """«Эти эмитенты, но без вот этой бумаги»: исключение бьёт включение."""
+    uni, metrics, depth = _market()
+    p = core.normalize_params({"spread_min": 100, "emitters": ["Газпром капитал"],
+                               "ratings": ["AAA"],
+                               "isins_ex": ["RU000A0000A1"]})
+    got = [m["isin"] for m in core.evaluate(p, uni, metrics, depth)]
+    assert "RU000A0000A1" not in got
+
+    # исключение эмитента вырезает бумагу и из «всего рынка»
+    p2 = core.normalize_params({"spread_min": 100,
+                                "emitters_ex": ["Мелкая контора"]})
+    got2 = [m["isin"] for m in core.evaluate(p2, uni, metrics, depth)]
+    assert "RU000A0000B2" not in got2 and "RU000A0000A1" in got2
+
+
+def test_block_filter_takes_exclusions():
+    """Исключения работают и в фильтре крупных сделок — отбор бумаг общий."""
+    from datetime import date
+    p = core.normalize_block_params({"min_value_rub": 1e6,
+                                     "isins_ex": ["RU000A0000A1"]})
+    meta = {"name": "Газпром 1", "emitter": "Газпром капитал", "base": "KEYRATE",
+            "rating": "AA", "maturity": "2029-08-11"}
+    trade = {"isin": "RU000A0000A1", "value": 5e6, "market": "main", "side": "buy"}
+    assert not core.block_matches(trade, meta, p, date(2026, 8, 21))
+    assert core.block_matches(dict(trade, isin="RU000A0000C3"), meta, p,
+                              date(2026, 8, 21))
+
+
+# --- порог штук в мини-стакане ---
+
+def test_book_snapshot_hides_small_orders_and_digs_deeper(monkeypatch):
+    """Порог штук выкидывает копеечные заявки, а лестница добирается более
+    глубокими уровнями — строк остаётся столько же."""
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[100.0, 5], [100.1, 900], [100.2, 3], [100.3, 700]],
+             "b": [[99.9, 4], [99.8, 1200]]}
+    row = {"face_px": 1000.0, "accrued_settle": 0.0}
+
+    full = core.book_snapshot(depth, row, 1000.0, levels=2)
+    assert [l["price"] for l in full["asks"]] == [100.1, 100.0]   # биржевой порядок
+
+    cut = core.book_snapshot(depth, row, 1000.0, levels=2, min_qty=100)
+    assert [l["price"] for l in cut["asks"]] == [100.3, 100.1]
+    assert [l["price"] for l in cut["bids"]] == [99.8]
+
+
+def test_book_min_qty_does_not_touch_filter_math():
+    """Порог — ТОЛЬКО показ: условия фильтра считаются по полной книге."""
+    uni, metrics, depth = _market()
+    p = core.normalize_params({"spread_min": 100, "min_money_rub": 1e6,
+                               "book_min_qty": 100_000})
+    assert [m["isin"] for m in core.evaluate(p, uni, metrics, depth)] \
+        == [m["isin"] for m in core.evaluate(
+            core.normalize_params({"spread_min": 100, "min_money_rub": 1e6}),
+            uni, metrics, depth)]
+
+
+# --- статистика дня ---
+
+def test_day_stats_counts_by_isin_and_reason():
+    uni, metrics, depth = _market()
+    f = signals.create(USER, "стат", {"spread_min": 100, "isins": ["RU000A0000A1"]})
+    ms = core.evaluate(f["params"], uni, metrics, depth)
+    signals.detect_events(f["id"], USER, "ask", 10, ms, None)
+    metrics["RU000A0000A1"]["yoi_ask"] = 400.0
+    signals.detect_events(f["id"], USER, "ask", 10,
+                          core.evaluate(f["params"], uni, metrics, depth), None)
+
+    st = signals.day_stats(USER)
+    assert st["total"] == 2
+    row = st["rows"][0]
+    assert row["isin"] == "RU000A0000A1" and row["total"] == 2
+    assert row["reasons"] == {"new": 1, "spread": 1}
+    assert st["filters"][0] == ("стат", 2)

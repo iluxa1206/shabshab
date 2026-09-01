@@ -126,15 +126,16 @@ def test_signal_text_caps_breakdown():
 
 
 def test_book_line_layout():
-    """Порядок записи: шапка (спред · выпуск со сроком), под ней цена с
-    рейтингом и объёмом, а обстоятельства срабатывания — в подписи."""
+    """Порядок записи: что случилось → шапка (спред · выпуск со сроком) → цена
+    с рейтингом и объёмом; обстоятельства срабатывания — в подписи."""
     txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A109B33", "name": "Газпн3P13R",
                                      "val_bps": 171.0, "price": 99.9, "money_rub": 1e6,
                                      "levels": 1, "years": 1.5, "reason": "money",
                                      "money_ok_rub": 1.06e6, "prev_money_ok_rub": 1e6}]})
     lines = txt.split("\n")
-    first, price = lines[0], lines[2]
+    why, first, price = lines[0], lines[1], lines[3]
+    assert "объём +6 %" in why, "что сдвинулось — первой строкой"
     assert first.startswith("🔴")                      # оффер красный
     # число без подписи: в строке это единственное значение в бп
     assert "171 бп" in first and "R-spread" not in first
@@ -143,15 +144,16 @@ def test_book_line_layout():
     assert first.index("171 бп") < first.index("Газпн3P13R")
     assert "₽" not in first
     assert "<b>99,90%</b>" in price and "1м ₽" in price
-    assert "RU000A109B33" in lines[3], "ISIN — в деталях, за формулой"
+    assert "RU000A109B33" in lines[4], "ISIN — в деталях, за формулой"
     # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
     # не добавляет к имени фильтра, а строку начинает мусором. Обстоятельства
     # срабатывания — там же, у имени фильтра.
     last = txt.strip().split("\n")[-1]
     assert last.startswith("<i>Тест 2</i> · оффер")
     # счёт уровней набора («1 ур») убран: он описывал механику фильтра.
-    # Заявка не лучшая — про очередь молчим вовсе.
-    assert "ур" not in last and "объём +6 %" in last
+    # Заявка не лучшая — про очередь молчим вовсе. Причины в подписи больше
+    # нет: повтор читают наверху сообщения, а не под стаканом.
+    assert "ур" not in last and "объём" not in last
     assert "📡" not in txt
 
 
@@ -369,11 +371,14 @@ def test_order_volume_falls_back_when_no_spread_bounds():
 
 
 def test_order_shows_time_then_threshold():
-    """После причины — время срабатывания с секундами, за ним порог фильтра."""
+    """Время срабатывания с секундами, за ним порог фильтра — в подписи; сама
+    причина стоит первой строкой сообщения."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_order_match()]})
-    sub = [ln for ln in txt.split("\n") if "12:47:02" in ln][0]
-    assert sub.index("RS") < sub.index("12:47:02") < sub.index(">1м")
+    lines = txt.split("\n")
+    assert "RS +15 бп" in lines[0]
+    sub = [ln for ln in lines if "12:47:02" in ln][0]
+    assert sub.index("12:47:02") < sub.index(">1м")
 
 
 def test_order_without_threshold_says_nothing():
@@ -582,7 +587,7 @@ def test_head_order_is_spread_issue_money():
                         "matches": [_order_match(years=1.1,
                                                  level_money_rub=12_100_000)]})
     lines = txt.split("\n")
-    head, price = lines[0], lines[2]
+    head, price = lines[1], lines[3]
     assert "<code>Газпн3P13R</code> (1,1 г)" in head
     assert head.index("168 бп") < head.index("Газпн3P13R")
     assert "12,1м ₽" in price and "₽" not in head
@@ -593,7 +598,7 @@ def test_head_without_maturity_has_no_empty_brackets():
     m = _order_match()
     m.pop("years", None)
     head = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [m]}).split("\n")[0]
+                         "matches": [m]}).split("\n")[1]
     assert "()" not in head and "Газпн3P13R" in head
 
 
@@ -628,7 +633,7 @@ def test_repeat_count_joins_details_line():
 def test_order_rating_goes_after_price():
     """У заявки рейтинг стоит между ценой и объёмом: «почём, чьё, на сколько»."""
     line = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [_order_match(rating="AAA")]}).split("\n")[2]
+                         "matches": [_order_match(rating="AAA")]}).split("\n")[3]
     assert line.index("100,05") < line.index("AAA") < line.index("₽")
 
 
@@ -923,3 +928,147 @@ def test_notify_admins_survives_missing_chats(monkeypatch):
     monkeypatch.setattr(tg_users, "chats_for_email", lambda e: [])
     monkeypatch.setattr(tg_notify.telegram, "enabled", lambda: True)
     assert asyncio.run(tg_notify.notify_admins("🛑 тест")) == 0
+
+
+# --- цвет направления: хорошо/плохо читается по стороне, а не по знаку ---
+
+def _why_line(side, **kw):
+    """Первая строка сообщения о повторе — там и стоит дельта."""
+    m = _order_match(**kw)
+    return _signal_text({"name": "ф", "side": side, "kind": "book",
+                         "matches": [m]}).split("\n")[0]
+
+
+def test_spread_tone_follows_side():
+    """Оффер: спред вырос — за бумагу дают больше, маркер зелёный. Бид —
+    зеркально: рост спреда значит, что у нас берут дешевле."""
+    assert _why_line("ask", val_bps=180.0, prev_val_bps=153.0).startswith("🟢")
+    assert _why_line("ask", val_bps=140.0, prev_val_bps=153.0).startswith("🔴")
+    assert _why_line("bid", val_bps=180.0, prev_val_bps=153.0).startswith("🔴")
+    assert _why_line("bid", val_bps=140.0, prev_val_bps=153.0).startswith("🟢")
+
+
+def test_price_tone_is_mirror_of_spread():
+    """Цена на оффере вниз — берём дешевле, это зелёное."""
+    assert _why_line("ask", reason="price", price=99.5,
+                     prev_price=100.05).startswith("🟢")
+    assert _why_line("ask", reason="price", price=100.5,
+                     prev_price=100.05).startswith("🔴")
+    assert _why_line("bid", reason="price", price=100.5,
+                     prev_price=100.05).startswith("🟢")
+
+
+def test_volume_tone_is_side_agnostic():
+    """Больше денег по устраивающей цене — хорошо обеим сторонам."""
+    for side in ("ask", "bid"):
+        assert _why_line(side, reason="money", money_ok_rub=9e6,
+                         prev_money_ok_rub=8e6).startswith("🟢")
+        assert _why_line(side, reason="money", money_ok_rub=7e6,
+                         prev_money_ok_rub=8e6).startswith("🔴")
+
+
+def test_change_line_stands_first():
+    """Что сдвинулось — ПЕРВОЙ строкой, до шапки и до стакана: повтор читают
+    ради этого, а под свёрнутой цитатой строку не видно вовсе."""
+    m = _order_match(book=_BOOK)
+    lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                          "matches": [m]}).split("\n")
+    assert "RS +15 бп" in lines[0]
+    assert "Газпн3P13R" in lines[1], "шапка — сразу под ней"
+    quote = next(i for i, ln in enumerate(lines) if ln.startswith("<blockquote"))
+    assert quote > 1, "стакан ниже дельты"
+
+
+def test_new_order_keeps_its_word_in_the_footer():
+    """Первое попадание наверх не выносим: новость там — сама бумага."""
+    lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                          "matches": [_order_match(reason="new")]}).split("\n")
+    assert lines[0].startswith("🔴"), "первая строка — шапка со стороной"
+    assert "заявка" in lines[-1]
+
+
+# --- порог штук: копеечные заявки не занимают строку ---
+
+def test_book_min_qty_hides_dust_in_message(monkeypatch):
+    """Мелочь из лестницы сообщения выкинута, а места заняли уровни поглубже."""
+    from services import screener_core as core
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[100.20, 3], [100.30, 900]], "b": [[99.80, 2], [99.70, 700]]}
+    book = core.book_snapshot(depth, {}, 1000.0, levels=2, min_qty=100)
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(book=book)]})
+    assert "100,30" in txt and "99,70" in txt
+    assert "100,20" not in txt and "99,80" not in txt
+
+
+# --- стоп-лист чата (/stop) ---
+
+def test_stop_mutes_only_that_chat(sent, db):
+    """Бумага из стоп-листа не уходит в этот чат; событие ленты не трогаем."""
+    from services import tg_mute
+    tg_mute.add(7001, "RU000A109B33")
+    import services.tg_notify as tg
+    assert tg._unmuted(7001, [_order_match()]) == []
+    assert tg._unmuted(7002, [_order_match()]) != [], "чужой чат молчать не обязан"
+    # другая бумага в том же чате проходит
+    assert tg._unmuted(7001, [_order_match(isin="RU000A10AU99")]) != []
+
+
+def test_stop_expires_with_the_day(db, monkeypatch):
+    """Срок — до полуночи МСК: к утру бумага снова звонит."""
+    from datetime import datetime, timedelta, timezone
+    from services import tg_mute
+    rec = tg_mute.add(7001, "RU000A109B33")
+    msk = rec["until"].astimezone(timezone(timedelta(hours=3)))
+    assert (msk.hour, msk.minute) == (0, 0)
+    assert rec["until"] > datetime.now(timezone.utc)
+
+
+def test_stop_command_resolves_and_lists(linked, monkeypatch):
+    """/stop принимает ISIN, показывает список и снимает по /stop del."""
+    from services import instruments_registry as reg
+    monkeypatch.setattr(reg, "get", lambda isin: {"short_name": "Газпн3P13R"}
+                        if isin == "RU000A109B33" else None)
+    monkeypatch.setattr(reg, "search", lambda q, limit=10: [])
+    monkeypatch.setattr(reg, "labels_map",
+                        lambda isins=None: {"RU000A109B33": {"name": "Газпн3P13R"}})
+
+    out = _cmd("/stop RU000A109B33")
+    assert "Газпн3P13R" in out and "конца дня" in out
+    assert "RU000A109B33" in _cmd("/stop")
+    assert "снова пишу" in _cmd("/stop del RU000A109B33")
+    assert "Стоп-лист пуст" in _cmd("/stop")
+
+
+def test_stop_asks_again_when_name_is_ambiguous(linked, monkeypatch):
+    """Под название подходит несколько бумаг — молчать наугад нельзя."""
+    from services import instruments_registry as reg
+    monkeypatch.setattr(reg, "get", lambda isin: None)
+    monkeypatch.setattr(reg, "search", lambda q, limit=10: [
+        {"isin": "RU000A1", "name": "Газпн 1"}, {"isin": "RU000A2", "name": "Газпн 2"}])
+    out = _cmd("/stop Газпн")
+    assert "несколько" in out and "RU000A1" in out and "RU000A2" in out
+    from services import tg_mute
+    assert tg_mute.list_for_chat(UID) == []
+
+
+# --- /daystat ---
+
+def test_daystat_lists_isins_with_reasons(linked):
+    """Кто сколько раз звонил и по каким причинам — для настройки порогов."""
+    from services import signals
+    f = signals.create("u@x.ru", "стат", {"spread_min": 100,
+                                          "isins": ["RU000A109B33"]})
+    ms = [{"isin": "RU000A109B33", "name": "Газпн3P13R", "val_bps": 168.0,
+           "price": 100.05}]
+    signals.detect_events(f["id"], "u@x.ru", "ask", 10, ms, None)
+    ms[0]["val_bps"] = 240.0
+    signals.detect_events(f["id"], "u@x.ru", "ask", 10, ms, None)
+
+    out = _cmd("/daystat")
+    assert "Газпн3P13R" in out and "<b>2</b>" in out
+    assert "заявка 1" in out and "RS 1" in out
+
+
+def test_daystat_says_nothing_happened(linked):
+    assert "не было" in _cmd("/daystat")

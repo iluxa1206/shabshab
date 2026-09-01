@@ -303,6 +303,52 @@ def event_moment(iso: Optional[str]) -> datetime:
     return (t if t.tzinfo else t.replace(tzinfo=_MSK)).astimezone(timezone.utc)
 
 
+def day_stats(user_email: str, days: int = 1) -> dict:
+    """Сколько раз какая бумага звонила за последние `days` торговых суток МСК.
+
+    Для настройки порогов на первых порах: «звонит ли фильтр по делу или одна
+    бумага даёт половину ленты». Причины разложены, потому что 14 «заявок» и
+    14 «RS» — разные болезни: первое лечится grace-окном, второе порогом.
+
+    Окно и границу дня считаем по МСК на ПРОЧИТАННОМ (event_moment), а не в
+    SQL: в колонке fired_at два формата времени (см. event_moment), и
+    строковое сравнение резало бы день не там.
+
+    Лента и так обрезана до _EVENTS_KEEP строк на пользователя, поэтому
+    читаем её целиком — отдельного индекса под статистику не заводим."""
+    days = max(1, min(int(days or 1), 30))
+    now_msk = datetime.now(_MSK)
+    since = (now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+             - timedelta(days=days - 1))
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT isin, name, reason, fired_at, filter_id FROM signal_events "
+            "WHERE user_email=? ORDER BY id DESC LIMIT ?",
+            (user_email, _EVENTS_KEEP)).fetchall()
+    names = {f["id"]: f["name"] for f in list_for_user(user_email)}
+    by_isin: dict = {}
+    by_filter: dict = {}
+    total = 0
+    for r in rows:
+        if event_moment(r["fired_at"]) < since.astimezone(timezone.utc):
+            continue
+        total += 1
+        d = by_isin.setdefault(r["isin"], {"isin": r["isin"], "name": r["name"],
+                                           "total": 0, "reasons": {}})
+        d["name"] = d["name"] or r["name"]
+        d["total"] += 1
+        why = r["reason"] or "?"
+        d["reasons"][why] = d["reasons"].get(why, 0) + 1
+        fname = names.get(r["filter_id"]) or f"#{r['filter_id']}"
+        by_filter[fname] = by_filter.get(fname, 0) + 1
+    return {"since": since.date().isoformat(), "days": days, "total": total,
+            "rows": sorted(by_isin.values(), key=lambda d: -d["total"]),
+            "filters": sorted(by_filter.items(), key=lambda kv: -kv[1]),
+            # вся ли история попала в окно: лента обрезается по _EVENTS_KEEP, и
+            # на шумном дне «за 7 дней» покажет только то, что уцелело
+            "capped": len(rows) >= _EVENTS_KEEP}
+
+
 def unseen_count(user_email: str) -> int:
     with _connect() as c:
         return c.execute("SELECT COUNT(*) FROM signal_events "
@@ -385,15 +431,51 @@ def _moved_pct(prev: Optional[float], cur: Optional[float], pct: float) -> bool:
     return abs(cur - prev) / base * 100.0 >= pct
 
 
+def _improved(side: str, best: Optional[float], cur: Optional[float]) -> bool:
+    """Побил ли спред ПЛАНКУ — в пользу той стороны, за которой следит фильтр.
+
+    Оффер (мы покупаем): улучшение — спред ВЫШЕ рекорда, то есть за ту же
+    бумагу дают больше. Бид (мы продаём) — зеркально, чем ниже спред, тем
+    дороже у нас берут. Планка двигается только вместе с отправленным
+    событием, поэтому дребезг заявки туда-сюда молчит: пока цену возвращают на
+    прежний уровень, рекорд не побит.
+
+    Порог тот же SPREAD_REPEAT_BPS: побить рекорд на полбазисного пункта —
+    не новость, а шум округления."""
+    if cur is None:
+        return False
+    if best is None:
+        return True
+    return (cur - best >= SPREAD_REPEAT_BPS if side == "ask"
+            else best - cur >= SPREAD_REPEAT_BPS)
+
+
+def _new_best(side: str, best: Optional[float], cur: Optional[float]) -> Optional[float]:
+    """Планка после события: экстремум в пользу стороны фильтра."""
+    if cur is None:
+        return best
+    if best is None:
+        return cur
+    return max(best, cur) if side == "ask" else min(best, cur)
+
+
 def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                   matches: List[dict], want_money: Optional[float],
-                  repeat_on_money: bool = True) -> List[dict]:
+                  repeat_on_money: bool = True,
+                  improve_only: bool = False) -> List[dict]:
     """Сравнивает набор с прошлым состоянием → только события.
 
     Две причины повтора, у каждой своя единица (см. пороги выше): спред ушёл на
     SPREAD_REPEAT_BPS бп, объём по нашим условиям — на change_pct %.
     repeat_on_money=False выключает вторую: остаётся только спред (и первое
     попадание бумаги в набор — оно не повтор).
+
+    improve_only меняет базу сравнения для спреда: не «ушёл от прошлого
+    значения», а «побил ПЛАНКУ» (best_val_bps — лучший спред за жизнь строки
+    состояния, см. _improved). Заявку двигают туда-обратно, и каждый шаг
+    звонил заново; с планкой возврат на прежнюю цену молчит, а сообщение
+    уходит только когда рынок дал больше, чем давал. Повтор по объёму в этом
+    режиме выключен: долив в стакан не улучшает цену.
     «Заявка» (бумага пришла в набор) — только если
     её не видели дольше RETURN_GRACE_MIN; иначе это то же самое, что уже
     звонило, и проверяются обычные пороги. Поверх всего кулдаун COOLDOWN_MIN на
@@ -408,8 +490,8 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
     with _lock, _connect() as c:
         known = {r["isin"]: r for r in c.execute(
             "SELECT isin, val_bps, price, money_rub, money_ok_rub, last_seen_at, "
-            "last_event_at, last_reason FROM signal_state WHERE filter_id=?",
-            (fid,)).fetchall()}
+            "last_event_at, last_reason, best_val_bps FROM signal_state "
+            "WHERE filter_id=?", (fid,)).fetchall()}
 
         for m in matches:
             prev = known.get(m["isin"])
@@ -420,6 +502,14 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
 
             if prev is None or returned:
                 reason = "new"
+            elif improve_only:
+                # планка вместо прошлого значения: молчим, пока рекорд цел
+                reason = ("spread"
+                          if _improved(side, prev["best_val_bps"], m.get("val_bps"))
+                          else None)
+                since = _age_min(prev["last_event_at"], now_dt)
+                if reason and since is not None and since < COOLDOWN_MIN:
+                    reason = None
             else:
                 # обе сработавшие причины в порядке важности; кулдаун гасит
                 # ПОВТОР ТОЙ ЖЕ причины (спред, дрожащий у порога, звонит не
@@ -461,18 +551,31 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                     prev_money_ok_rub=prev["money_ok_rub"] if prev else None))
 
             if reason or prev is None:
+                # ПЛАНКА двигается только с отправленным событием — как и
+                # базис сравнения: иначе улучшение, погашенное кулдауном,
+                # засчиталось бы рекордом и не позвонило бы никогда.
+                # «Заявка» (первое попадание или возврат после долгого
+                # отсутствия) планку ОБНУЛЯЕТ: история началась заново.
+                best_prev = prev["best_val_bps"] if prev else None
+                if reason == "new":
+                    best = m.get("val_bps")
+                elif reason:
+                    best = _new_best(side, best_prev, m.get("val_bps"))
+                else:
+                    best = best_prev
                 c.execute(
                     "INSERT INTO signal_state(filter_id,isin,val_bps,price,money_rub,"
-                    "money_ok_rub,last_seen_at,last_event_at,last_reason,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?) "
+                    "money_ok_rub,last_seen_at,last_event_at,last_reason,best_val_bps,"
+                    "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(filter_id,isin) DO UPDATE SET val_bps=excluded.val_bps, "
                     "price=excluded.price, money_rub=excluded.money_rub, "
                     "money_ok_rub=excluded.money_ok_rub, last_seen_at=excluded.last_seen_at, "
                     "last_event_at=excluded.last_event_at, last_reason=excluded.last_reason, "
+                    "best_val_bps=excluded.best_val_bps, "
                     "updated_at=excluded.updated_at",
                     (fid, m["isin"], m.get("val_bps"), m.get("price"),
                      m.get("money_rub"), m.get("money_ok_rub"), now_iso,
-                     now_iso if reason else None, reason, now_iso))
+                     now_iso if reason else None, reason, best, now_iso))
             else:
                 # присутствие отмечаем всегда: иначе бумага, спокойно стоящая в
                 # наборе, через полчаса «протухла» бы и позвонила как новая
@@ -592,7 +695,13 @@ async def run_cycle() -> int:
                                    f.get("change_pct") or 10.0, matches,
                                    f["params"].get("min_money_rub"),
                                    repeat_on_money=f["params"].get(
-                                       "repeat_on_money", True))
+                                       "repeat_on_money", True),
+                                   # ключа нет — фильтр заведён до режима
+                                   # планки: включаем, как в PARAM_DEFAULTS,
+                                   # иначе старые фильтры остались бы шумными
+                                   # до первой правки формы
+                                   improve_only=f["params"].get(
+                                       "improve_only", True) is not False)
             if not events:
                 continue
             # дата погашения и срок — во всплывающее окно и в телеграм: «спред
@@ -629,7 +738,7 @@ async def run_cycle() -> int:
                 tg_events.append(dict(e, book=book_snapshot(
                     depth_map.get(e["isin"]), row,
                     row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0,
-                    isin=e["isin"])))
+                    isin=e["isin"], min_qty=f["params"].get("book_min_qty"))))
             tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
                                      f["params"]["side"], tg_events,
                                      target_id=f.get("tg_target_id"))

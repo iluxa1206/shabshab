@@ -47,9 +47,32 @@ _REASON = {"new": "заявка", "price": "цена", "spread": "RS", "money": 
            "block": "крупная сделка"}
 
 
-def _reason_delta(m: dict) -> str:
-    """«спред +15 бп» / «объём +30 %» / «цена −0,6 п.п.» — насколько ушло с
-    прошлого срабатывания. Единицы те же, что у порогов (services/signals)."""
+# ХОРОШО/ПЛОХО ЧИТАЕТСЯ ПО СТОРОНЕ, А НЕ ПО ЗНАКУ. Смотрим офферы (покупаем):
+# спред вырос — дают больше, цена упала — берём дешевле, и то и другое зелёное.
+# Смотрим биды (продаём) — зеркально. Объём вне этой симметрии: чем больше
+# денег стоит по устраивающей цене, тем лучше обеим сторонам.
+_UP_IS_GOOD = {("spread", "ask"): True, ("spread", "bid"): False,
+               ("price", "ask"): False, ("price", "bid"): True,
+               ("money", "ask"): True, ("money", "bid"): True}
+
+
+def _tone(reason: str, side: Optional[str], delta: float) -> str:
+    """Маркер направления: 🟢 — движение в нашу пользу, 🔴 — против.
+
+    В Telegram цвета текста нет вовсе, поэтому цвет несёт эмодзи. Нулевая
+    дельта маркера не получает: красить нечего."""
+    if not delta:
+        return ""
+    good = _UP_IS_GOOD.get((reason, side or "ask"))
+    if good is None:
+        return ""
+    return "🟢" if (delta > 0) == good else "🔴"
+
+
+def _reason_delta(m: dict, side: Optional[str] = None) -> str:
+    """«🟢 RS +15 бп» / «🔴 объём −30 %» / «🟢 цена −0,6 п.п.» — насколько ушло с
+    прошлого срабатывания и в чью пользу. Единицы те же, что у порогов
+    (services/signals), сторона — та, за которой следит фильтр (см. _tone)."""
     r = m.get("reason")
     if r == "new":
         return "заявка"
@@ -57,23 +80,24 @@ def _reason_delta(m: dict) -> str:
         prev, cur = m.get("prev_money_ok_rub"), m.get("money_ok_rub")
         if prev is None or cur is None or abs(prev) < 1:
             return "объём"
-        pct = f"{(cur - prev) / abs(prev) * 100.0:+.0f}".replace("-", "−")
+        d = (cur - prev) / abs(prev) * 100.0
+        pct = f"{d:+.0f}".replace("-", "−")
         # прежнее значение зачёркнутым: видно, откуда пришли, и не надо считать
         # проценты в уме от текущего числа
-        return f"объём {pct} % (<s>{_money_m(prev)}</s>)"
+        return f"{_tone(r, side, d)} объём {pct} % (<s>{_money_m(prev)}</s>)".strip()
     if r == "spread":
         prev, cur = m.get("prev_val_bps"), m.get("val_bps")
         if prev is None or cur is None:
             return "RS"
         num = f"{cur - prev:+.0f}".replace("-", "−")
-        return f"RS {num} бп (<s>{prev:.0f}</s>)"
+        return f"{_tone(r, side, cur - prev)} RS {num} бп (<s>{prev:.0f}</s>)".strip()
     if r == "price":
         prev, cur = m.get("prev_price"), m.get("price")
         if prev is None or cur is None:
             return "цена"
         # запятая — только в самом числе: replace по всей строке съедал «п.п.»
         num = f"{cur - prev:+.2f}".replace(".", ",").replace("-", "−")
-        return f"цена {num} п.п."
+        return f"{_tone(r, side, cur - prev)} цена {num} п.п.".strip()
     return ""
 
 
@@ -143,7 +167,15 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
         if not chats:
             return
         for u in chats:
-            for group, ms in _group(matches, kind):
+            # СТОП-ЛИСТ ЧАТА (/stop в боте): бумага, которую сегодня не хотят
+            # видеть, отсекается на границе доставки — событие уже записано в
+            # ленту и ушло в браузер, а история и /daystat остаются целыми.
+            # Проверяем на каждый чат отдельно: молчание просят в личке, а
+            # канал команды продолжает получать всё.
+            keep = _unmuted(u["chat_id"], matches)
+            if not keep:
+                continue
+            for group, ms in _group(keep, kind):
                 buf = _pending.setdefault(
                     (u["chat_id"], filter_id, group),
                     {"name": filter_name, "side": side, "kind": kind,
@@ -154,6 +186,17 @@ def enqueue_signal(user_email: str, filter_id: int, filter_name: str,
                 buf["matches"] = (buf["matches"] + list(ms))[-40:]
     except Exception as e:
         logger.warning("tg_notify enqueue_signal error: %s", e)
+
+
+def _unmuted(chat_id: int, matches: List[dict]) -> List[dict]:
+    """События, которые этому чату сегодня не запрещали (см. services/tg_mute).
+    Пустой стоп-лист — обычный случай, поэтому один SELECT на чат и выход."""
+    from services import tg_mute
+    muted = tg_mute.muted_set(chat_id)
+    if not muted:
+        return matches
+    return [m for m in matches
+            if (m.get("isin") or "").strip().upper() not in muted]
 
 
 def _num(v: Optional[float], digits: int = 2) -> str:
@@ -335,15 +378,21 @@ def _fmt_threshold(v: Optional[float]) -> str:
 
 def _match_parts(m: dict, kind: str, side: Optional[str] = None,
                  icons: Optional[dict] = None) -> tuple:
-    """Запись о бумаге четырьмя частями: (шапка, цена, детали, хвост).
+    """Запись о бумаге пятью частями: (что случилось, шапка, цена, детали, хвост).
 
-    Разложено, а не склеено, потому что между второй и третьей частью встаёт
-    СТАКАН: сверху — ради чего открывают сообщение (спред, выпуск, цена,
-    объём), дальше книга, а «чем платит и что копировать» читают уже после
-    неё. Хвост — обстоятельства срабатывания (уровни, причина, время, порог):
-    он уезжает в подпись сообщения, к имени фильтра, потому что это уже не про
-    бумагу, а про то, кто и когда позвал."""
+    Разложено, а не склеено, потому что между третьей и четвёртой частью
+    встаёт СТАКАН: сверху — ради чего открывают сообщение (что сдвинулось,
+    спред, выпуск, цена, объём), дальше книга, а «чем платит и что копировать»
+    читают уже после неё. Хвост — обстоятельства срабатывания (очередь, время,
+    порог): он уезжает в подпись сообщения, к имени фильтра, потому что это уже
+    не про бумагу, а про то, кто и когда позвал.
+
+    ЧТО СЛУЧИЛОСЬ — ПЕРВОЙ СТРОКОЙ, над всем остальным. Повторное сообщение по
+    бумаге читают ради одного: куда ушло с прошлого раза. Внизу, под стаканом,
+    эта строка попадала уже за пределы свёрнутой цитаты, и ради неё
+    разворачивали всё сообщение."""
     head, sub, foot = [], [], []
+    why = ""
 
     # Порядок шапки: спред → выпуск со сроком. Спред первым, потому что по
     # нему решают, стоит ли читать дальше; срок в скобках при имени, потому
@@ -385,11 +434,14 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
             foot.append(f"одна заявка {_num(m['single_px'])}")
         if m.get("best"):
             foot.append("best")
-        # причина ДЕЛЬТОЙ («объём +6 %»): слово без величины не говорит,
-        # стоит ли отрываться от текущего дела
-        why = _reason_delta(m) or _REASON.get(m.get("reason") or "", "")
-        if why:
-            foot.append(why)
+        # причина ДЕЛЬТОЙ («🔴 объём −6 %»): слово без величины не говорит,
+        # стоит ли отрываться от текущего дела. Повтор идёт наверх сообщения,
+        # первое попадание («заявка») остаётся в хвосте: новость там — сама
+        # бумага, а не то, что она новая.
+        if (m.get("reason") or "new") == "new":
+            foot.append(_REASON.get(m.get("reason") or "", ""))
+        else:
+            why = _reason_delta(m, side) or _REASON.get(m.get("reason") or "", "")
         ts = _hhmmss(m)
         if ts:
             foot.append(ts)
@@ -404,7 +456,7 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
         sub.append(isin)
 
     head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
-    return (head_line, " · ".join(px), " · ".join(b for b in sub if b),
+    return (why, head_line, " · ".join(px), " · ".join(b for b in sub if b),
             " · ".join(b for b in foot if b))
 
 
@@ -414,8 +466,8 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
 
     with_foot=False, когда время уезжает в подпись сообщения (одна сделка на
     сообщение): дважды его печатать незачем."""
-    head, px, details, foot = _match_parts(m, kind, side, icons)
-    top = "\n".join(p for p in (head, px) if p)
+    why, head, px, details, foot = _match_parts(m, kind, side, icons)
+    top = "\n".join(p for p in (why, head, px) if p)
     parts = [top, details] + ([foot] if with_foot else [])
     return "\n\n".join(p for p in parts if p)
 
@@ -570,7 +622,7 @@ def _signal_text(buf: dict) -> str:
         # одно сообщение = одна бумага (см. _group): показываем последнее
         # состояние и прикладываем к нему стакан того же такта
         m = ms[-1]
-        head, px, details, extra = _match_parts(m, kind, side_key, icons)
+        why, head, px, details, extra = _match_parts(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
         if n > 1:
             extra = ((extra + " · ") if extra else "") \
@@ -578,7 +630,10 @@ def _signal_text(buf: dict) -> str:
         # стакан ВНУТРИ записи: сразу под ценой, до формулы с ISIN. Шапка от
         # цены отбита пустой строкой — иначе спред, выпуск и цифры сливаются
         # в одну простыню, и глазу негде остановиться.
-        top = "\n\n".join(p for p in (head, px) if p)
+        # что сдвинулось — над шапкой и отбито от неё: это заголовок новости,
+        # а спред с выпуском под ним — уже её содержание
+        top = "\n\n".join(p for p in ("\n".join(x for x in (why, head) if x), px)
+                          if p)
         body = "\n".join(p for p in (top, book, details) if p)
     else:
         # набор одинаковых сделок (см. _group и _trade_key) — одна карточка с
@@ -587,7 +642,7 @@ def _signal_text(buf: dict) -> str:
         m = dict(ms[-1])
         if n > 1:
             m["money_rub"] = sum(x.get("money_rub") or 0 for x in ms)
-        head, px, details, _foot = _match_parts(m, kind, side_key, icons)
+        _why, head, px, details, _foot = _match_parts(m, kind, side_key, icons)
         body = "\n\n".join(p for p in ("\n".join((head, px)).strip(),
                                        details, _breakdown(ms)) if p)
         extra = _trade_time(ms)

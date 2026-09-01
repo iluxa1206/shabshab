@@ -7,6 +7,7 @@
   /start — заявка на доступ, /signals — последние события,
   /digest — разбор дня альбомами картинок (флоатеры и фиксы),
   /week — итоги недели,
+  /stop — стоп-лист бумаги в этом чате на день, /daystat — кто сколько звонил,
   /mute, /unmute, /status, /custom, /help
 """
 import asyncio
@@ -35,6 +36,8 @@ _HELP = (
     "<b>Что умеет бот</b>\n"
     "Сигналы рынка настраиваются на сайте — сюда приходят их копии.\n\n"
     "/signals — последние сигналы\n"
+    "/stop ISIN — не писать про эту бумагу до конца дня (в этом чате)\n"
+    "/daystat — сколько раз какая бумага звонила сегодня\n"
     "/digest — разбор дня: движения, обороты, крупные сделки, кривая, выплаты\n"
     "    отдельным классом: <code>/digest флоатеры</code>, <code>/digest фиксы</code>\n"
     "/week — то же самое в недельном окне\n"
@@ -146,6 +149,79 @@ def _valid_icon(v: str) -> bool:
     return not any(ch.isalnum() or ch.isspace() for ch in v)
 
 
+def _resolve_isin(arg: str) -> Optional[dict]:
+    """Аргумент /stop → бумага. Принимаем и ISIN (его копируют из сообщения
+    сигнала — там он отдельной строкой с tap-to-copy), и название выпуска:
+    «Газпн3P13R» с экрана набрать быстрее, чем двенадцать символов ISIN.
+
+    Неоднозначное название не глушим наугад — лучше переспросить, чем молчать
+    не по той бумаге."""
+    from services import instruments_registry as reg
+    arg = (arg or "").strip()
+    if not arg:
+        return None
+    row = reg.get(arg.upper())
+    if row:
+        return {"isin": arg.upper(),
+                "name": row.get("short_name") or arg.upper()}
+    hits = reg.search(arg, limit=5)
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        return None
+    exact = [h for h in hits if (h.get("name") or "").upper() == arg.upper()]
+    return exact[0] if len(exact) == 1 else {"ambiguous": hits}
+
+
+def _stoplist_text(chat_id: int) -> str:
+    """Что сейчас молчит в этом чате."""
+    from services import tg_mute
+    rows = tg_mute.list_for_chat(chat_id)
+    if not rows:
+        return ("<b>Стоп-лист пуст</b>\nЗаглушить бумагу до конца дня: "
+                "<code>/stop RU000A10AU99</code> (можно и по названию выпуска).\n"
+                "Глушится только этот чат — лента на сайте и /daystat видят всё.")
+    from services import instruments_registry as reg
+    labels = reg.labels_map([r["isin"] for r in rows])
+    body = "\n".join(
+        f"<code>{html.escape(r['isin'])}</code>  "
+        + html.escape(str((labels.get(r["isin"]) or {}).get("name") or ""))
+        for r in rows)
+    return ("<b>Молчат до конца дня</b>\n" + body
+            + "\n\nВернуть: <code>/stop del RU000A10AU99</code>, "
+              "все сразу: <code>/stop clear</code>")
+
+
+_REASON_WORD = {"new": "заявка", "spread": "RS", "money": "объём",
+                "price": "цена", "block": "сделка"}
+
+
+def _daystat_text(email: str, days: int) -> str:
+    """Кто сколько раз звонил — для настройки порогов на первых порах."""
+    st = signals.day_stats(email, days=days)
+    if not st["total"]:
+        span = "сегодня" if st["days"] == 1 else f"за {st['days']} дн"
+        return f"Сигналов {span} не было."
+    head = (f"<b>Сигналы за {st['days']} дн</b> (с {st['since']}): "
+            f"{st['total']}" if st["days"] > 1
+            else f"<b>Сигналы сегодня</b>: {st['total']}")
+    lines = []
+    for r in st["rows"][:20]:
+        why = " · ".join(f"{_REASON_WORD.get(k, k)} {v}"
+                         for k, v in sorted(r["reasons"].items(),
+                                            key=lambda kv: -kv[1]))
+        name = html.escape(str(r["name"] or r["isin"]))
+        lines.append(f"<code>{name}</code> — <b>{r['total']}</b>  <i>{why}</i>")
+    tail = []
+    if len(st["rows"]) > 20:
+        tail.append(f"…ещё {len(st['rows']) - 20} бумаг")
+    if st["capped"]:
+        # лента режется по хвосту (signals._EVENTS_KEEP) — обещать полноту нельзя
+        tail.append("окно упёрлось в длину ленты — старое уже вытеснено")
+    out = head + "\n" + "\n".join(lines)
+    return out + ("\n\n<i>" + " · ".join(tail) + "</i>" if tail else "")
+
+
 async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> str:
     email = tg_users.email_for(uid)
     text = text.strip()
@@ -162,6 +238,48 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
         if not rows:
             return "Сигналов пока не было. Фильтры — на сайте, вкладка СИГНАЛЫ."
         return "\n".join(_fmt_event(e) for e in rows)
+
+    if text.startswith("/stop") or text.startswith("/unstop"):
+        from services import tg_mute
+        un = text.startswith("/unstop")
+        parts = text.split()[1:]
+        if not parts and not un:
+            return _stoplist_text(chat_id)
+        if un:
+            arg = parts[0] if parts else ""
+        elif parts[0].lower() in ("clear", "сброс", "все", "всё"):
+            n = tg_mute.clear(chat_id)
+            return (f"Стоп-лист очищен ({n})." if n else "Стоп-лист и так пуст.")
+        elif parts[0].lower() in ("del", "remove", "убрать", "вернуть"):
+            arg = parts[1] if len(parts) > 1 else ""
+            un = True
+        else:
+            arg = parts[0]
+        if not arg:
+            return "Нужен ISIN или название выпуска: <code>/stop RU000A10AU99</code>"
+        found = _resolve_isin(arg)
+        if not found:
+            return f"Бумагу «{html.escape(arg)}» не нашёл. Пришлите ISIN."
+        if found.get("ambiguous"):
+            opts = "\n".join(f"<code>{html.escape(h['isin'])}</code>  "
+                              f"{html.escape(str(h.get('name') or ''))}"
+                              for h in found["ambiguous"])
+            return "Под это подходит несколько бумаг — уточните ISIN:\n" + opts
+        isin, name = found["isin"], html.escape(str(found.get("name") or found["isin"]))
+        if un:
+            ok = tg_mute.remove(chat_id, isin)
+            return (f"🔔 {name} снова пишу." if ok
+                    else f"{name} и так не в стоп-листе.")
+        tg_mute.add(chat_id, isin)
+        # «до конца дня» — не «на сутки»: срок понятен без арифметики, а к утру
+        # история бумаги начинается заново
+        return (f"🔕 {name} — молчу до конца дня в этом чате.\n"
+                f"Вернуть раньше: <code>/stop del {isin}</code>")
+
+    if text.startswith("/daystat"):
+        parts = text.split()[1:]
+        days = int(parts[0]) if parts and parts[0].isdigit() else 1
+        return _daystat_text(email, days)
 
     if text.startswith("/mute"):
         tg_users.set_muted(uid, True)

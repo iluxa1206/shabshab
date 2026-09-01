@@ -17,6 +17,11 @@ class SignalParams(BaseModel):
     ratings: List[str] = []
     emitters: List[str] = []
     isins: List[str] = []
+    # исключения — бьют включение (см. screener_core.selected). В превью они
+    # обязаны быть: форма показывает, что попадёт под условия, и без них
+    # обещала бы бумаги, по которым сигнала не будет
+    emitters_ex: List[str] = []
+    isins_ex: List[str] = []
     issuer: str = "all"                 # all | ofz | corp
     # условия сделки (всегда И)
     side: str = "ask"                   # ask (оффер) | bid
@@ -27,6 +32,9 @@ class SignalParams(BaseModel):
     years_min: Optional[float] = None   # срок до погашения, лет
     years_max: Optional[float] = None
     hide_subord: bool = False           # прятать суборды
+    repeat_on_money: bool = True        # повтор при изменении объёма
+    improve_only: bool = True           # повтор только при улучшении (планка)
+    book_min_qty: Optional[float] = None  # прятать мелочь в стакане сообщения
 
 
 class BlockParams(BaseModel):
@@ -35,6 +43,8 @@ class BlockParams(BaseModel):
     ratings: List[str] = []
     emitters: List[str] = []
     isins: List[str] = []
+    emitters_ex: List[str] = []         # исключения — см. SignalParams
+    isins_ex: List[str] = []
     issuer: str = "all"                 # all | ofz | corp
     bases: List[str] = []               # KEYRATE/RUONIA/FIXED, пусто = любая
     min_value_rub: Optional[float] = None

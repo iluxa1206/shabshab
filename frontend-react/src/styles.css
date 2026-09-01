@@ -1879,6 +1879,12 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* причина повтора дельтой («спред +15 бп») — заметнее прочих подписей режима:
    это и есть ответ на вопрос «что случилось», ради которого строку читают */
 .sig-why, .sb-why { color: var(--fg); font-weight: 700; }
+/* Цвет — по СТОРОНЕ фильтра, а не по знаку (см. signalFormat.moveTone): на
+   оффере рост спреда и падение цены нам в пользу, на биде зеркально. Классы
+   ставит сам элемент, поэтому глобальные .pos/.neg перебиваем адресно —
+   правило выше красит подпись в цвет текста. */
+.sig-why.pos, .sb-why.pos { color: var(--up); }
+.sig-why.neg, .sb-why.neg { color: var(--down); }
 .sig-hit-body .dim, .sb-row-2 .dim { color: var(--mut); }
 .sig-hit-why { font-size: 10.5px; color: var(--mut); margin-top: 3px; }
 .sig-hit-why .num { font-family: var(--mono); }
@@ -2052,6 +2058,10 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sb-row.sb-t-rps:hover  { background: color-mix(in srgb, var(--accent) 22%, var(--hover)); }
 
 .sb-delta { font-family: var(--mono); margin-left: 4px; }
+/* Исключающий пикер («кроме эмитентов») — рамкой в цвет отказа: два
+   одинаковых поля рядом иначе путаются, и бумагу заносят не в тот столбец. */
+.sig-ex .sig-input { border-color: color-mix(in srgb, var(--down) 45%, var(--line-2)); }
+.sig-ex .sig-label { color: var(--down); }
 
 /* уровни стакана, из которых собран объём сигнала */
 .ob-row.ob-sig { background: color-mix(in srgb, var(--accent) 18%, transparent);

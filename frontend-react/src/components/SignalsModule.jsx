@@ -8,7 +8,7 @@ import {
 } from "../api.js";
 import { fmt, RT_FILTER } from "../format.js";
 import { bookMode, eventTag, maturityShort, maturityTxt, reasonDelta, reasonTitle,
-         sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
+         reasonTone, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
 import IsinCopy from "./IsinCopy.jsx";
 
 // значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
@@ -128,9 +128,14 @@ function RangeInputs({ min, max, setMin, setMax, step }) {
 }
 
 /** Блок «какие бумаги» — общий у обеих форм: один порядок полей, одни подписи.
- *  Отбор бумаг ОДИНАКОВ у стакана и у сделок, поэтому и выглядеть должен так же. */
+ *  Отбор бумаг ОДИНАКОВ у стакана и у сделок, поэтому и выглядеть должен так же.
+ *
+ *  Два столбца: слева «наблюдать», справа «исключить». Исключение бьёт
+ *  включение — иначе «эти эмитенты, но без вот этой бумаги» не описать: в
+ *  белом списке она сидит по эмитенту, и убрать её оттуда нечем. */
 function BondScope({ issuers, setIssuers, ratings, setRatings, emitters, setEmitters,
-                     isins, setIsins, hideSub, setHideSub }) {
+                     isins, setIsins, emittersEx, setEmittersEx, isinsEx, setIsinsEx,
+                     hideSub, setHideSub }) {
   const searchEmitters = useCallback(
     async (q) => (await fetchSignalEmitters(q)).emitters.map((n) => ({ n })), []);
   const searchBonds = useCallback(async (q) => (await searchInstruments(q)).results, []);
@@ -163,14 +168,25 @@ function BondScope({ issuers, setIssuers, ratings, setRatings, emitters, setEmit
         </div>
       </div>
 
-      <MultiPicker label="Эмитенты" placeholder="начни вводить название"
-        items={emitters} onChange={setEmitters} search={searchEmitters}
-        keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
+      <div className="sig-row">
+        <MultiPicker label="Эмитенты" placeholder="начни вводить название"
+          items={emitters} onChange={setEmitters} search={searchEmitters}
+          keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
+        <MultiPicker label="Кроме эмитентов" tone="ex" placeholder="исключить из наблюдения"
+          items={emittersEx} onChange={setEmittersEx} search={searchEmitters}
+          keyOf={(x) => x.n} labelOf={(x) => x.n} subOf={() => ""} />
+      </div>
 
-      <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
-        items={isins} onChange={setIsins} search={searchBonds}
-        keyOf={(r) => r.isin} labelOf={(r) => r.name}
-        subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
+      <div className="sig-row">
+        <MultiPicker label="Отдельные бумаги" placeholder="ISIN или название"
+          items={isins} onChange={setIsins} search={searchBonds}
+          keyOf={(r) => r.isin} labelOf={(r) => r.name}
+          subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
+        <MultiPicker label="Кроме бумаг" tone="ex" placeholder="исключить из наблюдения"
+          items={isinsEx} onChange={setIsinsEx} search={searchBonds}
+          keyOf={(r) => r.isin} labelOf={(r) => r.name}
+          subOf={(r) => r.isin + (r.rating ? " · " + r.rating : "")} />
+      </div>
 
       <div className="sig-field">
         <label className="sig-check-line" title="Опознаём по названию (СУБ, Т1, перп): признака в реестре нет. Суборды дают широчайший спред из-за риска списания и иначе занимают весь верх выдачи.">
@@ -198,6 +214,18 @@ const plural = (n, one, few, many) => {
   return b === 1 ? one : many;
 };
 
+/** «кроме 2 эмитентов и 1 бумаги» — исключения в описании фильтра. Молчать о
+ *  них нельзя: карточка объясняет, почему сигнала по бумаге нет. */
+function exceptTxt(p) {
+  const bits = [];
+  if (p.emitters_ex?.length)
+    bits.push(p.emitters_ex.length === 1 ? p.emitters_ex[0]
+      : p.emitters_ex.length + " " + plural(p.emitters_ex.length, "эмитента", "эмитентов", "эмитентов"));
+  if (p.isins_ex?.length)
+    bits.push(p.isins_ex.length + " " + plural(p.isins_ex.length, "бумаги", "бумаг", "бумаг"));
+  return bits.length ? "кроме " + bits.join(" и ") : null;
+}
+
 /** Человеческое описание условий блок-фильтра — строкой в карточке. */
 function describeBlock(p) {
   const bases = p.bases?.length
@@ -207,7 +235,8 @@ function describeBlock(p) {
   return [`от ${fmt.mln(p.min_value_rub)} млн`, labelOfPair(MARKETS, p.markets), bases,
           p.side !== "any" ? labelOfPair(SIDES, p.side) : null,
           spread ? `R-spread ${spread}` : null,
-          years ? `срок ${years}` : null].filter(Boolean).join(" · ");
+          years ? `срок ${years}` : null,
+          exceptTxt(p)].filter(Boolean).join(" · ");
 }
 
 /** Человеческое описание условий фильтра — одной строкой, как в карточке. */
@@ -221,6 +250,8 @@ function describe(p) {
     : p.issuer === "ofz" ? "все ОФЗ"
     : p.issuer === "corp" ? "весь рынок без ОФЗ" : "весь рынок";
   if (who.length && ISSUER_TXT[p.issuer]) scope += ", " + ISSUER_TXT[p.issuer];
+  const ex = exceptTxt(p);
+  if (ex) scope += ", " + ex;
   if (p.hide_subord) scope += ", без субордов";
   const range = rangeTxt(p.spread_min, p.spread_max, "бп");
   const years = rangeTxt(p.years_min, p.years_max, "л");
@@ -233,7 +264,8 @@ function describe(p) {
 }
 
 /** Пикер с накоплением выбранного в чипы (эмитенты, отдельные бумаги). */
-function MultiPicker({ label, placeholder, items, onChange, search, keyOf, labelOf, subOf }) {
+function MultiPicker({ label, placeholder, items, onChange, search, keyOf, labelOf,
+                      subOf, tone }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState([]);
   const [open, setOpen] = useState(false);
@@ -265,7 +297,7 @@ function MultiPicker({ label, placeholder, items, onChange, search, keyOf, label
   };
 
   return (
-    <div className="sig-field" ref={box}>
+    <div className={"sig-field" + (tone === "ex" ? " sig-ex" : "")} ref={box}>
       <label className="sig-label">{label}</label>
       <div className="sig-picker">
         <input className="sig-input" value={q} placeholder={placeholder}
@@ -315,6 +347,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
+  const [emittersEx, setEmittersEx] = useState(ep.emitters_ex || []);
+  const [isinsEx, setIsinsEx] = useState(ep.isins_ex || []);
   const [issuers, setIssuers] = useState(issuerChips(ep.issuer));
   const [side, setSide] = useState(ep.side || "ask");
   const [smin, setSmin] = useState(numOrEmpty(ep.spread_min));
@@ -325,6 +359,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
   const [repeatMoney, setRepeatMoney] = useState(ep.repeat_on_money !== false);
+  const [improveOnly, setImproveOnly] = useState(ep.improve_only !== false);
+  const [bookMinQty, setBookMinQty] = useState(numOrEmpty(ep.book_min_qty));
   const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
@@ -334,7 +370,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, issuer: chipsIssuer(issuers), side,
+    ratings, emitters, isins, emitters_ex: emittersEx, isins_ex: isinsEx,
+    issuer: chipsIssuer(issuers), side,
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     min_money_rub: mlnToRub(minMoney),
@@ -343,8 +380,11 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     years_max: ymax === "" ? null : Number(ymax),
     hide_subord: hideSub,
     repeat_on_money: repeatMoney,
-  }), [ratings, emitters, isins, issuers, side, smin, smax, minMoney, moneyMode,
-       ymin, ymax, hideSub, repeatMoney]);
+    improve_only: improveOnly,
+    book_min_qty: bookMinQty === "" ? null : Number(bookMinQty),
+  }), [ratings, emitters, isins, emittersEx, isinsEx, issuers, side, smin, smax,
+       minMoney, moneyMode, ymin, ymax, hideSub, repeatMoney, improveOnly,
+       bookMinQty]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
@@ -372,6 +412,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
                        tg_target_id: target });
       if (edit) return;      // правка закрывает форму снаружи
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
+      setEmittersEx([]); setIsinsEx([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
       setMoneyMode("book"); setHideSub(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
@@ -392,6 +433,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
 
       <BondScope issuers={issuers} setIssuers={setIssuers} ratings={ratings} setRatings={setRatings}
         emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
+        emittersEx={emittersEx} setEmittersEx={setEmittersEx}
+        isinsEx={isinsEx} setIsinsEx={setIsinsEx}
         hideSub={hideSub} setHideSub={setHideSub} />
 
       <div className="sig-section">Условия <span>складываются по «и»</span></div>
@@ -423,15 +466,27 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
 
       <div className="sig-row">
         <div className="sig-field">
-          <label className="sig-label">Повторно сообщать при сдвиге</label>
-          <Seg pairs={CHANGES} value={changePct} onChange={setChangePct} />
-          {/* Спред звонит всегда, объём — по желанию: у ликвидной бумаги стакан
-              дышит объёмом постоянно, и тому, кто следит за уровнем спреда, это
-              шум. Первое попадание бумаги в набор приходит в любом случае. */}
-          <label className="sig-check-inline" title="Стакан ликвидной бумаги дышит объёмом постоянно — выключи, если следишь только за уровнем спреда">
-            <input type="checkbox" checked={repeatMoney}
-              onChange={(e) => setRepeatMoney(e.target.checked)} /> и при изменении объёма
+          <label className="sig-label">Повторные сообщения</label>
+          {/* Заявку двигают: поставили, сняли, вернули на другую цену — и
+              каждый шаг звонил заново. В режиме планки повтор приходит, только
+              когда рынок дал лучше, чем давал (для оффера — спред выше). */}
+          <label className="sig-check-line" title="По бумаге держится планка лучшего спреда: пока рекорд не побит, повторов нет. Первое попадание бумаги под условия приходит всегда.">
+            <input type="checkbox" checked={improveOnly}
+              onChange={(e) => setImproveOnly(e.target.checked)} />
+            <span>только при улучшении</span>
           </label>
+          {!improveOnly && (
+            <>
+              <Seg pairs={CHANGES} value={changePct} onChange={setChangePct} />
+              {/* Спред звонит всегда, объём — по желанию: у ликвидной бумаги стакан
+                  дышит объёмом постоянно, и тому, кто следит за уровнем спреда, это
+                  шум. Первое попадание бумаги в набор приходит в любом случае. */}
+              <label className="sig-check-inline" title="Стакан ликвидной бумаги дышит объёмом постоянно — выключи, если следишь только за уровнем спреда">
+                <input type="checkbox" checked={repeatMoney}
+                  onChange={(e) => setRepeatMoney(e.target.checked)} /> и при изменении объёма
+              </label>
+            </>
+          )}
         </div>
         {minMoney !== "" && (
           <div className="sig-field">
@@ -441,6 +496,27 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           </div>
         )}
       </div>
+
+      <div className="sig-row">
+        <div className="sig-field">
+          <label className="sig-label" htmlFor="sig-minqty">
+            Прятать в стакане заявки мельче, шт</label>
+          {/* Только ПОКАЗ: лестница в телеграме добирается более глубокими
+              уровнями, а спред и объём фильтра считаются по полной книге —
+              иначе порог менял бы смысл самих условий. */}
+          <input id="sig-minqty" className="sig-input num" type="number" step="1" min="0"
+            placeholder="показывать все" value={bookMinQty}
+            title="Заявка на три бумаги строку в сообщении занимает, а не говорит ничего. На расчёт спреда и объёма не влияет."
+            onChange={(e) => setBookMinQty(e.target.value)} />
+        </div>
+      </div>
+
+      {improveOnly && (
+        <div className="sig-note">
+          Повтор придёт, только когда {side === "ask" ? "спред станет выше" : "спред станет ниже"} прошлого
+          лучшего по этой бумаге. Заявку сняли и вернули на ту же цену — сообщения не будет.
+        </div>
+      )}
 
       {minMoney !== "" && (
         <div className="sig-note">
@@ -482,6 +558,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [ratings, setRatings] = useState(ep.ratings || []);
   const [emitters, setEmitters] = useState(ep.emitters || []);
   const [isins, setIsins] = useState(ep.isins || []);
+  const [emittersEx, setEmittersEx] = useState(ep.emitters_ex || []);
+  const [isinsEx, setIsinsEx] = useState(ep.isins_ex || []);
   const [issuers, setIssuers] = useState(issuerChips(ep.issuer));
   const [bases, setBases] = useState(ep.bases || ["KEYRATE", "RUONIA"]);
   const [minValue, setMinValue] = useState(rubToMln(ep.min_value_rub ?? 100000000));  // млн ₽
@@ -500,15 +578,16 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [preview, setPreview] = useState(null);
 
   const params = useMemo(() => ({
-    ratings, emitters, isins, issuer: chipsIssuer(issuers), bases, markets,
+    ratings, emitters, isins, emitters_ex: emittersEx, isins_ex: isinsEx,
+    issuer: chipsIssuer(issuers), bases, markets,
     side, hide_subord: hideSub,
     min_value_rub: mlnToRub(minValue),
     spread_min: smin === "" ? null : Number(smin),
     spread_max: smax === "" ? null : Number(smax),
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
-  }), [ratings, emitters, isins, issuers, bases, markets, side, hideSub, minValue,
-       smin, smax, ymin, ymax]);
+  }), [ratings, emitters, isins, emittersEx, isinsEx, issuers, bases, markets,
+       side, hideSub, minValue, smin, smax, ymin, ymax]);
 
   // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
   // выставленный порог либо молчит неделю, либо звонит каждые пять минут.
@@ -535,6 +614,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
                        tg_target_id: target });
       if (edit) return;
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
+      setEmittersEx([]); setIsinsEx([]);
       setSmin(""); setSmax(""); setYmin(""); setYmax(""); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
@@ -554,6 +634,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
 
       <BondScope issuers={issuers} setIssuers={setIssuers} ratings={ratings} setRatings={setRatings}
         emitters={emitters} setEmitters={setEmitters} isins={isins} setIsins={setIsins}
+        emittersEx={emittersEx} setEmittersEx={setEmittersEx}
+        isinsEx={isinsEx} setIsinsEx={setIsinsEx}
         hideSub={hideSub} setHideSub={setHideSub} />
 
       <div className="sig-section">Условия <span>складываются по «и»</span></div>
@@ -1007,7 +1089,10 @@ export default function SignalsModule() {
                 <div className="sig-hit-mode">
                   {[tradeMode(h), bookMode(h)].filter(Boolean).join(" · ")}
                   {reasonDelta(h) && (
-                    <span className="sig-why" title={reasonTitle(h)}>
+                    /* цвет — по стороне фильтра: у оффера рост спреда и
+                       падение цены в нашу пользу, у бида зеркально */
+                    <span className={"sig-why " + (reasonTone(h) || "")}
+                      title={reasonTitle(h)}>
                       {[tradeMode(h), bookMode(h)].filter(Boolean).length ? " · " : ""}
                       {reasonDelta(h)}</span>
                   )}
