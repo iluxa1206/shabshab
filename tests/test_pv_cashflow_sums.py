@@ -136,3 +136,35 @@ def test_snapshot_is_written_in_chunks(tmp_path, monkeypatch):
     finally:
         market_cache.pop("universe_metrics", None)
         market_cache.pop("fixed_metrics", None)
+
+
+def test_margins_can_be_switched_off(keyrate_curve, ruonia_curve, calc_date,
+                                     flat_index_15, monkeypatch):
+    """SM и DM выключаются, Y-IDX остаётся.
+
+    Замер 01.09.2026: на маржи уходит 78–92 % расчёта бумаги — каждая это
+    солвер, а DM вдобавок ПЕРЕСОБИРАЕТ поток на плоской кривой, и всё это для
+    шестисот бумаг на каждом движении цены. Витрина живёт Y-IDX, поэтому
+    считает без марж; карточка и лента продолжают их считать."""
+    from conftest import make_bond, quarterly_periods
+    from core.valuation import settle_date
+    import services.valuation as sv
+
+    monkeypatch.setattr(
+        "services.valuation._index_provider",
+        lambda base, warnings, calc_date=None: (flat_index_15[0],
+                                                list(zip(*flat_index_15[1]))))
+    bond = make_bond(margin_bps=150, accrued=0.0)
+    periods = quarterly_periods(settle_date(calc_date), bond.maturity_date)
+    kw = dict(accrued_override=0.0, periods=periods, ruonia_curve=ruonia_curve)
+
+    full = sv.calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date, **kw)
+    lean = sv.calculate_valuation_metrics(bond, 100.0, keyrate_curve, calc_date,
+                                          with_margins=False, **kw)
+
+    assert full["sm_bps"] is not None and full["disc_margin_bps"] is not None
+    assert lean["sm_bps"] is None and lean["disc_margin_bps"] is None
+    # первичная метрика витрины не зависит от марж — считается тем же путём
+    assert lean["yield_over_index_bps"] == full["yield_over_index_bps"]
+    assert lean["yield_xirr_pct"] == full["yield_xirr_pct"]
+    assert lean["dirty_price_rub"] == full["dirty_price_rub"]

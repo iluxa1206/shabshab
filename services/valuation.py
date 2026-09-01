@@ -72,10 +72,19 @@ def calculate_valuation_metrics(
     alt_dm: bool = False,
     accrued_basis: str = "settle",
     accrued_date=None,
+    with_margins: bool = True,
 ) -> Dict[str, Any]:
     """
     Computes all valuation metrics for a given bond and price.
     accrued_override — НКД из MOEX (приоритет над стейл-кэшем).
+    with_margins=False — не считать SIMPLE и DISCOUNT MARGIN (sm_bps,
+              disc_margin_bps и их версии по горизонтам). Замер 01.09.2026: на
+              них уходит 78–92 % расчёта бумаги (у тридцатилетнего ипотечного
+              агента 21,7 мс из 23,7), потому что каждая маржа — это солвер, а
+              DM вдобавок ПЕРЕСОБИРАЕТ поток на плоской кривой. Первичная
+              метрика витрины — Y-IDX, он считается всегда; маржи остаются там,
+              где смотрят одну бумагу (карточка, калькулятор, лента, архивы).
+
     accrued_date — ДАТА БИРЖИ, на которую посчитан НКД (ISS SETTLEDATE блока
               securities). Задан — верим ей и приводим НКД к НАШЕЙ дате
               поставки; это точнее accrued_basis, который лишь угадывает
@@ -344,7 +353,7 @@ def calculate_valuation_metrics(
     # для обратной совместимости = то же значение (это простая маржа, не discount).
     sm_bps = None
     try:
-        if curve and len(cfs) > 0:
+        if with_margins and curve and len(cfs) > 0:
             sm_bps = solve_simple_margin_bps(bond, curve, cfs, calc_date, dirty_rub)
     except Exception as e:
         logger.warning(f"SM calculation error for {bond.isin}: {e}")
@@ -355,8 +364,13 @@ def calculate_valuation_metrics(
     disc_margin_bps = None
     dm_by_price: Dict[float, Any] = {}
     try:
-        L = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
-                              amorts=amorts, base=bond.base, hist=hist_pairs)
+        # Уровень индекса нужен либо витрине (with_margins), либо лестнице
+        # стакана (alt_dm). Не нужен ни там, ни там — не платим ни за него, ни
+        # за пересборку потока на плоской кривой ниже.
+        L = (current_index_pct(periods, calc_date, bond.spread_issue_bps,
+                               bond.face_value, amorts=amorts, base=bond.base,
+                               hist=hist_pairs)
+             if (with_margins or alt_dm) else None)
         if L is not None:
             flat = FlatForwardCurve(calc_date, L)
             flat_cfs = build_cashflows_with_spread(bond, flat, calc_date, bond.spread_issue_bps,
@@ -365,7 +379,9 @@ def calculate_valuation_metrics(
                                                    index_pct_fn=index_pct_fn,
                                                    face_grow_fn=face_grow_fn,
                                                    warnings_out=warnings)
-            disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date, dirty_rub, L)
+            if with_margins:
+                disc_margin_bps = solve_discount_margin_bps(flat_cfs, calc_date,
+                                                            dirty_rub, L)
             # DM по alt-ценам — солвер поверх ТОГО ЖЕ flat-потока: пересборки нет,
             # платим только за поиск корня на цену (см. alt_dm)
             if alt_dm:
@@ -472,11 +488,13 @@ def calculate_valuation_metrics(
             return None
         y_h = xirr_yield_pct(dirty_rub, cfs_h, calc_date)
         sm_h = (solve_simple_margin_bps(bond, curve, cfs_h, calc_date, dirty_rub)
-                if curve else None)
+                if (with_margins and curve) else None)
         dm_h = None
         flat_cfs_h = None        # им же считается DM alt-цен (см. alt_dm ниже)
-        L_h = current_index_pct(periods, calc_date, bond.spread_issue_bps, bond.face_value,
-                               amorts=amorts, base=bond.base, hist=hist_pairs)
+        L_h = (current_index_pct(periods, calc_date, bond.spread_issue_bps,
+                                 bond.face_value, amorts=amorts, base=bond.base,
+                                 hist=hist_pairs)
+               if (with_margins or alt_dm) else None)
         if L_h is not None:
             flat_h = FlatForwardCurve(calc_date, L_h)
             flat_cfs_h = build_cashflows_with_spread(bond, flat_h, calc_date, bond.spread_issue_bps,
@@ -485,7 +503,8 @@ def calculate_valuation_metrics(
                                                      index_pct_fn=index_pct_fn,
                                                    face_grow_fn=face_grow_fn,
                                                    warnings_out=warnings)
-            dm_h = solve_discount_margin_bps(flat_cfs_h, calc_date, dirty_rub, L_h)
+            if with_margins:
+                dm_h = solve_discount_margin_bps(flat_cfs_h, calc_date, dirty_rub, L_h)
         idx_y_h = None
         if _ru_curve is not None:
             try:

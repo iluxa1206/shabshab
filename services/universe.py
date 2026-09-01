@@ -5,6 +5,7 @@ watchlist) — раньше это были две почти построчны
 уже начинали разъезжаться. Route теперь только транспорт/маппинг в схемы.
 """
 import logging
+import os
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -21,6 +22,18 @@ from services import instruments_registry
 from services import live_quotes
 
 logger = logging.getLogger(__name__)
+
+# МАРЖИ (SM/DM) В ВИТРИНЕ — по требованию, не по умолчанию.
+#
+# Замер 01.09.2026: на них уходит 78–92 % расчёта бумаги (у тридцатилетнего
+# ипотечного агента 21,7 мс из 23,7), потому что каждая маржа это солвер, а DM
+# вдобавок ПЕРЕСОБИРАЕТ поток на плоской кривой — и всё это для 612 бумаг на
+# каждом движении цены. Первичная метрика витрины — Y-IDX, он считается всегда;
+# маржи остались там, где смотрят одну бумагу: карточка, калькулятор, лента
+# сделок, бары, as-of расчёт.
+# Вернуть: VALUATION_MARGINS=1.
+MARGINS_IN_UNIVERSE = (os.getenv("VALUATION_MARGINS") or "").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 async def _aempty():
@@ -138,6 +151,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                                             periods=periods or None,
                                             amorts=amorts, offers=offers,
                                             ruonia_curve=ruonia_curve,
+                                            with_margins=MARGINS_IN_UNIVERSE,
                                             alt_prices=[p for p in (bid, ask, wap) if p] + _probe)
             # ГОРИЗОНТ ПРАЙСИНГА по правилу цены (services.valuation._preferred_horizon):
             # цена ниже цены пут-выкупа → бумага торгуется к оферте, выше цены

@@ -252,9 +252,15 @@ export const COLS = [
       {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
+  // Маржи в ВИТРИНЕ выключены (services/universe.MARGINS_IN_UNIVERSE): каждая
+  // это солвер, а DM вдобавок пересобирает поток — 78–92 % расчёта бумаги ради
+  // колонки, по которой не торгуют. Первичная метрика здесь Y-IDX; маржи живут
+  // в карточке, калькуляторе и ленте. Вернуть в витрину: VALUATION_MARGINS=1.
   { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
+    title: "Simple margin. В витрине выключен ради скорости — число есть в карточке бумаги",
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
   { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,
+    title: "Discount margin. В витрине выключен ради скорости — число есть в карточке бумаги",
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.disc_margin_bps)} key="disc_margin_bps">{fmt.bps(b.disc_margin_bps) ?? <D />}</td> },
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
