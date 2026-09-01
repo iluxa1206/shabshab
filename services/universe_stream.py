@@ -160,6 +160,19 @@ _CTX_WARM_BATCH = int(os.getenv("UNIVERSE_CTX_WARM", "10"))
 # Доля такта под догрев. Живой пересчёт идёт первым и бюджет не делит: догрев
 # берёт то, что осталось от этих секунд, и не начинается, если такт уже съеден.
 _WARM_BUDGET_SEC = float(os.getenv("UNIVERSE_WARM_BUDGET_SEC", "3.0"))
+# Сколько догрев считает ОДНИМ заходом в heavy. Бюджет такта тратится не
+# целиком за раз, а слайсами: тяжёлый счёт держит GIL, и пока он идёт, event
+# loop не просыпается вовсе. Пачка сеток (25 бумаг × ~150 мс) занимала ядро
+# почти на четыре секунды — сторож писал «лаг 2.4с», а запросы витрины в этот
+# момент ждали столько же. Тот же объём работы, нарезанный по 0,4 с, даёт петле
+# продышаться между кусками: суммарная скорость прогрева та же, отзывчивость
+# на порядок лучше.
+_WARM_SLICE_SEC = float(os.getenv("UNIVERSE_WARM_SLICE_SEC", "0.4"))
+# Потолок заходов за такт. Слайсы режут время, а этот счётчик — страховка от
+# холостого кружения: бумага, которой сетка не строится (нет узлов, нет книги),
+# остаётся в целях и после захода, и без потолка догрев перебирал бы один и тот
+# же список весь бюджет такта.
+_WARM_MAX_SLICES = int(os.getenv("UNIVERSE_WARM_SLICES", "8"))
 _yoi_grid: Dict[str, tuple] = {}   # isin → (epoch, [узлы], {узел: бп})
 _grid_builds = 0                   # построений сетки с прошлой сводки
 _grid_budget = 0                   # остаток построений сетки в текущем такте
@@ -1015,7 +1028,8 @@ def _grid_warm_targets(limit: int) -> list:
     return out
 
 
-def warm_grids(isins: list, board: Optional[dict] = None) -> int:
+def warm_grids(isins: list, board: Optional[dict] = None,
+               deadline: Optional[float] = None) -> int:
     """ДОГРЕВ СЕТОК заранее, в простое движка.
 
     Кривые пинятся на день (services/market_data), поэтому сетка, построенная
@@ -1026,7 +1040,12 @@ def warm_grids(isins: list, board: Optional[dict] = None) -> int:
 
     Греем в такты, когда обе очереди пусты: живой пересчёт важнее — он про то,
     что происходит на рынке ПРЯМО СЕЙЧАС, а сетка нужна к моменту, когда на
-    таблицу посмотрят."""
+    таблицу посмотрят.
+
+    deadline (монотонное время) — граница ОДНОГО захода: на ней цикл выходит,
+    недоделанные бумаги вернутся следующим слайсом (их снова выберет
+    _grid_warm_targets). Без границы пачка держала ядро столько, сколько
+    занимал весь список, и витрина ждала вместе с ней."""
     global _grid_builds
     from services.yidx_exact import y_idx_many
     from services import live_quotes as _lq
@@ -1034,6 +1053,10 @@ def warm_grids(isins: list, board: Optional[dict] = None) -> int:
     book = _depth_snapshot()      # один снимок на пачку (см. _has_book)
     n = 0
     for isin in isins:
+        # проверка ДО работы, а не после: прервать надо перед следующей
+        # бумагой, иначе граница ничего не ограничивает
+        if deadline is not None and n and time.monotonic() >= deadline:
+            break
         ev = _eval_ctx.get(isin)
         if ev is None:
             continue
@@ -1357,7 +1380,7 @@ def _ctx_warm_targets(uni_by: dict, limit: int) -> list:
     return out
 
 
-def warm_ctx(isins: list, ctx: dict) -> int:
+def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
     """Контекст расчёта бумагам, которые СЕГОДНЯ НЕ ТОРГОВАЛИСЬ.
 
     Полный пересчёт заказывает цена сделки, и без неё бумага не попадала в
@@ -1365,9 +1388,15 @@ def warm_ctx(isins: list, ctx: dict) -> int:
     весь день. Между тем спред набора считается по ЦЕНЕ ИЗ КНИГИ, а не по цене
     сделки: заявки в стакане стоят и у бумаги, по которой сегодня не прошло ни
     одного принта. Контекст цены не требует, поэтому строим его и им — сетку
-    следом достроит догрев по лестнице."""
+    следом достроит догрев по лестнице.
+
+    deadline — граница одного захода (см. warm_grids): сборка контекста это
+    расписание купонов и калибровка фиксинга, десятки миллисекунд на бумагу, и
+    пачка целиком держала ядро."""
     n = 0
     for isin in isins:
+        if deadline is not None and n and time.monotonic() >= deadline:
+            break
         u = (ctx.get("uni_by") or {}).get(isin)
         if u is None or isin in _eval_ctx:
             continue
@@ -1608,7 +1637,7 @@ async def _warm_pass(ctx: dict, wsmod, market_cache: dict, tick0: float) -> None
         ctx["full_by"] = dict(ctx.get("full_by") or {})
         ctx["full_by"].update({i: ({} if isinstance(f, Exception) else f or {})
                                for i, f in zip(cold, fulls)})
-        await run_heavy(warm_ctx, cold, ctx)
+        await run_heavy(warm_ctx, cold, ctx, time.monotonic() + _WARM_SLICE_SEC)
     # ГАРАНТИРОВАННЫЙ МИНИМУМ, а не «что осталось». На живом рынке остатка не
     # бывает: полный пересчёт и очередь сторон съедают такт целиком, и догрев
     # сеток не выполнялся НИ РАЗУ — рынок так и жил без сеток, а каждая волна
@@ -1622,20 +1651,34 @@ async def _warm_pass(ctx: dict, wsmod, market_cache: dict, tick0: float) -> None
         for isin in _blank_side_targets(ctx["board"], _BLANK_SIDES_BATCH):
             _queue_sides(isin, _SIDES_PRIO_WAVE)
 
-    batch = _GRID_WARM_BATCH if left() > 0 else max(1, _GRID_WARM_BATCH // 5)
-    targets = _grid_warm_targets(batch)
-    if not targets:
-        return
-    warmed = await run_heavy(warm_grids, targets, ctx["board"])
-    # СЕТКА БЕЗ ПУБЛИКАЦИИ — это спред, которого никто не увидит: строку
-    # обновляет либо волна размера (она уже прошла), либо движение сторон (у
-    # неликвида его можно ждать часами). Поэтому прогретые бумаги сразу же
-    # получают числа в строку и уходят подписчикам.
-    if warmed and active_vol_sizes():
-        rows = await run_heavy(apply_vol_sizes, targets)
-        if rows:
-            _store_rows(market_cache, rows)
-            await _push_metrics(wsmod, rows)
+    # СЛАЙСАМИ, а не одной пачкой: бюджет такта тот же, но между заходами
+    # управление возвращается петле (см. _WARM_SLICE_SEC). Первый заход
+    # выполняется всегда — это тот самый гарантированный минимум.
+    first, slices = True, 0
+    while first or (left() > 0 and slices < _WARM_MAX_SLICES):
+        slices += 1
+        batch = _GRID_WARM_BATCH if left() > 0 else max(1, _GRID_WARM_BATCH // 5)
+        targets = _grid_warm_targets(batch)
+        if not targets:
+            return
+        warmed = await run_heavy(warm_grids, targets, ctx["board"],
+                                 time.monotonic() + _WARM_SLICE_SEC)
+        first = False
+        # СЕТКА БЕЗ ПУБЛИКАЦИИ — это спред, которого никто не увидит: строку
+        # обновляет либо волна размера (она уже прошла), либо движение сторон (у
+        # неликвида его можно ждать часами). Поэтому прогретые бумаги сразу же
+        # получают числа в строку и уходят подписчикам.
+        if warmed and active_vol_sizes():
+            # публикуем ТЕ, У КОГО СЕТКА ПОЯВИЛАСЬ, а не первые warmed из
+            # списка: заход пропускает бумаги без книги и без узлов, и срез по
+            # счётчику попал бы не в те строки
+            done = [i for i in targets if i in _yoi_grid]
+            rows = await run_heavy(apply_vol_sizes, done)
+            if rows:
+                _store_rows(market_cache, rows)
+                await _push_metrics(wsmod, rows)
+        if not warmed:          # заход не дал ничего — упёрлись не во время
+            return
 
 
 async def metrics_worker() -> None:

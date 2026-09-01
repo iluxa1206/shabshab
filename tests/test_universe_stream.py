@@ -604,7 +604,10 @@ def test_warm_pass_runs_while_queues_are_busy(monkeypatch):
     try:
         asyncio.run(us._warm_pass(ctx, None, {}, time.monotonic()))
         assert calls["ctx"] == [["RU000A100001"]]
-        assert calls["grids"] == [["RU000A100002"]]
+        # сетки греются СЛАЙСАМИ: заходов за такт может быть несколько (между
+        # ними управление возвращается петле), но не больше потолка
+        assert calls["grids"] and calls["grids"][0] == ["RU000A100002"]
+        assert len(calls["grids"]) <= us._WARM_MAX_SLICES
 
         # такт уже съеден — сетевой догрев контекстов ждёт, а СЕТКИ греются
         # всё равно, урезанной пачкой: остатка такта на живом рынке не бывает
@@ -725,3 +728,68 @@ def test_recrunch_sides_uses_board_when_no_push(monkeypatch):
             market_cache.pop("universe_metrics", None)
         else:
             market_cache["universe_metrics"] = prev
+
+
+# --- прогрев режется по времени, а не по числу штук ---
+
+def test_warm_grids_stops_at_deadline(monkeypatch):
+    """Заход догрева обязан кончаться ПО ВРЕМЕНИ.
+
+    Тяжёлый счёт держит GIL, и пока идёт пачка, event loop не просыпается
+    вовсе: 25 сеток по ~150 мс занимали ядро почти на четыре секунды, сторож
+    писал «лаг 2.4с», а запросы витрины ждали столько же. Граница слайса
+    оставляет ровно одну бумагу сверх — недоделанные вернутся следующим
+    заходом."""
+    import services.yidx_exact as ye
+    seen = []
+
+    def fake_many(ctx_, prices):
+        seen.append(prices)
+        return {round(float(p), 4): 200 for p in prices}
+
+    monkeypatch.setattr(ye, "y_idx_many", fake_many)
+    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap: [100.0])
+    monkeypatch.setattr(us, "_has_book", lambda isin, book=None: True)
+    isins = ["RU000A10000%d" % i for i in range(5)]
+    for i in isins:
+        us._eval_ctx[i] = {"ctx": True}
+        us._last_quote[i] = {"bid": 100.0, "ask": 100.1}
+    try:
+        # дедлайн в прошлом: первая бумага считается всегда (иначе догрев
+        # застыл бы), на второй заход прерывается
+        n = us.warm_grids(isins, {}, time.monotonic() - 1)
+        assert n == 1 and len(seen) == 1
+
+        seen.clear()
+        # без границы обрабатывается весь список — прежнее поведение цело
+        for i in isins:
+            us._yoi_grid.pop(i, None)
+        assert us.warm_grids(isins, {}) == len(isins)
+    finally:
+        for i in isins:
+            us._eval_ctx.pop(i, None)
+            us._last_quote.pop(i, None)
+            us._yoi_grid.pop(i, None)
+
+
+def test_warm_ctx_stops_at_deadline(monkeypatch):
+    """Та же граница у контекстов: сборка это расписание купонов и калибровка
+    фиксинга, десятки миллисекунд на бумагу."""
+    built = []
+
+    def fake_ref(u, isin, cache, secs):
+        built.append(isin)
+        return {"ref": isin}
+
+    monkeypatch.setattr("services.universe.build_universe_ref", fake_ref)
+    monkeypatch.setattr(us, "_store_eval_ctx",
+                        lambda isin, u, ref, ctx, snap: us._eval_ctx.__setitem__(isin, ref))
+    isins = ["RU000A2000%02d" % i for i in range(4)]
+    ctx = {"uni_by": {i: {"isin": i} for i in isins}, "cache": {}, "secs": {},
+           "board": {}, "full_by": {}}
+    try:
+        assert us.warm_ctx(isins, ctx, time.monotonic() - 1) == 1
+        assert len(built) == 1
+    finally:
+        for i in isins:
+            us._eval_ctx.pop(i, None)
