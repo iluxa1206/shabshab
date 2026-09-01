@@ -5,6 +5,7 @@ import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repric
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
+import { sideProgress } from "./spreadProgress.js";
 import { filterBonds } from "./search.js";
 import { ratingMatches, ratingOptions, yearsToIso } from "./format.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
@@ -693,6 +694,16 @@ function Dashboard() {
     return m ? filtered.filter(m) : filtered;
   }, [filtered, anFocus, showAnalytics]);
 
+  // ПРОГРЕСС ЗАПОЛНЕНИЯ СПРЕДОВ — заливкой в заголовках колонок BID/OFFER.
+  // Считается ВСЕГДА, а не только при фильтре по объёму: спред стороны в любом
+  // режиме считает движок своим тактом (при фильтре applyVolume уже подменил
+  // цену и спред на числа набора, поля те же — см. spreadProgress.js). Без
+  // индикатора прочерк в колонке неотличим от «числа не будет».
+  const colProgress = useMemo(() => ({
+    y_idx_bid_bps: sideProgress(tableRows, "bid_price_pct", "y_idx_bid_bps"),
+    y_idx_ask_bps: sideProgress(tableRows, "ask_price_pct", "y_idx_ask_bps"),
+  }), [tableRows]);
+
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
     const m = new Map();
@@ -840,6 +851,7 @@ function Dashboard() {
         colWidths={colWidths}
         onResizeCol={resizeCol}
         onResetColWidth={resetColWidth}
+        colProgress={colProgress}
       />
     </>
   );

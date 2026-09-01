@@ -6,7 +6,7 @@
 // drop клик не генерит, так что сортировка от переноса не срабатывает.
 // Alt+←/→ с клавиатуры двигает колонку без мыши.
 export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, setDragKey, overKey, setOverKey,
-                     onResizeCol, onResetColWidth }) {
+                     onResizeCol, onResetColWidth, progress }) {
   // Тяга за правую границу заголовка. Ширину меряем у живого <th> (а не из
   // COLS.w), поэтому тянется и колонка, которую ещё не трогали. Двойной клик по
   // ручке — вернуть ширину по умолчанию.
@@ -53,6 +53,8 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
       // безымянной колонке подсказка объясняет, что это вообще за столбец
       aria-label={col.label || col.title || col.key}
       title={(col.title ? col.title + ". " : "")
+             + (progress && progress.total > 0 && progress.done < progress.total
+               ? `Считается: ${progress.done} из ${progress.total}. ` : "")
              + "Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"}
       onClick={() => onSort(col.key)}
       onKeyDown={onKeyDown}
@@ -72,7 +74,15 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
         dragRef.current = null; setDragKey(null); setOverKey(null);
       }}
     >
-      {col.label}{col.sub && <><br /><small>{col.sub}</small></>}
+      {/* ПОЛОСА ПРОГРЕССА КОЛОНКИ: сколько её чисел движок уже посчитал.
+          Подложка под подписью, кликам и переносу колонки не мешает. */}
+      {progress && progress.total > 0 && progress.done < progress.total && (
+        <span className="th-progress" aria-hidden="true"
+          style={{ width: `${Math.max(Math.round((progress.done / progress.total) * 100), 2)}%` }} />
+      )}
+      {/* подпись — НАД полосой: позиционированная подложка иначе рисуется
+          поверх текста в потоке (пусть и полупрозрачно) */}
+      <span className="th-label">{col.label}{col.sub && <><br /><small>{col.sub}</small></>}</span>
       {onResizeCol && (
         <span className="th-resize" role="presentation" draggable={false}
           title="Потяни — ширина колонки; двойной клик — вернуть по умолчанию"

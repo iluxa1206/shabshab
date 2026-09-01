@@ -315,7 +315,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
 // colsDef/defaultCols — витрина, для которой рисуем таблицу. По умолчанию
 // флоатерная (COLS): у МОНИТОРА фиксов свой набор колонок того же формата
 // (components/fixed/fixedCols.jsx), всё остальное поведение общее.
-export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth, colsDef = COLS, defaultCols = DEFAULT_COLS, rowKind }) {
+export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth, colsDef = COLS, defaultCols = DEFAULT_COLS, rowKind, colProgress }) {
   // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),
   // а не порядок объявления colsDef. useMemo — стабильная ссылка для memo(BondRow).
   const cols = useMemo(() => {
@@ -367,7 +367,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
             <th className="star-col" aria-label="Watchlist" />
             {cols.map((c) => <HeaderCell key={c.key} col={c} sort={sort} onSort={onSort}
               onMoveCol={onMoveCol} dragRef={dragRef} dragKey={dragKey} setDragKey={setDragKey}
-              overKey={overKey} setOverKey={setOverKey}
+              overKey={overKey} setOverKey={setOverKey} progress={colProgress?.[c.key]}
               onResizeCol={onResizeCol} onResetColWidth={onResetColWidth} />)}
             <th className="fill-col" aria-hidden="true" />
           </tr>

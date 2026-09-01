@@ -5,6 +5,7 @@ import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../..
 import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
 import { filterBonds } from "../../search.js";
 import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
+import { sideProgress } from "../../spreadProgress.js";
 import { usePageStatus } from "../../pageStatus.jsx";
 import Toolbar from "../Toolbar.jsx";
 import BondTable from "../BondTable.jsx";
@@ -439,6 +440,15 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       volOn, volBid, volAsk, volMode, depth,
       matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, query, sort]);
 
+  // ПРОГРЕСС ЗАПОЛНЕНИЯ g-спредов — заливкой в заголовках колонок BID/OFFER, как
+  // у флоатеров: движок общий, ждать приходится одинаково. Имена полей у фикса
+  // свои (FIXED_VOL_FIELDS).
+  const F = FIXED_VOL_FIELDS;
+  const colProgress = useMemo(() => ({
+    [F.bidSpread]: sideProgress(rows, F.bidPx, F.bidSpread),
+    [F.askSpread]: sideProgress(rows, F.askPx, F.askSpread),
+  }), [rows, F.bidPx, F.bidSpread, F.askPx, F.askSpread]);
+
   // Итоги выборки — в общую нижнюю полосу, как у флоатеров (Kpis/StatusBar),
   // а не отдельным блоком-сеткой над таблицей: полоса в приложении одна.
   const ys = rows.map((b) => b.ytm).filter((v) => v != null);
@@ -547,6 +557,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         colWidths={colWidths}
         onResizeCol={resizeCol}
         onResetColWidth={resetColWidth}
+        colProgress={colProgress}
         colsDef={FIXED_COLS}
         defaultCols={FIXED_DEFAULT_COLS}
       />

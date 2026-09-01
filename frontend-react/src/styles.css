@@ -1232,6 +1232,15 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
   position: absolute; top: 0; right: 0; width: 7px; height: 100%;
   cursor: col-resize; z-index: 3;
 }
+/* Полоса прогресса ВНУТРИ заголовка колонки: сколько её чисел движок уже
+   посчитал. Прозрачная заливка — подложка, а не элемент интерфейса: она не
+   должна спорить с подписью колонки, только показывать, что счёт идёт. */
+.th-progress {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+  background: var(--accent); opacity: 0.16; z-index: 0; pointer-events: none;
+  transition: width 0.35s ease;
+}
+.th-label { position: relative; z-index: 1; }
 .grid thead th:hover .th-resize { background: var(--line-2); }
 .th-resize:hover { background: var(--fg) !important; }
 /* во время тяги — курсор ресайза по всему окну и без выделения текста */
