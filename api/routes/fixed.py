@@ -78,6 +78,12 @@ async def get_fixed(
 
     from services import ratings
     rmap = ratings.bucket_map_fixed([(u["isin"], u.get("cls")) for u in uni])  # батч (1 SQL)
+    # рейтинги по агентствам (Эксперт/АКРА) — durable-кэш слоя, без сети
+    try:
+        from services import ratings_br
+        ea = ratings_br.ea_map([u["isin"] for u in uni])
+    except Exception:
+        ea = {}
     # средний дневной оборот за месяц — из архива часовых баров (кэш в памяти на
     # 15 мин, SQLite синхронный → в поток). Зовём БЕЗ kind, тем же ключом, что и
     # /api/bonds: в bar_hourly у бумаги свой kind, поэтому ответ по всему рынку
@@ -95,6 +101,7 @@ async def get_fixed(
         item = {
             "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
             "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
+            "ratings_ea": ea.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             "adv_1m_rub": adv.get(u["isin"]),
@@ -201,7 +208,7 @@ async def get_fixed_details(isin: str = Path(...)):
     isin = isin.strip().upper()
     if not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="bad isin")
-    from services import fixed_income as fi, ratings
+    from services import fixed_income as fi, ratings, ratings_br
     uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
     row = next((u for u in uni if u.get("isin") == isin), None)
     if row is None:
@@ -221,6 +228,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "board": board, "maturity_date": row.get("maturity_date"),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
             "issuer": row.get("issuer"), "rating": ratings.bucket_of_fixed(isin, row.get("cls")),
+            "ratings_ea": ratings_br.ea_map([isin]).get(isin),
             "linked": row.get("linked", False),   # номинал индексирован (RUONIA/инфл.)
         },
         "market": {

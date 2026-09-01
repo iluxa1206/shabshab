@@ -372,12 +372,16 @@ def _rating_medians(today: dict, labels: dict, name_of) -> dict:
 
     Раздельно — потому что метрики разные (Y-IDX против g-спреда): в одном
     столбике они складывались бы в число, которого нет ни у кого."""
+    from services.ratings import rating_to_bucket
     grid: dict = {b: {"floater": [], "fixed": []} for b in _RATING_ORDER}
     cached = _rating_buckets(list(today.keys()))
     for isin, r in today.items():
         v = _spread_of(r)
         meta = labels.get(isin) or {}
-        bucket = (meta.get("rating") or cached.get(isin) or "").strip().upper()
+        # СТУПЕНЬ схлопываем в грейд: в реестре рейтинг лежит и как «AA», и как
+        # «AA-» (слой bondresearch даёт ступень), а сетка дайджеста — по грейдам.
+        # Без свёртки бумага со ступенью не попадала в grid и молча выпадала.
+        bucket = rating_to_bucket(meta.get("rating") or cached.get(isin))
         if v is None or bucket not in grid or not name_of(isin):
             continue
         if not (SANE_MIN_BPS <= v <= SANE_SPREAD_BPS) or (r.get("value") or 0) < MIN_VALUE_RUB:

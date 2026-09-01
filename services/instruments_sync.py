@@ -233,6 +233,19 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("bondresearch specs sync failed: %s", e)
 
+    # 7.2. рейтинги по агентствам с bondresearch (Эксперт/АКРА): приоритетный
+    #      слой над corpbonds. Пишет в колонку rating реестра ХУДШУЮ из оценок,
+    #      поэтому все фильтры начинают работать «по минимуму» без правок в них.
+    #      Сбой сайта не валит синк, куцая лента не затирает кэш.
+    try:
+        from services import ratings_br
+        rb = await ratings_br.refresh(force=True)
+        rb_applied = await asyncio.to_thread(ratings_br.apply_to_registry)
+        stats["br_ratings"] = rb.get("isins", 0)
+        stats["br_ratings_written"] = rb_applied.get("written", 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bondresearch ratings sync failed: %s", e)
+
     # 7.5. анонсы первички (bondresearch calendar_final): чужая витрина
     #      планируемых размещений, к реестру не привязана — просто освежаем
     #      durable-кэш раз в сутки, чтобы вкладка не ходила в сеть на запросе.

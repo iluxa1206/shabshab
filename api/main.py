@@ -599,6 +599,37 @@ async def warmup_caches():
         progress.finish("warmup", error=f"{type(e).__name__}: {e}")
 
 
+async def ratings_br_worker():
+    """Слой рейтингов по агентствам (bondresearch): прогрев на старте, дальше
+    просыпается каждые 6 часов, а в сеть ходит раз в 12 — по TTL слоя
+    (ratings_br.TTL_SEC); промежуточные побудки только сверяют реестр с картой.
+
+    Ленивого обновления «на первом запросе» здесь быть не может: витрина читает
+    карту синхронно, из durable-кэша. А кэш живёт в data/ — том, который НЕ
+    ездит с деплоем, поэтому после редеплоя он пуст, и без прогрева колонка
+    рейтингов молчала бы до ближайшего ночного синка.
+
+    Худшая из оценок пишется в колонку rating реестра — по ней работают все
+    фильтры. Сбой источника ничего не ломает: слой остаётся с прежней картой,
+    а рейтинги, которых он не знает, и так приходят из corpbonds.
+    """
+    from services import ratings_br
+    while True:
+        try:
+            st = await ratings_br.refresh()
+            applied = await asyncio.to_thread(ratings_br.apply_to_registry)
+            logger.info("рейтинги bondresearch: %s, в реестр записано %s",
+                        st, applied.get("written"))
+            delay = 6 * 3600
+        except Exception as e:
+            # Сбой источника на СТАРТЕ (сайт лежит, сеть не поднялась) не должен
+            # оставлять витрину без рейтингов на шесть часов: ретрай через 10
+            # минут, пока не получится.
+            logger.warning("ratings_br worker error: %s", e)
+            delay = 600
+        await asyncio.sleep(delay)
+
+
 async def daily_prewarm():
     """Каждый день в 09:00 МСК — контролируемый тяжёлый прогрев дня: расписания
     bondization (кэш протухает в 09:00 по _trading_day) + фикс-метрики + метрики
@@ -1144,6 +1175,7 @@ async def lifespan(app: FastAPI):
     _daemon("ws-broadcaster", ws_market_data_broadcaster)
     _daemon("price-poller", universe_price_poller)
     _daemon("daily-prewarm", daily_prewarm)
+    _daemon("ratings-br", ratings_br_worker)
     from services.alor_ws import alor_orderbook_ws
     _daemon("alor-ws", alor_orderbook_ws)
     _daemon("spread-snapshotter", spread_snapshotter)

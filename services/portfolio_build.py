@@ -525,7 +525,10 @@ def _shares(positions: List[dict], key: str) -> Dict[str, float]:
 def _rating_avg(positions: List[dict]) -> Optional[str]:
     """Среднее по денежным весам на буквенной шкале. Это индикатор СОСТАВА, а не
     кредитная оценка: шкала линейная, вероятности дефолта — нет."""
-    pts = [(r["money_rub"], RATING_SCALE.get((r.get("rating") or "").upper()))
+    # рейтинг позиции может прийти СО СТУПЕНЬЮ («AA-» из слоя bondresearch) —
+    # шкала здесь по грейдам, поэтому сворачиваем, а не сравниваем как есть
+    from services.ratings import rating_to_bucket
+    pts = [(r["money_rub"], RATING_SCALE.get(rating_to_bucket(r.get("rating"))))
            for r in positions]
     pts = [(m, v) for m, v in pts if v]
     if not pts:

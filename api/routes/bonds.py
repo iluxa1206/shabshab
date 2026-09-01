@@ -106,7 +106,7 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
         price_implausible=mx.get("implausible") or False,
         price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
-        rating=u.get("rating"),
+        rating=u.get("rating"), ratings_ea=u.get("ratings_ea"),
         z_model_bps=mx.get("z_model"), spread_dur_yrs=mx.get("spread_dur"),
         days_to_refix=mx.get("refix"), current_coupon_pct=mx.get("current_coupon"),
         preferred_horizon=mx.get("horizon") or "maturity", offer_date=mx.get("offer_date"),
@@ -148,9 +148,18 @@ async def _universe_bonds(extra_list, cache, limit, offset,
         logger.warning("spread_avg_map failed: %s", e)
         avg7 = {}
 
+    # рейтинги по агентствам (Эксперт/АКРА) — из durable-кэша слоя, без сети
+    try:
+        from services import ratings_br
+        ea = ratings_br.ea_map([u["isin"] for u in uni])
+    except Exception as e:
+        logger.warning("ratings_br ea_map failed: %s", e)
+        ea = {}
+
     items = []
     for u in uni:
         isin = u["isin"]
+        u["ratings_ea"] = ea.get(isin)
         name = shortnames.get(isin) or u.get("name") or isin
         mx = watch_metrics.get(isin) or uni_metrics.get(isin)
         if mx is None:

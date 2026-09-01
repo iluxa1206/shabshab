@@ -29,7 +29,7 @@ function qTitle(b, side) {
 
 export const FIXED_COLS = [
   // ── статика бумаги ──
-  { key: "name", label: "INSTRUMENT", align: "left", w: 24,
+  { key: "name", label: "INSTRUMENT (Э/А)", align: "left", w: 24,
     cell: (b) => (
       <td className="left name-cell" key="name">
         <div className="bond-name">
@@ -39,7 +39,13 @@ export const FIXED_COLS = [
           {b.price_thin && <span className="badge-thin"
             title="Последняя цена MOEX старше 4 дней — бумага не торговалась, YTM и спред сняты с несвежего принта.">тонк</span>}
         </div>
-        <IsinCopy isin={b.isin} />
+        <div className="isin-row">
+          <IsinCopy isin={b.isin} />
+          {/* Эксперт РА / АКРА; рядом с именем — худшая из них, по ней фильтр */}
+          {b.ratings_ea && (
+            <span className="isin-rt" title="Эксперт РА / АКРА">({b.ratings_ea})</span>
+          )}
+        </div>
       </td>
     ) },
   { key: "coupon_pct", label: "COUPON", sub: "%", align: "num", w: 7,

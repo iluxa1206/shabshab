@@ -2765,3 +2765,9 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .pri-spread { font-variant-numeric: tabular-nums; }
 /* «≤» приглушён: это признак границы, а не часть числа */
 .pri-le { color: var(--mut); }
+
+/* ISIN + рейтинги агентств (Эксперт/АКРА) одной строкой под именем выпуска.
+   Кегль тот же, что у ISIN, — иначе строка имени растёт и таблица дышит. */
+.isin-row { display: flex; align-items: baseline; gap: 5px; margin-top: 1px; }
+.isin-row .isin-copy-blk { margin-top: 0; }
+.isin-rt { font: 10px var(--mono); color: var(--mut-2); letter-spacing: 0.04em; white-space: nowrap; }

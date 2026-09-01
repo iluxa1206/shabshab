@@ -35,6 +35,37 @@ _RT_TRIM = re.compile(r"\|RU\||\(RU\)|\.RU$|^RU", re.I)
 # «DA» → бакет B, то есть бумага с ОТОЗВАННЫМ рейтингом ехала в самый рисковый
 # грейд вместо NR.
 _RT_SCALE = re.compile(r"^(AAA|AA|A|BBB|BB|B|CCC|CC|C|D)([+-])?$")
+# Кириллица В ЗНАЧЕНИИ рейтинга: «АА-», «А+», «ВВ+» пишутся русскими буквами и
+# в выгрузках, и в анонсах первички. Прежняя чистка выбрасывала их как «не
+# латиница» — рейтинг превращался в NR, то есть бумага с AA- уезжала к
+# безрейтинговым. Транслитерация обязана идти ДО чистки.
+_CYR2LAT = str.maketrans("АВСЕDО", "ABCEDO")
+
+# Порядок шкалы СО СТУПЕНЬЮ: индекс = ранг, 0 — лучший. Нужен там, где из
+# нескольких оценок берётся ХУДШАЯ (рейтинг бумаги = минимум по агентствам).
+_RT_RANK = {r: i for i, r in enumerate((
+    "AAA", "AA+", "AA", "AA-", "A+", "A", "A-", "BBB+", "BBB", "BBB-",
+    "BB+", "BB", "BB-", "B+", "B", "B-", "CCC", "CC", "C", "D"))}
+
+
+def rating_rank(raw: Optional[str]) -> Optional[int]:
+    """Ранг по шкале (0 = AAA, больше = хуже). None — рейтинга нет."""
+    return _RT_RANK.get(rating_norm(raw))
+
+
+def rating_min(*raws) -> str:
+    """ХУДШИЙ из переданных рейтингов («минимальный» в разговорной речи).
+    Пустые/нераспознанные игнорируются; ничего не осталось — "".
+
+    Именно минимум, а не средний и не первый попавшийся: инвестор ограничен
+    самой низкой оценкой, а не самой лестной."""
+    best = ""
+    worst = -1
+    for r in raws:
+        rk = rating_rank(r)
+        if rk is not None and rk > worst:
+            worst, best = rk, rating_norm(r)
+    return best
 
 
 def rating_norm(raw: Optional[str]) -> str:
@@ -42,9 +73,20 @@ def rating_norm(raw: Optional[str]) -> str:
     Нераспознанное (Withdrawn, мусор, пусто) → "" — это «рейтинга нет»."""
     if not raw:
         return ""
-    t = _RT_TRIM.sub("", str(raw).strip()).upper()
-    t = re.sub(r"[^A-D+-]", "", t)      # кириллица-агентство, пробелы, точки
-    return t if _RT_SCALE.match(t) else ""
+    t = str(raw).strip().upper().translate(_CYR2LAT)
+    # ПОТОКЕННО, а не «вычистить всё лишнее»: после транслитерации кириллицы
+    # название агентства само похоже на рейтинг — «АКРА» → «AKPA» → чистка
+    # оставляла бы «AA». Токен принимается, только если ЦЕЛИКОМ лежит на шкале.
+    hits = []
+    for tok in re.split(r"[\s()|.,/]+", t):
+        tok = _RT_TRIM.sub("", tok)
+        if _RT_SCALE.match(tok):
+            hits.append(tok)
+    if not hits:
+        return ""
+    # В строке может стоять СРАЗУ ДВЕ оценки («A/BBB», «AA (AA-)»): берём
+    # худшую. Инвестор ограничен низшей оценкой, а не той, что написана первой.
+    return max(hits, key=lambda r: _RT_RANK.get(r, -1))
 
 
 def rating_to_bucket(raw: Optional[str]) -> str:
@@ -75,7 +117,19 @@ def _save() -> None:
         logger.warning(f"ratings save failed: {e}")
 
 
+def _br():
+    """Слой bondresearch — ПРИОРИТЕТНЫЙ источник (разбивка по агентствам + дата
+    оценки). Не замена: 214 наших бумаг есть только в corpbonds, поэтому ниже
+    везде идёт фолбэк. Импорт ленивый — модуль читает свой кэш при первом
+    обращении."""
+    from services import ratings_br
+    return ratings_br
+
+
 def bucket_of(isin: str) -> Optional[str]:
+    b = _br().ratings_of(isin)
+    if b and b.get("bucket"):
+        return b["bucket"]
     r = _load().get(isin)
     return r.get("bucket") if r else None
 
@@ -86,7 +140,7 @@ def bucket_of_fixed(isin: str, cls: Optional[str]) -> Optional[str]:
     промахе фолбэк на реестр."""
     if cls == "ofz":
         return "AAA"
-    b = bucket_of(isin)
+    b = bucket_of(isin)          # внутри: bondresearch → corpbonds
     if b:
         return b
     try:
@@ -104,11 +158,15 @@ def bucket_map_fixed(items) -> Dict[str, Optional[str]]:
     (isin, cls). ОФЗ→AAA; корп — json-кэш, остаток ОДНИМ запросом в реестр
     (было: reg.get() per-row = сотни мс на /api/fixed при пустом json-кэше)."""
     cache = _load()
+    items = list(items)
+    br = _br().bucket_map([i for i, _c in items])
     out: Dict[str, Optional[str]] = {}
     need = []
     for isin, cls in items:
         if cls == "ofz":
             out[isin] = "AAA"
+        elif br.get(isin):
+            out[isin] = br[isin]
         elif isin in cache and cache[isin].get("bucket"):
             out[isin] = cache[isin]["bucket"]
         else:
@@ -128,7 +186,9 @@ def bucket_map_fixed(items) -> Dict[str, Optional[str]]:
 
 def bucket_map(isins: List[str]) -> Dict[str, str]:
     c = _load()
-    return {i: c[i]["bucket"] for i in isins if i in c and c[i].get("bucket")}
+    out = {i: c[i]["bucket"] for i in isins if i in c and c[i].get("bucket")}
+    out.update(_br().bucket_map(isins))      # bondresearch перекрывает corpbonds
+    return out
 
 
 async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
@@ -150,6 +210,15 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
     # через неделю, ни через год, а json-TTL до неё просто не доходил.
     checked = reg.rating_checked_map(isins) if reg is not None else {}
     rated = reg.ratings_map(isins) if reg is not None else {}
+    # бумаги, чей рейтинг ведёт приоритетный слой bondresearch: их значение в
+    # реестре дрейн не трогает (см. запись ниже)
+    try:
+        br_have = set(_br().bucket_map(isins))
+    except Exception:
+        br_have = set()
+
+    def br_covered(isin: str) -> bool:
+        return isin in br_have
 
     def _reg_fresh(isin: str) -> bool:
         """Рейтинг проверялся недавно (durable отметка реестра)."""
@@ -226,7 +295,15 @@ async def refresh(isins: List[str], cap: int = 80, delay: float = 0.6) -> int:
             n += 1
             # durable-персист: json-кэш (переживает рестарт через _save) — основной
             # для фиксов; в реестр дублируем, если бумага там есть (флоатеры).
-            if reg is not None and bucket != "NR":
+            #
+            # НО НЕ ПОВЕРХ СЛОЯ BONDRESEARCH. Колонка rating реестра — та, по
+            # которой работают ВСЕ фильтры, и в ней должен лежать минимум по
+            # агентствам со ступенью («AA-»), а не склеенный бакет corpbonds
+            # («AA»). Без этой проверки два писателя гонялись бы за колонкой:
+            # дрейн затирает, воркер ratings-br через 6 часов возвращает — и
+            # рейтинг бумаги мигал бы между прогонами. json-кэш выше пишется
+            # всегда: он остаётся фолбэком для бумаг, которых слой не знает.
+            if reg is not None and bucket != "NR" and not br_covered(isin):
                 try:
                     if reg.get(isin):
                         reg.set_rating(isin, bucket)

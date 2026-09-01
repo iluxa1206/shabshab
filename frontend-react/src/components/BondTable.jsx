@@ -112,7 +112,7 @@ export function OfferMarks({ b }) {
 // table-layout: fixed для .grid.cols-fixed в styles.css.
 export const COLS = [
   // ── статика бумаги ──
-  { key: "short_name", label: "INSTRUMENT", align: "left", w: 24,
+  { key: "short_name", label: "INSTRUMENT (Э/А)", align: "left", w: 24,
     cell: (b) => {
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
@@ -126,7 +126,14 @@ export const COLS = [
             {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
             {!b.price_implausible && b.price_thin && <span className="badge-thin" title="0 сделок сегодня на MOEX — цена несвежая (вчерашний/старый принт). DM/z сняты с ненадёжной цены.">тонк</span>}
           </div>
-          <IsinCopy isin={b.isin} />
+          <div className="isin-row">
+            <IsinCopy isin={b.isin} />
+            {/* Эксперт РА / АКРА через слэш; прочерк — агентство бумагу не
+                оценивало. Рядом с именем стоит ХУДШАЯ из них — по ней фильтр. */}
+            {b.ratings_ea && (
+              <span className="isin-rt" title="Эксперт РА / АКРА">({b.ratings_ea})</span>
+            )}
+          </div>
         </td>
       );
     } },
