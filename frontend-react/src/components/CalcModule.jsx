@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { calcCustomBond, calcCustomFloater, fetchBonds, fetchFixed } from "../api.js";
 import { fmt, dmColor, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
+import { horizonYears } from "../horizon.js";
 
 // КАЛЬКУЛЯТОР кастомной облигации: юзер вводит параметры выпуска + эмитента и
 // рейтинг — бэк считает метрики тем же путём, что таблицы (ФИКС →
@@ -17,17 +18,29 @@ const RTCOLOR = RT_BUCKET_COLOR;
 const norm = ratingBucket;
 const D = () => <span className="dash">—</span>;
 
+// Имя выпуска: у флоатера (/api/bonds) оно в short_name, у фикса (/api/fixed) —
+// в name. Читать одно поле нельзя: во вкладке ФЛОАТЕР весь список выпусков
+// эмитента и все подписи точек показывали «undefined».
+const bondName = (b) => b?.short_name || b?.name || b?.isin || "";
+
 // та же отсечка мусора, что в аналитике фиксов
 const okG = (v) => v != null && v < 3000 && v > -500;
 const okY = (v) => v != null && v > 0 && v < 60;
 
 const SC_PAD = { l: 46, r: 14, t: 14, b: 30 };
 
-// оси сравнения по типу бумаги: фиксы — метрика × мод.дюрация,
-// флоатеры — метрика × спред-дюрация выбранного горизонта
-const AXES = {
+// Ось X у обоих типов — СРОК до горизонта прайсинга (src/horizon.js): та же
+// шкала, что в мониторе и на графике аналитики. Дюрация читается не как
+// «сколько сидеть в бумаге» и уезжает влево тем сильнее, чем выше купон, —
+// сравнивать выпуски по ней на глаз нельзя.
+//
+// Раньше здесь стояла дюрация именно потому, что «срок» означал срок до
+// ПОГАШЕНИЯ, а Y (R-spread/SM) считался к оферте: бумага с путом через полгода
+// вставала на пяти годах со спредом к оферте. С горизонтом это возражение
+// снято — X и Y снова про одну и ту же дату.
+export const AXES = {
   fixed: {
-    x: (b) => b.mod_dur, xLabel: "мод. дюрация →",
+    x: horizonYears, xLabel: "срок, лет →",
     modes: {
       ytm: { label: "YTM", axis: "YTM, %", val: (b) => (okY(b.ytm) ? b.ytm : null),
              custom: (m) => m?.ytm_pct, fmt: (v) => "YTM: " + fmt.pct(v), tick: (v) => fmt.num(v, 1) },
@@ -36,10 +49,7 @@ const AXES = {
     },
   },
   float: {
-    // спред-дюрация ВЫБРАННОГО горизонта — та же ось, что во вкладке АНАЛИТИКА.
-    // Раньше тут стоял срок до ПОГАШЕНИЯ, а Y (R-spread/SM) считался к оферте:
-    // бумага с путом через полгода стояла на пяти годах со спредом к оферте.
-    x: (b) => b.spread_dur_yrs, xLabel: "спред-дюрация →",
+    x: horizonYears, xLabel: "срок, лет →",
     modes: {
       yidx: { label: "R-spread", axis: "R-spread, bps", val: (b) => (okG(b.yield_over_index_bps) ? b.yield_over_index_bps : null),
               custom: (m) => m?.y_idx_bps, fmt: (v) => "R-spread: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
@@ -57,7 +67,7 @@ function CompareScatter({ peers, custom, kind, mode, issuer, issuerOf }) {
     .map((b) => ({ b, x: ax.x(b), y: md.val(b) }))
     .filter(({ x, y }) => x != null && x > 0 && y != null)
     .map(({ b, x, y }) => ({
-      x, y, r: norm(b.rating), isin: b.isin, name: b.name,
+      x, y, r: norm(b.rating), isin: b.isin, name: bondName(b),
       mine: issuer && issuerOf(b) === issuer,
     }));
   const cy = md.custom(custom);
@@ -74,7 +84,7 @@ function CompareScatter({ peers, custom, kind, mode, issuer, issuerOf }) {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
         const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
-        const tip = (p, pre) => `${pre}\n${md.fmt(p.y)}\n${ax.xLabel.replace(" →", "")}: ${fmt.yrs(p.x)}`;
+        const tip = (p, pre) => `${pre}\n${md.fmt(p.y)}\nсрок: ${fmt.yrs(p.x)}`;
         return (
           <>
             <GridY ticks={linTicks(ymin, ymax, 5)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
@@ -199,12 +209,10 @@ export default function CalcModule({ initialKind = "fixed" }) {
 
   // метрики показываем только если посчитаны для ТЕКУЩЕГО типа
   const m = res?.kind === kind ? res.metrics : null;
-  // Точка «своей» бумаги на скэттере: x — ТОЛЬКО дюрация от движка (спред-дюрация
-  // у флоатера, мод.дюрация у фикса). Фолбэка на срок до погашения нет: на оси
-  // дюраций 0,2–5 лет восьмилетняя бумага встала бы по СРОКУ и сравнивалась бы
-  // с рынком по другой шкале — тот же суррогат, что убран из витрины. Нет
-  // числа — точки нет.
-  const customPt = m ? { ...m, _x: isFloat ? m.spread_dur_yrs : m.mod_dur } : null;
+  // Точка «своей» бумаги: по оси X тот же СРОК, что у рынка — до даты
+  // погашения, которую ввели в форме. Оферты у кастомной бумаги нет, поэтому
+  // горизонт у неё один и вопроса «к чему считать» не возникает.
+  const customPt = m ? { ...m, _x: horizonYears({ maturity_date: form.maturity }) } : null;
   const modes = AXES[kind].modes;
   return (
     <div className="calc-page">
@@ -351,7 +359,7 @@ export default function CalcModule({ initialKind = "fixed" }) {
               <tbody>
                 {sameIssuer.slice().sort((a, b) => (a.maturity_date || "9") < (b.maturity_date || "9") ? -1 : 1).map((b) => (
                   <tr key={b.isin}>
-                    <td className="left">{b.name}</td>
+                    <td className="left">{bondName(b)}</td>
                     <td className="num">{fmt.pct(b.last_price_pct) ?? <D />}</td>
                     {isFloat ? (
                       <>
