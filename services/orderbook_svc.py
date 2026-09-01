@@ -1,5 +1,6 @@
 """Общий слой стакана: построение per-level метрик под тип бумаги
-(флоатер: Y-IDX+DM+YTM, Y-IDX — первичная метрика; фикс: YTM+g-спред).
+(флоатер: Y-IDX+YTM, Y-IDX — первичная метрика, DM по флагу — см. LEVEL_DM;
+фикс: YTM+g-спред).
 Переиспользуют роут /api/orderbook и фоновый монитор алертов — один источник расчёта.
 
 ДВА ИНТЕРФЕЙСА НА ОДНОМ КОНТЕКСТЕ:
@@ -18,6 +19,18 @@ from services.market_data import MarketDataService, market_cache
 from services.exceptions import NotFoundException
 
 logger = logging.getLogger(__name__)
+
+# DM НА КАЖДЫЙ УРОВЕНЬ — по требованию, не по умолчанию.
+#
+# Замер 01.09.2026: discount margin на цену стоит столько же, сколько сам
+# Y-IDX с доходностью (0,21 мс против 0,22 у обычной бумаги; 2,4 против 2,6 у
+# тридцатилетней), то есть УДВАИВАЕТ цену лестницы. Отдаётся при этом одна
+# подсказка при наведении на строку стакана — витрина показывает Y-IDX и YTM,
+# а DM только в title. Лестница пересчитывается на каждый пуш книги по
+# подписанной бумаге, поэтому цена набегает постоянная, а польза разовая.
+# Вернуть: ORDERBOOK_LEVEL_DM=1.
+LEVEL_DM = (os.getenv("ORDERBOOK_LEVEL_DM") or "").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 def _px(p) -> float:
@@ -85,7 +98,7 @@ async def build_levels_fn(isin: str, kind: str = "floater", horizon: str = "auto
                 amorts=ctx["amorts"], offers=ctx["offers"],
                 ruonia_curve=ctx.get("ruonia_curve"),
                 accrued_date=ctx.get("accrued_date"),
-                alt_prices=want, alt_dm=True)
+                alt_prices=want, alt_dm=LEVEL_DM)
         except Exception as e:
             logger.debug("levels %s: %s", isin, e)
             return {}

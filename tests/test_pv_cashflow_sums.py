@@ -85,3 +85,25 @@ def test_long_bond_is_not_quadratic():
 
     short, long = ms(36), ms(368)
     assert long < short * 30, f"рост {long / max(short, 1e-6):.0f}× — похоже на квадрат"
+
+
+def test_level_dm_is_off_by_default(monkeypatch):
+    """DM на каждый уровень стакана — по флагу, не по умолчанию.
+
+    Замер 01.09.2026: discount margin на цену стоит столько же, сколько сам
+    Y-IDX с доходностью, то есть удваивает цену лестницы — а показывается одной
+    подсказкой при наведении. Лестница пересчитывается на каждый пуш книги, так
+    что цена постоянная, а польза разовая."""
+    import importlib
+    from services import orderbook_svc
+
+    monkeypatch.delenv("ORDERBOOK_LEVEL_DM", raising=False)
+    importlib.reload(orderbook_svc)
+    assert orderbook_svc.LEVEL_DM is False
+
+    monkeypatch.setenv("ORDERBOOK_LEVEL_DM", "1")
+    importlib.reload(orderbook_svc)
+    assert orderbook_svc.LEVEL_DM is True
+
+    monkeypatch.delenv("ORDERBOOK_LEVEL_DM")
+    importlib.reload(orderbook_svc)
