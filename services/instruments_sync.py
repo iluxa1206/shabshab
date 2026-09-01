@@ -233,6 +233,17 @@ async def sync_instruments() -> dict:
     except Exception as e:
         logger.warning("bondresearch specs sync failed: %s", e)
 
+    # 7.5. анонсы первички (bondresearch calendar_final): чужая витрина
+    #      планируемых размещений, к реестру не привязана — просто освежаем
+    #      durable-кэш раз в сутки, чтобы вкладка не ходила в сеть на запросе.
+    try:
+        from services import primary_calendar
+        pc_stats = await primary_calendar.refresh(force=True)
+        stats["primary_announcements"] = pc_stats.get("rows", 0)
+        stats["primary_new"] = pc_stats.get("added", 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("primary calendar sync failed: %s", e)
+
     # 8. бэктест спеки фиксинга по факту выплат: порция бумаг за проход
     #    (самые давно не проверенные первыми) → spec_verdict в реестре,
     #    фильтр «спека расходится» в Справочнике читает его.

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -16,19 +17,44 @@ const TYPES = [
 const SUBNAV = {
   floaters: [["/floaters", "Монитор"], ["/compare", "Сравнение"],
              ["/trades", "Сделки"], ["/signals", "Сигналы"], ["/payments", "Выплаты"],
-             ["/calc/float", "Калькулятор"]],
-  fixed: [["/fixed", "Монитор"], ["/calc", "Калькулятор"]],
+             ["/primary", "Первичка"], ["/calc/float", "Калькулятор"]],
+  fixed: [["/fixed", "Монитор"], ["/primary", "Первичка"], ["/calc", "Калькулятор"]],
   portfolio: [],
   curves: [],
   reference: [],
   status: [],
 };
-const currentType = (p) =>
+// Пути, живущие СРАЗУ В ДВУХ разделах: анонс первички не знает своего класса
+// (в одной выгрузке и флоатеры, и фиксы), поэтому /primary висит в обоих меню.
+const SHARED_PATHS = ["/primary"];
+const TYPE_KEY = "desk.lastType";
+
+const typeFromPath = (p) =>
   p.startsWith("/portfolio") ? "portfolio"
     : p.startsWith("/calc/float") ? "floaters"
     : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed"
     : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
     : p.startsWith("/status") ? "status" : "floaters";
+
+// Раздел по пути. На ОБЩЕМ пути тип не выводится из URL — держим последний
+// явно выбранный, иначе клик «Первичка» из Фиксов перекидывал бы верхнее меню
+// на Флоатеры. sessionStorage — чтобы перезагрузка прямо на /primary тоже
+// возвращала в свой раздел (private mode может кидать — тогда дефолт).
+function useCurrentType(pathname) {
+  const shared = SHARED_PATHS.some((s) => pathname.startsWith(s));
+  const resolved = shared ? null : typeFromPath(pathname);
+  useEffect(() => {
+    if (resolved === "floaters" || resolved === "fixed") {
+      try { sessionStorage.setItem(TYPE_KEY, resolved); } catch { /* private mode */ }
+    }
+  }, [resolved]);
+  if (!shared) return resolved;
+  try {
+    return sessionStorage.getItem(TYPE_KEY) === "fixed" ? "fixed" : "floaters";
+  } catch {
+    return "floaters";
+  }
+}
 
 function TypeMenu({ type, isAdmin, features }) {
   // Выключенный слой (services/feature_flags → /api/meta.features) исчезает из
@@ -73,7 +99,7 @@ const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 // «Аналитика» флоатеров): панель фильтров ниже — про отбор строк, а окна поверх
 // таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
 export default function Topbar({ user, onLogout, onOpenSettings, extra, features }) {
-  const type = currentType(useLocation().pathname);
+  const type = useCurrentType(useLocation().pathname);
   const sub = SUBNAV[type] || [];
   return (
     <header className="menubar">

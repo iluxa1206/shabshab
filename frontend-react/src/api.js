@@ -397,6 +397,9 @@ export const fetchCandles = (isin, tf = "1d", { secid, board } = {}) => {
 
 // --- Фиксы (ОФЗ-ПД + ликвидные корпораты) ---
 // календарь выплат юниверса (купоны/погашения, ₽ на бумагу); from/to = ISO-даты
+// Анонсы первички (внешний источник bondresearch.ru, кэш на бэке).
+export const fetchPrimaryCalendar = () => request("/api/primary");
+
 export const fetchPaymentsCalendar = ({ from, to } = {}) => {
   const p = new URLSearchParams();
   if (from) p.set("from", from);

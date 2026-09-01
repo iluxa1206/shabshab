@@ -17,11 +17,11 @@ const USER = { email: "t@test", role: "user" };
 // предыдущего и находит «Фиксы» там, где их уже не рисуют
 afterEach(cleanup);
 
-function show(features) {
+function show(features, path = "/floaters") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/floaters"]}>
+      <MemoryRouter initialEntries={[path]}>
         <Topbar user={USER} onLogout={() => {}} onOpenSettings={() => {}} features={features} />
       </MemoryRouter>
     </QueryClientProvider>
@@ -43,5 +43,31 @@ describe("вкладка типа бумаг", () => {
   it("старый бэк без флагов — вкладка видна", () => {
     show(undefined);
     expect(screen.getByText("Фиксы")).toBeTruthy();
+  });
+});
+
+// «Первичка» — общий путь двух разделов: анонс не знает своего класса. Тип на
+// нём не выводится из URL, иначе переход из Фиксов ронял бы меню в Флоатеры.
+describe("общий путь /primary", () => {
+  afterEach(() => sessionStorage.clear());
+
+  it("из Фиксов остаётся в Фиксах", () => {
+    show({ fixed: true }, "/fixed");     // раздел запомнился
+    cleanup();
+    show({ fixed: true }, "/primary");
+    expect(screen.queryByText("Сделки")).toBeNull();   // подменю флоатеров не всплыло
+    expect(screen.getByText("Первичка")).toBeTruthy();
+  });
+
+  it("из Флоатеров остаётся во Флоатерах", () => {
+    show({ fixed: true }, "/trades");
+    cleanup();
+    show({ fixed: true }, "/primary");
+    expect(screen.getByText("Сделки")).toBeTruthy();
+  });
+
+  it("холодный вход прямо на /primary — дефолт Флоатеры", () => {
+    show({ fixed: true }, "/primary");
+    expect(screen.getByText("Сделки")).toBeTruthy();
   });
 });

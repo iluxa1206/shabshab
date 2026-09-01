@@ -28,6 +28,7 @@ import SignalsModule from "./components/SignalsModule.jsx";
 import PortfolioModule from "./components/PortfolioModule.jsx";
 import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
+import PrimaryCalendar from "./components/PrimaryCalendar.jsx";
 import TradesTape from "./components/TradesTape.jsx";
 // lightweight-charts тянет ~180 kB — грузим только на самой странице графика,
 // а не в общий бандл дашборда
@@ -896,6 +897,7 @@ function Dashboard() {
         <Route path="/signals" element={<SignalsModule />} />
         <Route path="/portfolio" element={<PortfolioModule />} />
         <Route path="/payments" element={<PaymentsCalendar />} />
+        <Route path="/primary" element={<PrimaryCalendar />} />
         <Route path="/curves" element={<CurvesModule />} />
         <Route path="/curves/:view" element={<CurvesModule />} />
         <Route path="/status" element={<StatusPage />} />

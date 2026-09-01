@@ -2743,3 +2743,25 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .tmc-dot { fill: var(--mut); fill-opacity: .75; }
 .tmc-dot.buy { fill: var(--up); fill-opacity: .85; }
 .tmc-dot.sell { fill: var(--down); fill-opacity: .85; }
+
+/* ---- Первичка (анонсы размещений, внешний источник) ---- */
+.pri-cal .grid tbody tr { cursor: default; }
+.pri-cal .grid tbody td { white-space: nowrap; }
+/* комментарий (серия, оферта, поручители) — единственная длинная колонка:
+   режем её, а не растягиваем таблицу в горизонтальный скролл */
+.pri-comment { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.pri-badge {
+  margin-left: 8px; padding: 1px 5px; font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--bg); background: var(--up);
+}
+.pri-new td { background: var(--hover); }
+.pri-type {
+  display: inline-block; min-width: 58px; margin-right: 8px; font-size: 11px;
+  letter-spacing: 0.04em; color: var(--mut);
+}
+.pri-fl { color: var(--up); }
+.pri-fx { color: var(--mut); }
+.pri-src { display: block; margin-top: 14px; }
+.pri-spread { font-variant-numeric: tabular-nums; }
+/* «≤» приглушён: это признак границы, а не часть числа */
+.pri-le { color: var(--mut); }
