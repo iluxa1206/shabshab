@@ -47,57 +47,44 @@ _REASON = {"new": "заявка", "price": "цена", "spread": "RS", "money": 
            "block": "крупная сделка"}
 
 
-# ХОРОШО/ПЛОХО ЧИТАЕТСЯ ПО СТОРОНЕ, А НЕ ПО ЗНАКУ. Смотрим офферы (покупаем):
-# спред вырос — дают больше, цена упала — берём дешевле, и то и другое зелёное.
-# Смотрим биды (продаём) — зеркально. Объём вне этой симметрии: чем больше
-# денег стоит по устраивающей цене, тем лучше обеим сторонам.
-_UP_IS_GOOD = {("spread", "ask"): True, ("spread", "bid"): False,
-               ("price", "ask"): False, ("price", "bid"): True,
-               ("money", "ask"): True, ("money", "bid"): True}
+def _delta_bit(m: dict, reason: str, metric: str) -> str:
+    """Насколько ушло с прошлого срабатывания — В СКОБКАХ У САМОГО ЧИСЛА:
+    «204 бп (+1)», «29,1м ₽ (+6 %)», «99,97% (−0,60)».
 
+    Дельта живёт при своей метрике, а не отдельной строкой и не в подписи:
+    «на сколько» имеет смысл только рядом с «сколько», и глазу не приходится
+    сопоставлять два места. Единицы те же, что у порогов (services/signals):
+    спред — базисные пункты, цена — пункты цены, объём — проценты.
 
-def _tone(reason: str, side: Optional[str], delta: float) -> str:
-    """Маркер направления: 🟢 — движение в нашу пользу, 🔴 — против.
+    Цвета здесь нет намеренно: знак уже говорит направление, а эмодзи в
+    середине строки рвёт колонку чисел. Хорошо это движение или плохо, видно
+    из стороны в подписи («оффер»).
 
-    В Telegram цвета текста нет вовсе, поэтому цвет несёт эмодзи. Нулевая
-    дельта маркера не получает: красить нечего."""
-    if not delta:
+    Пусто, если сравнивать не с чем: у первого попадания прошлого значения
+    нет вовсе. Пусто и у чужой метрики: скобка стоит только при том числе,
+    из-за которого сообщение и пришло — иначе один и тот же процент повисал бы
+    разом у цены, у объёма и у спреда."""
+    if reason != metric:
         return ""
-    good = _UP_IS_GOOD.get((reason, side or "ask"))
-    if good is None:
-        return ""
-    return "🟢" if (delta > 0) == good else "🔴"
-
-
-def _reason_delta(m: dict, side: Optional[str] = None) -> str:
-    """«🟢 RS +15 бп» / «🔴 объём −30 %» / «🟢 цена −0,6 п.п.» — насколько ушло с
-    прошлого срабатывания и в чью пользу. Единицы те же, что у порогов
-    (services/signals), сторона — та, за которой следит фильтр (см. _tone)."""
-    r = m.get("reason")
-    if r == "new":
-        return "заявка"
-    if r == "money":
+    if reason == "spread":
+        prev, cur = m.get("prev_val_bps"), m.get("val_bps")
+        if prev is None or cur is None or round(cur - prev) == 0:
+            return ""
+        return " (" + f"{cur - prev:+.0f}".replace("-", "−") + ")"
+    if reason == "money":
         prev, cur = m.get("prev_money_ok_rub"), m.get("money_ok_rub")
         if prev is None or cur is None or abs(prev) < 1:
-            return "объём"
-        d = (cur - prev) / abs(prev) * 100.0
-        pct = f"{d:+.0f}".replace("-", "−")
-        # прежнее значение зачёркнутым: видно, откуда пришли, и не надо считать
-        # проценты в уме от текущего числа
-        return f"{_tone(r, side, d)} объём {pct} % (<s>{_money_m(prev)}</s>)".strip()
-    if r == "spread":
-        prev, cur = m.get("prev_val_bps"), m.get("val_bps")
-        if prev is None or cur is None:
-            return "RS"
-        num = f"{cur - prev:+.0f}".replace("-", "−")
-        return f"{_tone(r, side, cur - prev)} RS {num} бп (<s>{prev:.0f}</s>)".strip()
-    if r == "price":
+            return ""
+        pct = (cur - prev) / abs(prev) * 100.0
+        if round(pct) == 0:
+            return ""
+        return " (" + f"{pct:+.0f}".replace("-", "−") + " %)"
+    if reason == "price":
         prev, cur = m.get("prev_price"), m.get("price")
-        if prev is None or cur is None:
-            return "цена"
-        # запятая — только в самом числе: replace по всей строке съедал «п.п.»
-        num = f"{cur - prev:+.2f}".replace(".", ",").replace("-", "−")
-        return f"{_tone(r, side, cur - prev)} цена {num} п.п.".strip()
+        if prev is None or cur is None or round(cur - prev, 2) == 0:
+            return ""
+        # запятая — только в самом числе: replace по всей строке съедал скобку
+        return " (" + f"{cur - prev:+.2f}".replace(".", ",").replace("-", "−") + ")"
     return ""
 
 
@@ -378,34 +365,35 @@ def _fmt_threshold(v: Optional[float]) -> str:
 
 def _match_parts(m: dict, kind: str, side: Optional[str] = None,
                  icons: Optional[dict] = None) -> tuple:
-    """Запись о бумаге пятью частями: (что случилось, шапка, цена, детали, хвост).
+    """Запись о бумаге четырьмя частями: (шапка, цена, детали, хвост).
 
-    Разложено, а не склеено, потому что между третьей и четвёртой частью
-    встаёт СТАКАН: сверху — ради чего открывают сообщение (что сдвинулось,
-    спред, выпуск, цена, объём), дальше книга, а «чем платит и что копировать»
-    читают уже после неё. Хвост — обстоятельства срабатывания (очередь, время,
-    порог): он уезжает в подпись сообщения, к имени фильтра, потому что это уже
-    не про бумагу, а про то, кто и когда позвал.
+    Разложено, а не склеено, потому что между второй и третьей частью встаёт
+    СТАКАН: сверху — ради чего открывают сообщение (спред, выпуск, цена,
+    объём), дальше книга, а «чем платит и что копировать» читают уже после
+    неё. Хвост — обстоятельства срабатывания (очередь, время, порог): он
+    уезжает в подпись сообщения, к имени фильтра, потому что это уже не про
+    бумагу, а про то, кто и когда позвал.
 
-    ЧТО СЛУЧИЛОСЬ — ПЕРВОЙ СТРОКОЙ, над всем остальным. Повторное сообщение по
-    бумаге читают ради одного: куда ушло с прошлого раза. Внизу, под стаканом,
-    эта строка попадала уже за пределы свёрнутой цитаты, и ради неё
-    разворачивали всё сообщение."""
+    ЧТО СДВИНУЛОСЬ — В СКОБКАХ У САМОГО ЧИСЛА («204 бп (+1)»), а не отдельной
+    строкой и не в подписи: дельта имеет смысл только рядом со своей метрикой,
+    и сообщение остаётся на строку короче (см. _delta_bit)."""
     head, sub, foot = [], [], []
-    why = ""
+    reason = m.get("reason") or "new"
 
     # Порядок шапки: спред → выпуск со сроком. Спред первым, потому что по
     # нему решают, стоит ли читать дальше; срок в скобках при имени, потому
     # что «180 бп» у годовой бумаги и у пятилетней — разные новости.
     if m.get("val_bps") is not None:
-        head.append(f"<b>{m['val_bps']:.0f} бп</b>")
+        head.append(f"<b>{m['val_bps']:.0f} бп</b>"
+                    + _delta_bit(m, reason, "spread"))
     years = _fmt_years(m.get("years"))
     head.append(_issue_link(m) + (f" ({years})" if years else ""))
 
     # Цена и объём — ЖИРНЫМ: это две цифры, ради которых сообщение открывают,
     # остальное в строке им подпись.
     money = _short_money(_money_of(m, kind))
-    px = [f"<b>{_num(m['price'])}%</b>"] if m.get("price") is not None else []
+    px = ([f"<b>{_num(m['price'])}%</b>" + _delta_bit(m, reason, "price")]
+          if m.get("price") is not None else [])
 
     formula = _formula(m)
     if formula:
@@ -426,7 +414,7 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
         if m.get("rating"):
             px.append(html.escape(str(m["rating"])))
         if money:
-            px.append(f"<b>{money}</b>")
+            px.append(f"<b>{money}</b>" + _delta_bit(m, reason, "money"))
         # Раньше здесь стоял счёт уровней набора («3 ур») — механика фильтра,
         # а не новость. Отвечаем на вопрос, который задаёт стол: стоит ли эта
         # заявка ПЕРВОЙ в очереди. Не первая — молчим, лишнего слова нет.
@@ -434,14 +422,11 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
             foot.append(f"одна заявка {_num(m['single_px'])}")
         if m.get("best"):
             foot.append("best")
-        # причина ДЕЛЬТОЙ («🔴 объём −6 %»): слово без величины не говорит,
-        # стоит ли отрываться от текущего дела. Повтор идёт наверх сообщения,
-        # первое попадание («заявка») остаётся в хвосте: новость там — сама
-        # бумага, а не то, что она новая.
-        if (m.get("reason") or "new") == "new":
-            foot.append(_REASON.get(m.get("reason") or "", ""))
-        else:
-            why = _reason_delta(m, side) or _REASON.get(m.get("reason") or "", "")
+        # Первое попадание бумаги под условия называем словом: дельты у него
+        # нет вовсе, а «почему пришло» иначе не прочитать. У повторов слово
+        # лишнее — там всё сказала скобка при числе.
+        if reason == "new":
+            foot.append(_REASON["new"])
         ts = _hhmmss(m)
         if ts:
             foot.append(ts)
@@ -456,7 +441,7 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
         sub.append(isin)
 
     head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
-    return (why, head_line, " · ".join(px), " · ".join(b for b in sub if b),
+    return (head_line, " · ".join(px), " · ".join(b for b in sub if b),
             " · ".join(b for b in foot if b))
 
 
@@ -466,8 +451,8 @@ def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
 
     with_foot=False, когда время уезжает в подпись сообщения (одна сделка на
     сообщение): дважды его печатать незачем."""
-    why, head, px, details, foot = _match_parts(m, kind, side, icons)
-    top = "\n".join(p for p in (why, head, px) if p)
+    head, px, details, foot = _match_parts(m, kind, side, icons)
+    top = "\n".join(p for p in (head, px) if p)
     parts = [top, details] + ([foot] if with_foot else [])
     return "\n\n".join(p for p in parts if p)
 
@@ -622,7 +607,7 @@ def _signal_text(buf: dict) -> str:
         # одно сообщение = одна бумага (см. _group): показываем последнее
         # состояние и прикладываем к нему стакан того же такта
         m = ms[-1]
-        why, head, px, details, extra = _match_parts(m, kind, side_key, icons)
+        head, px, details, extra = _match_parts(m, kind, side_key, icons)
         book = _book_pre(m, side_key)
         if n > 1:
             extra = ((extra + " · ") if extra else "") \
@@ -630,10 +615,7 @@ def _signal_text(buf: dict) -> str:
         # стакан ВНУТРИ записи: сразу под ценой, до формулы с ISIN. Шапка от
         # цены отбита пустой строкой — иначе спред, выпуск и цифры сливаются
         # в одну простыню, и глазу негде остановиться.
-        # что сдвинулось — над шапкой и отбито от неё: это заголовок новости,
-        # а спред с выпуском под ним — уже её содержание
-        top = "\n\n".join(p for p in ("\n".join(x for x in (why, head) if x), px)
-                          if p)
+        top = "\n\n".join(p for p in (head, px) if p)
         body = "\n".join(p for p in (top, book, details) if p)
     else:
         # набор одинаковых сделок (см. _group и _trade_key) — одна карточка с
@@ -642,7 +624,7 @@ def _signal_text(buf: dict) -> str:
         m = dict(ms[-1])
         if n > 1:
             m["money_rub"] = sum(x.get("money_rub") or 0 for x in ms)
-        _why, head, px, details, _foot = _match_parts(m, kind, side_key, icons)
+        head, px, details, _foot = _match_parts(m, kind, side_key, icons)
         body = "\n\n".join(p for p in ("\n".join((head, px)).strip(),
                                        details, _breakdown(ms)) if p)
         extra = _trade_time(ms)

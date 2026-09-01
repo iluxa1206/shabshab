@@ -126,16 +126,16 @@ def test_signal_text_caps_breakdown():
 
 
 def test_book_line_layout():
-    """Порядок записи: что случилось → шапка (спред · выпуск со сроком) → цена
-    с рейтингом и объёмом; обстоятельства срабатывания — в подписи."""
+    """Порядок записи: шапка (спред со сдвигом · выпуск со сроком), под ней
+    цена с рейтингом и объёмом; обстоятельства срабатывания — в подписи."""
     txt = _signal_text({"name": "Тест 2", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A109B33", "name": "Газпн3P13R",
                                      "val_bps": 171.0, "price": 99.9, "money_rub": 1e6,
                                      "levels": 1, "years": 1.5, "reason": "money",
                                      "money_ok_rub": 1.06e6, "prev_money_ok_rub": 1e6}]})
     lines = txt.split("\n")
-    why, first, price = lines[0], lines[1], lines[3]
-    assert "объём +6 %" in why, "что сдвинулось — первой строкой"
+    first, price = lines[0], lines[2]
+    assert "(+6 %)" in price, "сдвиг — в скобке у своего числа"
     assert first.startswith("🔴")                      # оффер красный
     # число без подписи: в строке это единственное значение в бп
     assert "171 бп" in first and "R-spread" not in first
@@ -144,7 +144,7 @@ def test_book_line_layout():
     assert first.index("171 бп") < first.index("Газпн3P13R")
     assert "₽" not in first
     assert "<b>99,90%</b>" in price and "1м ₽" in price
-    assert "RU000A109B33" in lines[4], "ISIN — в деталях, за формулой"
+    assert "RU000A109B33" in lines[3], "ISIN — в деталях, за формулой"
     # подпись фильтра — сноской в конце, а не заголовком; без значка: он ничего
     # не добавляет к имени фильтра, а строку начинает мусором. Обстоятельства
     # срабатывания — там же, у имени фильтра.
@@ -203,14 +203,17 @@ def test_signal_text_shows_issue_and_isin_monospace():
 
 
 def test_reason_delta_shows_direction():
-    """Причина повтора — величиной со знаком: «спред −18 бп», а не словом."""
+    """Сдвиг — величиной со знаком В СКОБКЕ ПРИ ЧИСЛЕ: «240 бп (−60)».
+
+    Дельта живёт при своей метрике: «на сколько» имеет смысл только рядом с
+    «сколько», и сообщение остаётся на строку короче."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [{"isin": "RU000A10AU99", "name": "Т",
                                      "val_bps": 240.0, "prev_val_bps": 300.0,
                                      "reason": "spread"}]})
-    assert "RS −60 бп" in txt
-    # прежнее значение зачёркнутым: видно, откуда пришли
-    assert "<s>300</s>" in txt
+    assert "<b>240 бп</b> (−60)" in txt
+    # слова-ярлыка («RS») больше нет: скобка при числе сказала всё сама
+    assert "RS" not in txt
 
 
 # --- снимок стакана в уведомлении о заявке ---
@@ -371,12 +374,12 @@ def test_order_volume_falls_back_when_no_spread_bounds():
 
 
 def test_order_shows_time_then_threshold():
-    """Время срабатывания с секундами, за ним порог фильтра — в подписи; сама
-    причина стоит первой строкой сообщения."""
+    """Время срабатывания с секундами, за ним порог фильтра — в подписи; сам
+    сдвиг стоит в скобке при спреде."""
     txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
                         "matches": [_order_match()]})
     lines = txt.split("\n")
-    assert "RS +15 бп" in lines[0]
+    assert "(+15)" in lines[0]
     sub = [ln for ln in lines if "12:47:02" in ln][0]
     assert sub.index("12:47:02") < sub.index(">1м")
 
@@ -587,7 +590,7 @@ def test_head_order_is_spread_issue_money():
                         "matches": [_order_match(years=1.1,
                                                  level_money_rub=12_100_000)]})
     lines = txt.split("\n")
-    head, price = lines[1], lines[3]
+    head, price = lines[0], lines[2]
     assert "<code>Газпн3P13R</code> (1,1 г)" in head
     assert head.index("168 бп") < head.index("Газпн3P13R")
     assert "12,1м ₽" in price and "₽" not in head
@@ -598,7 +601,7 @@ def test_head_without_maturity_has_no_empty_brackets():
     m = _order_match()
     m.pop("years", None)
     head = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [m]}).split("\n")[1]
+                         "matches": [m]}).split("\n")[0]
     assert "()" not in head and "Газпн3P13R" in head
 
 
@@ -633,7 +636,7 @@ def test_repeat_count_joins_details_line():
 def test_order_rating_goes_after_price():
     """У заявки рейтинг стоит между ценой и объёмом: «почём, чьё, на сколько»."""
     line = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                         "matches": [_order_match(rating="AAA")]}).split("\n")[3]
+                         "matches": [_order_match(rating="AAA")]}).split("\n")[2]
     assert line.index("100,05") < line.index("AAA") < line.index("₽")
 
 
@@ -930,61 +933,54 @@ def test_notify_admins_survives_missing_chats(monkeypatch):
     assert asyncio.run(tg_notify.notify_admins("🛑 тест")) == 0
 
 
-# --- цвет направления: хорошо/плохо читается по стороне, а не по знаку ---
+# --- сдвиг метрики: скобка при своём числе ---
 
-def _why_line(side, **kw):
-    """Первая строка сообщения о повторе — там и стоит дельта."""
-    m = _order_match(**kw)
+def _msg(side="ask", **kw):
     return _signal_text({"name": "ф", "side": side, "kind": "book",
-                         "matches": [m]}).split("\n")[0]
+                         "matches": [_order_match(**kw)]})
 
 
-def test_spread_tone_follows_side():
-    """Оффер: спред вырос — за бумагу дают больше, маркер зелёный. Бид —
-    зеркально: рост спреда значит, что у нас берут дешевле."""
-    assert _why_line("ask", val_bps=180.0, prev_val_bps=153.0).startswith("🟢")
-    assert _why_line("ask", val_bps=140.0, prev_val_bps=153.0).startswith("🔴")
-    assert _why_line("bid", val_bps=180.0, prev_val_bps=153.0).startswith("🔴")
-    assert _why_line("bid", val_bps=140.0, prev_val_bps=153.0).startswith("🟢")
+def test_delta_stands_next_to_its_own_number():
+    """Скобка со сдвигом стоит при ТОЙ метрике, из-за которой пришло
+    сообщение, и только при ней: иначе один и тот же процент повисал бы разом
+    у цены, у объёма и у спреда."""
+    spread = _msg().split("\n")
+    assert "<b>168 бп</b> (+15)" in spread[0]
+    assert "(" not in spread[2], "цена и объём не двигались — скобок нет"
+
+    money = _msg(reason="money", money_ok_rub=8.2e6,
+                 prev_money_ok_rub=7.7e6).split("\n")
+    assert "(+15)" not in money[0], "спред не двигался — скобки у него нет"
+    assert "₽</b> (+6 %)" in money[2]
+
+    price = _msg(reason="price", price=99.5, prev_price=100.05).split("\n")
+    assert "<b>99,50%</b> (−0,55)" in price[2]
 
 
-def test_price_tone_is_mirror_of_spread():
-    """Цена на оффере вниз — берём дешевле, это зелёное."""
-    assert _why_line("ask", reason="price", price=99.5,
-                     prev_price=100.05).startswith("🟢")
-    assert _why_line("ask", reason="price", price=100.5,
-                     prev_price=100.05).startswith("🔴")
-    assert _why_line("bid", reason="price", price=100.5,
-                     prev_price=100.05).startswith("🟢")
+def test_delta_is_plain_signed_number():
+    """Без эмодзи и без «было»: знак говорит направление, сторона стоит в
+    подписи, а цветной значок посреди строки рвал бы колонку чисел."""
+    txt = _msg()
+    assert "🟢" not in txt and "<s>" not in txt
+    assert txt.split("\n")[0].startswith("🔴"), "маркер строки — сторона стакана"
 
 
-def test_volume_tone_is_side_agnostic():
-    """Больше денег по устраивающей цене — хорошо обеим сторонам."""
-    for side in ("ask", "bid"):
-        assert _why_line(side, reason="money", money_ok_rub=9e6,
-                         prev_money_ok_rub=8e6).startswith("🟢")
-        assert _why_line(side, reason="money", money_ok_rub=7e6,
-                         prev_money_ok_rub=8e6).startswith("🔴")
+def _head_before_name(txt: str) -> str:
+    """Шапка до имени выпуска: дальше начинаются свои скобки со сроком."""
+    return txt.split("\n")[0].split("<code>")[0]
 
 
-def test_change_line_stands_first():
-    """Что сдвинулось — ПЕРВОЙ строкой, до шапки и до стакана: повтор читают
-    ради этого, а под свёрнутой цитатой строку не видно вовсе."""
-    m = _order_match(book=_BOOK)
-    lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                          "matches": [m]}).split("\n")
-    assert "RS +15 бп" in lines[0]
-    assert "Газпн3P13R" in lines[1], "шапка — сразу под ней"
-    quote = next(i for i, ln in enumerate(lines) if ln.startswith("<blockquote"))
-    assert quote > 1, "стакан ниже дельты"
+def test_no_delta_when_nothing_moved():
+    """Сдвиг меньше единицы округления — скобки нет вовсе: «(+0)» это шум."""
+    assert "(" not in _head_before_name(_msg(val_bps=168.2, prev_val_bps=168.0))
 
 
 def test_new_order_keeps_its_word_in_the_footer():
-    """Первое попадание наверх не выносим: новость там — сама бумага."""
-    lines = _signal_text({"name": "ф", "side": "ask", "kind": "book",
-                          "matches": [_order_match(reason="new")]}).split("\n")
-    assert lines[0].startswith("🔴"), "первая строка — шапка со стороной"
-    assert "заявка" in lines[-1]
+    """Первое попадание называем словом: дельты у него нет, а «почему пришло»
+    иначе не прочитать."""
+    txt = _msg(reason="new")
+    assert "(" not in _head_before_name(txt), "у new сравнивать не с чем"
+    assert "заявка" in txt.split("\n")[-1]
 
 
 # --- порог штук: копеечные заявки не занимают строку ---
