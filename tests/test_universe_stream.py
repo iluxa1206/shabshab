@@ -818,3 +818,42 @@ def test_crunch_stops_at_deadline_and_returns_pending():
     pend.clear()
     rows2 = us._crunch(batch, ctx, enrich=_enrich_counter(calls), pending=pend)
     assert len(rows2) == len(batch) and pend == []
+
+
+def test_sides_batch_adapts_to_measured_cost():
+    """Размер пачки сторон — от ФАКТИЧЕСКОЙ цены бумаги, а не жёсткого числа.
+
+    При жёстких 100 за такт дешёвая ветка съедала 4–7 секунд ИЗ МИНУТЫ (замер
+    на проде 01.09.2026) — тяжёлый поток простаивал, а прочерки расходились по
+    рынку минутами."""
+    prev = us._sides_ms_avg
+    try:
+        us._sides_ms_avg = 0.0                 # замера ещё нет — прежний потолок
+        assert us._sides_batch() == us._MAX_SIDES_BATCH
+        us._sides_ms_avg = 10.0                # дешёвая бумага — пачка больше
+        assert us._sides_batch() == int(us._SIDES_BUDGET_SEC * 1000 / 10)
+        us._sides_ms_avg = 200.0               # дорогая — не ниже прежнего пола
+        assert us._sides_batch() == us._MAX_SIDES_BATCH
+        us._sides_ms_avg = 0.1                 # аномально дёшево — потолок держит
+        assert us._sides_batch() == us._SIDES_BATCH_MAX
+    finally:
+        us._sides_ms_avg = prev
+
+
+def test_blank_sides_count_measures_backlog():
+    """Число ждущих сторон — в минутную сводку: по нему видно, расходится
+    очередь или стоит."""
+    from services.market_data import market_cache
+    prev = market_cache.get("universe_metrics")
+    try:
+        market_cache["universe_metrics"] = {
+            "RU000A100001": {"bid": 99.0, "ask": 101.0, "yoi_bid": 200, "yoi_ask": None},
+            "RU000A100002": {"bid": 99.0, "ask": None, "yoi_bid": None, "yoi_ask": None},
+            "RU000A100003": {"bid": None, "ask": None, "yoi_bid": None, "yoi_ask": None},
+        }
+        assert us._blank_sides_count() == 2    # оффер первой + бид второй
+    finally:
+        if prev is None:
+            market_cache.pop("universe_metrics", None)
+        else:
+            market_cache["universe_metrics"] = prev
