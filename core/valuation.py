@@ -4,7 +4,7 @@ import math
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from core.forwards import DiscountCurve, add_months, yf_act365
 
@@ -1140,8 +1140,18 @@ def pv_cashflows_with_dm(
     # Якорь дисконта = дата поставки (T+1 раб): PV сравнивается с dirty,
     # который платится на settle, — дисконтируем платежи к settle
     settle = settle_date(calc_date)
-    pay_dates_set = {cf.pay_date for cf in cashflows if cf.pay_date > settle}
-    grid = sorted(list(pay_dates_set))
+    # СУММЫ ПО ДАТАМ — одним проходом. Раньше каждая дата сетки заново
+    # перебирала весь поток («sum(... for cf in cashflows if cf.pay_date == d)»),
+    # то есть PV был квадратичным по числу купонов. У обычной бумаги (20–40
+    # платежей) это незаметно, а у тридцатилетнего ипотечного агента с
+    # ежемесячным купоном (ИАДОМ 1P62 — 368 платежей) один PV стоил 135 тысяч
+    # сравнений, и солвер, зовущий PV полтора десятка раз, держал ядро 700 мс
+    # на одну бумагу.
+    amounts: Dict[date, float] = {}
+    for cf in cashflows:
+        if cf.pay_date > settle:
+            amounts[cf.pay_date] = amounts.get(cf.pay_date, 0.0) + cf.amount_rub
+    grid = sorted(amounts)
 
     df_dm = 1.0
     prev = settle
@@ -1167,8 +1177,7 @@ def pv_cashflows_with_dm(
             raise ValueError(f"Unknown base: {bond.base}")
             
         # Сумма всех CF в эту дату (может быть и купон, и погашение)
-        amount_on_d = sum(cf.amount_rub for cf in cashflows if cf.pay_date == d)
-        pv += amount_on_d * df_dm
+        pv += amounts[d] * df_dm
         
         prev = d
         

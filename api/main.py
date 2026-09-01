@@ -1165,6 +1165,31 @@ def daemons_state() -> dict:
             for name, t in _daemons.items()}
 
 
+# Пауза сборки мусора, с которой она попадает в лог. Полная сборка (gen2) на
+# большом heap (кэш уровней, контексты, memo — под сотню мегабайт) занимает
+# сотни миллисекунд и НЕ ОСТАВЛЯЕТ Python-кадров: сторож лага в такой момент
+# видит спящие потоки и писал «C-код/сеть». Меряем прямо, а не по стекам.
+GC_WARN_MS = float(os.getenv("GC_WARN_MS", "200"))
+
+
+def _install_gc_watch() -> None:
+    """Хук на сборку мусора: длинные паузы — в лог, поимённо по поколению."""
+    import gc
+    state = {"t0": 0.0}
+
+    def _cb(phase, info):
+        if phase == "start":
+            state["t0"] = time.perf_counter()
+            return
+        dt = (time.perf_counter() - state["t0"]) * 1000.0
+        if dt >= GC_WARN_MS:
+            logger.warning("GC поколения %s: пауза %.0f мс (собрано %s, мусора %s)",
+                           info.get("generation"), dt, info.get("collected"),
+                           info.get("uncollectable"))
+
+    gc.callbacks.append(_cb)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from concurrent.futures import ThreadPoolExecutor
@@ -1172,6 +1197,7 @@ async def lifespan(app: FastAPI):
         ThreadPoolExecutor(max_workers=API_POOL_WORKERS, thread_name_prefix="api"))
     from services.pools import BG_WORKERS
     logger.info("пулы потоков: api=%d, bg=%d, heavy=1", API_POOL_WORKERS, BG_WORKERS)
+    _install_gc_watch()
 
     from services.portfolio_db import init_db
     init_db()  # схема spread_daily/bar_hourly/trade_tick (идемпотентно)
