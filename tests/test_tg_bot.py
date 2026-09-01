@@ -1068,3 +1068,33 @@ def test_daystat_lists_isins_with_reasons(linked):
 
 def test_daystat_says_nothing_happened(linked):
     assert "не было" in _cmd("/daystat")
+
+
+def test_arrow_does_not_move_to_a_hidden_level(monkeypatch):
+    """Порог штук выкинул строку набора — метка «←» не переезжает на соседа.
+
+    Регресс саморевью 01.09: hit-цены считались по ПОКАЗАННОЙ лестнице, и
+    сообщение указывало на уровень, которого набор не касался."""
+    from services import screener_core as core
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[99.90, 3], [99.92, 5000], [99.95, 8000]], "b": [[99.80, 700]]}
+    book = core.book_snapshot(depth, {}, 1000.0, levels=3, min_qty=100,
+                              side="ask", taken=2)
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(book=book, levels=2,
+                                                 single_px=None)]})
+    marked = [ln for ln in txt.split("\n") if "←" in ln]
+    assert len(marked) == 1 and "99,92" in marked[0]
+    assert "99,95" not in "".join(marked), "чужой уровень не помечаем"
+
+
+def test_empty_book_explains_itself(monkeypatch):
+    """Порог штук съел книгу целиком — пишем почему: пустое место под ценой
+    читается как поломка, а причина в своей же настройке."""
+    from services import screener_core as core
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    book = core.book_snapshot({"a": [[99.9, 3]], "b": [[99.8, 5]]}, {}, 1000.0,
+                              levels=4, min_qty=100, side="ask", taken=1)
+    txt = _signal_text({"name": "ф", "side": "ask", "kind": "book",
+                        "matches": [_order_match(book=book, book_min_qty=100)]})
+    assert "в стакане нет заявок от 100 шт" in txt

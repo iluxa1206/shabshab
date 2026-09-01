@@ -366,6 +366,7 @@ CREATE TABLE IF NOT EXISTS signal_state(
   last_event_at TEXT,     -- когда по ней последний раз звонило (кулдаун)
   last_reason TEXT,       -- по какой причине звонило: кулдаун гасит ПОВТОР ТОЙ ЖЕ
   best_val_bps REAL,      -- планка режима «только улучшение»: лучший спред за жизнь строки
+  best_money_rub REAL,    -- та же планка для фильтров без спреда: лучший объём
   updated_at TEXT NOT NULL,
   PRIMARY KEY(filter_id, isin)
 );
@@ -465,6 +466,10 @@ _MIGRATIONS = [
     # ПЛАНКА режима «только улучшение» (см. signals.detect_events): лучший
     # спред бумаги за время её жизни в наборе. Молчим, пока рынок его не побил.
     "ALTER TABLE signal_state ADD COLUMN best_val_bps REAL",
+    # Вторая планка — для фильтров БЕЗ границ спреда («крупные заявки в ААА»):
+    # спред у них не считается вовсе, и по best_val_bps такой фильтр молчал бы
+    # вечно. Там улучшение меряется деньгами по условиям фильтра.
+    "ALTER TABLE signal_state ADD COLUMN best_money_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN money_ok_rub REAL",
     "ALTER TABLE signal_events ADD COLUMN prev_money_ok_rub REAL",
     # деньги ПО ЦЕНЕ СИГНАЛА (весь уровень стакана, а не набранный лимит и не

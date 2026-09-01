@@ -1421,3 +1421,59 @@ def test_day_stats_counts_by_isin_and_reason():
     assert row["isin"] == "RU000A0000A1" and row["total"] == 2
     assert row["reasons"] == {"new": 1, "spread": 1}
     assert st["filters"][0] == ("стат", 2)
+
+
+def test_improve_only_falls_back_to_volume_without_spread(monkeypatch):
+    """Фильтр БЕЗ границ спреда всё равно должен звонить.
+
+    Регресс саморевью 01.09: «крупные заявки в ААА» описываются без спреда,
+    Y-IDX у таких событий не считается, планка по спреду пуста — и фильтр после
+    первого срабатывания молчал до конца дня. Мерить остаётся то единственное,
+    что он и просил: деньги по своим условиям."""
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "объём", {"min_money_rub": 1e6, "ratings": ["AAA"]})
+
+    def fire(money):
+        m = {"isin": "RU000A0000A1", "name": "Т", "val_bps": None,
+             "price": 100.0, "money_rub": 1e6, "money_ok_rub": money}
+        return [e["reason"] for e in signals.detect_events(
+            f["id"], USER, "ask", 10, [m], 1e6, improve_only=True)]
+
+    assert fire(5e6) == ["new"]
+    assert fire(5.15e6) == [], "+3 % — ниже порога повтора"
+    assert fire(1e7) == ["money"], "рекорд объёма побит"
+    assert fire(2e6) == [], "объём упал — не улучшение"
+    assert fire(1e7) == [], "вернулись к рекорду, но не побили его"
+    assert fire(1.5e7) == ["money"]
+
+
+def test_spread_planka_wins_when_spread_exists(monkeypatch):
+    """Если спред считается, планка по нему — объём в режиме улучшения молчит
+    (долив в стакан не улучшает цену)."""
+    monkeypatch.setattr(signals, "COOLDOWN_MIN", 0.0)
+    f = signals.create(USER, "спред", {"spread_min": 100, "min_money_rub": 1e6})
+
+    def fire(val, money):
+        m = {"isin": "RU000A0000A1", "name": "Т", "val_bps": val, "price": 100.0,
+             "money_rub": 1e6, "money_ok_rub": money}
+        return [e["reason"] for e in signals.detect_events(
+            f["id"], USER, "ask", 10, [m], 1e6, improve_only=True)]
+
+    assert fire(200.0, 5e6) == ["new"]
+    assert fire(200.0, 5e7) == [], "объём вырос вдесятеро — спред тот же"
+    assert fire(230.0, 5e6) == ["spread"]
+
+
+def test_book_snapshot_marks_taken_levels_from_full_book(monkeypatch):
+    """Метка «здесь сработало» ставится по ПОЛНОЙ книге.
+
+    Регресс саморевью 01.09: порог штук выкидывает строки из лестницы, и метка,
+    посчитанная по показанным уровням, переезжала на уровень, которого набор не
+    касался."""
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[99.90, 3], [99.92, 5000], [99.95, 8000]], "b": [[99.80, 700]]}
+    book = core.book_snapshot(depth, {}, 1000.0, levels=3, min_qty=100,
+                              side="ask", taken=2)
+    # набор съел 99,90 (скрыт порогом) и 99,92 — метка только на втором
+    assert book["hit"] == [99.90, 99.92]
+    assert [l["price"] for l in book["asks"]] == [99.95, 99.92]

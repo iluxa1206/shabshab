@@ -534,7 +534,9 @@ def vwap_passes(v: Optional[dict], want_rub: float) -> bool:
 def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
                   accrued: float = 0.0, levels: int = 4,
                   isin: Optional[str] = None,
-                  min_qty: Optional[float] = None) -> dict:
+                  min_qty: Optional[float] = None,
+                  side: Optional[str] = None,
+                  taken: Optional[int] = None) -> dict:
     """Лестница стакана НА МОМЕНТ СОБЫТИЯ: по levels уровней с каждой стороны,
     у каждого — цена, деньги и Y-IDX.
 
@@ -551,7 +553,12 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     попадают, а их место занимают более глубокие (levels уровней остаётся
     levels). Это ТОЛЬКО показ: спред и объём фильтра считаются по полной книге,
     иначе порог менял бы смысл самих условий. Заявка на три бумаги в стакане
-    стоит, но читателю сообщения не говорит ничего, а строку занимает."""
+    стоит, но читателю сообщения не говорит ничего, а строку занимает.
+
+    side/taken — сторона сигнала и сколько уровней съел набор. По ним считается
+    `hit`: ЦЕНЫ уровней набора, взятые из ПОЛНОЙ книги. Считать их потом, по
+    показанной лестнице, нельзя — порог штук выкидывает из неё строки, и метка
+    «здесь сработало» переезжала на уровень, которого набор не касался."""
     d = depth_side or {}
 
     def side_levels(key: str) -> list:
@@ -572,6 +579,13 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     pxs = [_px(l) for key in ("a", "b") for l in shown[key]]
     exact_map = exact_y_idx_map(isin, pxs)
 
+    # лестница стороны в depth идёт ОТ ЛУЧШЕЙ цены — тем же порядком, каким её
+    # ест vwap_for, поэтому набор это ровно первые taken уровней
+    hit = []
+    if side and taken:
+        full = (d.get("a" if side == "ask" else "b") or [])[:int(taken)]
+        hit = [px for px in (_px(l) for l in full) if px is not None]
+
     def level_y(px: float, side: str) -> Optional[float]:
         # без контекста/НКД числа нет — прочерк честнее наклона от чужого якоря
         return exact_map.get(round(float(px), _EXACT_PX_DIGITS))
@@ -587,7 +601,8 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
                         "y_idx": level_y(px, "ask" if key == "a" else "bid")})
         return out if best_first else list(reversed(out))
 
-    return {"asks": side_rows("a", False), "bids": side_rows("b", True)}
+    return {"asks": side_rows("a", False), "bids": side_rows("b", True),
+            "hit": hit}
 
 
 def money_in_spread(levels, row: dict, side: str, lo: Optional[float],

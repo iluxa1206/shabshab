@@ -476,6 +476,14 @@ def _pad(s: str, w: int) -> str:
     return _FIG * max(0, w - len(s)) + s
 
 
+def _qty_txt(v: Optional[float]) -> str:
+    """Количество бумаг словами лестницы: до сотни тысяч точным числом
+    («38», «24 950»), крупнее — порядком («120к»)."""
+    if not v:
+        return "0"
+    return f"{v:,.0f}".replace(",", _FIG) if abs(v) < 100_000 else _compact(v)
+
+
 def _book_qty(lvl: dict) -> str:
     """Объём уровня В БУМАГАХ — в колонку фиксированной ширины.
 
@@ -489,8 +497,7 @@ def _book_qty(lvl: dict) -> str:
     # до сотни тысяч — точное число («38», «24 950»): в стакане облигаций это
     # обычный размер заявки, и «0к» вместо него бесполезно. Крупнее — порядок
     # («120к»), иначе колонка не влезает в экран телефона.
-    txt = (f"{v:,.0f}".replace(",", _FIG) if abs(v) < 100_000 else _compact(v))
-    return _pad(txt, _W_QTY)
+    return _pad(_qty_txt(v), _W_QTY)
 
 
 def _book_pre(m: dict, side: Optional[str]) -> str:
@@ -504,6 +511,13 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
     book = m.get("book") or {}
     asks, bids = book.get("asks") or [], book.get("bids") or []
     if not asks and not bids:
+        # Порог штук мог выкинуть книгу целиком. Молчать нельзя: пустое место
+        # под ценой читается как поломка, а причина — своя же настройка.
+        if m.get("book_min_qty"):
+            # порог печатаем так же, как количество в самой лестнице: точным
+            # числом до сотни тысяч, дальше порядком («0,1к» вместо «100» —
+            # это про деньги, а не про штуки)
+            return f"<i>в стакане нет заявок от {_qty_txt(m['book_min_qty'])} шт</i>"
         return ""
     px = m.get("single_px") if m.get("single_px") is not None else m.get("price")
 
@@ -514,11 +528,18 @@ def _book_pre(m: dict, side: Optional[str]) -> str:
     taken = m.get("levels") if m.get("single_px") is None else None
 
     # Цены, ПО КОТОРЫМ посчитан сигнал: у одиночной заявки — своя, у набора —
-    # первые taken уровней стороны сигнала, считая ОТ ЛУЧШЕГО. Помечаем по
-    # цене, а не по номеру строки: порядок сторон в лестнице биржевой, и
-    # индекс в ней не совпадает с порядком набора.
-    near_best = list(bids) if side == "bid" else list(reversed(asks))
-    if taken:
+    # уровни, которые он съел. Помечаем по цене, а не по номеру строки:
+    # порядок сторон в лестнице биржевой, и индекс в ней не совпадает с
+    # порядком набора.
+    #
+    # Список приходит готовым из снимка (book['hit']): там он посчитан по
+    # ПОЛНОЙ книге, до того как порог штук выкинул мелочь. Считать его здесь,
+    # по показанной лестнице, значило бы двигать метку вслед за скрытыми
+    # строками. Фолбэк — для событий из старого буфера, где поля ещё нет.
+    if taken and book.get("hit"):
+        hit_px = list(book["hit"])
+    elif taken:
+        near_best = list(bids) if side == "bid" else list(reversed(asks))
         hit_px = [l["price"] for l in near_best[:taken] if l.get("price") is not None]
     else:
         hit_px = [px] if px is not None else []

@@ -459,6 +459,24 @@ def _new_best(side: str, best: Optional[float], cur: Optional[float]) -> Optiona
     return max(best, cur) if side == "ask" else min(best, cur)
 
 
+def _improved_money(best: Optional[float], cur: Optional[float], pct: float) -> bool:
+    """Побит ли РЕКОРД ОБЪЁМА — планка фильтров, у которых спреда нет.
+
+    «Крупные заявки в ААА» описываются без границ спреда, и Y-IDX у таких
+    событий не считается вовсе: планка по спреду там пуста, и фильтр после
+    первого срабатывания молчал бы до конца дня. Мерить остаётся то
+    единственное, что он и просил, — деньги по своим условиям; улучшение здесь
+    однозначно, больше значит больше.
+
+    Порог — тот же change_pct, что у обычного повтора по объёму: рекорд,
+    побитый на сто рублей, не новость."""
+    if cur is None:
+        return False
+    if not best:
+        return True
+    return cur >= best * (1.0 + max(pct, 0.0) / 100.0)
+
+
 def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                   matches: List[dict], want_money: Optional[float],
                   repeat_on_money: bool = True,
@@ -490,8 +508,8 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
     with _lock, _connect() as c:
         known = {r["isin"]: r for r in c.execute(
             "SELECT isin, val_bps, price, money_rub, money_ok_rub, last_seen_at, "
-            "last_event_at, last_reason, best_val_bps FROM signal_state "
-            "WHERE filter_id=?", (fid,)).fetchall()}
+            "last_event_at, last_reason, best_val_bps, best_money_rub "
+            "FROM signal_state WHERE filter_id=?", (fid,)).fetchall()}
 
         for m in matches:
             prev = known.get(m["isin"])
@@ -503,10 +521,18 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
             if prev is None or returned:
                 reason = "new"
             elif improve_only:
-                # планка вместо прошлого значения: молчим, пока рекорд цел
-                reason = ("spread"
-                          if _improved(side, prev["best_val_bps"], m.get("val_bps"))
-                          else None)
+                # Планка вместо прошлого значения: молчим, пока рекорд цел.
+                # По какой метрике мерить — решает сам фильтр: есть спред —
+                # по спреду, нет (фильтр без его границ) — по деньгам, иначе
+                # мерить было бы нечем и повтор не пришёл бы никогда.
+                if m.get("val_bps") is not None or prev["best_val_bps"] is not None:
+                    reason = ("spread"
+                              if _improved(side, prev["best_val_bps"], m.get("val_bps"))
+                              else None)
+                else:
+                    reason = ("money" if _improved_money(
+                        prev["best_money_rub"], m.get("money_ok_rub"), change_pct)
+                        else None)
                 since = _age_min(prev["last_event_at"], now_dt)
                 if reason and since is not None and since < COOLDOWN_MIN:
                     reason = None
@@ -557,25 +583,31 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                 # «Заявка» (первое попадание или возврат после долгого
                 # отсутствия) планку ОБНУЛЯЕТ: история началась заново.
                 best_prev = prev["best_val_bps"] if prev else None
+                money_prev = prev["best_money_rub"] if prev else None
                 if reason == "new":
-                    best = m.get("val_bps")
+                    best, best_money = m.get("val_bps"), m.get("money_ok_rub")
                 elif reason:
                     best = _new_best(side, best_prev, m.get("val_bps"))
+                    # объём — всегда «больше значит лучше», сторона ни при чём
+                    best_money = max(money_prev or 0.0, m.get("money_ok_rub") or 0.0) \
+                        or None
                 else:
-                    best = best_prev
+                    best, best_money = best_prev, money_prev
                 c.execute(
                     "INSERT INTO signal_state(filter_id,isin,val_bps,price,money_rub,"
                     "money_ok_rub,last_seen_at,last_event_at,last_reason,best_val_bps,"
-                    "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                    "best_money_rub,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(filter_id,isin) DO UPDATE SET val_bps=excluded.val_bps, "
                     "price=excluded.price, money_rub=excluded.money_rub, "
                     "money_ok_rub=excluded.money_ok_rub, last_seen_at=excluded.last_seen_at, "
                     "last_event_at=excluded.last_event_at, last_reason=excluded.last_reason, "
                     "best_val_bps=excluded.best_val_bps, "
+                    "best_money_rub=excluded.best_money_rub, "
                     "updated_at=excluded.updated_at",
                     (fid, m["isin"], m.get("val_bps"), m.get("price"),
                      m.get("money_rub"), m.get("money_ok_rub"), now_iso,
-                     now_iso if reason else None, reason, best, now_iso))
+                     now_iso if reason else None, reason, best, best_money,
+                     now_iso))
             else:
                 # присутствие отмечаем всегда: иначе бумага, спокойно стоящая в
                 # наборе, через полчаса «протухла» бы и позвонила как новая
@@ -735,10 +767,13 @@ async def run_cycle() -> int:
                                 ((depth_map.get(e["isin"]) or {}).get("a") or [])[:3])
                 except Exception as _de:
                     logger.warning("signal diag %s: %s", e.get("isin"), _de)
-                tg_events.append(dict(e, book=book_snapshot(
+                tg_events.append(dict(e, book_min_qty=f["params"].get("book_min_qty"),
+                                      book=book_snapshot(
                     depth_map.get(e["isin"]), row,
                     row.get("face_px") or 1000.0, row.get("accrued_settle") or 0.0,
-                    isin=e["isin"], min_qty=f["params"].get("book_min_qty"))))
+                    isin=e["isin"], min_qty=f["params"].get("book_min_qty"),
+                    side=f["params"]["side"],
+                    taken=e.get("levels") if e.get("single_px") is None else None)))
             tg_notify.enqueue_signal(f["user_email"], f["id"], f["name"],
                                      f["params"]["side"], tg_events,
                                      target_id=f.get("tg_target_id"))

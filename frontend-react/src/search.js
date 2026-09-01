@@ -121,14 +121,6 @@ export function matchTokens(hay, tokens, flat) {
   return true;
 }
 
-// готовый предикат по строке запроса (пустой запрос → null: фильтр не нужен)
-export function makeBondFilter(query) {
-  const tokens = tokenize(query);
-  if (!tokens.length) return null;
-  const flat = tokens.join("");
-  return (b) => matchTokens(bondHaystack(b), tokens, flat);
-}
-
 /**
  * Отбор ЛЮБОГО списка по одному текстовому полю — теми же правилами, что и
  * рынок: токены, допуск опечатки, гомоглифы, запасная раскладка.
