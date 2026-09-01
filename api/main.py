@@ -1263,6 +1263,17 @@ async def lifespan(app: FastAPI):
     from services.yidx_sentinel import run_forever as _yidx_sentinel
     _daemon("yidx-sentinel", _yidx_sentinel)
     yield
+    # СНИМОК ВИТРИН ПЕРЕД ОСТАНОВКОЙ. Периодический снимок движка ловит
+    # случайный момент (раз в 2 минуты), а редеплой чаще всего застаёт как раз
+    # прогретое состояние — его и сохраняем, чтобы новый контейнер поднял
+    # полную таблицу вместо прочерков (см. services/metrics_persist).
+    try:
+        from services.universe_stream import save_snapshot_now
+        n = await save_snapshot_now()
+        if n:
+            logger.info("остановка: снимок метрик сохранён (%d строк)", n)
+    except Exception as e:
+        logger.warning("остановка: снимок метрик не сохранён: %s", e)
     _live = set(_daemons.values())
     for _t in _live:
         _t.cancel()

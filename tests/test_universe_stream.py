@@ -857,3 +857,85 @@ def test_blank_sides_count_measures_backlog():
             market_cache.pop("universe_metrics", None)
         else:
             market_cache["universe_metrics"] = prev
+
+
+def test_snapshot_restore_fills_only_missing(monkeypatch):
+    """Снимок прошлой сессии заполняет ТОЛЬКО пустые места витрины.
+
+    Пока движок стартовал, часть бумаг он мог посчитать сам — эти числа свежее
+    снимка, и затирать их значит показать в таблице шаг назад."""
+    from services.market_data import market_cache
+    prev = market_cache.get("universe_metrics")
+    us._snapshot_restored = False
+    try:
+        market_cache["universe_metrics"] = {"RU000A100001": {"last": 100.0, "yoi": 999}}
+        monkeypatch.setattr(
+            "services.metrics_persist.load",
+            lambda **kw: {"universe": {"RU000A100001": {"last": 100.0, "yoi": 100},
+                                       "RU000A100002": {"last": 99.0, "yoi": 200}},
+                          "fixed": {}, "ts": 0.0})
+        ctx = {"calc_date": "2026-09-01", "version": ("2026-09-01", "fp1")}
+        assert us._restore_snapshot(ctx, market_cache) == 1
+        um = market_cache["universe_metrics"]
+        assert um["RU000A100001"]["yoi"] == 999      # своё, не из снимка
+        assert um["RU000A100002"]["yoi"] == 200      # прочерк закрыт снимком
+
+        # ВТОРОЙ РАЗ НЕ ПОДНИМАЕМ: снимок нужен на старте, а дальше он всегда
+        # старее того, что уже посчитано в этой сессии
+        assert us._restore_snapshot(ctx, market_cache) == 0
+    finally:
+        us._snapshot_restored = False
+        if prev is None:
+            market_cache.pop("universe_metrics", None)
+        else:
+            market_cache["universe_metrics"] = prev
+
+
+def test_snapshot_merges_by_price(monkeypatch):
+    """Снимок доливает числа В СУЩЕСТВУЮЩУЮ строку — но только пустые места и
+    только там, где цена не изменилась.
+
+    Поллер юниверса создаёт строки раньше движка, поэтому «класть строку
+    целиком, если её нет» не срабатывало ни разу: ключ есть, спредов нет (прод
+    01.09.2026 — «снимок поднят: 0 строк»). А число, посчитанное по ДРУГОЙ
+    цене, брать нельзя: в таблице окажется свежая цена со спредом от прежней."""
+    cur = {"last": 100.0, "bid": 99.5, "ask": None, "yoi": None, "yoi_bid": None}
+    snap = {"last": 100.0, "bid": 99.0, "ask": 101.0,
+            "yoi": 210, "yoi_bid": 220, "yoi_ask": 190}
+    assert us._merge_snapshot_row(cur, snap) is True
+    assert cur["yoi"] == 210            # цена сделки та же — число берём
+    assert cur["yoi_bid"] is None       # бид уехал 99.5 против 99.0 — не берём
+    assert "yoi_ask" not in cur or cur["yoi_ask"] is None   # оффера в строке нет
+
+    # своё число снимок не трогает, даже если цена совпала
+    cur2 = {"last": 100.0, "yoi": 999}
+    assert us._merge_snapshot_row(cur2, {"last": 100.0, "yoi": 210}) is False
+    assert cur2["yoi"] == 999
+
+
+def test_save_snapshot_now_uses_last_ctx(monkeypatch):
+    """Снимок при остановке берёт день и кривую из ПОСЛЕДНЕГО такта, а не
+    собирает день заново: сервер уже гасят, ходить в сеть там нечем и некогда."""
+    import asyncio as _aio
+    from services.market_data import market_cache
+    seen = {}
+
+    def fake_save(**kw):
+        seen.update(kw)
+        return len(kw["universe"])
+
+    monkeypatch.setattr("services.metrics_persist.save", fake_save)
+    prev_ctx, prev_um = us._last_ctx, market_cache.get("universe_metrics")
+    try:
+        us._last_ctx = None
+        assert _aio.run(us.save_snapshot_now()) == 0      # такта ещё не было
+        us._last_ctx = {"calc_date": "2026-09-01", "version": ("2026-09-01", "fp1")}
+        market_cache["universe_metrics"] = {"RU000A100001": {"yoi": 210}}
+        assert _aio.run(us.save_snapshot_now()) == 1
+        assert seen["calc_date"] == "2026-09-01" and seen["curves_fp"] == "fp1"
+    finally:
+        us._last_ctx = prev_ctx
+        if prev_um is None:
+            market_cache.pop("universe_metrics", None)
+        else:
+            market_cache["universe_metrics"] = prev_um

@@ -1744,6 +1744,119 @@ async def _warm_pass(ctx: dict, wsmod, market_cache: dict, tick0: float) -> None
             return
 
 
+# СНИМОК МЕТРИК НА ДИСК: рестарт не должен начинаться с пустой витрины —
+# см. services/metrics_persist. Пишем не чаще, чем раз в этот интервал: файл
+# небольшой, но и смысла писать его каждый такт нет.
+_SNAPSHOT_EVERY_SEC = float(os.getenv("METRICS_SNAPSHOT_EVERY_SEC", "120"))
+_snapshot_at = 0.0
+_snapshot_restored = False
+# Последний контекст дня: снимку при остановке нужны calc_date и отпечаток
+# кривых, а собирать день заново на выходе — лишняя сеть в момент, когда сервер
+# уже гасят.
+_last_ctx: Optional[dict] = None
+
+
+def _restore_snapshot(ctx: dict, market_cache: dict) -> int:
+    """Поднять строки прошлой сессии, если они про этот день и эту кривую.
+
+    Числа ложатся в витрину КАК ЕСТЬ и живут ровно до первого пересчёта своей
+    бумаги: цена сделки, сдвинувшаяся за время простоя, поставит её в очередь
+    обычным порядком. Смысл не в том, чтобы сэкономить пересчёт, а в том, чтобы
+    в первые минуты после рестарта в таблице стояли последние известные числа,
+    а не прочерки."""
+    global _snapshot_restored
+    if _snapshot_restored:
+        return 0
+    _snapshot_restored = True
+    from services import metrics_persist
+    snap = metrics_persist.load(calc_date=str(ctx["calc_date"]),
+                                curves_fp=ctx["version"][1])
+    if not snap:
+        return 0
+    n = 0
+    for key, rows in (("universe_metrics", snap["universe"]),
+                      ("fixed_metrics", snap["fixed"])):
+        if not rows:
+            continue
+        cur = market_cache.get(key) or {}
+        for isin, row in rows.items():
+            old = cur.get(isin)
+            if old is None:
+                cur[isin] = row
+                n += 1
+            elif _merge_snapshot_row(old, row):
+                n += 1
+        market_cache[key] = cur
+    logger.info("снимок метрик поднят: %d строк, возраст %.0f мин",
+                n, (time.time() - snap["ts"]) / 60)
+    return n
+
+
+# Поля строки, посчитанные ПО ЦЕНЕ СДЕЛКИ: их можно взять из снимка только
+# если цена та же. Иначе в таблице окажется свежая цена со спредом от прежней —
+# ровно тот рассинхрон, от которого гасятся производные при живом пересчёте.
+_SNAP_LEVEL_FIELDS = ("yoi", "dm", "disc_dm", "z_model", "ytm", "base_ytm",
+                      "dirty", "delta", "horizon", "spread_dur")
+# Поля, посчитанные по цене СТОРОНЫ и по средневзвесу — каждое со своей ценой.
+_SNAP_PRICE_FIELDS = {"last": _SNAP_LEVEL_FIELDS, "bid": ("yoi_bid",),
+                      "ask": ("yoi_ask",), "wap": ("yoi_wap",)}
+# Числа НАБОРА на объём из снимка не поднимаем вовсе: они считаны по книге,
+# которая за время простоя ушла, а размер тикета задаёт клиент — их посчитает
+# волна размера, когда фильтр включат.
+
+
+def _merge_snapshot_row(cur: dict, snap_row: dict) -> bool:
+    """Долить в живую строку числа из снимка — ТОЛЬКО пустые места и только там,
+    где цена не изменилась. Возвращает True, если что-то добавилось.
+
+    Поллер юниверса успевает создать строки раньше движка, поэтому «положить
+    строку целиком, если её нет» не срабатывало ни разу: ключ есть, а спредов в
+    нём нет (прод 01.09.2026 — «снимок поднят: 0 строк»)."""
+    filled = False
+    for px_key, fields in _SNAP_PRICE_FIELDS.items():
+        a, b = cur.get(px_key), snap_row.get(px_key)
+        if a is None or b is None or a != b:
+            continue           # цены нет или она другая — числа к ней не относятся
+        for f in fields:
+            if cur.get(f) is None and snap_row.get(f) is not None:
+                cur[f] = snap_row[f]
+                filled = True
+    return filled
+
+
+async def _save_snapshot(ctx: dict, market_cache: dict) -> None:
+    """Периодический снимок витрин на диск (в потоке — не держим event loop)."""
+    global _snapshot_at
+    now = time.monotonic()
+    if now - _snapshot_at < _SNAPSHOT_EVERY_SEC:
+        return
+    _snapshot_at = now
+    from services import metrics_persist
+    try:
+        await asyncio.to_thread(
+            metrics_persist.save,
+            calc_date=str(ctx["calc_date"]), curves_fp=ctx["version"][1],
+            universe=dict(market_cache.get("universe_metrics") or {}),
+            fixed=dict(market_cache.get("fixed_metrics") or {}))
+    except Exception as e:
+        logger.debug("снимок метрик: %s", e)
+
+
+async def save_snapshot_now() -> int:
+    """Снимок витрин ПРЯМО СЕЙЧАС, без оглядки на интервал — зовётся при
+    остановке сервера (api/main lifespan). Возвращает число сохранённых строк."""
+    from services.market_data import market_cache
+    from services import metrics_persist
+    ctx = _last_ctx
+    if not ctx:
+        return 0
+    return await asyncio.to_thread(
+        metrics_persist.save,
+        calc_date=str(ctx["calc_date"]), curves_fp=ctx["version"][1],
+        universe=dict(market_cache.get("universe_metrics") or {}),
+        fixed=dict(market_cache.get("fixed_metrics") or {}))
+
+
 async def metrics_worker() -> None:
     """Такт 5с: полный пересчёт только изменившихся цен и только новых уровней.
     Результат — в market_cache['universe_metrics'] (его читает /api/bonds и
@@ -1795,6 +1908,11 @@ async def metrics_worker() -> None:
             if ctx is None:
                 continue
             _check_version(ctx["version"], ctx)
+            # первым делом — строки прошлой сессии: они уже посчитаны на этот
+            # день и эту кривую, и без них первые минуты после рестарта таблица
+            # стоит с прочерками (см. _restore_snapshot)
+            _restore_snapshot(ctx, market_cache)
+            globals()["_last_ctx"] = ctx
             from services.heavy import run_heavy
             _tick0 = time.monotonic()
             _grid_budget = _GRID_BUILD_PER_TICK   # потолок построений на такт
@@ -1860,6 +1978,7 @@ async def metrics_worker() -> None:
                     await _push_metrics(wsmod, srows)
             # хвост такта — догрев контекстов и сеток (см. _warm_pass)
             await _warm_pass(ctx, wsmod, market_cache, _tick0)
+            await _save_snapshot(ctx, market_cache)
         except asyncio.CancelledError:
             raise
         except Exception as e:
