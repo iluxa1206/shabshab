@@ -1,9 +1,15 @@
 import { useMemo, useState } from "react";
 import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
+import { horizonYears } from "../horizon.js";
 
-// Аналитика фиксов — зеркало AnalyticsPanel флоатеров, но метрики к погашению:
-// g-спред vs модифицированная дюрация, распределение g-спреда, срочность.
+// Аналитика фиксов — зеркало AnalyticsPanel флоатеров: g-спред vs СРОК,
+// распределение g-спреда, профиль срочности.
+//
+// Срок везде считает horizon.js — до той даты, к которой посчитаны метрики
+// строки (у фикса поток обрывается на оферте, дальше купоны неизвестны). Своя
+// арифметика по maturity_date врала бы: бумага с офертой через год попадала в
+// корзину «5–10 лет», хотя деньги вернутся через год.
 
 // бакеты/палитра/правило — из format.js (одно на фронт)
 const BUCKETS = RT_BUCKETS;
@@ -64,18 +70,18 @@ const quantile = (a, q) => {
 const SC_PAD = { l: 44, r: 12, t: 12, b: 30 };
 const SC_H = 260;
 
-// ── Scatter: g-спред vs mod duration, цвет = рейтинг ──
+// ── Scatter: g-спред vs СРОК, цвет = рейтинг ──
 function ScatterGDur({ rows }) {
   const pts = rows
-    .map((b) => ({ b, g: gval(b) }))
-    .filter(({ b, g }) => b.mod_dur != null && g != null)
-    .map(({ b, g }) => ({ x: b.mod_dur, y: g, r: norm(b.rating), isin: b.isin, name: b.name }));
+    .map((b) => ({ b, g: gval(b), yrs: horizonYears(b) }))
+    .filter(({ yrs, g }) => yrs != null && yrs > 0 && g != null)
+    .map(({ b, g, yrs }) => ({ x: yrs, y: g, r: norm(b.rating), isin: b.isin, name: b.name }));
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
   return (
-    <MeasuredSvg height={SC_H} label="g-спред vs дюрация">
+    <MeasuredSvg height={SC_H} label="g-спред vs срок">
       {({ W, H, bind }) => {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
@@ -89,9 +95,9 @@ function ScatterGDur({ rows }) {
             {pts.map((p) => (
               <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}
                 {...bind(sx(p.x), sy(p.y),
-                  `${p.name}\ng-спред: ${Math.round(p.y)} bps\nмод. дюрация: ${fmt.yrs(p.x)} · рейтинг: ${p.r}`)} />
+                  `${p.name}\ng-спред: ${Math.round(p.y)} bps\nсрок: ${fmt.yrs(p.x)} · рейтинг: ${p.r}`)} />
             ))}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
               transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>g-спред, bps</text>
           </>
@@ -101,12 +107,12 @@ function ScatterGDur({ rows }) {
   );
 }
 
-// ── Scatter агрегированный по эмитенту: (медиана дюрации, медиана g-спреда) ──
+// ── Scatter агрегированный по эмитенту: (медиана срока, медиана g-спреда) ──
 function ScatterIssuer({ rows }) {
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const gs = bonds.map(gval).filter((v) => v != null);
-    const ds = bonds.map((b) => b.mod_dur).filter((v) => v != null);
+    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null && v > 0);
     if (!gs.length || !ds.length) continue;
     pts.push({ x: median(ds), y: median(gs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
   }
@@ -115,7 +121,7 @@ function ScatterIssuer({ rows }) {
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
   return (
-    <MeasuredSvg height={SC_H} label="g-спред vs дюрация по эмитентам">
+    <MeasuredSvg height={SC_H} label="g-спред vs срок по эмитентам">
       {({ W, H, bind }) => {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
@@ -130,9 +136,9 @@ function ScatterIssuer({ rows }) {
               <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n))}
                 fill={BCOLOR[p.r]} fillOpacity={0.55} stroke={BCOLOR[p.r]} strokeOpacity={0.9}
                 {...bind(sx(p.x), sy(p.y),
-                  `${p.name}\nмедиана g-спреда: ${Math.round(p.y)} bps · медиана дюрации: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`)} />
+                  `${p.name}\nмедиана g-спреда: ${Math.round(p.y)} bps · медиана срока: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`)} />
             ))}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">мод. дюрация →</text>
+            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
               transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>g-спред, bps</text>
           </>
@@ -209,20 +215,37 @@ function IssuerDist({ rows }) {
   return <BoxRows entries={entries} note={note} label="распределение g-спреда по эмитентам" />;
 }
 
-// ── Гистограмма срочности (лет до погашения) ──
+const MAT_BINS = [
+  { lbl: "<1г", lo: 0, hi: 1 }, { lbl: "1–3", lo: 1, hi: 3 },
+  { lbl: "3–5", lo: 3, hi: 5 }, { lbl: "5–10", lo: 5, hi: 10 },
+  { lbl: ">10", lo: 10, hi: 1e9 },
+];
+
+/**
+ * Раскладка бумаг по корзинам СРОКА (см. horizon.js): у фикса с офертой это
+ * срок до неё — деньги вернутся тогда, а не в дату погашения. Считать здесь
+ * годы до maturity_date, как было раньше, значило бы класть годовую по факту
+ * бумагу в корзину «5–10».
+ *
+ * Вынесено из компонента, потому что сам график в тестах не измеряется:
+ * проверять раскладку удобнее на числах.
+ */
+export function maturityBuckets(rows, today = new Date()) {
+  const yrs = (rows || []).map((b) => horizonYears(b, today))
+    .filter((v) => v != null && v > 0);
+  return MAT_BINS.map((bin) => ({
+    lbl: bin.lbl, n: yrs.filter((v) => v >= bin.lo && v < bin.hi).length,
+  }));
+}
+
+// ── Гистограмма срочности (лет до горизонта) ──
 function MaturityProfile({ rows }) {
-  const bins = [
-    { lbl: "<1г", lo: 0, hi: 1 }, { lbl: "1–3", lo: 1, hi: 3 },
-    { lbl: "3–5", lo: 3, hi: 5 }, { lbl: "5–10", lo: 5, hi: 10 },
-    { lbl: ">10", lo: 10, hi: 1e9 },
-  ];
+  const bins = MAT_BINS;
   // МСК-дата (UTC+3)
   const today = new Date(Date.now() + 3 * 3600 * 1000);
-  const yrs = rows
-    .map((b) => (b.maturity_date ? (new Date(b.maturity_date) - today) / (365.25 * 864e5) : null))
-    .filter((v) => v != null && v > 0);
-  if (!yrs.length) return <div className="an-empty">нет дат погашения</div>;
-  const counts = bins.map((bin) => yrs.filter((v) => v >= bin.lo && v < bin.hi).length);
+  const buckets = maturityBuckets(rows, today);
+  if (!buckets.some((b) => b.n)) return <div className="an-empty">нет дат погашения</div>;
+  const counts = buckets.map((b) => b.n);
   const cmax = Math.max(...counts, 1);
   const PAD = { l: 30, r: 10, t: 10, b: 24 };
   return (
@@ -282,8 +305,8 @@ export default function FixedAnalytics({ rows }) {
   return (
     <section className="analytics">
       <div className="an-card">
-        <div className="an-title">G-СПРЕД vs ДЮРАЦИЯ
-          <span className="an-hint">{byIss ? "спред по средневзвесу дня · точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "спред по средневзвесу дня · точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
+        <div className="an-title">G-СПРЕД vs СРОК
+          <span className="an-hint">{byIss ? "спред по средневзвесу дня · срок до погашения (или оферты, если она есть) · точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "спред по средневзвесу дня · срок до погашения (или оферты, если она есть) · точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         {byIss ? <ScatterIssuer rows={rows} /> : <ScatterGDur rows={rows} />}

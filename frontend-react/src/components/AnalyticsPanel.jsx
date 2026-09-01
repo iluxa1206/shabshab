@@ -114,7 +114,9 @@ function ScatterYidx({ rows, focus, onPick, height, full }) {
   const pts = rows
     .map((b) => ({ b, z: yval(b) }))
     .map(({ b, z }) => ({ b, z, yrs: horizonYears(b) }))
-    .filter(({ yrs, z }) => yrs != null && z != null)
+    // срок строго положительный: бумага с прошедшей датой (стейл в справочнике)
+    // иначе уехала бы за левый край области, где ось начинается с нуля
+    .filter(({ yrs, z }) => yrs != null && yrs > 0 && z != null)
     .map(({ b, z, yrs }) => ({ x: yrs, y: z, r: norm(b.rating), isin: b.isin, name: b.short_name, iss: emKey(b) }));
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const [xlo, xmax] = padDomain(pts.map((p) => p.x));
@@ -161,7 +163,7 @@ function ScatterIssuer({ rows, focus, onPick, height, full }) {
   const pts = [];
   for (const [k, bonds] of byIssuer(rows)) {
     const zs = bonds.map(yval).filter((v) => v != null);
-    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null);
+    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null && v > 0);
     if (!zs.length || !ds.length) continue;
     pts.push({ x: median(ds), y: median(zs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
   }

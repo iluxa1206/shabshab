@@ -24,10 +24,16 @@
  *  сортировки, а не притворяются бессрочно короткими. */
 export function horizonDate(b) {
   if (!b) return null;
-  const toOffer = b.preferred_horizon === "put" || b.preferred_horizon === "call";
-  if (toOffer && b.offer_date) return b.offer_date;
-  if (b.put_date) return b.put_date;      // фикс: поток обрывается на оферте
-  return b.maturity_date || null;
+  // ФЛОАТЕР: горизонт выбран правилом цены на бэке, оферта берётся только когда
+  // выбрана она. Строка фикса приходит БЕЗ preferred_horizon — там put_date и
+  // есть горизонт. Порядок именно такой: появись у флоатера поле put_date,
+  // безусловная проверка перебила бы правило цены и вернула оферту бумаге,
+  // которую рынок прайсит к погашению.
+  if (b.preferred_horizon) {
+    const toOffer = b.preferred_horizon === "put" || b.preferred_horizon === "call";
+    return (toOffer && b.offer_date) || b.maturity_date || null;
+  }
+  return b.put_date || b.maturity_date || null;   // фикс: поток рвётся на оферте
 }
 
 /** Лет до горизонта, ACT/365.25. null — горизонта нет (перп/дыра). Считается
