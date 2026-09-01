@@ -130,21 +130,16 @@ export function makeBondFilter(query) {
 }
 
 /**
- * Отбор ЛЮБОГО списка по подстроке — с гомоглифами и запасной раскладкой.
+ * Отбор ЛЮБОГО списка по одному текстовому полю — теми же правилами, что и
+ * рынок: токены, допуск опечатки, гомоглифы, запасная раскладка.
  *
- * Для простых полей (эмитент в меню фильтров, ISIN/имя в Справочнике), где
- * токенайзер с допуском опечатки избыточен, а «набрал не в той раскладке»
- * случается ровно так же часто. getText(item) → строка, по которой ищем.
+ * Для полей без ISIN (эмитент в меню фильтров). getText(item) → строка, по
+ * которой ищем. Правила одни на все поля интерфейса намеренно: набрав имя
+ * одинаково, человек не должен получать разный ответ в таблице и в фильтре.
  */
 export function filterByText(items, query, getText = (x) => x) {
-  const variants = queryVariants(query);
-  if (!variants.length) return items;
-  for (const v of variants) {
-    const needle = normalize(v);
-    const hit = items.filter((it) => normalize(getText(it) || "").includes(needle));
-    if (hit.length) return hit;
-  }
-  return [];
+  return filterBonds(items, query,
+                     (it) => ({ name: normalize(getText(it) || ""), isin: "" }));
 }
 
 /**
@@ -155,13 +150,14 @@ export function filterByText(items, query, getText = (x) => x) {
  * разбавлялся бы случайными совпадениями догадки — поиск переставал бы быть
  * предсказуемым. Ничего не нашлось ни по одному варианту — честно пусто.
  */
-export function filterBonds(rows, query) {
+export function filterBonds(rows, query, hay = bondHaystack) {
   const variants = queryVariants(query);
   if (!variants.length) return rows;
   for (const v of variants) {
-    const match = makeBondFilter(v);
-    if (!match) return rows;          // запрос из одних разделителей
-    const hit = rows.filter(match);
+    const tokens = tokenize(v);
+    if (!tokens.length) return rows;  // запрос из одних разделителей
+    const flat = tokens.join("");
+    const hit = rows.filter((b) => matchTokens(hay(b), tokens, flat));
     if (hit.length) return hit;
   }
   return [];

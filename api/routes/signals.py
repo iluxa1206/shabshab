@@ -181,8 +181,10 @@ async def list_emitters(q: str = "", user: dict = Depends(require_user)):
                     for r in rows if r.get("emitter_name")})
     q = (q or "").strip()
     if q:
-        names = text_search.first_hit(
-            q, lambda term: [n for n in names if text_search.contains(n, term)])
+        # 30 имён — столько же, сколько отдаём пикеру: ранжирование должно
+        # видеть весь список, а не первые попавшиеся совпадения
+        names = text_search.first_hit(q, lambda term: text_search.ranked(
+            term, names, lambda n: (n, "", ""), 30))
     return {"emitters": names[:30], "total": len(names)}
 
 

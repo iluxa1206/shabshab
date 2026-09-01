@@ -428,16 +428,18 @@ def search(q: str, limit: int = 10) -> list[dict]:
     # ТОЛЬКО для ASCII, и «газпн» не находил «Газпн3P13R» — поиск работал лишь
     # когда регистр совпал с базой. Полторы тысячи строк на запрос — дешевле,
     # чем держать в схеме отдельную свёрнутую колонку.
+    #
+    # Правило отбора — общее с таблицей монитора (text_search.make_matcher):
+    # токены по «и», допуск одной лишней буквы, ISIN отдельным haystack. Пикер
+    # и монитор обязаны судить одинаково: одно и то же имя, набранное одинаково,
+    # не может находиться в таблице и не находиться в форме фильтра.
     def run(term: str) -> list[dict]:
-        out = []
-        for r in rows:
-            if any(text_search.contains(r[k], term)
-                   for k in ("isin", "short_name", "emitter_name")):
-                out.append({"isin": r["isin"], "name": r["short_name"] or r["isin"],
-                            "base": r["base"], "rating": r["rating"]})
-                if len(out) >= int(limit):
-                    break
-        return out
+        hit = text_search.ranked(
+            term, rows,
+            lambda r: (r["short_name"], r["emitter_name"], r["isin"]),
+            int(limit))
+        return [{"isin": r["isin"], "name": r["short_name"] or r["isin"],
+                 "base": r["base"], "rating": r["rating"]} for r in hit]
 
     return text_search.first_hit(q, run)
 

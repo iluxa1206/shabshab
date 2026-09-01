@@ -74,10 +74,55 @@ def test_first_hit_is_honest_about_nothing():
     assert ts.first_hit("зюзюка", lambda term: []) == []
 
 
-def test_contains_ignores_case_and_homoglyphs():
-    assert ts.contains("Газпн3P13R", "газпн")
-    assert ts.contains("Газпн3P13R", "3р13")      # кириллическая «р» в тикере
-    assert not ts.contains("Газпн3P13R", "ржд")
+# --- токены и опечатки ---
+
+def test_tokenize_splits_on_letter_digit_border():
+    """«ржд3» это «ржд» + «3»: в именах выпусков буквы и цифры слиты, а ищут
+    их по отдельности."""
+    assert ts.tokenize("ржд-2р3") == ["ржд", "2", "р", "3"]
+    assert ts.tokenize("  ") == []
+
+
+def test_loose_includes_forgives_one_letter():
+    """Допуск — одна лишняя буква в токене от четырёх символов: так ловится и
+    промах по соседней клавише, и лишний символ."""
+    assert ts.loose_includes("газпн3р13r", "газпм")
+    assert ts.loose_includes("газпн3р13r", "гаазпн")
+    # короткий токен проверяется точно: на «ржд» допуск оставил бы «рж»
+    assert not ts.loose_includes("ржд 1р-52r", "рxд")
+
+
+def test_matcher_requires_every_token():
+    """Токены складываются по «и» — иначе «ржд 3» вернул бы весь рынок."""
+    ok = ts.make_matcher("ржд 52")
+    assert ok("РЖД 1Р-52R", "RU000A10AU99")
+    assert not ok("РЖД 1Р-40R", "RU000A10AU98")
+
+
+def test_matcher_keeps_short_digits_out_of_isin():
+    """Одиночная цифра в ISIN не считается: «3» совпадает с цифрами почти
+    любого ISIN, и фильтр перестал бы фильтровать."""
+    ok = ts.make_matcher("3")
+    assert not ok("РЖД 1Б-01", "RU000A103333")
+    assert ok("РЖД 3Р-01", "RU000A103333")
+
+
+def test_ranked_puts_exact_before_typo():
+    """Набравшему имя верно оно и достаётся первым: без ранжирования допуск
+    опечатки вытеснял точное совпадение соседями по алфавиту."""
+    rows = [("ГазпКап2P1", "Газпром капитал", "RU000A0000A1"),
+            ("Газпн3P13R", "Газпром нефть", "RU000A109B33")]
+    got = ts.ranked("газпн", rows, lambda r: r, limit=2)
+    assert [r[0] for r in got] == ["Газпн3P13R", "ГазпКап2P1"]
+
+
+def test_ranked_prefers_issue_name_over_emitter():
+    """Имя выпуска важнее имени эмитента: набирают обычно выпуск, а эмитент —
+    способ достать всю группу."""
+    rows = [("ГПН005Р-07", "Газпром нефть", "RU000A0000A2"),
+            ("ГазпКап2P1", "Газпром капитал", "RU000A0000A1")]
+    got = ts.ranked("газп", rows, lambda r: r, limit=2)
+    assert [r[0] for r in got] == ["ГазпКап2P1", "ГПН005Р-07"]
 
 
 # --- поиск по реестру ---
@@ -92,8 +137,10 @@ def reg(tmp_path, monkeypatch):
             ("RU000A10AU99", "РЖД 1Р-52R", "РЖД"),
     ):
         instruments_registry.upsert(
-            {"isin": isin, "short_name": name, "emitter_name": emitter,
-             "base": "KEYRATE"}, source="test")
+            {"isin": isin, "short_name": name, "base": "KEYRATE"}, source="test")
+        # эмитент живёт отдельным полем: upsert его не пишет (белый список
+        # расчётных параметров), а поиск по группе выпусков без него не проверить
+        instruments_registry.set_emitter(isin, None, emitter)
     yield instruments_registry
     monkeypatch.delenv("INSTRUMENTS_DB")
     importlib.reload(instruments_registry)
@@ -123,3 +170,20 @@ def test_registry_search_finds_by_emitter_and_isin(reg):
 
 def test_registry_search_needs_two_chars(reg):
     assert reg.search("г") == []
+
+
+def test_registry_search_forgives_a_typo(reg):
+    """Опечатка в одну букву не должна ронять пикер в «ничего не найдено» —
+    правило то же, что в таблице монитора."""
+    assert _names(reg.search("газпм")) == ["Газпн3P13R"]
+
+
+def test_registry_search_keeps_exact_hit_on_top(reg):
+    """Точное совпадение выше приблизительного: «газпн» — это Газпн3P13R, а не
+    сосед по эмитенту, подошедший через допуск."""
+    assert _names(reg.search("газпн"))[0] == "Газпн3P13R"
+
+
+def test_registry_search_finds_group_by_emitter(reg):
+    """Эмитент — способ достать всю группу выпусков."""
+    assert _names(reg.search("газпром")) == ["Газпн3P13R"]
