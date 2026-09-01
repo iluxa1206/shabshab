@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchCatalog, catalogExportUrl, importCatalogXlsx, markInstrumentReviewed, resetInstrumentManual, recheckInstrumentSpec, cbondsUrl } from "../api.js";
 import { InstrumentForm } from "./AdminPanel.jsx";
+import { filterByText } from "../search.js";
 
 const CATALOG_KEY = ["admin", "catalog"];
 
@@ -123,9 +124,9 @@ export default function Catalog({ user }) {
     // спека расходится с фактом выплат: неверный лаг/окно/режим
     if (specBadOnly) items = items.filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD");
     if (slBadOnly) items = items.filter((r) => r.sl_mismatch);
-    const s = query.trim().toLowerCase();
-    if (s) items = items.filter((r) =>
-      r.isin.toLowerCase().includes(s) || (r.short_name || "").toLowerCase().includes(s));
+    // ISIN и имя одной строкой: искать можно по любому, и раскладка с
+    // латинскими двойниками разбирается как в мониторе (см. search.js)
+    items = filterByText(items, query, (r) => `${r.isin} ${r.short_name || ""}`);
     if (specBadOnly) items = [...items].sort((a, b) => (b.spec_err_pp || 0) - (a.spec_err_pp || 0));
     return items;
   }, [q.data, missOnly, specBadOnly, slBadOnly, newOnly, newSet, query]);

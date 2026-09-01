@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../../api.js";
 import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
-import { makeBondFilter } from "../../search.js";
+import { filterBonds } from "../../search.js";
 import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
 import { usePageStatus } from "../../pageStatus.jsx";
 import Toolbar from "../Toolbar.jsx";
@@ -423,8 +423,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     };
     win("g_spread_bps", spreadFrom, spreadTo);
     win("ytm", ytmFrom, ytmTo);
-    const match = makeBondFilter(query);
-    if (match) r = r.filter(match);
+    r = filterBonds(r, query);
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
     r.sort((a, b) => {

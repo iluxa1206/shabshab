@@ -169,14 +169,20 @@ async def search_bonds(q: str = "", user: dict = Depends(require_user)):
 
 @router.get("/emitters", tags=["Signals"])
 async def list_emitters(q: str = "", user: dict = Depends(require_user)):
-    """Эмитенты универса для пикера фильтра."""
-    from services import instruments_registry
+    """Эмитенты универса для пикера фильтра.
+
+    Запрос разбирает services/text_search: не нашлось по набранному — пробуем
+    чужую раскладку («Ufpghjv» это «Газпром») и латинские двойники кириллицы.
+    Правила ровно те же, что у поиска бумаг: два соседних поля одной формы не
+    должны понимать ввод по-разному."""
+    from services import instruments_registry, text_search
     rows = instruments_registry.universe_rows()
-    q = (q or "").strip().lower()
     names = sorted({(r.get("emitter_name") or "").strip()
                     for r in rows if r.get("emitter_name")})
+    q = (q or "").strip()
     if q:
-        names = [n for n in names if q in n.lower()]
+        names = text_search.first_hit(
+            q, lambda term: [n for n in names if text_search.contains(n, term)])
     return {"emitters": names[:30], "total": len(names)}
 
 

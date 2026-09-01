@@ -11,11 +11,55 @@
 //  • латиница нормализуется в кириллицу по начертанию: в тикерах и в наборе с
 //    чужой раскладки «P» и «Р», «BO» и «БО» перемешаны.
 // Опечатки: токен от 4 символов допускает одну лишнюю/пропущенную букву.
+// Раскладка: не нашлось по набранному — пробуем ту же строку в другой
+// раскладке («Ufpgy» это «Газпн»), см. filterBonds. Порт бэка —
+// services/text_search.py; таблицы обязаны совпадать, иначе таблица монитора
+// и пикер бумаг понимали бы один и тот же ввод по-разному.
 
 const HOMOGLYPH = {
   a: "а", b: "в", e: "е", k: "к", m: "м", h: "н",
   o: "о", p: "р", c: "с", t: "т", y: "у", x: "х",
 };
+
+// ЙЦУКЕН → QWERTY ПО КЛАВИШАМ: что напечатается, если не переключить язык.
+// Раскладка русская стандартная, латиница US.
+const RU_BY_KEY = "йцукенгшщзхъфывапролджэячсмитьбю.";
+const EN_BY_KEY = "qwertyuiop[]asdfghjkl;'zxcvbnm,./";
+const TO_RU = {}, TO_EN = {};
+for (let i = 0; i < EN_BY_KEY.length; i++) {
+  TO_RU[EN_BY_KEY[i]] = RU_BY_KEY[i];
+  TO_EN[RU_BY_KEY[i]] = EN_BY_KEY[i];
+}
+TO_RU["`"] = "ё";
+TO_EN["ё"] = "`";
+
+// Клавиши пунктуации ЙЦУКЕН: «ж» превращается в «;», «х» в «[». В именах
+// выпусков таких знаков нет, поэтому вариант с ними — заведомо мусор от
+// кириллического запроса («РЖД» → «h;l»), и гонять его по рынку незачем.
+const KEY_PUNCT = new Set(";'[]`,./");
+
+/** Строка так, как если бы её набрали в другой раскладке. Обе стороны сразу и
+ *  посимвольно: запрос бывает смешанным, и одна общая карта разбирает его без
+ *  выбора направления. */
+export function swapLayout(s) {
+  let out = "";
+  for (const ch of String(s || "").toLowerCase()) {
+    out += TO_RU[ch] || TO_EN[ch] || ch;
+  }
+  return out;
+}
+
+/** Как ещё мог выглядеть запрос — набранное первым, догадка следом: человек
+ *  чаще всего набрал верно, и никакая догадка не должна его опережать. */
+export function queryVariants(q) {
+  const raw = String(q || "").trim();
+  if (!raw) return [];
+  const out = [raw];
+  const sw = swapLayout(raw);
+  const junk = [...sw].some((ch) => KEY_PUNCT.has(ch) && !raw.includes(ch));
+  if (sw && !junk && sw.toLowerCase() !== raw.toLowerCase()) out.push(sw);
+  return out;
+}
 
 export function normalize(s) {
   let out = "";
@@ -83,4 +127,42 @@ export function makeBondFilter(query) {
   if (!tokens.length) return null;
   const flat = tokens.join("");
   return (b) => matchTokens(bondHaystack(b), tokens, flat);
+}
+
+/**
+ * Отбор ЛЮБОГО списка по подстроке — с гомоглифами и запасной раскладкой.
+ *
+ * Для простых полей (эмитент в меню фильтров, ISIN/имя в Справочнике), где
+ * токенайзер с допуском опечатки избыточен, а «набрал не в той раскладке»
+ * случается ровно так же часто. getText(item) → строка, по которой ищем.
+ */
+export function filterByText(items, query, getText = (x) => x) {
+  const variants = queryVariants(query);
+  if (!variants.length) return items;
+  for (const v of variants) {
+    const needle = normalize(v);
+    const hit = items.filter((it) => normalize(getText(it) || "").includes(needle));
+    if (hit.length) return hit;
+  }
+  return [];
+}
+
+/**
+ * Отбор бумаг по строке поиска с ЗАПАСНОЙ РАСКЛАДКОЙ.
+ *
+ * Варианты пробуются по очереди, побеждает ПЕРВЫЙ давший хоть что-то.
+ * Объединять выдачи нельзя: «ср» в чужой раскладке это «cg», и обычный запрос
+ * разбавлялся бы случайными совпадениями догадки — поиск переставал бы быть
+ * предсказуемым. Ничего не нашлось ни по одному варианту — честно пусто.
+ */
+export function filterBonds(rows, query) {
+  const variants = queryVariants(query);
+  if (!variants.length) return rows;
+  for (const v of variants) {
+    const match = makeBondFilter(v);
+    if (!match) return rows;          // запрос из одних разделителей
+    const hit = rows.filter(match);
+    if (hit.length) return hit;
+  }
+  return [];
 }

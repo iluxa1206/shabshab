@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconFilter } from "./icons.jsx";
+import { filterByText } from "../search.js";
 
 // Кнопка «ФИЛЬТРЫ» (воронка) → всплывающее окно: база (КС/RUONIA), тип выпуска,
 // класс эмитента и эмитент.
@@ -25,9 +26,8 @@ export default function FiltersMenu({
   }, [open]);
 
   const shown = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    const list = s ? issuers.filter((i) => i.name.toLowerCase().includes(s)) : issuers;
-    return list.slice(0, 200);
+    // раскладка и латинские двойники — как в поиске по таблице (см. search.js)
+    return filterByText(issuers, q, (i) => i.name).slice(0, 200);
   }, [issuers, q]);
 
   const nEm = emittersSel.length;

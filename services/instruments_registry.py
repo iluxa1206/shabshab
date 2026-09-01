@@ -18,6 +18,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from services import text_search
+
 _log = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -406,20 +408,38 @@ def get(isin: str) -> Optional[dict]:
 
 
 def search(q: str, limit: int = 10) -> list[dict]:
-    """Поиск бумаги по подстроке ISIN/имени/эмитента (пикер Mini App).
-    → [{isin, name, base, rating}]."""
+    """Поиск бумаги по подстроке ISIN/имени/эмитента (пикер бумаг, /stop бота).
+    → [{isin, name, base, rating}].
+
+    Запрос разбирается services/text_search: не нашлось по набранному —
+    пробуем чужую раскладку («Ufpgy» это «Газпн») и латинские двойники
+    кириллицы. Варианты идут ПО ОЧЕРЕДИ, побеждает первый непустой: объединять
+    выдачи нельзя, иначе обычный запрос разбавлялся бы догадками."""
     q = (q or "").strip()
     if len(q) < 2:
         return []
     _ensure()
-    like = f"%{q}%"
     with _conn() as c:
         rows = c.execute(
             "SELECT isin, short_name, emitter_name, base, rating FROM instruments "
-            "WHERE isin LIKE ? OR short_name LIKE ? OR emitter_name LIKE ? "
-            "ORDER BY short_name LIMIT ?", (like, like, like, int(limit))).fetchall()
-    return [{"isin": r["isin"], "name": r["short_name"] or r["isin"],
-             "base": r["base"], "rating": r["rating"]} for r in rows]
+            "ORDER BY short_name").fetchall()
+
+    # Сравниваем В ПИТОНЕ, а не через SQL LIKE: LIKE в SQLite регистронезависим
+    # ТОЛЬКО для ASCII, и «газпн» не находил «Газпн3P13R» — поиск работал лишь
+    # когда регистр совпал с базой. Полторы тысячи строк на запрос — дешевле,
+    # чем держать в схеме отдельную свёрнутую колонку.
+    def run(term: str) -> list[dict]:
+        out = []
+        for r in rows:
+            if any(text_search.contains(r[k], term)
+                   for k in ("isin", "short_name", "emitter_name")):
+                out.append({"isin": r["isin"], "name": r["short_name"] or r["isin"],
+                            "base": r["base"], "rating": r["rating"]})
+                if len(out) >= int(limit):
+                    break
+        return out
+
+    return text_search.first_hit(q, run)
 
 
 def ratings_map(isins) -> Dict[str, str]:

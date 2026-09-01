@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { filterByText } from "../search.js";
 
 // Мульти-селект эмитентов: кнопка «Эмитент (N)» → поисковый чеклист.
 // issuers: [{name, count}] (уже отсортированы по count desc). selected: string[].
@@ -17,9 +18,9 @@ export default function IssuerFilter({ issuers, selected, onToggle, onClear }) {
   }, [open]);
 
   const shown = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    const list = s ? issuers.filter((i) => i.name.toLowerCase().includes(s)) : issuers;
-    return list.slice(0, 200);
+    // раскладка и латинские двойники — как в поиске по таблице (см. search.js):
+    // «Ufpghjv» это «Газпром», и переключать язык ради фильтра незачем
+    return filterByText(issuers, q, (i) => i.name).slice(0, 200);
   }, [issuers, q]);
 
   const n = selected.length;

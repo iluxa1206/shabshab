@@ -5,7 +5,7 @@ import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repric
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
-import { makeBondFilter } from "./search.js";
+import { filterBonds } from "./search.js";
 import { ratingMatches, ratingOptions, yearsToIso } from "./format.js";
 import { AuthProvider, queryClient, useAuth } from "./auth.jsx";
 import Login from "./components/Login.jsx";
@@ -672,8 +672,7 @@ function Dashboard() {
     }
     // умный поиск: токены запроса ищутся по имени/эмитенту/ISIN с допуском
     // опечатки — «РЖД 3» вытаскивает все похожие выпуски эмитента
-    const match = makeBondFilter(query);
-    if (match) rows = rows.filter(match);
+    rows = filterBonds(rows, query);
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
     rows.sort((a, b) => {
