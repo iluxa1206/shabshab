@@ -92,6 +92,23 @@ _MAX_BATCH = int(os.getenv("UNIVERSE_FULL_BATCH", "60"))
 # объёму стали реально собираться (глубина книги 50), сторона стоит 20–30 мс, и
 # на 60 волна нового размера тикета растягивалась на минуту.
 _MAX_SIDES_BATCH = int(os.getenv("UNIVERSE_SIDES_BATCH", "100"))
+# ПОТОЛОК АДАПТИВНЫЙ, а не жёсткий: сколько бумаг влезет в отведённый кусок
+# такта по ФАКТИЧЕСКОЙ цене стороны. Замер на проде 01.09.2026 — сторона стоит
+# 13–35 мс, а очередь при жёстких 100 съедала 4–7 секунд ИЗ МИНУТЫ, то есть
+# около 10% пула: тяжёлый поток простаивал, а прочерки в биде и оффере всё
+# равно расходились по рынку минутами. Считаем N по бюджету и цене, с полом на
+# случай пустого замера и потолком, чтобы один такт не ушёл в счёт целиком.
+_SIDES_BUDGET_SEC = float(os.getenv("UNIVERSE_SIDES_BUDGET_SEC", "2.5"))
+_SIDES_BATCH_MAX = int(os.getenv("UNIVERSE_SIDES_BATCH_MAX", "400"))
+_sides_ms_avg = 0.0             # скользящая цена пересчёта одной стороны, мс
+
+
+def _sides_batch() -> int:
+    """Сколько сторон брать в этот такт: бюджет / фактическая цена бумаги."""
+    if _sides_ms_avg <= 0:
+        return _MAX_SIDES_BATCH
+    n = int(_SIDES_BUDGET_SEC * 1000.0 / _sides_ms_avg)
+    return max(_MAX_SIDES_BATCH, min(n, _SIDES_BATCH_MAX))
 _PRICE_KEY_DIGITS = 3       # квантование цены в ключе кэша уровней
 # Кэш Y-IDX по НАБОРУ цен бумаги: isin → (ключ набора, момент, {цена: бп}).
 # Стоимость батча почти вся в сборке потока и кривой, а не в числе цен (66 мс
@@ -148,7 +165,7 @@ _GRID_BUILD_PER_TICK = int(os.getenv("UNIVERSE_GRID_BUILD_TICK", "12"))
 # Сколько прочерков в сторонах добираем за такт (см. _blank_side_targets).
 # Дешёвая ветка стоит ~13–35 мс на бумагу, и очередь такта всё равно ограничена
 # _MAX_SIDES_BATCH — добор кладём в неё только когда живой поток её не занял.
-_BLANK_SIDES_BATCH = int(os.getenv("UNIVERSE_BLANK_SIDES", "40"))
+_BLANK_SIDES_BATCH = int(os.getenv("UNIVERSE_BLANK_SIDES", "150"))
 # Пауза перед повтором у бумаг, которым сетку строить не из чего (нет пуша
 # котировки, книга пустая, расчёт не сошёлся). Без неё они вечно занимали
 # первые места в догреве: он берёт первые N из _eval_ctx, каждый такт
@@ -175,6 +192,11 @@ _HEAVY_SLICE_SEC = float(os.getenv("UNIVERSE_HEAVY_SLICE_SEC", "0.4"))
 # Сколько такта отдаём живому пересчёту. Остаток идёт сторонам и догреву;
 # недосчитанное возвращается в очередь и продолжится следующим тактом.
 _FULL_BUDGET_SEC = float(os.getenv("UNIVERSE_FULL_BUDGET_SEC", "2.5"))
+# С какого времени бумага считается ТЯЖЁЛОЙ и попадает в лог поимённо. Слайсы
+# режут пачку, но одна бумага внутри неделима: пока она считается, ядро занято.
+# Средняя стоит ~140 мс, а отдельные выпуски — секунды, и без имени в логе их
+# не найти (сторож лага показывает функцию, а не ISIN).
+_SLOW_BOND_MS = float(os.getenv("UNIVERSE_SLOW_BOND_MS", "700"))
 # Потолок заходов за такт. Слайсы режут время, а этот счётчик — страховка от
 # холостого кружения: бумага, которой сетка не строится (нет узлов, нет книги),
 # остаётся в целях и после захода, и без потолка догрев перебирал бы один и тот
@@ -1287,6 +1309,20 @@ def _blank_side_targets(board: dict, limit: int) -> list:
     return out
 
 
+def _blank_sides_count() -> int:
+    """Сколько сторон ЖДЁТ движок: цена есть, спреда нет. Число для минутной
+    сводки — по нему видно, расходится очередь или стоит на месте."""
+    um = _market_cache_um()
+    n = 0
+    for isin, row in um.items():
+        if isin in _fixed_isins:
+            continue
+        for side in ("bid", "ask"):
+            if (row.get(side) or 0) > 0 and row.get("yoi_" + side) is None:
+                n += 1
+    return n
+
+
 def _market_cache_um() -> dict:
     from services.market_data import market_cache
     return market_cache.get("universe_metrics") or {}
@@ -1467,6 +1503,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
         if row is None:
             _memo_misses += 1
             snap = ctx["board"].get(isin, {})
+            _bond_t0 = time.perf_counter()
             try:
                 ref = build_ref(u, isin, ctx["cache"], ctx["secs"])
                 row = enrich(
@@ -1481,6 +1518,14 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
             except Exception as e:
                 logger.debug("universe crunch %s: %s", isin, e)
                 continue
+            _bond_ms = (time.perf_counter() - _bond_t0) * 1000.0
+            if _bond_ms >= _SLOW_BOND_MS:
+                # поимённо: слайс не режет бумагу пополам, поэтому такая строка
+                # это ровно тот кусок, на который ядро замирает
+                logger.warning("тяжёлая бумага %s: %.0f мс на полный пересчёт "
+                               "(%s, купонов %d)", isin, _bond_ms,
+                               u.get("base") or "?",
+                               len((ctx["full_by"].get(isin) or {}).get("coupons") or []))
             _level_memo[key] = row
             _store_eval_ctx(isin, u, ref, ctx, snap)
         else:
@@ -1665,7 +1710,7 @@ async def _warm_pass(ctx: dict, wsmod, market_cache: dict, tick0: float) -> None
     # _blank_side_targets). Ставим их в очередь сторон низким приоритетом —
     # живой поток остаётся первым, а хвост рынка перестаёт ждать события,
     # которого может не случиться за весь день.
-    if _sides_dirty.__len__() < _MAX_SIDES_BATCH:
+    if len(_sides_dirty) < _sides_batch():
         for isin in _blank_side_targets(ctx["board"], _BLANK_SIDES_BATCH):
             _queue_sides(isin, _SIDES_PRIO_WAVE)
 
@@ -1724,17 +1769,17 @@ async def metrics_worker() -> None:
             if (done_since_log or sides_since_log) and time.time() - last_log >= 60:
                 global _depth_msgs
                 logger.info("metrics engine: %d строк/мин (%.1fс, %.0fмс/шт) · "
-                            "сторон %d/мин (%.1fс, %.0fмс/шт) · "
+                            "сторон %d/мин (%.1fс, %.0fмс/шт, пачка %d) · "
                             "memo %d (hit %d / miss %d) · ctx %d · сетки %d (+%d/мин, холодных %d) · "
-                            "dirty %d (+%d сторон) · "
+                            "dirty %d (+%d сторон) · прочерков %d · "
                             "depth-пушей %d/мин (%d бумаг)",
                             done_since_log, full_ms / 1000.0,
                             full_ms / max(1, done_since_log),
                             sides_since_log, sides_ms / 1000.0,
-                            sides_ms / max(1, sides_since_log),
+                            sides_ms / max(1, sides_since_log), _sides_batch(),
                             len(_level_memo), _memo_hits, _memo_misses,
                             len(_eval_ctx), len(_yoi_grid), _grid_builds, len(_grid_cold),
-                            len(_dirty), len(_sides_dirty),
+                            len(_dirty), len(_sides_dirty), _blank_sides_count(),
                             _depth_msgs, len(_depth_streamed))
                 done_since_log = 0
                 sides_since_log = 0
@@ -1797,12 +1842,18 @@ async def metrics_worker() -> None:
             # ждало бы следующей сделки, а до неё жила линеаризация в браузере.
             if _sides_dirty:
                 # порядок — по приоритету: живые движения сторон впереди волны
-                take_s = sorted(_sides_dirty, key=_sides_dirty.get)[:_MAX_SIDES_BATCH]
+                take_s = sorted(_sides_dirty, key=_sides_dirty.get)[:_sides_batch()]
                 for _i in take_s:
                     _sides_dirty.pop(_i, None)
                 _t0 = time.perf_counter()
                 srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
-                sides_ms += (time.perf_counter() - _t0) * 1000.0
+                _took = (time.perf_counter() - _t0) * 1000.0
+                sides_ms += _took
+                # цена стороны плавает от книги и глубины — держим скользящее
+                # среднее, по нему следующий такт и выбирает размер пачки
+                globals()["_sides_ms_avg"] = (
+                    _took / len(take_s) if _sides_ms_avg <= 0
+                    else 0.7 * _sides_ms_avg + 0.3 * (_took / len(take_s)))
                 if srows:
                     _store_rows(market_cache, srows)
                     sides_since_log += len(srows)

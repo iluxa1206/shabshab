@@ -248,24 +248,41 @@ async def universe_price_poller():
 
 def _thread_stacks_brief() -> str:
     """Верхушки стеков всех потоков, кроме своего — атрибуция «кто держал CPU»
-    в момент лага. Только наш код (пути с /app либо репо), по 3 кадра."""
+    в момент лага. Сначала наш код (пути с /app либо репо), по 3 кадра.
+
+    ЧУЖИЕ КАДРЫ ТОЖЕ ПЕЧАТАЕМ, если наших не нашлось. Прежняя версия в таком
+    случае писала «стеков нашего кода нет — C-код/сеть» и на этом диагностика
+    кончалась: 01.09.2026 самый долгий лаг смены (7,3 с) остался неопознанным
+    ровно потому, что виновник сидел в библиотеке. Библиотечный кадр называет
+    подсистему (sqlite3, ssl, json) — этого хватает, чтобы знать, куда смотреть.
+    Заодно печатаем счётчики GC: длинная сборка мусора стеков не оставляет
+    вовсе, и без них она неотличима от «C-кода»."""
+    import gc
     import sys
     import threading
     me = threading.get_ident()
     names = {t.ident: t.name for t in threading.enumerate()}
-    out = []
+    ours, foreign = [], []
     for tid, frame in sys._current_frames().items():
         if tid == me:
             continue
-        frames, f = [], frame
-        while f is not None and len(frames) < 3:
+        mine, any_frames, f = [], [], frame
+        while f is not None and len(any_frames) < 3:
             fn = f.f_code.co_filename
-            if "site-packages" not in fn and ("/app" in fn or "shabshab" in fn):
-                frames.append(f"{fn.rsplit('/', 1)[-1]}:{f.f_lineno}:{f.f_code.co_name}")
+            short = f"{fn.rsplit('/', 1)[-1]}:{f.f_lineno}:{f.f_code.co_name}"
+            any_frames.append(short)
+            if len(mine) < 3 and "site-packages" not in fn and ("/app" in fn or "shabshab" in fn):
+                mine.append(short)
             f = f.f_back
-        if frames:
-            out.append(f"[{names.get(tid, tid)}] " + " < ".join(frames))
-    return " | ".join(out) or "(стеков нашего кода нет — C-код/сеть)"
+        name = names.get(tid, tid)
+        if mine:
+            ours.append(f"[{name}] " + " < ".join(mine))
+        elif any_frames:
+            foreign.append(f"[{name}] чужой код: " + " < ".join(any_frames))
+    picked = ours or foreign
+    gc_counts = "gc " + "/".join(str(n) for n in gc.get_count())
+    return (" | ".join(picked) + " · " + gc_counts) if picked else \
+        f"(стеков нет вовсе — C-код без Python-кадров) · {gc_counts}"
 
 
 STREAM_SILENCE_MIN = float(os.getenv("STREAM_SILENCE_MIN", "10"))
