@@ -803,7 +803,6 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .ob-row:hover { background: var(--line); }
 .ob-spread td { text-align: center; font-size: 10px; letter-spacing: 0.08em; color: var(--mut); text-transform: uppercase; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); }
 .ob-warn { margin: 10px 20px 0; font-size: 11px; color: var(--down); }
-.ob-note { padding: 12px 20px; font-size: 10px; color: var(--mut-2); letter-spacing: 0.02em; }
 /* легенда подсветки уровней: те же цвета, что у заливки строк (.ob-sig/.ob-vol) */
 .ob-legend { display: flex; flex-direction: column; gap: 4px; padding: 10px 20px 0; font-size: 10px; color: var(--mut); }
 .ob-lg-item { display: flex; align-items: center; gap: 6px; }
@@ -2389,7 +2388,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   border-right: 1px solid var(--bev-sh);
   box-shadow: inset 1px 1px 0 var(--bev-hi), inset -1px -1px 0 var(--bev-sh);
 }
-.theme-win .ob-status, .theme-win .ob-note, .theme-win .ob-warn, .theme-win .ob-ctl, .theme-win .ob-legend { padding-left: 6px; }
+.theme-win .ob-status, .theme-win .ob-warn, .theme-win .ob-ctl, .theme-win .ob-legend { padding-left: 6px; }
 .theme-win .cp-chart, .theme-win .cp-dist, .theme-win .pchart-empty {
   background: var(--bg);
   border: 1px solid; border-color: var(--bev-sh) var(--bev-hi) var(--bev-hi) var(--bev-sh);

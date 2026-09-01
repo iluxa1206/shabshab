@@ -850,9 +850,6 @@ export default function TradesTape() {
                             : "фиксы: облигации с постоянным купоном"}>{label}</button>
                       ))}
                     </div>
-                    <div className="sig-note">
-                      Оба флажка (или ни одного) — рынок целиком, включая бумаги вне реестра.
-                    </div>
                   </div>
 
                   <div className="fp-sec">

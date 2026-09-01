@@ -300,7 +300,6 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
         </div>
       )}
       {d?.warnings?.length > 0 && <div className="ob-warn">{d.warnings.join(" · ")}</div>}
-      <div className="ob-note">{isFixed ? "YTM/G-спред" : "R-spread/YTM"} — расчёт под цену уровня (как калькулятор карточки); DM — в подсказке уровня.</div>
     </div>
   );
 }

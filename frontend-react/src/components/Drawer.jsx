@@ -132,7 +132,6 @@ function FloaterSection({ f, base }) {
         <div className="vc">
           <div className="vc-label">Спред-дюрация</div>
           <div className="vc-val">{fmt.num(f.spread_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
-          <div className="vc-sub">риск ΔDM/Δz (до погашения)</div>
         </div>
         <div className="vc">
           <div className="vc-label">Дюрация к ставке</div>
@@ -207,7 +206,7 @@ function PastCalc({ isin }) {
                   ? `цена от ${fmt.date(res.data.trade_date)} (в этот день торгов не было) · `
                   : ""}кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
             : res && !res.ok ? res.err
-            : "дата в прошлом → метрики как-на-дату"}
+            : ""}
         </span>
       </div>
       {m && (() => {
