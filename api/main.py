@@ -760,6 +760,25 @@ async def memory_watch(period_sec: int = 1800):
                      f"full={len(MD._full_mem)}", f"snap={len(MD._snap_cache)}",
                      f"secid={len(MD._secid_cache)}", f"sec={len(MD._sec_cache)}",
                      f"levels={len(us._level_memo)}"]
+            # ДВИЖОК ВИТРИНЫ — самые крупные долгожители: контексты расчёта
+            # (расписание купонов на бумагу), сетки цен, кэш потоков. Без них в
+            # списке рост RSS объяснялся «остальным», хотя вес именно здесь.
+            try:
+                parts.append(f"ctx={len(us._eval_ctx)}")
+                parts.append(f"grids={len(us._yoi_grid)}")
+                parts.append(f"flows={len(us._flow_cache)}/{us._flow_cache_items()}пл")
+            except Exception:
+                pass
+            # market_cache — общий мешок горячих веток (метрики витрин, стаканы):
+            # они переписываются, но их размер задаёт нижнюю планку памяти
+            try:
+                from services.market_data import market_cache as _mc
+                for _k in ("universe_metrics", "fixed_metrics", "depth"):
+                    _v = _mc.get(_k)
+                    if hasattr(_v, "__len__"):
+                        parts.append(f"{_k[:6]}={len(_v)}")
+            except Exception:
+                pass
             try:
                 from services import trade_yidx as ty
                 parts.append(f"tradectx={len(ty._ctx_cache)}")

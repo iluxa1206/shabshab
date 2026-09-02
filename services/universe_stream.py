@@ -389,6 +389,12 @@ _streamed: set = set()               # ISIN на живых сокетах пу�
 _depth_streamed: set = set()         # ISIN на живых depth-сокетах
 _depth_msgs = 0                      # пуши стаканов с последней сводки (диагностика)
 _level_memo: Dict[tuple, dict] = {}  # (isin, px_key) → строка метрик
+# Потолок кэша уровней. Ключ включает ЦЕНУ, поэтому за торговый день по каждой
+# ликвидной бумаге накапливаются сотни записей, и словарь рос без края: 13.08
+# процесс за ночь ушёл с 599 на 1004 МБ и почти упёрся в лимит контейнера.
+# Вытесняем самые старые (обычный dict хранит порядок вставки) — свежие цены
+# и есть те, по которым считают.
+_LEVEL_MEMO_MAX = int(os.getenv("UNIVERSE_LEVEL_MEMO_MAX", "20000"))
 _memo_version: Optional[tuple] = None
 _memo_hits = 0
 _memo_misses = 0
@@ -1557,6 +1563,11 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
                                u.get("base") or "?",
                                len((ctx["full_by"].get(isin) or {}).get("coupons") or []))
             _level_memo[key] = row
+            if len(_level_memo) > _LEVEL_MEMO_MAX:
+                # режем хвост пачкой, а не по одной записи: удалять на каждой
+                # вставке значит платить за это в самом горячем месте
+                for _old in list(_level_memo)[:len(_level_memo) - _LEVEL_MEMO_MAX + 500]:
+                    _level_memo.pop(_old, None)
             _store_eval_ctx(isin, u, ref, ctx, snap)
         else:
             _memo_hits += 1

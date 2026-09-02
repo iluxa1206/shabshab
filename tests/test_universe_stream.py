@@ -989,3 +989,27 @@ def test_flow_cache_has_a_ceiling():
         assert us._flow_cache == {}
     finally:
         mp.undo()
+
+
+def test_level_memo_has_a_ceiling(monkeypatch):
+    """У кэша уровней есть потолок.
+
+    Ключ включает ЦЕНУ, поэтому за торговый день по ликвидной бумаге
+    накапливаются сотни записей, а словарь рос без края — 13.08.2026 процесс за
+    ночь ушёл с 599 на 1004 МБ и почти упёрся в лимит контейнера. Вытесняются
+    самые старые: свежие цены и есть те, по которым считают."""
+    uni = {"RU000A100001": {"isin": "RU000A100001"}}
+    ctx = _ctx(uni)
+    calls = []
+    us._level_memo.clear()
+    monkeypatch.setattr(us, "_LEVEL_MEMO_MAX", 600)
+    try:
+        for i in range(700):
+            us._crunch([("RU000A100001", {"last_price": 100.0 + i * 0.001})], ctx,
+                       enrich=_enrich_counter(calls))
+        assert len(us._level_memo) <= 600
+        # уцелели ПОСЛЕДНИЕ цены, а не первые
+        assert ("RU000A100001", us._px_key(100.699)) in us._level_memo
+        assert ("RU000A100001", us._px_key(100.0)) not in us._level_memo
+    finally:
+        us._level_memo.clear()
