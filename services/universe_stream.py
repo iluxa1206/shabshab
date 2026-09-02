@@ -1374,6 +1374,22 @@ def _sides_of(q: dict) -> dict:
     return out
 
 
+def _sides_from(q: Optional[dict], snap: dict) -> dict:
+    """Цены сторон: из котировочного пуша, а чего в нём нет — из биржевого
+    снапшота.
+
+    ПОСТОРОННЕ, а не «или пуш, или снапшот». Пуш Alor приходит и без стороны —
+    например, тик сделки, — и прежняя логика (фолбэк только когда пуша не было
+    ВОВСЕ) в этом случае считала, что стороны нет. Спред не считался, а цену в
+    строку тут же клал поллер из снапшота: получалась строка «цена есть, спреда
+    нет», и висела она до следующего движения книги. На проде 02.09 таких строк
+    было 75 при живых числах в кэше витрины."""
+    q = q or {}
+    return _sides_of({side: (q.get(side) if q.get(side) is not None
+                             else (snap or {}).get(side))
+                      for side in ("bid", "ask")})
+
+
 def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
     """Дешёвый пересчёт ТОЛЬКО сторон стакана для бумаг из очереди _sides_dirty.
 
@@ -1389,15 +1405,10 @@ def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
         if not row or isin not in _eval_ctx:
             continue
         snap = board.get(isin, {}) or {}
-        q = _last_quote.get(isin)
-        # КОТИРОВОЧНЫЙ ПУШ НЕ ОБЯЗАТЕЛЕН: стороны берём из биржевого снапшота,
-        # когда пуша по бумаге сегодня не было. Раньше такая бумага молча
-        # пропускалась — цена стороны в строке стояла (снапшот её даёт), а спред
-        # к ней оставался прочерком до конца дня.
-        if q is None:
-            q = {"bid": snap.get("bid"), "ask": snap.get("ask")}
+        # КОТИРОВОЧНЫЙ ПУШ НЕ ОБЯЗАТЕЛЕН и не обязан быть полным: сторону, которой
+        # в нём нет, берём из биржевого снапшота (см. _sides_from).
         row = dict(row)
-        sides = _sides_of(q)
+        sides = _sides_from(_last_quote.get(isin), snap)
         for side, v in sides.items():
             row[side] = v
         _fill_side_metrics(row, isin, sides, snap)
@@ -1709,10 +1720,11 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
         # мала, но уехавший якорь уводит за собой все производные числа разом
         # (прод 27.08.2026 — вся лестница стакана в телеграме). Батч из двух-трёх
         # цен стоит ~13 мс на бумагу (замер там же), поток и база не пересобираются.
-        sides = _sides_of(q)
+        _snap = ctx["board"].get(isin, {}) or {}
+        sides = _sides_from(q, _snap)
         for side, v in sides.items():
             row[side] = v
-        _fill_side_metrics(row, isin, sides, (ctx["board"].get(isin, {}) or {}))
+        _fill_side_metrics(row, isin, sides, _snap)
         snap = ctx["board"].get(isin, {})
         # свой тиковый счёт впереди биржевого (см. services/universe): VALTODAY и
         # WAPRICE из ISS-снапшота отстают, тик уже здесь
