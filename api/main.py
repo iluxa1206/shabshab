@@ -607,8 +607,12 @@ async def warmup_caches():
                                                    on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
-                logger.info("прогрев старта: движок получил ctx=%d, потоков=%d",
-                            len(_us._eval_ctx), len(_us._flow_cache))
+                # ЗАСЕВ ПОМЕЧЕН ВЕРСИЕЙ — иначе первый такт движка снесёт его
+                # как «кэш неизвестного происхождения» (см. _check_version)
+                _, _, _cd, _rd = await MarketDataService.get_curves()
+                n_ctx = _us.seed_done(market_cache, _cd or _rd or date.today())
+                logger.info("прогрев старта: движок получил ctx=%d, потоков=%d (%s)",
+                            n_ctx, len(_us._flow_cache), _us.seed_skips_report())
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
         # календарь выплат — тем же прогревом (плашка выплат в нижней строке
@@ -684,8 +688,10 @@ async def daily_prewarm():
                                                    on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
-                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d",
-                            len(_us._eval_ctx), len(_us._flow_cache))
+                _, _, _cd, _rd = await MarketDataService.get_curves()
+                n_ctx = _us.seed_done(market_cache, _cd or _rd or date.today())
+                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d (%s)",
+                            n_ctx, len(_us._flow_cache), _us.seed_skips_report())
             await _warm_fixed(market_cache)
             # Календарь выплат: полный поток по универсу считается раз в день и
             # держится в памяти. Без прогрева его первым платил случайный

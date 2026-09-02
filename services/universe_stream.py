@@ -1534,6 +1534,11 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
     return out
 
 
+# текст исключения → сколько раз. Читает seed_skips_report: одна и та же
+# причина на сотнях бумаг должна быть видна строкой, а не залить лог
+_ctx_fail_reason: dict = {}
+
+
 def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
     """Вход точного расчёта Y-IDX по любой цене — на бумагу, на весь день.
 
@@ -1561,6 +1566,8 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
         }
     except Exception as e:
         logger.debug("eval ctx %s: %s", isin, e)
+        _ctx_fail_reason[type(e).__name__ + ": " + str(e)[:60]] = \
+            _ctx_fail_reason.get(type(e).__name__ + ": " + str(e)[:60], 0) + 1
         _eval_ctx.pop(isin, None)
 
 
@@ -1633,6 +1640,41 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
     return n
 
 
+# ПОЧЕМУ УТРЕННИЙ ПРОХОД НЕ ОТДАЛ КОНТЕКСТ: причины отказа по видам. Без них
+# «движок получил ctx=2 из 611» (репетиция переката 02.09) не с чем сверить.
+_seed_skips: dict = {}
+
+
+def seed_skips_report() -> str:
+    """Свод причин отказа с обнулением — печатается после прогрева."""
+    if not _seed_skips:
+        return "отказов нет"
+    txt = ", ".join(f"{k} {v}" for k, v in sorted(_seed_skips.items(),
+                                                  key=lambda x: -x[1]))
+    if _ctx_fail_reason:
+        top = sorted(_ctx_fail_reason.items(), key=lambda x: -x[1])[:2]
+        txt += " · причины: " + "; ".join(f"{k} ×{v}" for k, v in top)
+        _ctx_fail_reason.clear()
+    _seed_skips.clear()
+    return txt
+
+
+# ВЕРСИЯ, НА КОТОРОЙ СОБРАН ЗАСЕВ утреннего прохода: день + отпечаток кривых.
+# Совпала с версией такта — первая сверка версий засев не сносит (см.
+# _check_version). Ставится по окончании прогрева, снимается сменой версии.
+_seeded_version: Optional[tuple] = None
+
+
+def seed_done(market_cache: dict, calc_date) -> int:
+    """Прогрев закончил засев — помечаем, на какой версии он собран.
+
+    Возвращает число контекстов: вызывающий печатает его в лог, и теперь это
+    число честное — раньше оно жило до первого такта движка."""
+    global _seeded_version
+    _seeded_version = (str(calc_date), _curves_fp(market_cache))
+    return len(_eval_ctx)
+
+
 def seed_ctx(isin: str, u: dict, ref, ctx_like: dict, snap: dict) -> None:
     """Контекст расчёта, собранный УТРЕННИМ проходом (universe.compute_universe_
     metrics), — прямо в движок.
@@ -1641,9 +1683,21 @@ def seed_ctx(isin: str, u: dict, ref, ctx_like: dict, snap: dict) -> None:
     выбрасывал, и движок после переката собирал всё заново лениво, по десять
     бумаг за такт. Уже прогретую бумагу не трогаем: свежий контекст такта лучше
     утреннего, а тратить время на перезапись незачем."""
-    if not isin or isin in _eval_ctx or isin in _fixed_isins:
+    if not isin:
+        _seed_skips["без isin"] = _seed_skips.get("без isin", 0) + 1
         return
+    if isin in _eval_ctx:
+        _seed_skips["уже прогрет"] = _seed_skips.get("уже прогрет", 0) + 1
+        return
+    if isin in _fixed_isins:
+        _seed_skips["фикс"] = _seed_skips.get("фикс", 0) + 1
+        return
+    before = len(_eval_ctx)
     _store_eval_ctx(isin, u, ref, ctx_like, snap or {})
+    if len(_eval_ctx) == before:
+        # _store_eval_ctx проглотила исключение в debug — в проде этот уровень
+        # выключен, и «движок получил ctx=2» выглядело беспричинным
+        _seed_skips["ошибка сборки"] = _seed_skips.get("ошибка сборки", 0) + 1
 
 
 def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = None,
@@ -1822,9 +1876,19 @@ def _check_version(version: tuple, ctx: Optional[dict] = None) -> None:
     global _memo_version, _yoi_cache_epoch
     if version != _memo_version:
         same_day = bool(_memo_version) and _memo_version[0] == version[0]
+        # ЗАСЕВ УТРЕННЕГО ПРОХОДА ПЕРЕЖИВАЕТ ПЕРВУЮ СВЕРКУ ВЕРСИЙ. На старте и
+        # после переката _memo_version пуста, и снос шёл «на всякий случай» —
+        # вместе с контекстами и потоками, которые прогрев только что положил на
+        # ЭТОЙ же версии. Передача работы движку не срабатывала ни разу: лог
+        # «движок получил ctx=611» печатался за секунды до того, как первый такт
+        # всё выбрасывал, и рынок догревался заново по десять бумаг за такт
+        # (репетиция переката 02.09: прогрев отдал 2 контекста из 611, потому
+        # что на медленной выкачке расписаний движок проснулся раньше конца).
+        seeded = _seeded_version is not None and _seeded_version == version
         _level_memo.clear()
         # поток строится НА КРИВОЙ: сменилась она или день — платежи другие
-        _flow_cache.clear()
+        if not seeded:
+            _flow_cache.clear()
         # КОНТЕКСТ РАСЧЁТА КРИВОЙ НЕ ПРИНАДЛЕЖИТ. От неё в нём зависит одна
         # ССЫЛКА, всё остальное (ref_obj, график купонов, амортизации, оферты,
         # НКД) собрано из реестра и MOEX и на новой кривой ровно то же. Раньше
@@ -1835,7 +1899,7 @@ def _check_version(version: tuple, ctx: Optional[dict] = None) -> None:
         # сносим только на смене дня: там меняются и потоки, и НКД, и графики.
         if same_day and _eval_ctx and ctx:
             _rebind_curves(ctx)
-        else:
+        elif not seeded:
             _eval_ctx.clear()
         # спред по цене считан на ТОЙ кривой — набор цен прежний, число другое
         _yoi_cache.clear()
