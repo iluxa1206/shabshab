@@ -1393,6 +1393,61 @@ def test_book_snapshot_hides_small_orders_and_digs_deeper(monkeypatch):
     assert [l["price"] for l in cut["bids"]] == [99.8]
 
 
+def test_book_snapshot_counts_skipped_levels(monkeypatch):
+    """Снимок помнит, СКОЛЬКО уровней отсеяно перед каждым показанным: без
+    этого лестница с вырезанной серединой читается как сплошная."""
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    # мелочь стоит у самой котировки и в середине лестницы
+    depth = {"a": [[99.5, 8], [99.6, 12], [99.7, 5000], [99.8, 7], [99.9, 6000]],
+             "b": [[99.4, 9], [99.3, 3000]]}
+    bk = core.book_snapshot(depth, {}, 1000.0, levels=4, min_qty=1000)
+    # офферы печатаются худшим-первым, gap считается от лучшей цены
+    assert [(l["price"], l["gap"]) for l in bk["asks"]] == [(99.9, 1), (99.7, 2)]
+    assert [(l["price"], l["gap"]) for l in bk["bids"]] == [(99.3, 1)]
+
+
+def test_book_snapshot_flags_fully_hidden_side(monkeypatch):
+    """Сторону выкосило порогом целиком — прикрепить пропуск не к чему,
+    поэтому он отдельным флагом."""
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    bk = core.book_snapshot({"a": [[99.7, 5], [99.8, 7]], "b": [[99.6, 3000]]},
+                            {}, 1000.0, levels=4, min_qty=1000)
+    assert bk["asks"] == [] and bk["asks_all_hidden"] is True
+    assert bk["bids_all_hidden"] is False
+
+
+def test_book_pre_marks_gaps_with_ellipsis(monkeypatch):
+    """Многоточие рисуется СО СТОРОНЫ КОТИРОВКИ: у офферов под строкой, у
+    бидов над ней. Иначе «лучший оффер 99,70» — неправда, когда между ним и
+    спредом стояла отсеянная мелочь."""
+    from services import tg_notify
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[99.55, 8], [99.6, 12], [99.7, 50001], [99.97, 1565]],
+             "b": [[99.5, 9], [99.36, 1016], [99.22, 1434]]}
+    bk = core.book_snapshot(depth, {}, 1000.0, levels=4, min_qty=1000)
+    lines = [ln for ln in tg_notify._book_pre({"book": bk, "price": 99.7,
+                                               "book_min_qty": 1000}, "ask").split("\n")]
+    lines = [ln.replace("<blockquote expandable>", "").replace("</blockquote>", "")
+             for ln in lines]
+    sep = next(i for i, ln in enumerate(lines) if ln.startswith("─"))
+    assert lines[sep - 1] == "..."      # отсеянные офферы — между 99,70 и спредом
+    assert lines[sep + 1] == "..."      # отсеянный бид 99,50
+    assert "99,70" in lines[sep - 2]    # последний показанный оффер над многоточием
+    assert "99,36" in lines[sep + 2]
+
+
+def test_book_pre_no_ellipsis_when_nothing_hidden(monkeypatch):
+    """Глубина книги за лестницей многоточием НЕ помечается: она обрезана
+    всегда, и метка стояла бы в каждом сообщении, ничего не говоря."""
+    from services import tg_notify
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    depth = {"a": [[99.7, 5000], [99.8, 6000], [99.9, 7000]],
+             "b": [[99.6, 3000], [99.5, 2000]]}
+    bk = core.book_snapshot(depth, {}, 1000.0, levels=2, min_qty=1000)
+    out = tg_notify._book_pre({"book": bk, "price": 99.7}, "ask")
+    assert "..." not in out
+
+
 def test_book_min_qty_does_not_touch_filter_math():
     """Порог — ТОЛЬКО показ: условия фильтра считаются по полной книге."""
     uni, metrics, depth = _market()

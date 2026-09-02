@@ -564,19 +564,29 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
     def side_levels(key: str) -> list:
         """levels уровней стороны ПОСЛЕ отсева мелочи — считая от лучшей цены.
         Обрезаем после фильтра, а не до: иначе одна копеечная заявка на верху
-        съедала бы строку лестницы."""
-        out = []
+        съедала бы строку лестницы.
+
+        Возвращает пары (уровень, сколько отсеяно ПЕРЕД ним). Счётчик нужен
+        витрине: лестница с выкинутой серединой читается как сплошная, и
+        «лучший оффер 99,70» — неправда, если между ним и спредом стояли
+        мелкие заявки. Пропуск помечается многоточием (см. tg_notify)."""
+        out, skipped = [], 0
         for lvl in (d.get(key) or []):
             q = _qty(lvl)
             if min_qty and (q is None or q < min_qty):
+                skipped += 1
                 continue
-            out.append(lvl)
+            out.append((lvl, skipped))
+            skipped = 0
             if len(out) >= levels:
                 break
         return out
 
     shown = {key: side_levels(key) for key in ("a", "b")}
-    pxs = [_px(l) for key in ("a", "b") for l in shown[key]]
+    # сторона была, но её выкосило порогом целиком — тоже пропуск, только
+    # прикрепить его не к чему: строк не осталось
+    all_hidden = {key: bool(d.get(key)) and not shown[key] for key in ("a", "b")}
+    pxs = [_px(l) for key in ("a", "b") for l, _g in shown[key]]
     exact_map = exact_y_idx_map(isin, pxs)
 
     # лестница стороны в depth идёт ОТ ЛУЧШЕЙ цены — тем же порядком, каким её
@@ -592,17 +602,21 @@ def book_snapshot(depth_side: Optional[dict], row: dict, face: float,
 
     def side_rows(key: str, best_first: bool) -> list:
         out = []
-        for lvl in shown[key]:
+        for lvl, gap in shown[key]:
             px, qty = _px(lvl), _qty(lvl)
             if px is None or qty is None:
                 continue
             out.append({"price": px, "qty": qty,
                         "money": level_money(px, qty, face, accrued),
-                        "y_idx": level_y(px, "ask" if key == "a" else "bid")})
+                        "y_idx": level_y(px, "ask" if key == "a" else "bid"),
+                        # сколько уровней отсеяно между этим и предыдущим
+                        # показанным (у первого — между ним и лучшей ценой)
+                        "gap": gap})
         return out if best_first else list(reversed(out))
 
     return {"asks": side_rows("a", False), "bids": side_rows("b", True),
-            "hit": hit}
+            "hit": hit,
+            "asks_all_hidden": all_hidden["a"], "bids_all_hidden": all_hidden["b"]}
 
 
 def money_in_spread(levels, row: dict, side: str, lo: Optional[float],
