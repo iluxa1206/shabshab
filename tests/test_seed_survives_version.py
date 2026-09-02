@@ -93,3 +93,35 @@ def test_level_memo_is_always_dropped(monkeypatch):
     us.seed_begin({}, date(2026, 9, 2))
     us._check_version(("2026-09-02", "fp-1"))
     assert not us._level_memo
+
+
+def test_curves_rebuilt_mid_pass_rebinds_instead_of_dropping(monkeypatch):
+    """Кривые пересобрались ПОСРЕДИ прогрева. Контекст кривой не принадлежит —
+    от неё в нём одна ссылка, поэтому его перепривязывают, а не сносят. На
+    старте «тот же день» определить было нечем (_memo_version пуста), и половина
+    засева терялась: репетиция 02.09 — посчитано 611, у движка 315."""
+    _reset()
+    monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
+    us.seed_begin({}, date(2026, 9, 2))
+    _seed(4)
+    class _C:  # ссылки на новые кривые
+        pass
+    ru, kr = _C(), _C()
+    us._check_version(("2026-09-02", "fp-2"),
+                      {"ruonia_curve": ru, "keyrate_curve": kr,
+                       "calc_date": date(2026, 9, 2)})
+    assert len(us._eval_ctx) == 4                     # контексты живы
+    assert all(v["curve"] is kr for v in us._eval_ctx.values())   # и на новой кривой
+    assert not us._flow_cache                         # потоки строятся НА кривой — снесены
+
+
+def test_new_day_still_drops_everything(monkeypatch):
+    """Смена дня — другие НКД, графики и потоки: перепривязка не спасает."""
+    _reset()
+    monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
+    us.seed_begin({}, date(2026, 9, 2))
+    _seed(4)
+    us._check_version(("2026-09-03", "fp-1"),
+                      {"ruonia_curve": object(), "keyrate_curve": object(),
+                       "calc_date": date(2026, 9, 3)})
+    assert not us._eval_ctx and not us._flow_cache
