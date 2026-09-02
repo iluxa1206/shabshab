@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../../api.js";
 import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
 import { filterBonds } from "../../search.js";
+import { filterByAdv } from "../../tableRows.js";
 import { horizonDate } from "../../horizon.js";
 import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
 import { sideProgress } from "../../spreadProgress.js";
@@ -22,7 +23,7 @@ import { FIXED_COLS, FIXED_COL_META, FIXED_DEFAULT_COLS } from "./fixedCols.jsx"
 // собой чужой отбор (у фиксов нет ни базы купона, ни бумаг того же эмитента).
 const FILTER_KEYS = ["fxq", "fxw", "fxrt", "fxem", "fxcls", "fxnosub", "fxnoam",
                      "fxmyf", "fxmyt", "fxgf", "fxgt", "fxyf", "fxyt", "fxtwo",
-                     "fxvb", "fxva", "fxvm"];
+                     "fxvb", "fxva", "fxvm", "fxadv", "fxadvm"];
 // Суборды/перпы — по имени выпуска, тот же паттерн, что у флоатеров (App.jsx)
 // и у скринера (services/screener_core.py::_SUBORD_RE).
 const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
@@ -161,6 +162,10 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   const [spreadTo, setSpreadTo] = useState(() => initialParams().get("fxgt") || ls("gSpreadTo_fx"));
   const [ytmFrom, setYtmFrom] = useState(() => initialParams().get("fxyf") || ls("ytmFrom_fx"));
   const [ytmTo, setYtmTo] = useState(() => initialParams().get("fxyt") || ls("ytmTo_fx"));
+  // порог ликвидности по ADV, млн ₽ (как в колонке); сторона сравнения — gte/lte
+  const [advMin, setAdvMin] = useState(() => initialParams().get("fxadv") || ls("advMin_fx"));
+  const [advMode, setAdvMode] = useState(() => ((initialParams().get("fxadvm")
+    || ls("advMode_fx")) === "lte" ? "lte" : "gte"));
   const [sort, setSort] = useState({ key: "g_spread_bps", dir: "asc" });
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch_fx") || "[]"); } catch { return []; }
@@ -219,11 +224,13 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       if (spreadTo) next.set("fxgt", spreadTo);
       if (ytmFrom) next.set("fxyf", ytmFrom);
       if (ytmTo) next.set("fxyt", ytmTo);
+      if (advMin) next.set("fxadv", advMin);
+      if (advMin && advMode === "lte") next.set("fxadvm", "lte");
       return next;
     }, { replace: true });
   }, [query, onlyWatch, ratingsSel, emittersSel, clsSel, hideSub, hideAmort, twoSided,
       volBid, volAsk, volMode,
-      matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, setSearchParams]);
+      matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, advMin, advMode, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord_fx", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("hideAmort_fx", hideAmort ? "1" : "0"); }, [hideAmort]);
@@ -233,6 +240,8 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   useEffect(() => { localStorage.setItem("gSpreadTo_fx", spreadTo); }, [spreadTo]);
   useEffect(() => { localStorage.setItem("ytmFrom_fx", ytmFrom); }, [ytmFrom]);
   useEffect(() => { localStorage.setItem("ytmTo_fx", ytmTo); }, [ytmTo]);
+  useEffect(() => { localStorage.setItem("advMin_fx", advMin); }, [advMin]);
+  useEffect(() => { localStorage.setItem("advMode_fx", advMode); }, [advMode]);
   useEffect(() => { localStorage.setItem("volBidRub_fx", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub_fx", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode_fx", volMode); }, [volMode]);
@@ -427,6 +436,8 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     };
     win("g_spread_bps", spreadFrom, spreadTo);
     win("ytm", ytmFrom, ytmTo);
+    // порог ликвидности по ADV — то же правило, что у флоатеров (tableRows.js)
+    r = filterByAdv(r, parseFloat(advMin), advMode);
     r = filterBonds(r, query);
     const { key, dir } = sort;
     const m = dir === "asc" ? 1 : -1;
@@ -445,7 +456,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     return r;
   }, [bonds, onlyWatch, watch, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
       volOn, volBid, volAsk, volMode, depth,
-      matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, query, sort]);
+      matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, advMin, advMode, query, sort]);
 
   // ПРОГРЕСС ЗАПОЛНЕНИЯ g-спредов — заливкой в заголовках колонок BID/OFFER, как
   // у флоатеров: движок общий, ждать приходится одинаково. Имена полей у фикса
@@ -503,13 +514,13 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     + (volBid > 0 || volAsk > 0 ? 1 : 0)
     + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0)
-    + (ytmFrom !== "" ? 1 : 0) + (ytmTo !== "" ? 1 : 0);
+    + (ytmFrom !== "" ? 1 : 0) + (ytmTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setRatingsSel([]); setEmittersSel([]); setClsSel([]);
     setHideSub(true); setHideAmort(false); setQuery(""); setTwoSided(false);
     setVolBid(0); setVolAsk(0);
     setMatFrom(""); setMatTo(""); setSpreadFrom(""); setSpreadTo("");
-    setYtmFrom(""); setYtmTo("");
+    setYtmFrom(""); setYtmTo(""); setAdvMin("");
   }, []);
 
   // ступени рейтинга витрины (меню «▾» рядом с чипами грейдов) — до фильтров
@@ -537,6 +548,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         spreadFrom={spreadFrom} setSpreadFrom={setSpreadFrom}
         spreadTo={spreadTo} setSpreadTo={setSpreadTo}
         ytmFrom={ytmFrom} setYtmFrom={setYtmFrom} ytmTo={ytmTo} setYtmTo={setYtmTo}
+        advMin={advMin} setAdvMin={setAdvMin} advMode={advMode} setAdvMode={setAdvMode}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={rows.length} total={bonds.length}

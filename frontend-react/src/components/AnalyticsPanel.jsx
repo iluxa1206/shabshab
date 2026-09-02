@@ -348,6 +348,11 @@ function withToday(data, rows, byIss) {
   if (!dates.length || !series.length || dates[dates.length - 1] >= today) {
     return data;
   }
+  // В выходные точку не достраиваем: истории выходных дней тоже нет (сервер их
+  // выкидывает — оборот копеечный, медиана скачет), и субботняя точка висела бы
+  // одна за краем рабочей недели.
+  const wd = new Date(today + "T00:00:00Z").getUTCDay();
+  if (wd === 0 || wd === 6) return data;
   const groups = new Map();
   for (const b of rows) {
     const key = byIss ? emKey(b) : norm(b.rating);
@@ -387,6 +392,12 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
   if (!data) return <div className="an-empty">загрузка…</div>;
   const { dates, series } = withToday(data, rows, byIss);
   if (!dates.length || !series.length) return <div className="an-empty">нет истории снапшотов за период</div>;
+  // Глубина архива меньше запрошенного окна — обычное дело: агрегат берёт только
+  // бары, посчитанные АКТУАЛЬНОЙ версией движка (см. /aggregate/yidx), и старые
+  // дни в него не попадают. Без этой подписи 6м и 12м выглядят как мёртвые
+  // кнопки: жмёшь — картинка та же.
+  const gotDays = Math.round((Date.parse(dates[dates.length - 1]) - Date.parse(dates[0])) / 864e5);
+  const shortHist = gotDays < period * 0.8;
 
   const colorOf = (s, i) => (byIss
     ? (s.key === MARKET ? "var(--mut-2)" : ICOLORS[i % ICOLORS.length])
@@ -480,6 +491,11 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
           );
         })}
       </div>
+      {shortHist && (
+        <div className="an-note" title="Агрегат считается по барам актуальной версии движка метрик; за более ранние дни их нет.">
+          история с {fmt.date(dates[0])} — глубже архива нет
+        </div>
+      )}
     </>
   );
 }

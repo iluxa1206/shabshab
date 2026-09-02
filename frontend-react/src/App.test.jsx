@@ -181,7 +181,7 @@ describe("монтирование приложения", () => {
 
     // витрина фиксов: стакан впереди последней сделки, обе первичные метрики
     // и watchlist — то же, что у монитора флоатеров
-    for (const th of ["BID", "OFFER", "G-SPRD", "YTM", "ADV"]) {
+    for (const th of ["BID", "ASK", "G-SPRD", "YTM", "ADV"]) {
       expect((await screen.findAllByText(th)).length).toBeGreaterThan(0);
     }
     // строк в витрине несколько — звёздочка watchlist есть у каждой

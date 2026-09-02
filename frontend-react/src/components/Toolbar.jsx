@@ -15,6 +15,7 @@ export default function Toolbar({
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   spreadFrom, setSpreadFrom, spreadTo, setSpreadTo,
+  advMin, setAdvMin, advMode, setAdvMode,
   query, setQuery, searchRef, watchCount, shown, total,
   visibleCols, onToggleCol, onResetCols, onMoveCol, colsMeta,
   activeFilters, onResetFilters,
@@ -108,7 +109,7 @@ export default function Toolbar({
       {setTwoSided && <div className="fgroup">
         <button className={"chip-btn" + (twoSided ? " on" : "")} onClick={() => setTwoSided(!twoSided)}
           aria-label="Только двусторонние котировки"
-          title="BID×OFFER — показывать только бумаги с двусторонней котировкой (есть и бид, и оффер)">
+          title="BID×ASK — показывать только бумаги с двусторонней котировкой (есть и бид, и оффер)">
           <IconTwoWay size={13} />
         </button>
       </div>}
@@ -170,6 +171,30 @@ export default function Toolbar({
             onClick={() => { setSpreadFrom(""); setSpreadTo(""); }}>×</button>
         )}
       </div>
+
+      {/* группа: порог ликвидности по ADV — одно число и сторона сравнения.
+          Неликвид даёт «спред» по случайной сделке в пустом стакане: порогом
+          ≥ он отсекается целиком, ≤ помогает найти именно тонкие бумаги. */}
+      {setAdvMin && (
+        <div className="fgroup" title={"Среднедневной оборот за месяц (колонка ADV), млн ₽. "
+          + "Переключатель задаёт сторону: ≥ — только бумаги ликвиднее порога (чистые спреды без "
+          + "неликвида), ≤ — только тоньше порога. Бумаги без посчитанного ADV при заданном пороге скрыты."}>
+          <span className="fg-lbl">ADV, М₽</span>
+          <button className="chip-btn"
+            aria-label="Сторона сравнения ADV"
+            title={advMode === "lte" ? "≤ — оборот НЕ БОЛЬШЕ порога (клик → ≥)" : "≥ — оборот НЕ МЕНЬШЕ порога (клик → ≤)"}
+            onClick={() => setAdvMode(advMode === "lte" ? "gte" : "lte")}>
+            {advMode === "lte" ? "≤" : "≥"}
+          </button>
+          <input className="num-input" type="number" min="0" step="1" placeholder="порог"
+            aria-label="Порог ADV, млн ₽" value={advMin}
+            onChange={(e) => setAdvMin(e.target.value)} />
+          {advMin && (
+            <button className="chip-btn" title="Сбросить порог ликвидности"
+              onClick={() => setAdvMin("")}>×</button>
+          )}
+        </div>
+      )}
 
       {/* группа: окно доходности к погашению, % (вторая первичная метрика фиксов) */}
       {setYtmFrom && (

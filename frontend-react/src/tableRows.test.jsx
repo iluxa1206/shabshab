@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortRows, filterBySpread } from "./tableRows.js";
+import { sortRows, filterByAdv, filterBySpread } from "./tableRows.js";
 
 const rows = (...v) => v.map(([isin, y]) => ({ isin, y_idx_ask_bps: y }));
 const val = (r) => r.y_idx_ask_bps;
@@ -96,5 +96,26 @@ describe("окно спреда с памятью", () => {
     filterBySpread(rs(["A", 200], ["B", 300]), 150, NaN, memo);
     filterBySpread(rs(["A", 200]), 150, NaN, memo);
     expect([...memo.keys()]).toEqual(["A"]);
+  });
+});
+
+describe("порог ликвидности по ADV", () => {
+  const av = (...xs) => xs.map(([isin, adv]) => ({ isin, adv_1m_rub: adv }));
+
+  it("≥ отсекает неликвид, ≤ оставляет только тонкие", () => {
+    const src = av(["A", 5e6], ["B", 50e6], ["C", 200e6]);
+    expect(filterByAdv(src, 50, "gte").map((r) => r.isin)).toEqual(["B", "C"]);
+    expect(filterByAdv(src, 50, "lte").map((r) => r.isin)).toEqual(["A", "B"]);
+  });
+
+  it("бумага без ADV при заданном пороге скрыта в обе стороны", () => {
+    const src = av(["A", null]);
+    expect(filterByAdv(src, 10, "gte")).toEqual([]);
+    expect(filterByAdv(src, 10, "lte")).toEqual([]);
+  });
+
+  it("без порога список не трогается", () => {
+    const src = av(["A", null], ["B", 1e6]);
+    expect(filterByAdv(src, NaN, "gte")).toBe(src);
   });
 });

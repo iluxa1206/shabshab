@@ -468,6 +468,11 @@ async def yidx_aggregate(body: YidxAggBody):
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
     rows = [r for r in rows if want is None or r["isin"] in want]
+    # ВЫХОДНЫЕ ВОН. Биржа торгует и в субботу-воскресенье, но оборот там копеечный:
+    # медиана бакета считается по горстке сделок и даёт выбросы, которых на рынке
+    # не было. Праздники внутри недели этим не ловятся — там объём тоже тонкий,
+    # но их снимает порог «тонких дней» ниже (n_min по p95 покрытия серии).
+    rows = [r for r in rows if _date.fromisoformat(r["date"]).weekday() < 5]
     rows = _one_horizon(rows, lo, hi)
     if not rows:
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}

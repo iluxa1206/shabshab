@@ -283,6 +283,11 @@ td.mut { color: var(--mut); }
   font-family: var(--mono); font-size: 11px; padding: 4px 2px; outline: none;
 }
 .num-input { width: 46px; }
+/* стрелки-спиннеры у number-полей вон: в плотном ряду фильтров это шум, а сам
+   шаг остаётся — колесо и ↑/↓ с клавиатуры работают как прежде */
+.num-input::-webkit-outer-spin-button,
+.num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.num-input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .date-input { width: 104px; }
 .num-input:focus, .date-input:focus { border-color: var(--fg); }
 .num-input::placeholder { color: var(--mut-2); }
@@ -611,9 +616,18 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cp-top { display: flex; flex-direction: column; gap: 8px; }
 .cp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
 .cp-id { display: flex; align-items: baseline; gap: 8px; }
-.cp-back { color: var(--mut); text-decoration: none; font-size: 16px; line-height: 1; padding: 2px 4px;
-  border-radius: 3px; transition: color .15s, background .15s; }
-.cp-back:hover { color: var(--fg); background: var(--line-2); }
+/* Стрелка «назад» — плоский символ, а не кнопка. Разметка давно <button>, а
+   сброса не было: браузер дорисовывал НАТИВНУЮ кнопку (серая заливка + объёмная
+   рамка — вид Win95, особенно на мобильном Safari). */
+.cp-back { appearance: none; -webkit-appearance: none; background: transparent; border: 0;
+  color: var(--mut); text-decoration: none; font: inherit; font-size: 16px; line-height: 1;
+  padding: 2px 4px; cursor: pointer; border-radius: 3px; transition: color .15s, background .15s; }
+/* заливка — только под настоящей мышью: на тач-экране :hover ЗАЛИПАЕТ после
+   тапа, и стрелка «назад» остаётся серым квадратом (вид кнопки из Win95) */
+@media (hover: hover) and (pointer: fine) {
+  .cp-back:hover { color: var(--fg); background: var(--line-2); }
+}
+.cp-back:active { color: var(--fg); }
 .cp-name { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
 .cp-isin { font: 11px var(--mono); color: var(--mut-2); }
 .cp-rating { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;

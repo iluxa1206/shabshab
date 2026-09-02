@@ -68,3 +68,18 @@ export function filterBySpread(rows, from, to, memo, valueOf = (r) => r.yield_ov
   for (const isin of [...memo.keys()]) if (!alive.has(isin)) memo.delete(isin);
   return out;
 }
+
+// Порог ликвидности по ADV (среднедневной оборот за месяц, ₽ в строке — млн ₽
+// в инпуте). mode: "gte" — оборот не меньше порога (отсечь неликвид), "lte" —
+// не больше (найти именно тонкие бумаги). Строки без ADV при заданном пороге
+// прячем: прочерк — это и есть отсутствие оборота, пускать его в «ликвидные»
+// нельзя, а в «тонкие» — врать числом, которого нет.
+export function filterByAdv(rows, minMln, mode = "gte") {
+  if (!Number.isFinite(minMln)) return rows;
+  const lim = minMln * 1e6;
+  return rows.filter((r) => {
+    const v = r.adv_1m_rub;
+    if (v == null) return false;
+    return mode === "lte" ? v <= lim : v >= lim;
+  });
+}

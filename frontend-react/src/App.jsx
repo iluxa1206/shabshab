@@ -4,7 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } 
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
   sideMetricPatch, sideMetricChanges, applySideQuote } from "./quotesMerge.js";
-import { sortRows, filterBySpread } from "./tableRows.js";
+import { sortRows, filterByAdv, filterBySpread } from "./tableRows.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { sideProgress } from "./spreadProgress.js";
@@ -43,7 +43,7 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "nosub", "noam", "cls"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "advf", "advm", "nosub", "noam", "cls"];
 // Субординация — по имени бумаги: отдельного признака нет ни у MOEX, ни у
 // corpbonds, а маркер в short_name — устойчивая конвенция («ВТБСУБ1-12»,
 // «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
@@ -118,6 +118,11 @@ function Dashboard() {
   // с прочерком молча пролезали бы в любой диапазон
   const [spreadFrom, setSpreadFrom] = useState(() => initialParams().get("sf") || localStorage.getItem("spreadFrom") || "");
   const [spreadTo, setSpreadTo] = useState(() => initialParams().get("st") || localStorage.getItem("spreadTo") || "");
+  // порог ликвидности по ADV (среднедневной оборот за месяц), млн ₽ как в колонке.
+  // advMode — сторона сравнения: "gte" (по умолчанию, отсечь неликвид) / "lte".
+  const [advMin, setAdvMin] = useState(() => initialParams().get("advf") || localStorage.getItem("advMin") || "");
+  const [advMode, setAdvMode] = useState(() => ((initialParams().get("advm")
+    || localStorage.getItem("advMode")) === "lte" ? "lte" : "gte"));
   const [query, setQuery] = useState(() => initialParams().get("q") || "");
   const [showAnalytics, setShowAnalytics] = useState(false);
   // выбор на графике аналитики ({type:"issuer"|"rating", key}) — временный фильтр
@@ -200,10 +205,12 @@ function Dashboard() {
       if (matTo) next.set("myt", matTo);
       if (spreadFrom) next.set("sf", spreadFrom);
       if (spreadTo) next.set("st", spreadTo);
+      if (advMin) next.set("advf", advMin);
+      if (advMin && advMode === "lte") next.set("advm", "lte");
       return next;
     }, { replace: true });
   }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, clsSel,
-      volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, setSearchParams]);
+      volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
@@ -214,6 +221,8 @@ function Dashboard() {
   useEffect(() => { localStorage.setItem("matYrsTo", matTo); }, [matTo]);
   useEffect(() => { localStorage.setItem("spreadFrom", spreadFrom); }, [spreadFrom]);
   useEffect(() => { localStorage.setItem("spreadTo", spreadTo); }, [spreadTo]);
+  useEffect(() => { localStorage.setItem("advMin", advMin); }, [advMin]);
+  useEffect(() => { localStorage.setItem("advMode", advMode); }, [advMode]);
   useEffect(() => { localStorage.setItem("theme", theme); }, [theme]);
   // жёлтые подсказки эпохи — только в теме win; за собой всё снимают
   useEffect(() => {
@@ -696,6 +705,10 @@ function Dashboard() {
     // сортировка; в самой ячейке оно приглушено, пока движок не пересчитает.
     rows = filterBySpread(rows, parseFloat(spreadFrom), parseFloat(spreadTo),
                           spreadMemo.current);
+    // порог ликвидности по ADV: одно число и сторона сравнения. Бумаги без
+    // посчитанного оборота при заданном пороге прячем — иначе неликвид с
+    // прочерком пролезал бы именно туда, откуда его и выгоняют.
+    rows = filterByAdv(rows, parseFloat(advMin), advMode);
     // умный поиск: токены запроса ищутся по имени/эмитенту/ISIN с допуском
     // опечатки — «РЖД 3» вытаскивает все похожие выпуски эмитента
     rows = filterBonds(rows, query);
@@ -708,7 +721,8 @@ function Dashboard() {
     return sortRows(rows, key, dir, sortMemo.current,
                     (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
   }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
-      query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
+      query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode,
+      volOn, volBid, volAsk, volMode, depth]);
 
   // набор строк таблицы: отфильтрованный + сужение выбором на графике аналитики
   const tableRows = useMemo(() => {
@@ -825,12 +839,12 @@ function Dashboard() {
     + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 0 : 1) + (query !== "" ? 1 : 0)
     + (hideAmort ? 1 : 0) + (clsSel.length ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
-    + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0);
+    + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
     setTwoSided(false); setHideSub(true); setHideAmort(false); setClsSel([]);
     setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
-    setSpreadFrom(""); setSpreadTo("");
+    setSpreadFrom(""); setSpreadTo(""); setAdvMin("");
   }, []);
 
   // Панель фильтров общая у МОНИТОРА и СРАВНЕНИЯ: состояние одно, значит
@@ -855,6 +869,7 @@ function Dashboard() {
         matFrom={matFrom} setMatFrom={setMatFrom} matTo={matTo} setMatTo={setMatTo}
         spreadFrom={spreadFrom} setSpreadFrom={setSpreadFrom}
         spreadTo={spreadTo} setSpreadTo={setSpreadTo}
+        advMin={advMin} setAdvMin={setAdvMin} advMode={advMode} setAdvMode={setAdvMode}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={tableRows.length} total={bonds.length}

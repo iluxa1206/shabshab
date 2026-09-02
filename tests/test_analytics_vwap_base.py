@@ -96,8 +96,16 @@ def test_aggregate_reads_vwap_rollup(bars, monkeypatch):
     importlib.reload(hist)
 
     from datetime import date, timedelta
-    d0 = (date.today() - timedelta(days=3)).isoformat()
-    d1 = (date.today() - timedelta(days=2)).isoformat()
+    # два последних БУДНИХ дня: выходные агрегат выкидывает (оборот копеечный,
+    # медиана бакета скачет), и на дате-субботе тест ловил бы пустой ряд
+    def _prev_workdays(n: int) -> list:
+        out, d = [], date.today() - timedelta(days=1)
+        while len(out) < n:
+            if d.weekday() < 5:
+                out.append(d.isoformat())
+            d -= timedelta(days=1)
+        return out[::-1]
+    d0, d1 = _prev_workdays(2)
     import services.portfolio_db as pdb
     with pdb._connect() as c:
         c.executemany(
