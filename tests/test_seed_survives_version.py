@@ -137,3 +137,23 @@ def test_new_day_still_drops_everything(monkeypatch):
                       {"ruonia_curve": object(), "keyrate_curve": object(),
                        "calc_date": date(2026, 9, 3)})
     assert not us._eval_ctx and not us._flow_cache
+
+
+def test_early_tick_without_curves_keeps_the_seed(monkeypatch):
+    """Ранний такт после старта кривых ещё не видит. Снос защищает от ссылки на
+    кривую, которой нет в кэше, — но засев собран минуту назад на живых кривых.
+    Репетиция 02.09: посчитано 611, у движка оставалось 256."""
+    _reset()
+    monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
+    us.seed_begin({}, date(2026, 9, 2))
+    _seed(4)
+    us._check_version(("2026-09-02", "fp-2"), {"calc_date": date(2026, 9, 2)})
+    assert len(us._eval_ctx) == 4
+
+
+def test_without_seed_missing_curves_still_drop_the_cache():
+    """Без засева происхождение контекстов неизвестно — снос остаётся."""
+    _reset()
+    _seed(4)
+    assert us._rebind_curves(None) == 4
+    assert not us._eval_ctx

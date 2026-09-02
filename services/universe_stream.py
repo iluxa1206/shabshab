@@ -1859,15 +1859,18 @@ def _rebind_curves(ctx: Optional[dict] = None) -> int:
 
     ctx нет (движок ещё не собрал день) — контексты сносим: считать по ссылке
     на кривую, которой уже нет в кэше, хуже, чем построить контекст заново."""
-    if not ctx:
+    # ЗАСЕВ ПЕРЕЖИВАЕТ ОТСУТСТВИЕ КРИВЫХ В ТАКТЕ. Снос здесь защищает от ссылки
+    # на кривую, которой уже нет в кэше, — но контексты утреннего прохода
+    # собраны минуту назад на ЖИВЫХ кривых, и их ссылки верны. Ранний такт
+    # после старта кривых ещё не видит, и этот снос съедал засев на середине
+    # прохода: репетиция переката 02.09 — посчитано 611, у движка 256.
+    if not ctx or ctx.get("ruonia_curve") is None or ctx.get("keyrate_curve") is None:
+        if _seeded_version is not None:
+            return len(_eval_ctx)
         n = len(_eval_ctx)
         _eval_ctx.clear()
         return n
     ru, kr = ctx.get("ruonia_curve"), ctx.get("keyrate_curve")
-    if ru is None or kr is None:
-        n = len(_eval_ctx)
-        _eval_ctx.clear()
-        return n
     for ev in _eval_ctx.values():
         base = ev.get("base")
         if base is None:        # контекст от прошлой версии кода
