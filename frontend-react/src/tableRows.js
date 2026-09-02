@@ -1,5 +1,7 @@
 /**
- * Сортировка строк монитора с ПАМЯТЬЮ ПОЗИЦИИ.
+ * Порядок и состав строк монитора, устойчивые к пересчёту спредов.
+ *
+ * Сортировка с ПАМЯТЬЮ ПОЗИЦИИ.
  *
  * Спред стороны гаснет на каждом движении цены — число, посчитанное к прошлой
  * цене, к новой не относится, и до следующего такта движка в ячейке честный
@@ -38,4 +40,31 @@ export function sortRows(rows, key, dir, memo, valueOf) {
     return (x - y) * m;
   });
   return rows;
+}
+
+
+/**
+ * Окно R-spread: строка не исчезает, пока спред считается.
+ *
+ * Пустое значение выкидывало её из списка на каждом движении цены — бумага
+ * мигала, а с ней прыгало всё, что ниже. Держим по последнему известному
+ * числу; в самой ячейке оно приглушено, пока движок не пересчитает.
+ *
+ * memo — Map(isin → последний спред), живёт между вызовами (useRef).
+ */
+export function filterBySpread(rows, from, to, memo, valueOf = (r) => r.yield_over_index_bps) {
+  const hasFrom = Number.isFinite(from), hasTo = Number.isFinite(to);
+  if (!hasFrom && !hasTo) return rows;
+  const out = rows.filter((r) => {
+    const v = valueOf(r);
+    if (v != null) memo.set(r.isin, v);
+    const x = v != null ? v : memo.get(r.isin);
+    if (x == null) return false;          // не считалась ни разу
+    if (hasFrom && x < from) return false;
+    return !(hasTo && x > to);
+  });
+  // память живёт, пока строка на экране: иначе карта копила бы весь рынок
+  const alive = new Set(rows.map((r) => r.isin));
+  for (const isin of [...memo.keys()]) if (!alive.has(isin)) memo.delete(isin);
+  return out;
 }

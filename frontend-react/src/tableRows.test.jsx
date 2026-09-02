@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortRows } from "./sortRows.js";
+import { sortRows, filterBySpread } from "./tableRows.js";
 
 const rows = (...v) => v.map(([isin, y]) => ({ isin, y_idx_ask_bps: y }));
 const val = (r) => r.y_idx_ask_bps;
@@ -57,5 +57,44 @@ describe("сортировка с памятью позиции", () => {
     const rs = [{ isin: "A", name: "Яндекс" }, { isin: "B", name: "Аэрофлот" }];
     const got = sortRows(rs, "name", "asc", memo, (r) => r.name);
     expect(order(got)).toEqual(["B", "A"]);
+  });
+});
+
+describe("окно спреда с памятью", () => {
+  const rs = (...v) => v.map(([isin, y]) => ({ isin, yield_over_index_bps: y }));
+
+  it("обычная фильтрация по границам", () => {
+    const got = filterBySpread(rs(["A", 100], ["B", 300], ["C", 200]), 150, 250, new Map());
+    expect(got.map((r) => r.isin)).toEqual(["C"]);
+  });
+
+  it("строка НЕ исчезает, пока спред пересчитывается", () => {
+    const memo = new Map();
+    filterBySpread(rs(["A", 100], ["B", 200]), 150, NaN, memo);
+    const got = filterBySpread(rs(["A", 100], ["B", null]), 150, NaN, memo);
+    expect(got.map((r) => r.isin)).toEqual(["B"]);
+  });
+
+  it("новый спред вне окна — строка уходит", () => {
+    const memo = new Map();
+    filterBySpread(rs(["A", 200]), 150, NaN, memo);
+    filterBySpread(rs(["A", null]), 150, NaN, memo);
+    expect(filterBySpread(rs(["A", 100]), 150, NaN, memo)).toEqual([]);
+  });
+
+  it("не считавшаяся ни разу не проходит окно", () => {
+    expect(filterBySpread(rs(["A", null]), 150, NaN, new Map())).toEqual([]);
+  });
+
+  it("без границ список не трогается", () => {
+    const src = rs(["A", null], ["B", 10]);
+    expect(filterBySpread(src, NaN, NaN, new Map())).toBe(src);
+  });
+
+  it("ушедшая с экрана строка забывается", () => {
+    const memo = new Map();
+    filterBySpread(rs(["A", 200], ["B", 300]), 150, NaN, memo);
+    filterBySpread(rs(["A", 200]), 150, NaN, memo);
+    expect([...memo.keys()]).toEqual(["A"]);
   });
 });

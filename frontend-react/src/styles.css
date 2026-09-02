@@ -2789,3 +2789,9 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .isin-row { display: flex; align-items: baseline; gap: 5px; margin-top: 1px; }
 .isin-row .isin-copy-blk { margin-top: 0; }
 .isin-rt { font: 10px var(--mono); color: var(--mut-2); letter-spacing: 0.04em; white-space: nowrap; }
+
+/* Спред, посчитанный к ПРЕЖНЕЙ цене: цена уже новая, движок ещё считает.
+   Приглушаем, а не гасим — порядок величины известен и на порядок не
+   изменится, но выдавать число за актуальное нельзя. Возвращается к полной
+   яркости само, патчем движка (такт ≤5 с). */
+.q-sp-old { opacity: 0.42; }

@@ -3,8 +3,8 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
-  sideMetricPatch, sideMetricChanges } from "./quotesMerge.js";
-import { sortRows } from "./sortRows.js";
+  sideMetricPatch, sideMetricChanges, applySideQuote } from "./quotesMerge.js";
+import { sortRows, filterBySpread } from "./tableRows.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { sideProgress } from "./spreadProgress.js";
@@ -65,24 +65,6 @@ const REPRICE_MIN_MS = 2000;
 // подписок Alor, стрим лёг, торгов нет) — снова обновляется тактом 5с.
 const LIVE_FRESH_MS = 15000;
 const initialParams = () => new URLSearchParams(window.location.search);
-
-// Новая цена стороны в строку. Спред этой цены НЕ достраиваем: раньше он
-// двигался наклоном dY/dP от якоря, и пара «цена → спред» выглядела
-// согласованной, но обе цифры уезжали вместе с якорем (27.08.2026 — вся
-// лестница стакана в телеграме).
-// Теперь спред стороны считает бэкенд по методике и присылает патчем: движок
-// будит отдельная очередь на движение bid/ask, такт ≤5 с. До прихода числа
-// ячейка спреда пуста — прочерк честнее правдоподобной прикидки.
-//
-// px === null значит «стороны в книге НЕТ» (котировка — полный снимок верха
-// стакана): гасим и цену, и спред. Пропускать такой случай нельзя — в строке
-// осталась бы цена заявки, которой на рынке уже нет.
-function applySideQuote(b, n, side, px, hasKey) {
-  const pxField = side === "bid" ? "bid_price_pct" : "ask_price_pct";
-  if (px === undefined || (!hasKey && px == null) || px === b[pxField]) return;
-  n[pxField] = px ?? null;
-  n[side === "bid" ? "y_idx_bid_bps" : "y_idx_ask_bps"] = null;
-}
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
@@ -363,6 +345,9 @@ function Dashboard() {
   // последнее непустое значение ключа сортировки на бумагу: держит позицию
   // строки, пока её спред пересчитывается (см. сортировку filtered)
   const sortMemo = useRef({ key: null, map: new Map() });
+  // последний известный R-spread на бумагу: держит строку в окне фильтра, пока
+  // движок пересчитывает её к новой цене
+  const spreadMemo = useRef(new Map());
   // фолбэк-таймеры «движок не прислал производные» → одиночный reprice
   const repriceFallback = useRef({});
   // буфер WS-патчей до флаша (коалесцирование пушей всего юниверса)
@@ -605,6 +590,10 @@ function Dashboard() {
         // «наш VWAP по сделкам» на них была бы неправдой
         const n = { ...b, _live: false };
         if (q.last != null) {
+          // R-spread посчитан к ПРЕЖНЕЙ цене сделки: пока движок не прислал
+          // новый, число в колонке относится к прошлому состоянию. Не гасим
+          // (порядок величины верен), но помечаем — таблица приглушит.
+          if (q.last !== b.last_price_pct && q.yoi == null) n._yoi_stale = true;
           // CHG держим согласованным с новой ценой (prev_close — инвариант дня)
           if (b.delta_to_prev_close != null && b.last_price_pct != null) {
             const prevClose = b.last_price_pct - b.delta_to_prev_close;
@@ -627,6 +616,7 @@ function Dashboard() {
         for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
           if (q[k] != null) n[field] = q[k];
         }
+        if (q.yoi != null) n._yoi_stale = false;
         // Спреды сторон — ПОСЛЕ applySideQuote: та гасит спред под новую цену,
         // а здесь он возвращается, если движок считал по ЭТОЙ же цене. Патч
         // сверяется с уже накопленным n, иначе спред сел бы на прошлую цену.
@@ -699,13 +689,13 @@ function Dashboard() {
     // окно спреда Y-IDX, bps — считается ПОСЛЕ фильтра по объёму: там спред
     // строки уже пересчитан к VWAP-цене тикета, и границы применяются к тому же
     // числу, что видно в таблице
-    const sFrom = parseFloat(spreadFrom), sTo = parseFloat(spreadTo);
-    if (Number.isFinite(sFrom)) {
-      rows = rows.filter((b) => b.yield_over_index_bps != null && b.yield_over_index_bps >= sFrom);
-    }
-    if (Number.isFinite(sTo)) {
-      rows = rows.filter((b) => b.yield_over_index_bps != null && b.yield_over_index_bps <= sTo);
-    }
+    //
+    // СТРОКА НЕ ИСЧЕЗАЕТ, ПОКА СПРЕД СЧИТАЕТСЯ. Пустое значение выкидывало её из
+    // списка на каждом движении цены — бумага мигала, а с ней прыгало и всё,
+    // что ниже. Держим по последнему известному числу (spreadMemo), как и
+    // сортировка; в самой ячейке оно приглушено, пока движок не пересчитает.
+    rows = filterBySpread(rows, parseFloat(spreadFrom), parseFloat(spreadTo),
+                          spreadMemo.current);
     // умный поиск: токены запроса ищутся по имени/эмитенту/ISIN с допуском
     // опечатки — «РЖД 3» вытаскивает все похожие выпуски эмитента
     rows = filterBonds(rows, query);

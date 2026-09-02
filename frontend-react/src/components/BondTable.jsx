@@ -38,7 +38,7 @@ export function wapSpread(b) {
 // base7 — база недели: у СРЕДНЕВЗВЕСА рядом со спредом мелким серым идёт
 // отклонение от неё («120 +20»). У котировок стакана база не рисуется: там и так
 // две цифры, а сравнивать с историей осмысленно цену сделок, а не заявку.
-export function Quote({ px, spread, title, vwap, side, base7 }) {
+export function Quote({ px, spread, stale, title, vwap, side, base7 }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
   const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
@@ -46,15 +46,24 @@ export function Quote({ px, spread, title, vwap, side, base7 }) {
   // цену, и спред: «0,00» с четырёхзначным спредом под ним читались как
   // настоящая котировка. Бэк нормализует то же самое, здесь — страховка на
   // случай строк из старого кэша.
-  if (!(px > 0)) { px = null; spread = null; }
+  if (!(px > 0)) { px = null; spread = null; stale = null; }
+  // ЦЕНА УШЛА, СПРЕД ЕЩЁ СЧИТАЕТСЯ — показываем последнее число приглушённым.
+  // Пустая клетка говорила «спреда нет», хотя порядок величины известен и на
+  // порядок не изменится; выдавать его за посчитанный тоже нельзя — отсюда
+  // полупрозрачность и подпись. Число к ПРЕЖНЕЙ цене, поэтому отклонение от
+  // семидневки рядом с ним не рисуем: сравнивать было бы не с чем.
+  const old = spread == null && stale != null;
+  const shown = spread ?? (old ? stale : null);
   // заявки нет вовсе — один прочерк, а не два друг под другом
-  if (px == null && spread == null) return <td className={"num" + cls} title={title}><D /></td>;
+  if (px == null && shown == null) return <td className={"num" + cls} title={title}><D /></td>;
   const dev = spread == null || base7 == null ? null : spread - base7;
   return (
     <td className={"num q-cell" + cls} title={title}>
       <div className={"q-px" + (vwap ? " q-vwap" : "")}>{fmt.pct(px) ?? <D />}</div>
-      <div className="q-sp" style={spread == null ? undefined : dmColor(spread)}>
-        {spread == null ? <D /> : fmt.bps(spread)}
+      <div className={"q-sp" + (old ? " q-sp-old" : "")}
+           style={shown == null ? undefined : dmColor(shown)}
+           title={old ? "спред к прежней цене — пересчитывается" : undefined}>
+        {shown == null ? <D /> : fmt.bps(shown)}
         {dev != null && (
           <span className="q-sp-dev"
             title={`отклонение от средневзвешенного спреда за 7 дней (${fmt.bps(base7)} бп)`}>
@@ -208,11 +217,11 @@ export const COLS = [
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
   { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 8,
-    cell: (b) => <Quote key="bid" side="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps} vwap={b._vwap_bid}
-      title={qTitle(b, "bid")} /> },
+    cell: (b) => <Quote key="bid" side="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps}
+      stale={b.y_idx_bid_stale} vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
   { key: "y_idx_ask_bps", label: "OFFER", sub: "% / R-spread", align: "num", w: 8,
-    cell: (b) => <Quote key="ask" side="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps} vwap={b._vwap_ask}
-      title={qTitle(b, "ask")} /> },
+    cell: (b) => <Quote key="ask" side="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
+      stale={b.y_idx_ask_stale} vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
@@ -251,7 +260,10 @@ export const COLS = [
         + "число торговых дней рынка (не дней, когда торговалась эта бумага)"}>
       {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
   { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
-    cell: (b) => <td className={"num" + ms(b)} key="yield_over_index_bps"><Chip value={b.yield_over_index_bps} /></td> },
+    cell: (b) => <td className={"num" + ms(b) + (b._yoi_stale ? " q-sp-old" : "")}
+      key="yield_over_index_bps"
+      title={b._yoi_stale ? "спред к прежней цене сделки — пересчитывается" : undefined}>
+      <Chip value={b.yield_over_index_bps} /></td> },
   // Маржи в ВИТРИНЕ выключены (services/universe.MARGINS_IN_UNIVERSE): каждая
   // это солвер, а DM вдобавок пересобирает поток — 78–92 % расчёта бумаги ради
   // колонки, по которой не торгуют. Первичная метрика здесь Y-IDX; маржи живут

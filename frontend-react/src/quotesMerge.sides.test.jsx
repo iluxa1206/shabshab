@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { sideMetricPatch, sideMetricChanges, mergeStreamedQuote } from "./quotesMerge.js";
+import { sideMetricPatch, sideMetricChanges, mergeStreamedQuote,
+  applySideQuote } from "./quotesMerge.js";
 
 const row = (o = {}) => ({ isin: "X", bid_price_pct: 100, ask_price_pct: 101,
   y_idx_bid_bps: null, y_idx_ask_bps: null, ...o });
@@ -49,5 +50,46 @@ describe("спред стороны из котировок", () => {
   it("на стриме без изменений ссылка та же", () => {
     const r = row({ y_idx_ask_bps: 300 });
     expect(mergeStreamedQuote(r, { yoi_ask: 300, yoi_ask_px: 101 })).toBe(r);
+  });
+});
+
+describe("последнее известное число стороны", () => {
+  const apply = (row, px, hasKey = true, side = "bid") => {
+    const n = { ...row };
+    applySideQuote(row, n, side, px, hasKey);
+    return n;
+  };
+
+  it("цена сдвинулась — спред гаснет, но число запоминается", () => {
+    const n = apply(row({ y_idx_bid_bps: 250 }), 99.5);
+    expect(n.bid_price_pct).toBe(99.5);
+    expect(n.y_idx_bid_bps).toBeNull();      // расчётным его никто не считает
+    expect(n.y_idx_bid_stale).toBe(250);     // но показать есть что
+  });
+
+  it("вторая подряд смена цены не теряет самое первое число", () => {
+    const a = apply(row({ y_idx_bid_bps: 250 }), 99.5);
+    const b2 = apply(a, 99.4);
+    expect(b2.y_idx_bid_stale).toBe(250);
+  });
+
+  it("сторону сняли — запомненное стирается, показывать нечего", () => {
+    const n = apply(row({ y_idx_bid_bps: 250, y_idx_bid_stale: 250 }), null);
+    expect(n.bid_price_pct).toBeNull();
+    expect(n.y_idx_bid_stale).toBeNull();
+  });
+
+  it("цена не менялась — строка не трогается вовсе", () => {
+    const r = row({ y_idx_bid_bps: 250 });
+    const n = { ...r };
+    applySideQuote(r, n, "bid", 100, true);
+    expect(n.y_idx_bid_bps).toBe(250);
+    expect(n.y_idx_bid_stale).toBeUndefined();
+  });
+
+  it("оффер работает так же", () => {
+    const n = apply(row({ y_idx_ask_bps: 310 }), 101.5, true, "ask");
+    expect(n.y_idx_ask_stale).toBe(310);
+    expect(n.y_idx_ask_bps).toBeNull();
   });
 });
