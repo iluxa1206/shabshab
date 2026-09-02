@@ -607,7 +607,7 @@ async def warmup_caches():
                                                    on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
-                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d",
+                logger.info("прогрев старта: движок получил ctx=%d, потоков=%d",
                             len(_us._eval_ctx), len(_us._flow_cache))
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
@@ -674,9 +674,18 @@ async def daily_prewarm():
             uni = await instruments_registry.fetch_floater_universe()
             isins = [u["isin"] for u in uni if u.get("isin")]
             if uni:
-                m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
+                # ТА ЖЕ ПЕРЕДАЧА РАБОТЫ ДВИЖКУ, что в прогреве старта: перекат
+                # сбрасывает контексты и потоки, и без этого движок собирал бы
+                # их заново по десять бумаг за такт — рынок стоял бы в прочерках
+                # всё утро.
+                from services import universe_stream as _us
+                m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
+                                                   flows_by=_us._flow_cache,
+                                                   on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
+                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d",
+                            len(_us._eval_ctx), len(_us._flow_cache))
             await _warm_fixed(market_cache)
             # Календарь выплат: полный поток по универсу считается раз в день и
             # держится в памяти. Без прогрева его первым платил случайный
