@@ -514,6 +514,15 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
     if (volSizes.length) send({ action: "vol-sizes", sizes: volSizes });
   };
 
+  // ЧТО СЕЙЧАС НА ЭКРАНЕ. Движок обслуживает весь рынок, но ждут именно эти
+  // строки: по ним он греет контекст, стороны и сетку цен в первую очередь.
+  // Держим регистрацию живой, пока вкладка открыта, — как размеры тикета.
+  let visible = [];
+  let visTimer = null;
+  const pushVisible = () => {
+    if (visible.length) send({ action: "visible", isins: visible });
+  };
+
   // Вся таблица живая: одна wildcard-подписка вместо диффа списка избранного —
   // бэк пушит патчи всех бумаг юниверса, фронт коалесцирует и мерджит.
   const sync = () => {
@@ -521,6 +530,7 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
     send({ action: "subscribe", channel: "market", isin: "*" });
     subscribedAll = true;
     if (volSizes.length) send({ action: "vol-sizes", sizes: volSizes });
+    pushVisible();
   };
 
 
@@ -562,10 +572,24 @@ export function connectMarketWs(getIsins, onStatus, onQuote) {
       // тик и на переподключение сокета
       if (volSizes.length) volTimer = setInterval(pushVolSizes, 300000);
     },
+    /** ISIN строк, которые сейчас на экране (после фильтров и сортировки). */
+    setVisible(isins) {
+      const next = (isins || []).filter(Boolean);
+      // шлём только при СМЕНЕ среза: прокрутка и фильтр дёргают состояние на
+      // каждый рендер, а движку важен сам список, а не частота напоминаний
+      if (next.length === visible.length && next.every((v, i) => v === visible[i])) return;
+      visible = next;
+      pushVisible();
+      if (!visTimer && visible.length) {
+        // продление раз в половину серверного TTL (180 с)
+        visTimer = setInterval(pushVisible, 90000);
+      }
+    },
     close() {
       closed = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (volTimer) { clearInterval(volTimer); volTimer = null; }
+      if (visTimer) { clearInterval(visTimer); visTimer = null; }
       if (ws) ws.close();
     },
   };

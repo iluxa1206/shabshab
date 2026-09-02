@@ -1064,3 +1064,74 @@ def test_side_metrics_keep_last_numbers_without_ctx():
     finally:
         us._ctx_wanted.clear()
         us._sides_dirty.pop(isin, None)
+
+
+def test_visible_bonds_are_warmed_first(monkeypatch):
+    """Видимый срез таблицы греется раньше хвоста рынка.
+
+    Движок обслуживает весь рынок, но человек смотрит полсотни строк — и ждёт
+    именно их. Раньше догрев шёл по порядку словаря универса, и бумага с экрана
+    могла оказаться в самом конце очереди."""
+    us._visible.clear()
+    us._ctx_wanted.clear()
+    uni = {f"RU000A1000{i:02d}": {"isin": f"RU000A1000{i:02d}"} for i in range(40)}
+    try:
+        assert us._ctx_warm_targets(uni, 2) == list(uni)[:2]
+
+        us.register_visible(["RU000A100039", "RU000A100038"])
+        assert us._ctx_warm_targets(uni, 2) == ["RU000A100039", "RU000A100038"]
+
+        # открытая карточка всё равно вперёд видимых: её ждут прямо сейчас
+        us.request_bond("RU000A100037")
+        assert us._ctx_warm_targets(uni, 1) == ["RU000A100037"]
+    finally:
+        us._visible.clear()
+        us._ctx_wanted.clear()
+        us._sides_dirty.clear()
+
+
+def test_visible_registration_expires(monkeypatch):
+    """Регистрация видимых живёт TTL: закрытая вкладка не должна держать
+    приоритет до конца дня."""
+    us._visible.clear()
+    try:
+        us.register_visible(["RU000A100001"])
+        assert us.is_visible("RU000A100001")
+        monkeypatch.setattr(us, "_VISIBLE_TTL_SEC", -1)
+        assert not us.is_visible("RU000A100001")
+        assert us.visible_isins() == []
+    finally:
+        us._visible.clear()
+
+
+def test_visible_input_is_bounded():
+    """Вход от клиента режем: одна кривая вкладка не растит словарь без края,
+    а греть больше экрана смысла нет."""
+    us._visible.clear()
+    try:
+        us.register_visible([f"RU000A{i:06d}" for i in range(500)] + ["мусор", None, 42])
+        assert len(us._visible) <= us._VISIBLE_MAX
+        assert all(len(i) == 12 for i in us._visible)
+    finally:
+        us._visible.clear()
+
+
+def test_grid_is_built_for_visible_without_volume_filter(monkeypatch):
+    """Сетка цен строится и без фильтра по объёму — для видимых бумаг.
+
+    У них она окупается сама: смена лучшего бида или оффера берётся из готовой
+    сетки вместо пересчёта на 26 мс, а верх книги у ликвидной бумаги дёргается
+    десятки раз в минуту. Для остального рынка это была бы полуторминутная
+    работа впустую."""
+    monkeypatch.setattr(us, "active_vol_sizes", lambda: [])
+    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap: [100.0, 100.1])
+    monkeypatch.setattr(us, "_grid_budget", 5)     # потолок построений на такт
+    us._visible.clear()
+    us._yoi_grid.pop("RU000A100001", None)
+    try:
+        sides = {"bid": 99.9, "ask": 100.1}
+        assert us._grid_nodes_if_needed("RU000A100001", sides, None, {}) == []
+        us.register_visible(["RU000A100001"])
+        assert us._grid_nodes_if_needed("RU000A100001", sides, None, {}) == [100.0, 100.1]
+    finally:
+        us._visible.clear()

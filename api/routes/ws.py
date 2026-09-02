@@ -193,6 +193,16 @@ async def websocket_market_endpoint(websocket: WebSocket):
                 # который и так открыт, — при включении фильтра и раз в полTTL:
                 # регистрация через /api/bonds протухала бы у того, кто просто
                 # держит вкладку открытой.
+                # ВИДИМЫЙ СРЕЗ ТАБЛИЦЫ. Движок обслуживает весь рынок, но
+                # человек смотрит полсотни строк — их и греем первыми
+                # (контекст, стороны, сетка цен). Идёт по тому же сокету и с той
+                # же логикой, что размеры тикета: регистрация живёт TTL, клиент
+                # продлевает её, пока вкладка открыта.
+                if action == "visible":
+                    from services.universe_stream import register_visible
+                    isins = payload.get("isins")
+                    register_visible(isins if isinstance(isins, list) else [])
+                    continue
                 if action == "vol-sizes":
                     from services.universe_stream import (register_vol_sizes,
                                                           flush_vol_sizes)

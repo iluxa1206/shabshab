@@ -251,6 +251,39 @@ _sides_dirty: Dict[str, float] = {}
 _ctx_wanted: Dict[str, float] = {}      # isin → monotonic заявки
 
 
+# ЧТО СЕЙЧАС НА ЭКРАНЕ. Движок обслуживает весь рынок, но человек смотрит
+# полсотни строк — и ждёт он именно их. Фронт присылает видимый срез (после
+# фильтров и сортировки), движок греет эти бумаги первыми: контекст, стороны,
+# сетка цен. Регистрация живёт TTL и обновляется, пока вкладка открыта, — как
+# размеры тикета (register_vol_sizes).
+_VISIBLE_TTL_SEC = float(os.getenv("UNIVERSE_VISIBLE_TTL_SEC", "180"))
+_VISIBLE_MAX = int(os.getenv("UNIVERSE_VISIBLE_MAX", "150"))
+_visible: Dict[str, float] = {}     # isin → monotonic последней регистрации
+
+
+def register_visible(isins) -> None:
+    """Видимый срез таблицы от клиента. Вход режем: одна кривая вкладка не
+    должна растить словарь без края, а греть больше экрана смысла нет."""
+    now = time.monotonic()
+    for raw in (isins or [])[:_VISIBLE_MAX]:
+        isin = str(raw or "").strip().upper()
+        if len(isin) == 12 and isin.isalnum():
+            _visible[isin] = now
+    for isin in [i for i, t in _visible.items() if now - t > _VISIBLE_TTL_SEC]:
+        _visible.pop(isin, None)
+
+
+def visible_isins() -> list:
+    """Бумаги, которые смотрят прямо сейчас (в порядке регистрации)."""
+    now = time.monotonic()
+    return [i for i, t in _visible.items() if now - t <= _VISIBLE_TTL_SEC]
+
+
+def is_visible(isin: str) -> bool:
+    t = _visible.get(isin)
+    return t is not None and time.monotonic() - t <= _VISIBLE_TTL_SEC
+
+
 def request_bond(isin: str) -> None:
     """«Эту бумагу смотрят» — из карточки и стакана (orderbook_svc).
 
@@ -1052,8 +1085,14 @@ def _grid_nodes_if_needed(isin: str, sides: dict, wap, vol_px: dict) -> list:
     Строить её на каждом движении — платить полную цену за уже готовый ответ:
     в проде это подняло пересчёт стороны с 26 до 180 мс/шт. Поэтому строим,
     когда фильтр по объёму кто-то смотрит И сетки нет, она протухла или цена
-    набора вышла за её края."""
-    if not active_vol_sizes():
+    набора вышла за её края.
+
+    ВИДИМЫЕ БУМАГИ — второй повод. У них сетка окупается сама: смена лучшего
+    бида или оффера берётся из неё готовой вместо пересчёта на 26 мс, а верх
+    книги у ликвидной бумаги дёргается десятки раз в минуту. Для остального
+    рынка это была бы полуторминутная работа впустую — там сетку никто не
+    спросит."""
+    if not active_vol_sizes() and not is_visible(isin):
         return []
     g = _yoi_grid.get(isin)
     fresh = bool(g) and g[0] == _yoi_cache_epoch
@@ -1096,19 +1135,30 @@ def _grid_warm_targets(limit: int) -> list:
     out = []
     now = time.monotonic()
     book = _depth_snapshot()      # один снимок на весь обход (см. _has_book)
-    for isin in _eval_ctx:
-        if isin in _fixed_isins:
-            continue
+
+    def ok(isin: str) -> bool:
+        if isin in _fixed_isins or isin not in _eval_ctx:
+            return False
         g = _yoi_grid.get(isin)
         if g and g[0] == _yoi_cache_epoch:
-            continue
+            return False
         if not _last_quote.get(isin) and not _has_book(isin, book):
-            continue          # ни котировки, ни книги — сетку строить не из чего
-        if now - _grid_cold.get(isin, 0.0) < _GRID_RETRY_SEC:
-            continue          # недавно не вышло — не занимать квоту такта
-        out.append(isin)
-        if len(out) >= limit:
-            break
+            return False      # ни котировки, ни книги — сетку строить не из чего
+        # недавно не вышло — не занимать квоту такта
+        return now - _grid_cold.get(isin, 0.0) >= _GRID_RETRY_SEC
+
+    # ВИДИМЫЕ ВПЕРЁД: их сетку спросят через секунду, сеткой хвоста рынка не
+    # воспользуется никто до самого вечера
+    for isin in visible_isins():
+        if ok(isin):
+            out.append(isin)
+            if len(out) >= limit:
+                return out
+    for isin in _eval_ctx:
+        if isin not in out and ok(isin):
+            out.append(isin)
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -1486,6 +1536,15 @@ def _ctx_warm_targets(uni_by: dict, limit: int) -> list:
             _ctx_wanted.pop(isin, None)
             continue
         out.append(isin)
+        if len(out) >= limit:
+            return out
+    # ВИДИМЫЕ — следом за открытой карточкой и раньше остального рынка: строку,
+    # на которую человек смотрит, он ждёт, а хвост рынка — нет
+    for isin in visible_isins():
+        if isin in _eval_ctx or isin in _fixed_isins or isin not in uni_by:
+            continue
+        if isin not in out:
+            out.append(isin)
         if len(out) >= limit:
             return out
     for isin in uni_by:
