@@ -142,7 +142,6 @@ async def memory():
             "caches": caches, "market_cache": mc}
 
 
-@router.get("", tags=["Status"])
 def _warmup_block(us: dict, um: dict, fl_n: int) -> dict:
     """Покрытие прогрева и остаток работы — числами, которые видно на вкладке.
 
@@ -185,6 +184,7 @@ def _warmup_block(us: dict, um: dict, fl_n: int) -> dict:
     }
 
 
+@router.get("", tags=["Status"])
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
     from services import trades_stream as tstream
