@@ -1088,13 +1088,25 @@ def set_br_specs_bulk(specs: Dict[str, dict]) -> int:
     n = 0
     with _lock, _conn() as c:
         for isin, s in specs.items():
+            # ТОЛЬКО РЕАЛЬНЫЕ ИЗМЕНЕНИЯ. Дневной синк перезаписывает те же ~450
+            # спек, и без этого условия rowcount считал их все изменёнными — а
+            # дальше invalidate_params_cache сносила кэш уровней, потоки и
+            # КОНТЕКСТЫ РАСЧЁТА движка. На старте синк попадает в середину
+            # прогрева и съедал его засев целиком (репетиция переката 02.09:
+            # посчитано 611, движок получил 0). IS NOT — NULL-безопасное
+            # сравнение SQLite: спека без поля не должна выглядеть правкой.
             cur = c.execute(
                 "UPDATE instruments SET br_fixing_lag=?, br_coupon_mode=?, "
-                "br_avg_window_days=?, updated_at=? WHERE isin=?",
+                "br_avg_window_days=?, updated_at=? WHERE isin=? AND ("
+                "br_fixing_lag IS NOT ? OR br_coupon_mode IS NOT ? "
+                "OR br_avg_window_days IS NOT ?)",
                 (s.get("fixing_lag"), s.get("coupon_mode"),
-                 s.get("avg_window_days"), now, isin))
+                 s.get("avg_window_days"), now, isin,
+                 s.get("fixing_lag"), s.get("coupon_mode"),
+                 s.get("avg_window_days")))
             n += cur.rowcount
-    invalidate_params_cache()
+    if n:
+        invalidate_params_cache()
     return n
 
 
