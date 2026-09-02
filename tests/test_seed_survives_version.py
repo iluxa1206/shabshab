@@ -8,7 +8,19 @@
 конца прогрева, и в логе оставалось ctx=2."""
 from datetime import date
 
+import pytest
+
 import services.universe_stream as us
+
+
+@pytest.fixture(autouse=True)
+def _clean_seed():
+    """Отметка засева — глобальная: оставленная после теста, она меняет
+    поведение _check_version в чужих тестах (падал
+    test_curves_rebuild_keeps_eval_ctx)."""
+    yield
+    us._seeded_version = None
+    us._memo_version = ()
 
 
 def _reset():
