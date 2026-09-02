@@ -612,9 +612,10 @@ async def warmup_caches():
                                                    on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
-                logger.info("прогрев старта: движок получил ctx=%d, потоков=%d (%s)",
-                            _us.seed_count(), len(_us._flow_cache),
-                            _us.seed_skips_report())
+                logger.info("прогрев старта: универс %d, посчитано %d, движок получил "
+                            "ctx=%d, потоков=%d (%s)",
+                            len(isins), len(m or {}), _us.seed_count(),
+                            len(_us._flow_cache), _us.seed_skips_report())
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
         # календарь выплат — тем же прогревом (плашка выплат в нижней строке
@@ -692,9 +693,10 @@ async def daily_prewarm():
                                                    on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
-                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d (%s)",
-                            _us.seed_count(), len(_us._flow_cache),
-                            _us.seed_skips_report())
+                logger.info("daily 09:00 prewarm: универс %d, посчитано %d, движок получил "
+                            "ctx=%d, потоков=%d (%s)",
+                            len(isins), len(m or {}), _us.seed_count(),
+                            len(_us._flow_cache), _us.seed_skips_report())
             await _warm_fixed(market_cache)
             # Календарь выплат: полный поток по универсу считается раз в день и
             # держится в памяти. Без прогрева его первым платил случайный
