@@ -113,6 +113,51 @@ export default function StatusPage() {
           </table>
         </div>
 
+        {/* ПРОГРЕВ ДВИЖКА. Отвечает на «почему у бумаги прочерк»: идёт догрев
+            (очередь длинная, есть ETA) или всё посчитано, а пустые клетки —
+            законные. Раньше это жило только в минутной сводке лога. */}
+        {d.warmup && (
+          <div className="st-card">
+            <div className="st-title">
+              Прогрев движка
+              <span className="st-sub">
+                {d.warmup.queues.blank_sides
+                  ? `ждут счёта ${fmt.num(d.warmup.queues.blank_sides, 0)} сторон`
+                  : "всё посчитано"}
+              </span>
+            </div>
+            <table className="st-data">
+              <tbody>
+                {d.warmup.coverage.map((r) => (
+                  <tr key={r.key}>
+                    <td className="st-data-key">{r.key}<div className="st-data-hint">{r.hint}</div></td>
+                    <td className="st-data-bar"><Bar n={r.n} total={r.total} pct={r.pct} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="st-drain" style={{ marginTop: 10 }}>
+              <span><b>{fmt.num(d.warmup.queues.rows, 0)}</b> строк в очереди</span>
+              <span><b>{fmt.num(d.warmup.queues.sides, 0)}</b> сторон в очереди</span>
+              {d.warmup.rate && <>
+                <span><b>{fmt.num(d.warmup.rate.rows_per_min, 0)}</b> строк/мин · {d.warmup.rate.row_ms} мс</span>
+                <span><b>{fmt.num(d.warmup.rate.sides_per_min, 0)}</b> сторон/мин · {d.warmup.rate.side_ms} мс</span>
+              </>}
+            </div>
+            <div className="st-data-hint">
+              {d.warmup.queues.blank_sides
+                ? <>Цена есть, спреда ещё нет у <b>{d.warmup.queues.blank_sides}</b> сторон
+                    {d.warmup.queues.eta_sec != null && <> · при текущем темпе ~{dur(d.warmup.queues.eta_sec)}</>}.
+                    Часть из них не догонится никогда: у дефолтных выпусков (цена в единицы
+                    процентов от номинала) спреда не существует в границах солвера.</>
+                : <>Все стороны с ценой посчитаны. Пустые клетки в мониторе означают, что
+                    заявки нет вовсе либо цена вне модели.</>}
+              {!!d.warmup.queues.ctx_no_accrued && <> Без биржевого НКД: {d.warmup.queues.ctx_no_accrued} —
+                считаются своим начислением.</>}
+            </div>
+          </div>
+        )}
+
         {/* Фоновые задачи: то, что грузится ПРЯМО СЕЙЧАС. Карточку держим на
             месте и когда задач нет — иначе сетка прыгает на каждом опросе. */}
         <div className="st-card st-card-wide">

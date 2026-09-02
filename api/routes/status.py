@@ -143,6 +143,48 @@ async def memory():
 
 
 @router.get("", tags=["Status"])
+def _warmup_block(us: dict, um: dict, fl_n: int) -> dict:
+    """Покрытие прогрева и остаток работы — числами, которые видно на вкладке.
+
+    Спреды сторон считаются отдельной очередью от строк, поэтому их полнота —
+    самостоятельная метрика: строка может быть посчитана, а стороны ещё нет."""
+    def frac(n, d):
+        return {"n": n, "total": d, "pct": round(100 * n / d) if d else 0}
+
+    sides = {k: sum(1 for r in um.values() if r.get(k) is not None)
+             for k in ("yoi", "yoi_bid", "yoi_ask")}
+    rate = us.get("rate") or {}
+    left = us.get("blank_sides") or 0
+    # сколько ещё ждать: остаток сторон делим на текущий темп очереди
+    eta = (round(60 * left / rate["sides_per_min"])
+           if rate.get("sides_per_min") else None)
+    return {
+        "coverage": [
+            {"key": "Контексты расчёта", **frac(us.get("ctx", 0), fl_n),
+             "hint": "поток, кривая и база на бумагу — вход точного спреда"},
+            {"key": "Кэш денежных потоков", **frac(us.get("flows", 0), fl_n),
+             "hint": f"{(us.get('flow_items') or 0) // 1000}к платежей; "
+                     f"строится утром, дальше берётся из памяти"},
+            {"key": "Сетки цен", **frac(us.get("grids", 0), fl_n),
+             "hint": f"спред любой цены без пересчёта; холодных {us.get('grids_cold', 0)}"},
+            {"key": "Спред по сделке", **frac(sides["yoi"], fl_n),
+             "hint": "Y-IDX цены последней сделки"},
+            {"key": "Спред бида", **frac(sides["yoi_bid"], fl_n),
+             "hint": "у части бумаг заявок нет вовсе — это не прочерк"},
+            {"key": "Спред оффера", **frac(sides["yoi_ask"], fl_n),
+             "hint": "продавец есть не у каждого выпуска"},
+        ],
+        "queues": {
+            "rows": us.get("dirty", 0), "sides": us.get("sides_queue", 0),
+            "blank_sides": left, "eta_sec": eta,
+            "ctx_no_accrued": us.get("ctx_no_accrued", 0),
+        },
+        "rate": rate or None,
+        "memo": {"n": us.get("memo", 0), "hits": us.get("hits", 0),
+                 "misses": us.get("misses", 0)},
+    }
+
+
 async def get_status():
     from services import instruments_registry as reg, ratings, fixed_income as fi, progress
     from services import trades_stream as tstream
@@ -233,6 +275,10 @@ async def get_status():
         # пул котировок/стаканов по сокетам: мёртвый шард уносит 150 бумаг, и
         # общий счётчик streamed этого не показывает
         "universe_stream": _us_stats(),
+        # ПРОГРЕВ ДВИЖКА: чем он полон и что ещё считает. Пока это жило только в
+        # минутной сводке лога, «почему у бумаги прочерк» нельзя было отличить
+        # от «идёт догрев» без ssh на прод.
+        "warmup": _warmup_block(_us_stats(), um, fl_n),
         # фоновые воркеры: упавший и перезапущенный виден по restarts
         "daemons": _daemons_state(),
         # что грузится ПРЯМО СЕЙЧАС: обход баров, прогрев после рестарта, дрейн

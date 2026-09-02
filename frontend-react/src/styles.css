@@ -739,9 +739,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* flex:1 + min-height:0 + overflow-y — как у .table-wrap и .issuer-agg:
    #app = height:100vh; overflow:hidden, поэтому страница скроллится сама,
    иначе карточки ниже сгиба просто обрезались */
-.status-page { padding: 20px 24px; max-width: 1100px;
+.status-page { padding: 20px 24px;
   flex: 1; min-height: 0; overflow-y: auto; }
-.st-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* Колонок столько, сколько влезает: страница шире 1100 px была прижата к левому
+   краю жёстким max-width, а на широком мониторе две колонки оставляли половину
+   экрана пустой. align-items:start — карточки разной высоты не тянут друг
+   друга. */
+.st-grid { display: grid; gap: 16px; align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
 .st-card { border: 1px solid var(--line); padding: 16px 18px; }
 .st-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
 .st-title .st-sub { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--mut); margin-left: 8px; font-size: 11px; }
@@ -765,6 +770,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .st-bar-num b { color: var(--fg); }
 /* фоновые загрузки: карточка на всю ширину сетки — полос бывает несколько */
 .st-card-wide { grid-column: 1 / -1; }
+/* полосы задач на сверхширокой сетке растягиваются в нитку — держим читаемую
+   меру, а карточку оставляем во всю ширину ради заголовка и пустого состояния */
+.st-card-wide .st-job { max-width: 900px; }
 .st-job + .st-job { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .st-job-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
 .st-job-name { font-size: 12px; font-weight: 600; }
@@ -789,6 +797,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .st-ts td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--mut); }
 .st-foot { margin-top: 14px; font-size: 11px; color: var(--mut); letter-spacing: 0.04em; }
 @media (max-width: 760px) { .st-grid { grid-template-columns: 1fr; } }
+/* узкая колонка: подпись и полоса в строку не помещаются — ставим друг под друга */
+@media (max-width: 520px) { .st-data-key { width: auto; } }
 .ob-row.ob-empty .ob-price, .ob-row.ob-empty .ob-qty { opacity: 0.4; }
 .ob-row.ob-empty td { background: transparent; }
 .ob-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }

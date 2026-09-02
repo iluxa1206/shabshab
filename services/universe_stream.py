@@ -505,6 +505,11 @@ def _shard_view(src: Dict[int, dict]) -> dict:
             "list": rows}
 
 
+# темп последней минутной сводки движка (см. metrics_worker) — его читает
+# /api/status, чтобы прогрев был виден числами, а не только в логах
+_last_rate: dict = {}
+
+
 def stats() -> dict:
     return {"streamed": len(_streamed), "dirty": len(_dirty), "pool": pool_state(),
             "shards": _shard_view(_shards), "depth_shards": _shard_view(_depth_shards),
@@ -515,7 +520,15 @@ def stats() -> dict:
             # попал в активные» и от «сетки снесла пересборка кривых».
             "ctx": len(_eval_ctx), "grids": len(_yoi_grid),
             "grids_cold": len(_grid_cold), "sides_queue": len(_sides_dirty),
-            "vol_sizes": active_vol_sizes()}
+            "vol_sizes": active_vol_sizes(),
+            # ПРОГРЕВ: чем полон движок и сколько сторон ещё ждёт счёта. По этим
+            # числам видно, идёт ли догрев после рестарта/переката или всё
+            # посчитано, а прочерки на экране — законные (дефолтные выпуски).
+            "flows": len(_flow_cache), "flow_items": _flow_cache_items(),
+            "blank_sides": _blank_sides_count(),
+            "ctx_no_accrued": sum(1 for c in _eval_ctx.values()
+                                  if c.get("accrued_missing")),
+            "rate": dict(_last_rate) or None}
 
 
 def _seed_price(isin: str, px) -> None:
@@ -2086,6 +2099,16 @@ async def metrics_worker() -> None:
                             sum(1 for c in _eval_ctx.values()
                                 if c.get("accrued_missing")),
                             _depth_msgs, len(_depth_streamed))
+                # ТЕМП — НАРУЖУ. Те же числа, что в сводке, нужны на вкладке
+                # СТАТУС: «медленно грузится» иначе не отличить от «движок
+                # считает, просто бумаг много».
+                globals()["_last_rate"] = {
+                    "rows_per_min": done_since_log,
+                    "row_ms": round(full_ms / max(1, done_since_log)),
+                    "sides_per_min": sides_since_log,
+                    "side_ms": round(sides_ms / max(1, sides_since_log)),
+                    "at": time.time(),
+                }
                 done_since_log = 0
                 sides_since_log = 0
                 globals()["_grid_builds"] = 0
