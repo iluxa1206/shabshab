@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } 
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
   sideMetricPatch, sideMetricChanges } from "./quotesMerge.js";
+import { sortRows } from "./sortRows.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { sideProgress } from "./spreadProgress.js";
@@ -359,6 +360,9 @@ function Dashboard() {
   const quotesSinceRef = useRef(null);
   const quotesTickRef = useRef(0);
   const quotesEpochRef = useRef(null);
+  // последнее непустое значение ключа сортировки на бумагу: держит позицию
+  // строки, пока её спред пересчитывается (см. сортировку filtered)
+  const sortMemo = useRef({ key: null, map: new Map() });
   // фолбэк-таймеры «движок не прислал производные» → одиночный reprice
   const repriceFallback = useRef({});
   // буфер WS-патчей до флаша (коалесцирование пушей всего юниверса)
@@ -706,21 +710,13 @@ function Dashboard() {
     // опечатки — «РЖД 3» вытаскивает все похожие выпуски эмитента
     rows = filterBonds(rows, query);
     const { key, dir } = sort;
-    const m = dir === "asc" ? 1 : -1;
-    rows.sort((a, b) => {
-      // СРОК сортируется по горизонту прайсинга — по той же дате, что подсвечена
-      // в строке синим и по которой отбирает окно срока. По дате погашения
-      // список спорил сам с собой: бумага с офертой через 2,7 года стояла в
-      // хвосте среди одиннадцатилетних, хотя её метрики посчитаны к оферте.
-      let x = key === "maturity_date" ? hzDate(a) : a[key];
-      let y = key === "maturity_date" ? hzDate(b) : b[key];
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;
-      if (y == null) return -1;
-      if (typeof x === "string") return x.localeCompare(y) * m;
-      return (x - y) * m;
-    });
-    return rows;
+    // Строка с погасшим спредом держит место, а не улетает вниз — см. sortRows.
+    // СРОК сортируется по горизонту прайсинга — по той же дате, что подсвечена
+    // в строке синим и по которой отбирает окно срока. По дате погашения список
+    // спорил сам с собой: бумага с офертой через 2,7 года стояла в хвосте среди
+    // одиннадцатилетних, хотя её метрики посчитаны к оферте.
+    return sortRows(rows, key, dir, sortMemo.current,
+                    (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
   }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
       query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, volOn, volBid, volAsk, volMode, depth]);
 

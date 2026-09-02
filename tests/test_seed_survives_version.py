@@ -29,7 +29,7 @@ def test_seeded_context_survives_first_version_check(monkeypatch):
     _reset()
     _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
-    us.seed_done({}, date(2026, 9, 2))
+    us.seed_begin({}, date(2026, 9, 2))
     us._check_version(("2026-09-02", "fp-1"))
     assert len(us._eval_ctx) == 3 and len(us._flow_cache) == 3
 
@@ -48,7 +48,7 @@ def test_other_version_drops_the_seed(monkeypatch):
     _reset()
     _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
-    us.seed_done({}, date(2026, 9, 2))
+    us.seed_begin({}, date(2026, 9, 2))
     us._check_version(("2026-09-02", "fp-2"))
     assert not us._eval_ctx and not us._flow_cache
 
@@ -57,17 +57,31 @@ def test_new_day_drops_the_seed(monkeypatch):
     _reset()
     _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
-    us.seed_done({}, date(2026, 9, 2))
+    us.seed_begin({}, date(2026, 9, 2))
     us._check_version(("2026-09-03", "fp-1"))
     assert not us._eval_ctx
 
 
-def test_seed_done_returns_real_count(monkeypatch):
+def test_seed_count_is_what_engine_really_has(monkeypatch):
     """Число в логе должно быть тем, что реально осталось у движка."""
     _reset()
     _seed(5)
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
-    assert us.seed_done({}, date(2026, 9, 2)) == 5
+    us.seed_begin({}, date(2026, 9, 2))
+    assert us.seed_count() == 5
+
+
+def test_version_marked_before_the_pass_protects_the_middle(monkeypatch):
+    """ГЛАВНОЕ: движок просыпается ПОСРЕДИ прохода. Отметка, поставленная в
+    конце, спасала только хвост — репетиция переката 02.09 дала 151 контекст из
+    611. Версия объявляется до засева, поэтому такт в середине ничего не сносит."""
+    _reset()
+    monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
+    us.seed_begin({}, date(2026, 9, 2))          # проход только начался
+    _seed(2)                                      # успели две бумаги
+    us._check_version(("2026-09-02", "fp-1"))     # ← движок проснулся здесь
+    _seed(5)                                      # проход продолжается
+    assert len(us._eval_ctx) == 5 and len(us._flow_cache) == 5
 
 
 def test_level_memo_is_always_dropped(monkeypatch):
@@ -76,6 +90,6 @@ def test_level_memo_is_always_dropped(monkeypatch):
     _seed()
     us._level_memo[("I0", 100.0)] = {"yoi": 1}
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
-    us.seed_done({}, date(2026, 9, 2))
+    us.seed_begin({}, date(2026, 9, 2))
     us._check_version(("2026-09-02", "fp-1"))
     assert not us._level_memo
