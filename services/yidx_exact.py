@@ -30,6 +30,22 @@ def _key(px: float) -> float:
     return round(float(px), _PX_DIGITS)
 
 
+# Когда по бумаге последний раз жаловались на отказ расчёта: одна битая бумага
+# пересчитывается каждые несколько секунд, и без троттлинга лог станет
+# бесполезным.
+_WARN_TTL_SEC = 300.0
+_warned: Dict[str, float] = {}
+
+
+def _warn_once(isin, err) -> None:
+    import time
+    now = time.time()
+    if now - _warned.get(str(isin), 0.0) < _WARN_TTL_SEC:
+        return
+    _warned[str(isin)] = now
+    logger.warning("точный Y-IDX не посчитан для %s: %s", isin, err)
+
+
 def y_idx_many(ctx: dict, prices: Iterable[float]) -> Dict[float, Optional[int]]:
     """{цена: Y-IDX бп} по методике на тёплом контексте (bond_details.load_reprice_ctx).
 
@@ -55,7 +71,10 @@ def y_idx_many(ctx: dict, prices: Iterable[float]) -> Dict[float, Optional[int]]
             accrued_date=ctx.get("accrued_date"),
             alt_prices=want)
     except Exception as e:
-        logger.debug("y_idx_many %s: %s", ctx.get("isin"), e)
+        # НЕ debug: в проде этот уровень выключен, и отказ расчёта выглядел как
+        # молчаливый прочерк в сторонах — причину искать было негде. Троттлим по
+        # бумаге, чтобы одна битая не залила лог.
+        _warn_once(ctx.get("isin"), e)
         return {}
     hzs = m.get("horizons") or {}
     out: Dict[float, Optional[int]] = {}

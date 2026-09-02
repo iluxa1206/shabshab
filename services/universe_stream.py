@@ -1311,7 +1311,11 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
         got = hit[2]
     else:
         got = y_idx_many(ev, want + [n for n in nodes if n not in want])
-        _yoi_cache[isin] = (key, time.time(), got)
+        # ПУСТОЙ ОТВЕТ НЕ КЭШИРУЕМ: расчёт мог отказать разово (контекст остыл,
+        # цена вне модели), а кэш держал бы прочерк ещё минуту — и всё это время
+        # строка на экране стояла бы пустой при живых числах в кэше витрины.
+        if got:
+            _yoi_cache[isin] = (key, time.time(), got)
         if nodes:
             global _grid_builds
             _grid_builds += 1
