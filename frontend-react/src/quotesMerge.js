@@ -59,12 +59,56 @@ export function quoteChanges(row, q, keys) {
  * Возвращает ту же ссылку, если менять нечего (без лишнего ререндера таблицы).
  */
 export function mergeStreamedQuote(row, q) {
-  if (!q || !quoteChanges(row, q, QUOTE_METRIC_FIELDS)) return row;
+  const sides = sideMetricPatch(row, q);
+  if (!q || (!quoteChanges(row, q, QUOTE_METRIC_FIELDS) && !sides)) return row;
   const n = { ...row };
   for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
     if (q[k] != null) n[field] = q[k];
   }
+  // у бумаги на стриме цены свои, из push'а — сверка со ценой движка тем более
+  // обязательна, снапшот тут отстаёт заведомо
+  if (sides) Object.assign(n, sides);
   return n;
 }
 
 export { QUOTE_PRICE_FIELDS };
+
+/** Спреды сторон из котировок: ставим ТОЛЬКО при совпадении цены.
+ *
+ * Стороны приезжают вторым путём (кроме WS-патча движка) с 02.09.2026: пока
+ * патч и снимок движка согласны, разницы нет, но если патч разошёлся с
+ * реальностью, на сервере число правильное, а в строке прочерк — и лечило его
+ * лишь следующее движение книги (у неликвида его может не быть часами).
+ *
+ * Слепо присваивать нельзя: цена строки идёт из снапшота (или из стрима), спред
+ * — из движка, и на такт они расходятся. Число, посчитанное по прошлой цене,
+ * рядом с новой ценой выглядит согласованным и врёт — ровно так ошибалась
+ * лестница стакана 27.08.2026. Поэтому бэкенд отдаёт цену, по которой считал
+ * (yoi_bid_px/yoi_ask_px), и мы сверяем её с ценой, которая окажется в строке.
+ *
+ * row — строка ДО патча, patch — уже накопленные изменения (там может лежать
+ * новая цена стороны из этого же ответа).
+ */
+export function sideMetricPatch(row, q, patch = null) {
+  if (!q) return null;
+  let out = null;
+  for (const [side, pxField, yField] of [
+    ["bid", "bid_price_pct", "y_idx_bid_bps"],
+    ["ask", "ask_price_pct", "y_idx_ask_bps"],
+  ]) {
+    const v = q[`yoi_${side}`];
+    const at = q[`yoi_${side}_px`];
+    if (v == null || at == null) continue;
+    const px = patch && pxField in patch ? patch[pxField] : row[pxField];
+    if (px == null || Math.abs(px - at) > 1e-9) continue;   // спред от другой цены
+    if (row[yField] === v && !(patch && yField in patch)) continue;
+    (out ||= {})[yField] = v;
+  }
+  return out;
+}
+
+/** Есть ли в котировке спред стороны, которого нет в строке (для «строка не
+ * изменилась» — без этого патч сторон не доехал бы вовсе). */
+export function sideMetricChanges(row, q, patch = null) {
+  return sideMetricPatch(row, q, patch) !== null;
+}

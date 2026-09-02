@@ -977,6 +977,8 @@ class MarketDataService:
 
     _board_snap: Dict[str, dict] = {}
     _board_snap_ts: float = 0.0
+    # замок похода на источник: см. fetch_board_snapshot
+    _board_snap_lock = asyncio.Lock()
 
     # Борды снапшота: TQCB (корп) + TQOB (ОФЗ, в т.ч. ОФЗ-ПК) + TQRD (риск-сектор:
     # Агродом/Монополия/СОБИ-ЛИЗИНГ и т.п.). Без TQOB/TQRD эти бумаги не имели цены
@@ -999,6 +1001,20 @@ class MarketDataService:
         now = time.time()
         if not force and cls._board_snap and now - cls._board_snap_ts < _SNAP_TTL:
             return cls._board_snap
+        # ОДИН ПОХОД НА ИСТОЧНИК ЗА РАЗ. Кэш держит свежим поллер котировок
+        # (force=True, такт 5 с), поэтому обычные читатели попадают в него и
+        # сюда не доходят. Но если поллер встанет, TTL истечёт для ВСЕХ
+        # одновременно — и каждый читатель пойдёт в ISS сам. Такт опроса
+        # котировок теперь секунда (App.jsx), читателей столько же, сколько
+        # вкладок: без замка это залп по бирже ровно в тот момент, когда с ней и
+        # так что-то не так. Ждущие получают результат первого.
+        async with cls._board_snap_lock:
+            if not force and cls._board_snap and time.time() - cls._board_snap_ts < _SNAP_TTL:
+                return cls._board_snap
+            return await cls._fetch_board_snapshot_inner()
+
+    @classmethod
+    async def _fetch_board_snapshot_inner(cls) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
         try:
             async with httpx.AsyncClient() as client:
@@ -1081,7 +1097,7 @@ class MarketDataService:
             logger.warning(f"board snapshot error: {e}")
         if out:
             cls._board_snap = out
-            cls._board_snap_ts = now
+            cls._board_snap_ts = time.time()
         return out
 
     # tf → (MOEX interval, глубина в днях, размер бакета агрегации в мин|None)

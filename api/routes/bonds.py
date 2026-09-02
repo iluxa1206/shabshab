@@ -3,7 +3,7 @@ import os
 import re
 import logging
 from datetime import date
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from fastapi import APIRouter, Query, Path, HTTPException
 
 from api.schemas import (
@@ -351,10 +351,57 @@ async def get_payments_calendar(
     return PaymentsCalendarResponse(calc_date=cd, date_from=lo, date_to=hi, events=events)
 
 
+# ЖУРНАЛ ИЗМЕНЕНИЙ СТРОК КОТИРОВОК: {ключ размеров: {isin: (когда, содержимое)}}.
+# Держит ответ маленьким при частом такте — см. параметр since в get_quotes.
+# Ключ верхнего уровня — размеры тикета: с ними состав строки другой, и делить
+# журнал между запросами с разными размерами нельзя.
+_QUOTE_LOG: Dict[str, Dict[str, tuple]] = {}
+_QUOTE_LOG_TS: Dict[str, float] = {}
+_QUOTE_LOG_TTL_SEC = 900.0
+# Отметка процесса, которому принадлежит журнал. Клиент возвращает её вместе с
+# since, и с чужой отметкой дельта не выдаётся — приходит полный ответ.
+# Ловит рестарт бэка (журнал пуст, а since у клиента из прошлой жизни) и второй
+# воркер, если он когда-нибудь появится: у него свой журнал, и since от соседа
+# заставил бы его молча проглатывать строки, которых клиент не видел.
+_QUOTE_EPOCH = f"{os.getpid()}-{id(_QUOTE_LOG):x}"
+
+
+def _quote_delta(items: list, key: str, since: Optional[float],
+                 epoch: Optional[str] = None) -> tuple:
+    """(строки к отдаче, отметка времени ответа). since=None → отдаём всё.
+
+    Содержимое строки сравнивается целиком: изменилось хоть одно поле — строка
+    получает новую отметку и уедет всем, кто спрашивал раньше. Не изменилась —
+    лежит в журнале со старой отметкой и в дельту не попадает."""
+    import time
+    now = time.time()
+    if epoch is not None and epoch != _QUOTE_EPOCH:
+        since = None                     # журнал не тот — отдаём всё
+    seen = _QUOTE_LOG.setdefault(key, {})
+    _QUOTE_LOG_TS[key] = now
+    # журналы под размеры тикета, которые давно никто не спрашивает, копят
+    # память по всему рынку — выкидываем
+    for k, ts in list(_QUOTE_LOG_TS.items()):
+        if now - ts > _QUOTE_LOG_TTL_SEC:
+            _QUOTE_LOG.pop(k, None)
+            _QUOTE_LOG_TS.pop(k, None)
+    out = []
+    for it in items:
+        body = tuple(sorted((k, v) for k, v in it.items() if k != "isin"))
+        prev = seen.get(it["isin"])
+        mt = prev[0] if (prev is not None and prev[1] == body) else now
+        seen[it["isin"]] = (mt, body)
+        if since is None or mt > since:
+            out.append(it)
+    return out, now
+
+
 @router.get("/quotes", tags=["Bonds"])
 async def get_quotes(
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
-    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽")
+    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽"),
+    since: Optional[float] = Query(None, description="Отметка прошлого ответа — вернуть только изменившиеся строки"),
+    epoch: Optional[str] = Query(None, description="Метка процесса из прошлого ответа: не совпала — придёт всё")
 ):
     """Котировки всего рынка одним компактным ответом — фронт тянет их тактом 5с.
 
@@ -407,6 +454,22 @@ async def get_quotes(
         # хуже точного числа пятисекундной давности (27.08.2026).
         if m and m.get("yoi_wap") is not None:
             it["yoi_wap"] = m["yoi_wap"]
+        # СПРЕДЫ СТОРОН — ВТОРЫМ ПУТЁМ. Считает их движок, а до строки монитора
+        # они доезжали ТОЛЬКО его WS-патчем: в QUOTE_METRIC_FIELDS сторон не
+        # было. Пока патч и снимок согласны, разницы нет; разошлись (прод
+        # 01.09.2026: сторона бралась из пуша, а пуш пришёл без неё) — на
+        # сервере число правильное, в браузере прочерк, и лечило его только
+        # следующее движение книги. У неликвида его может не быть часами.
+        # Теперь котировки везут стороны своим тактом: рассинхрон живёт секунду.
+        # ЦЕНА ЕДЕТ ВМЕСТЕ СО СПРЕДОМ. Цены строки берутся из борд-снапшота (или
+        # из стрима у живой бумаги), а спред — из движка, и разъехаться на такт
+        # они могут: тогда пара «цена → спред» выглядит согласованной, но
+        # относится к разным состояниям книги (ровно чем врала лестница стакана
+        # 27.08.2026). Отдаём цену, по которой движок считал, — клиент ставит
+        # спред, только если она совпала с той, что у него в строке.
+        for k, px in (("yoi_bid", "bid"), ("yoi_ask", "ask")):
+            if m and m.get(k) is not None and m.get(px) is not None:
+                it[k], it[f"{k}_px"] = m[k], m[px]
         if m and (vol_bid or vol_ask):
             # ключ размера строится ЗДЕСЬ, а наружу поля едут плоскими
             # (vol_bid_px/vol_bid_y): размер известен из самого запроса, и
@@ -421,7 +484,16 @@ async def get_quotes(
                 if y_map.get(key) is not None:
                     it[f"vol_{side}_y"] = y_map[key]
         items.append(it)
-    return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
+    # ДЕЛЬТА. Такт опроса — секунда, а за секунду меняется десяток строк из трёх
+    # тысяч: полный ответ (294 КБ сырых, 54 КБ gzip) был бы на 4/5 повтором
+    # того, что у клиента уже лежит. Клиент возвращает since из прошлого ответа
+    # и получает только изменившееся; периодический запрос без since сверяет
+    # состояние целиком.
+    key = f"{float(vol_bid or 0):.0f}:{float(vol_ask or 0):.0f}"
+    out, stamp = _quote_delta(items, key, since, epoch)
+    return {"ts": market_cache.get("quotes_ts"), "n": len(out), "items": out,
+            "since": stamp, "epoch": _QUOTE_EPOCH,
+            "full": len(out) == len(items), "total": len(items)}
 
 
 @router.get("/{isin}", response_model=BondDetailsResponse, tags=["Bonds"])

@@ -476,10 +476,17 @@ export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater
 // volBid/volAsk — размеры тикета: тем же тактом приезжают цена набора и её
 // Y-IDX (vol_bid_px/vol_bid_y/…), поэтому прочерк, который движок посчитал уже
 // после загрузки таблицы, заполняется через такт, а не по F5.
-export const fetchQuotes = (signal, volBid = 0, volAsk = 0) => {
+// since — отметка прошлого ответа: бэкенд вернёт только изменившиеся строки.
+// Такт опроса секундный, а за секунду меняется десяток строк из трёх тысяч, и
+// полный ответ (294 КБ сырых, 54 КБ gzip) был бы на 4/5 повтором. Без since
+// приходит всё — так сверяется состояние целиком (см. QUOTES_FULL_EVERY).
+export const fetchQuotes = (signal, volBid = 0, volAsk = 0, since = null, epoch = null) => {
   const p = new URLSearchParams();
   if (volBid > 0) p.set("vol_bid", String(Math.round(volBid)));
   if (volAsk > 0) p.set("vol_ask", String(Math.round(volAsk)));
+  // epoch — метка процесса, выдавшего since: после рестарта бэка журнал пуст, и
+  // дельту от прошлой жизни считать нельзя. Не совпала — придёт полный ответ.
+  if (since) { p.set("since", String(since)); if (epoch) p.set("epoch", epoch); }
   const qs = p.toString();
   return request(`/api/bonds/quotes${qs ? `?${qs}` : ""}`, { signal });
 };

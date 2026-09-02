@@ -2,7 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
-import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS } from "./quotesMerge.js";
+import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
+  sideMetricPatch, sideMetricChanges } from "./quotesMerge.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
 import { sideProgress } from "./spreadProgress.js";
@@ -48,7 +49,13 @@ const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va",
 // Тот же паттерн у скринера — services/screener_core.py::_SUBORD_RE.
 const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
 // Такт котировок рынка (бумаги вне избранного). Избранное идёт push-стримом.
-const QUOTES_POLL_MS = 5000;
+// Такт котировок. Секунда, а не пять: ответ идёт дельтой (см. fetchQuotes), и
+// платим мы только за то, что реально изменилось. Спред стороны, разошедшийся
+// с движком, живёт теперь секунду вместо «до следующего движения книги».
+const QUOTES_POLL_MS = 1000;
+// Раз в столько тактов спрашиваем БЕЗ since — полный снимок сверяет строку
+// целиком на случай, если дельта что-то потеряла (рестарт бэка, разрыв связи).
+const QUOTES_FULL_EVERY = 60;
 // Пол частоты reprice на бумагу: в push-потоке цена ликвидной бумаги двигается
 // непрерывно, и без пола каждый тик заказывал бы пересчёт на бэке.
 const REPRICE_MIN_MS = 2000;
@@ -348,6 +355,10 @@ function Dashboard() {
   // isin → время последнего WS-пуша: им решается, чья цифра свежее (push или
   // снапшот MOEX) при мердже котировок рынка
   const liveTsRef = useRef({});
+  // отметка прошлого ответа котировок (дельта) и счётчик тактов до полной сверки
+  const quotesSinceRef = useRef(null);
+  const quotesTickRef = useRef(0);
+  const quotesEpochRef = useRef(null);
   // фолбэк-таймеры «движок не прислал производные» → одиночный reprice
   const repriceFallback = useRef({});
   // буфер WS-патчей до флаша (коалесцирование пушей всего юниверса)
@@ -538,8 +549,18 @@ function Dashboard() {
     // размер тикета — часть ключа: со сменой размера прежние числа набора
     // относятся к прошлому фильтру, и переиспользовать их нельзя
     queryKey: ["quotes", volSize(volBid), volSize(volAsk)],
-    queryFn: ({ signal }) => fetchQuotes(signal, volSize(volBid), volSize(volAsk)),
-    refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS - 1000,
+    queryFn: ({ signal }) => {
+      const nth = (quotesTickRef.current = (quotesTickRef.current + 1) % QUOTES_FULL_EVERY);
+      const since = nth === 0 ? null : quotesSinceRef.current;
+      return fetchQuotes(signal, volSize(volBid), volSize(volAsk), since,
+                         quotesEpochRef.current)
+        .then((r) => {
+          quotesSinceRef.current = r?.since ?? null;
+          quotesEpochRef.current = r?.epoch ?? null;
+          return r;
+        });
+    },
+    refetchInterval: QUOTES_POLL_MS, staleTime: 0,
   });
   useEffect(() => {
     const items = quotesQ.data?.items;
@@ -572,7 +593,8 @@ function Dashboard() {
           && (q.ask == null || q.ask === b.ask_price_pct)
           && (q.wap == null || q.wap === b.wap_price_pct)
           && (q.vol == null || q.vol === b.val_today)
-          && !quoteChanges(b, q, QUOTE_METRIC_FIELDS);
+          && !quoteChanges(b, q, QUOTE_METRIC_FIELDS)
+          && !sideMetricChanges(b, q);
         if (same) return b;              // без изменений — не трогаем ссылку
         touched = true;
         // снимаем метку live: дальше в строке цифры снапшота, и подпись
@@ -586,8 +608,12 @@ function Dashboard() {
           }
           n.last_price_pct = q.last;
         }
-        applySideQuote(b, n, "bid", q.bid);
-        applySideQuote(b, n, "ask", q.ask);
+        // hasKey ОБЯЗАТЕЛЕН: /api/bonds/quotes кладёт bid/ask всегда, и None
+        // значит «заявку сняли». Без флага такой случай проваливался в ранний
+        // выход (px == null), и в строке продолжала висеть цена, которой на
+        // рынке уже нет — до перезагрузки страницы. У WS-ветки флаг стоял.
+        applySideQuote(b, n, "bid", q.bid, "bid" in q);
+        applySideQuote(b, n, "ask", q.ask, "ask" in q);
         if (q.wap != null) n.wap_price_pct = q.wap;
         if (q.vol != null) n.val_today = q.vol;
         // РАСЧЁТНЫЕ поля от событийного движка (Y-IDX по сделке и средневзвесу,
@@ -597,6 +623,11 @@ function Dashboard() {
         for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
           if (q[k] != null) n[field] = q[k];
         }
+        // Спреды сторон — ПОСЛЕ applySideQuote: та гасит спред под новую цену,
+        // а здесь он возвращается, если движок считал по ЭТОЙ же цене. Патч
+        // сверяется с уже накопленным n, иначе спред сел бы на прошлую цену.
+        const sides = sideMetricPatch(b, q, n);
+        if (sides) Object.assign(n, sides);
         return n;
       });
       return touched ? next : prev;      // ничего не поменялось — без ререндера
