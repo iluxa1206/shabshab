@@ -1056,7 +1056,16 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         # событие по 99,60 при котировке, ещё показывавшей прошлый верх).
         # Та же грабля, что была у якоря Y-IDX (см. exact_y_idx_map ниже).
         top_px = _px(ladder[0]) if ladder else row.get(side)
+        # Одной сверки ЦЕН мало: цена набора округляется до 4 знаков, и набор,
+        # взявший 99,8% денег с верхнего уровня и остаток со следующего, даёт
+        # средневзвес 99,600021 → round() схлопывает его в цену верха, и метка
+        # утверждала бы, что заявка первая в очереди, хотя она уже пробита.
+        # Поэтому у набора условие точное — он уложился В ОДИН уровень
+        # (vwap_for ест лестницу от лучшей цены, значит этот уровень и есть
+        # верх). levels=None — режим без порога объёма, там цена и есть верх
+        # книги, решает сверка цен.
         best_px = (price is not None and top_px is not None
+                   and (levels is None or levels == 1)
                    and abs(float(price) - float(top_px)) < _PX_EPS)
         out.append({"isin": isin, "name": u.get("name") or isin,
                     "best": best_px,

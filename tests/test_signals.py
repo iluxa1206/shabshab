@@ -1375,6 +1375,66 @@ def test_block_filter_takes_exclusions():
                               date(2026, 8, 21))
 
 
+# --- метка «best»: заявка стоит первой в очереди ---
+
+def _one(depth_a, ask, want=1_000_000, accrued=0.0, **par):
+    """Одна бумага, одна сторона: лестница против котировки в метриках."""
+    core.exact_y_idx_map = lambda isin, pxs: {}
+    uni = [{"isin": "X", "name": "n", "base": "RUONIA"}]
+    metrics = {"X": {"ask": ask, "yoi_ask": 164, "face_px": 1000.0,
+                     "accrued_settle": accrued, "maturity_date": "2028-07-19"}}
+    depth = {"X": {"a": depth_a, "b": [(99.0, 1)]}}
+    p = core.normalize_params({"side": "ask", "min_money_rub": want, **par})
+    return core.evaluate_candidates(p, uni, metrics, depth)
+
+
+def test_best_flag_uses_ladder_not_stale_quote(monkeypatch):
+    """Верх книги берётся ИЗ ЛЕСТНИЦЫ, на которой посчитан сигнал.
+
+    bid/ask в метриках приезжают потоком котировок, лестница — потоком
+    стаканов: в момент улучшения цены они расходятся на такт, и сигнал по
+    НОВОМУ верху приходил без метки ровно тогда, когда она важнее всего
+    (РЖД 1Р-26R 02.09.2026: событие по 99,60 при котировке 99,69)."""
+    ev = _one([(99.60, 1759), (99.70, 50238)], ask=99.69)
+    assert [(e["price"], e["best"]) for e in ev] == [(99.6, True)]
+
+
+def test_best_flag_false_when_signal_is_deeper(monkeypatch):
+    """Набор пробил верх и ушёл вглубь — заявка НЕ первая в очереди."""
+    # верхний уровень мелкий, набор доедает следующий → цена это средневзвес
+    ev = _one([(99.60, 2), (99.70, 50238)], ask=99.60)
+    assert ev and ev[0]["price"] > 99.60
+    assert ev[0]["best"] is False
+
+
+def test_best_flag_on_fractional_price(monkeypatch):
+    """Цена набора считается делением — метка не должна зависеть от того,
+    «круглая» ли цена уровня."""
+    ev = _one([(100.005, 5000), (100.10, 900)], ask=100.005)
+    assert ev and ev[0]["best"] is True
+
+
+def test_best_flag_not_fooled_by_adjacent_level(monkeypatch):
+    """Набор из ДВУХ соседних уровней — средневзвес лежит между ними и близок
+    к верху, но заявка уже не первая в очереди. Допуск сравнения цен не должен
+    склеивать соседние уровни."""
+    # верхний уровень покрывает почти весь тикет, добор — с соседнего
+    ev = _one([(99.60, 990), (99.61, 50000)], ask=99.60, want=1_000_000)
+    assert ev and 99.60 < ev[0]["price"] < 99.61
+    assert ev[0]["best"] is False
+
+
+def test_best_flag_not_fooled_by_rounded_vwap(monkeypatch):
+    """Набор взял почти все деньги с верхнего уровня, остаток — со следующего:
+    средневзвес 99,600021 округляется ДО ЦЕНЫ ВЕРХА, и одной сверки цен мало.
+    Решает то, что набор не уложился в один уровень."""
+    ev = _one([(99.60, 990), (99.61, 50000)], ask=99.60, want=1_000_000,
+              accrued=11.98)
+    assert ev and round(ev[0]["price"], 4) == 99.60   # округление скрыло добор
+    assert ev[0]["levels"] == 2                       # а он был
+    assert ev[0]["best"] is False
+
+
 # --- порог штук в мини-стакане ---
 
 def test_book_snapshot_hides_small_orders_and_digs_deeper(monkeypatch):
