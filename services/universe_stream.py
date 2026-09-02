@@ -1203,6 +1203,18 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     цену при поштучном reprice. Наклон отсюда убран: он честен только рядом с
     якорем, а уехавший якорь уводил за собой все производные числа разом."""
     from services import live_quotes as _lq
+
+    # НЕТ КОНТЕКСТА — НЕ ГАСИМ СТРОКУ. Прежняя версия обнуляла спреды сторон
+    # ПЕРЕД проверкой контекста, и бумага без него оставалась с прочерками: так
+    # весь рынок гас после переката дня в 09:00 (контексты сбрасываются) и после
+    # рестарта, хотя числа были посчитаны минуту назад. Пустая клетка говорит
+    # «спреда нет», а на деле его просто нечем пересчитать прямо сейчас —
+    # честнее оставить последнее известное и заказать догрев вне очереди.
+    ev = _eval_ctx.get(isin)
+    if ev is None:
+        request_bond(isin)
+        return
+
     lvq = _lq.get(isin) or {}
     wap = lvq.get("vwap_pct") or snap.get("waprice")
     wap = wap if (wap or 0) > 0 else None
@@ -1213,10 +1225,6 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     vol_px = _vol_prices(isin)
     row["vol_px"] = vol_px or None
     row["yoi_vol"] = None
-
-    ev = _eval_ctx.get(isin)
-    if ev is None:
-        return
     from services.yidx_exact import y_idx_many
     want = [v for v in list(sides.values()) + [wap] if v is not None]
     want += [p for p in vol_px.values() if p is not None]

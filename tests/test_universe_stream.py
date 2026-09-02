@@ -1041,3 +1041,26 @@ def test_open_bond_jumps_the_warm_queue(monkeypatch):
         us._eval_ctx.pop("RU000A100029", None)
         us._ctx_wanted.clear()
         us._sides_dirty.clear()
+
+
+def test_side_metrics_keep_last_numbers_without_ctx():
+    """Без контекста строка НЕ гаснет.
+
+    Спреды сторон обнулялись ПЕРЕД проверкой контекста, и бумага без него
+    оставалась с прочерками: так весь рынок гас после переката дня в 09:00
+    (контексты сбрасываются) и после рестарта, хотя числа были посчитаны минуту
+    назад. Пустая клетка говорит «спреда нет», а на деле его просто нечем
+    пересчитать прямо сейчас."""
+    isin = "RU000A100777"
+    us._eval_ctx.pop(isin, None)
+    us._ctx_wanted.clear()
+    row = {"yoi_bid": 170, "yoi_ask": 134, "yoi_wap": 150}
+    try:
+        us._fill_side_metrics(row, isin, {"bid": 99.0, "ask": 100.0}, {})
+        assert row == {"yoi_bid": 170, "yoi_ask": 134, "yoi_wap": 150}
+        # и заодно заказан догрев вне очереди — числа обновятся, а не застынут
+        assert isin in us._ctx_wanted
+        assert isin in us._sides_dirty
+    finally:
+        us._ctx_wanted.clear()
+        us._sides_dirty.pop(isin, None)
