@@ -1162,3 +1162,29 @@ def test_morning_pass_hands_work_to_the_engine(monkeypatch):
     finally:
         us._eval_ctx.clear()
         us._flow_cache.clear()
+
+
+def test_ctx_picks_up_accrued_when_it_arrives(monkeypatch):
+    """НКД, приехавший позже контекста, оживляет стороны.
+
+    Без биржевого НКД точный спред не считается вовсе (yidx_exact молчит:
+    выдумывать начисление нельзя, десятые доли рубля стоят десятков б.п.).
+    Контекст, собранный до прихода снапшота, держал прочерк в сторонах до конца
+    дня — а число в строке к тому времени уже есть."""
+    isin = "RU000A100888"
+    us._eval_ctx[isin] = {"isin": isin, "accrued_missing": True, "accrued_live": None}
+    got = {}
+    monkeypatch.setattr("services.yidx_exact.y_idx_many",
+                        lambda ctx, prices: {round(float(p), 4): 200 for p in prices})
+    monkeypatch.setattr(us, "_vol_prices", lambda i: {})
+    monkeypatch.setattr(us, "_grid_nodes_if_needed", lambda *a, **kw: [])
+    row = {}
+    try:
+        us._fill_side_metrics(row, isin, {"bid": 99.5, "ask": 100.0},
+                              {"accrued": 12.34, "accrued_date": None})
+        ev = us._eval_ctx[isin]
+        assert ev["accrued_missing"] is False and ev["accrued_live"] == 12.34
+        assert row["yoi_bid"] == 200 and row["yoi_ask"] == 200
+    finally:
+        us._eval_ctx.pop(isin, None)
+        us._yoi_cache.pop(isin, None)

@@ -1265,6 +1265,18 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
         request_bond(isin)
         return
 
+    # НКД МОГ ПРИЕХАТЬ ПОЗЖЕ КОНТЕКСТА. Без биржевого НКД точный спред не
+    # считается вовсе (см. yidx_exact.y_idx_many: выдумывать начисление нельзя,
+    # десятые доли рубля стоят десятков б.п.), и контекст, собранный до прихода
+    # снапшота, держал бы прочерк в сторонах до конца дня — хотя НКД в строке к
+    # тому времени уже есть. Обновляем на месте: он от цены не зависит,
+    # пересобирать ради него весь контекст незачем.
+    if ev.get("accrued_missing") and snap.get("accrued") is not None:
+        from services.bond_details import _acc_date
+        ev["accrued_live"] = snap.get("accrued")
+        ev["accrued_date"] = _acc_date(snap.get("accrued_date"))
+        ev["accrued_missing"] = False
+
     lvq = _lq.get(isin) or {}
     wap = lvq.get("vwap_pct") or snap.get("waprice")
     wap = wap if (wap or 0) > 0 else None
@@ -2045,7 +2057,7 @@ async def metrics_worker() -> None:
                             "сторон %d/мин (%.1fс, %.0fмс/шт, пачка %d) · "
                             "memo %d (hit %d / miss %d) · потоки %d (%dк платежей) · "
                             "ctx %d · сетки %d (+%d/мин, холодных %d) · "
-                            "dirty %d (+%d сторон) · прочерков %d · "
+                            "dirty %d (+%d сторон) · прочерков %d (без НКД %d) · "
                             "depth-пушей %d/мин (%d бумаг)",
                             done_since_log, full_ms / 1000.0,
                             full_ms / max(1, done_since_log),
@@ -2055,6 +2067,8 @@ async def metrics_worker() -> None:
                             len(_flow_cache), _flow_items // 1000,
                             len(_eval_ctx), len(_yoi_grid), _grid_builds, len(_grid_cold),
                             len(_dirty), len(_sides_dirty), _blank_sides_count(),
+                            sum(1 for c in _eval_ctx.values()
+                                if c.get("accrued_missing")),
                             _depth_msgs, len(_depth_streamed))
                 done_since_log = 0
                 sides_since_log = 0
