@@ -76,6 +76,24 @@ async def build_levels_fn(isin: str, kind: str = "floater", horizon: str = "auto
     ctx = await load_reprice_ctx(isin, cache)
     face = getattr(ctx["ref_obj"], "face_value", None)
 
+    # ПОТОК СТРОИТСЯ РАЗ НА КОНТЕКСТ, а не на каждый пуш книги. График платежей
+    # от цены не зависит (цена входит только в dirty и в солверы), но
+    # calculate_valuation_metrics собирал его заново на каждый вызов levels_fn —
+    # 35 мс у тридцатилетнего ипотечного агента, дважды (погашение и оферта), и
+    # так на КАЖДОМ движении стакана. Кэш живёт вместе с контекстом: пересобрали
+    # его (TTL подписки, новая кривая) — собрался и поток.
+    flows: dict = {}
+
+    # ОТКРЫЛИ СТАКАН — ПОПРОСИМ ДВИЖОК посчитать и строку витрины. Уровни здесь
+    # считаются по СВОЕМУ контексту, движок об этом не знает, и бумага, у которой
+    # в мониторе стоял прочерк, после закрытия стакана оставалась с прочерком:
+    # числа были, но в другом месте.
+    try:
+        from services import universe_stream as _us
+        _us.request_bond(isin)
+    except Exception as e:
+        logger.debug("request_bond %s: %s", isin, e)
+
     def levels_fn(prices):
         """Все уровни ОДНИМ calculate_valuation_metrics: поток, кривая и base leg
         от цены не зависят и строятся один раз, на цену остаётся XIRR и солвер DM.
@@ -98,7 +116,7 @@ async def build_levels_fn(isin: str, kind: str = "floater", horizon: str = "auto
                 amorts=ctx["amorts"], offers=ctx["offers"],
                 ruonia_curve=ctx.get("ruonia_curve"),
                 accrued_date=ctx.get("accrued_date"),
-                alt_prices=want, alt_dm=LEVEL_DM)
+                alt_prices=want, alt_dm=LEVEL_DM, flows_cache=flows)
         except Exception as e:
             logger.debug("levels %s: %s", isin, e)
             return {}

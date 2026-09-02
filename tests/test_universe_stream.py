@@ -1013,3 +1013,31 @@ def test_level_memo_has_a_ceiling(monkeypatch):
         assert ("RU000A100001", us._px_key(100.0)) not in us._level_memo
     finally:
         us._level_memo.clear()
+
+
+def test_open_bond_jumps_the_warm_queue(monkeypatch):
+    """Открытая карточка/стакан двигает бумагу в голову догрева.
+
+    Уровни стакана считает orderbook_svc по СВОЕМУ контексту — движок о нём не
+    знает, и бумага, у которой в мониторе стоял прочерк, после закрытия стакана
+    оставалась с прочерком: числа были, но в другом месте. Теперь открытие
+    заказывает движку и контекст, и пересчёт сторон."""
+    us._ctx_wanted.clear()
+    us._sides_dirty.clear()
+    uni = {f"RU000A1000{i:02d}": {"isin": f"RU000A1000{i:02d}"} for i in range(30)}
+    try:
+        # без заявки догрев идёт по порядку словаря
+        assert us._ctx_warm_targets(uni, 3) == list(uni)[:3]
+
+        us.request_bond("RU000A100029")          # последняя в общем обходе
+        assert us._sides_dirty.get("RU000A100029") == us._SIDES_PRIO_LIVE
+        assert us._ctx_warm_targets(uni, 3)[0] == "RU000A100029", "заявка идёт первой"
+
+        # контекст собрался — заявка снимается, бумага не занимает место в голове
+        us._eval_ctx["RU000A100029"] = {"ctx": True}
+        assert us._ctx_warm_targets(uni, 3) == list(uni)[:3]
+        assert "RU000A100029" not in us._ctx_wanted
+    finally:
+        us._eval_ctx.pop("RU000A100029", None)
+        us._ctx_wanted.clear()
+        us._sides_dirty.clear()

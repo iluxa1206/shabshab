@@ -243,6 +243,26 @@ _SIDES_PRIO_WAVE = 1.0        # волна нового размера тике�
 _sides_dirty: Dict[str, float] = {}
 
 
+# БУМАГИ, КОТОРЫЕ СМОТРЯТ ПРЯМО СЕЙЧАС: их контекст греется первым, вне общей
+# очереди догрева. Без этого бумага из хвоста рынка ждала своей очереди по 10
+# штук за такт, а человек уже открыл её стакан и видел там посчитанные уровни —
+# при пустой строке в мониторе (уровни считает orderbook_svc по СВОЕМУ
+# контексту, движок о нём не знает).
+_ctx_wanted: Dict[str, float] = {}      # isin → monotonic заявки
+
+
+def request_bond(isin: str) -> None:
+    """«Эту бумагу смотрят» — из карточки и стакана (orderbook_svc).
+
+    Ставит её контекст в голову догрева и заказывает пересчёт сторон: к
+    возвращению в монитор строка должна быть с числами, а не с прочерком."""
+    if not isin:
+        return
+    if isin not in _eval_ctx:
+        _ctx_wanted[isin] = time.monotonic()
+    _queue_sides(isin, _SIDES_PRIO_LIVE)
+
+
 def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
     """В очередь сторон. Живое событие ПОВЫШАЕТ приоритет бумаги, уже стоящей в
     волне: она нужна раньше, а не вторым заходом."""
@@ -1447,10 +1467,21 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
 
 
 def _ctx_warm_targets(uni_by: dict, limit: int) -> list:
-    """Бумаги юниверса, у которых контекста расчёта нет вовсе."""
+    """Бумаги юниверса, у которых контекста расчёта нет вовсе.
+
+    ПЕРВЫМИ — те, что смотрят прямо сейчас (см. request_bond): человек уже
+    открыл карточку, и ждать своей очереди в общем обходе такая бумага не
+    должна. Заявка снимается, как только контекст собран."""
     out = []
+    for isin in list(_ctx_wanted):
+        if isin in _eval_ctx or isin in _fixed_isins or isin not in uni_by:
+            _ctx_wanted.pop(isin, None)
+            continue
+        out.append(isin)
+        if len(out) >= limit:
+            return out
     for isin in uni_by:
-        if isin in _eval_ctx or isin in _fixed_isins:
+        if isin in _eval_ctx or isin in _fixed_isins or isin in _ctx_wanted:
             continue
         out.append(isin)
         if len(out) >= limit:
@@ -1487,6 +1518,11 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
         _store_eval_ctx(isin, u, ref, ctx, (ctx["board"].get(isin, {}) or {}))
         if isin in _eval_ctx:
             n += 1
+            # контекст только что появился — СРАЗУ считаем стороны: до этого
+            # момента бумага стояла в строке с прочерком, и очередь сторон её
+            # пропускала (без контекста считать нечем)
+            _queue_sides(isin, _SIDES_PRIO_WAVE)
+            _ctx_wanted.pop(isin, None)
     return n
 
 

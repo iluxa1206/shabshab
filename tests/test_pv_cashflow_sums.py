@@ -219,3 +219,42 @@ def test_flows_cache_reuses_stream_and_keeps_numbers(keyrate_curve, ruonia_curve
     assert a["yield_over_index_bps"] != b["yield_over_index_bps"], "цена всё же влияет"
     # предупреждения сборки не теряются на попадании в кэш
     assert set(c["warnings"]) <= set(b["warnings"])
+
+
+def test_orderbook_levels_reuse_the_flow(monkeypatch):
+    """Лестница стакана строит поток РАЗ НА КОНТЕКСТ, а не на каждый пуш книги.
+
+    Уровни считаются батчем, но сам график платежей собирался заново при каждом
+    вызове levels_fn — 35 мс у тридцатилетнего ипотечного агента, дважды
+    (погашение и оферта), и так на каждом движении стакана."""
+    import asyncio
+    from services import orderbook_svc as ob
+    import services.valuation as sv
+
+    seen = []
+
+    def fake_metrics(*a, **kw):
+        seen.append(kw.get("flows_cache"))
+        return {"horizons": {}, "y_idx_by_price": {}}
+
+    monkeypatch.setattr(sv, "calculate_valuation_metrics", fake_metrics)
+    monkeypatch.setattr(ob, "load_reprice_ctx",
+                        lambda isin, cache: _async({"ref_obj": None, "curve": None,
+                                                    "calc_date": None, "periods": None,
+                                                    "amorts": None, "offers": None,
+                                                    "accrued_live": None}),
+                        raising=False)
+    monkeypatch.setattr(ob.MarketDataService, "get_local_bond_cache",
+                        staticmethod(lambda p: {}))
+    monkeypatch.setattr("services.universe_stream.request_bond", lambda isin: None)
+
+    levels_fn, _cd, _face = asyncio.run(ob.build_levels_fn("RU000A109B33"))
+    levels_fn([100.0])
+    levels_fn([99.5])
+    assert len(seen) == 2, "оба вызова дошли до расчёта"
+    # ОДИН И ТОТ ЖЕ словарь кэша — значит поток из него переиспользуется
+    assert seen[0] is seen[1] and seen[0] is not None
+
+
+async def _async(value):
+    return value
