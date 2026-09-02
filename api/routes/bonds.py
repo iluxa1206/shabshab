@@ -425,6 +425,9 @@ async def get_quotes(
     ОБЪЯВЛЕН ДО /{isin}: иначе путь съест роут карточки как ISIN.
     """
     from services.market_data import market_cache
+    from services.universe_stream import (_vol_prices as _us_vol_prices,
+                                          yoi_at as _us_yoi_at,
+                                          live_sides as _us_live_sides)
     if vol_bid or vol_ask:
         from services.universe_stream import register_vol_sizes
         register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
@@ -472,7 +475,18 @@ async def get_quotes(
         # Цена и спред обязаны быть ОДНОЙ парой, поэтому берём обе оттуда, где
         # их посчитали вместе. Снапшот остаётся для бумаг вне универса движка
         # (в ответе их вчетверо больше, чем он считает).
+        # СВЕЖАЯ ПАРА ИЗ СЕТКИ ПОБЕЖДАЕТ ЧИСЛА ДВИЖКА. Очередь сторон обходит
+        # универс за две-три минуты, и всё это время строка жила спредом к
+        # прежней цене — при том что ответ лежал в памяти: сетка даёт спред на
+        # любой цене интерполяцией, без солвера. Берём последний верх книги и
+        # спрашиваем сетку (см. live_sides); сетки нет — остаёмся на числах
+        # движка, как раньше.
+        fresh = _us_live_sides(isin) if m else {}
         for k, px in (("yoi_bid", "bid"), ("yoi_ask", "ask")):
+            if px in fresh:
+                it[px], it[k] = fresh[px][0], fresh[px][1]
+                it[f"{k}_px"] = fresh[px][0]
+                continue
             # `px in m`, а не `m.get(px) is not None`: пустая сторона у движка
             # значит «заявку сняли», и это тоже новость — откатываться на
             # снапшот в такой момент означало бы вернуть цену, которой на рынке
@@ -490,14 +504,31 @@ async def get_quotes(
             # (vol_bid_px/vol_bid_y): размер известен из самого запроса, и
             # тащить его в каждую строку ответа незачем
             px_map, y_map = m.get("vol_px") or {}, m.get("yoi_vol") or {}
+            # ЧИСЛО, КОТОРОЕ УЖЕ ЕСТЬ В ПАМЯТИ, НЕ ЖДЁТ ОЧЕРЕДИ. Цена набора и
+            # спред по ней попадали в строку только когда движок доберётся до
+            # бумаги в очереди сторон — круг по универсу это две-три минуты, и
+            # всё это время пользователь, включивший фильтр по объёму, смотрел
+            # на прочерк. Между тем цена набора считается по кэшу глубины
+            # арифметикой (_vol_prices), а спред на любой цене берётся из
+            # готовой сетки (yoi_at) — обе операции без сети и без солвера.
+            # Считаем лениво: только для бумаг, где чего-то не хватает.
+            live_px = None
             for side, size in (("bid", vol_bid), ("ask", vol_ask)):
                 if not size:
                     continue
                 key = f"{side}:{float(size):.0f}"
-                if px_map.get(key) is not None:
-                    it[f"vol_{side}_px"] = px_map[key]
-                if y_map.get(key) is not None:
-                    it[f"vol_{side}_y"] = y_map[key]
+                px = px_map.get(key)
+                if px is None:
+                    if live_px is None:
+                        live_px = _us_vol_prices(isin)
+                    px = live_px.get(key)
+                y = y_map.get(key)
+                if y is None and px is not None:
+                    y = _us_yoi_at(isin, px)      # из сетки, если она построена
+                if px is not None:
+                    it[f"vol_{side}_px"] = px
+                if y is not None:
+                    it[f"vol_{side}_y"] = y
         items.append(it)
     # ДЕЛЬТА. Такт опроса — секунда, а за секунду меняется десяток строк из трёх
     # тысяч: полный ответ (294 КБ сырых, 54 КБ gzip) был бы на 4/5 повтором

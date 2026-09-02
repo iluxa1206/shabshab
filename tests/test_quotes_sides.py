@@ -90,3 +90,51 @@ def test_row_without_side_keys_keeps_snapshot(monkeypatch):
                {"U": {"last": 100.0, "bid": 99.9, "ask": 100.1}},
                {"U": {"yoi": 150}})
     assert got["U"]["bid"] == 99.9 and got["U"]["ask"] == 100.1
+
+
+def _with_grid(monkeypatch, snap, metrics, last_quote, grid):
+    """Тот же прогон, но с живой книгой и сеткой спредов."""
+    from api.routes import bonds as mod
+    import services.market_data as md
+    import services.universe_stream as us
+
+    async def fake_snap(*a, **k):
+        return snap
+    monkeypatch.setattr(mod.MarketDataService, "fetch_board_snapshot", fake_snap)
+    monkeypatch.setattr(mod.live_quotes, "get", lambda i: {})
+    monkeypatch.setattr(us, "_last_quote", last_quote)
+    monkeypatch.setattr(us, "yoi_at", lambda isin, px: grid.get(round(float(px), 4)))
+    md.market_cache["universe_metrics"] = metrics
+    try:
+        r = asyncio.run(get_quotes(vol_bid=None, vol_ask=None, since=None, epoch=None))
+    finally:
+        md.market_cache.pop("universe_metrics", None)
+    return {i["isin"]: i for i in r["items"]}
+
+
+def test_grid_gives_fresher_pair_than_engine(monkeypatch):
+    """Движок отстал на такт очереди: у него цена 100,10 и спред к ней, а книга
+    уже на 100,14. Сетка отвечает по свежей цене — пара новее и согласована."""
+    got = _with_grid(monkeypatch,
+                     {"X": {"last": 100.0, "bid": 99.9, "ask": 100.1}},
+                     {"X": {"bid": 99.9, "ask": 100.10, "yoi_ask": 150}},
+                     {"X": {"ask": 100.14}}, {100.14: 143})
+    assert got["X"]["ask"] == 100.14
+    assert got["X"]["yoi_ask"] == 143 and got["X"]["yoi_ask_px"] == 100.14
+
+
+def test_without_grid_engine_numbers_stay(monkeypatch):
+    got = _with_grid(monkeypatch,
+                     {"X": {"last": 100.0, "bid": 99.9, "ask": 100.1}},
+                     {"X": {"bid": 99.9, "ask": 100.10, "yoi_ask": 150}},
+                     {"X": {"ask": 100.14}}, {})
+    assert got["X"]["ask"] == 100.10 and got["X"]["yoi_ask"] == 150
+
+
+def test_zero_price_in_book_is_not_a_side(monkeypatch):
+    """0 = стороны в стакане нет: сетку по ней не спрашиваем."""
+    got = _with_grid(monkeypatch,
+                     {"X": {"last": 100.0, "bid": 99.9, "ask": 100.1}},
+                     {"X": {"bid": 99.9, "ask": 100.10, "yoi_ask": 150}},
+                     {"X": {"ask": 0}}, {0: 999})
+    assert got["X"]["ask"] == 100.10 and got["X"]["yoi_ask"] == 150
