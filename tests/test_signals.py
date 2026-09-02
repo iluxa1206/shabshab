@@ -1416,10 +1416,11 @@ def test_book_snapshot_flags_fully_hidden_side(monkeypatch):
     assert bk["bids_all_hidden"] is False
 
 
-def test_book_pre_marks_gaps_with_ellipsis(monkeypatch):
-    """Многоточие рисуется СО СТОРОНЫ КОТИРОВКИ: у офферов под строкой, у
-    бидов над ней. Иначе «лучший оффер 99,70» — неправда, когда между ним и
-    спредом стояла отсеянная мелочь."""
+def test_book_pre_marks_gap_at_the_touch(monkeypatch):
+    """Многоточие — у КОТИРОВКИ, между лестницей и спредом: иначе «лучший
+    оффер 99,70» читается как правда, когда порог убрал заявки ближе к спреду.
+    У офферов метка идёт под строкой, у бидов над ней — ближайший к спреду
+    уровень у них печатается с разных концов."""
     from services import tg_notify
     monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
     depth = {"a": [[99.55, 8], [99.6, 12], [99.7, 50001], [99.97, 1565]],
@@ -1434,6 +1435,22 @@ def test_book_pre_marks_gaps_with_ellipsis(monkeypatch):
     assert lines[sep + 1] == "..."      # отсеянный бид 99,50
     assert "99,70" in lines[sep - 2]    # последний показанный оффер над многоточием
     assert "99,36" in lines[sep + 2]
+
+
+def test_book_pre_ignores_gap_in_the_middle(monkeypatch):
+    """Пропуск В СЕРЕДИНЕ лестницы не помечается, хотя снимок его считает:
+    глубина читается как «примерно столько-то по таким-то ценам», выпавшая
+    середина этого не меняет, а метки в каждой второй строке рвут колонку."""
+    from services import tg_notify
+    monkeypatch.setattr(core, "exact_y_idx_map", lambda isin, pxs: {})
+    # мелочь стоит в середине, у самой котировки книга целая
+    depth = {"a": [[99.7, 5000], [99.8, 7], [99.9, 6000]],
+             "b": [[99.6, 3000], [99.5, 7], [99.4, 2000]]}
+    bk = core.book_snapshot(depth, {}, 1000.0, levels=4, min_qty=1000)
+    assert any(l["gap"] for l in bk["asks"])      # снимок пропуск ВИДИТ
+    out = tg_notify._book_pre({"book": bk, "price": 99.7,
+                               "book_min_qty": 1000}, "ask")
+    assert "..." not in out                       # а витрина его не рисует
 
 
 def test_book_pre_no_ellipsis_when_nothing_hidden(monkeypatch):
