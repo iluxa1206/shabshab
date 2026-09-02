@@ -369,8 +369,14 @@ def apply_vol_sizes(isins: Optional[list] = None) -> Dict[str, dict]:
     Бумаги, у которых сетки ещё нет (движок по ним сегодня не проходил),
     отправляются в обычную очередь сторон — там сетка и построится."""
     from services.market_data import market_cache
+    from services import depth as depth_svc
     um = market_cache.get("universe_metrics") or {}
     out: Dict[str, dict] = {}
+    # СНИМОК ГЛУБИНЫ — ОДИН НА ПРОХОД. get_depth() проходит по всем ISIN всех
+    # шардов и при протухшем шарде пересобирает словарь целиком; ответ для всех
+    # бумаг прохода одинаков, а вызов на бумагу превращал обход в квадрат.
+    book = depth_svc.get_depth()
+    sizes = active_vol_sizes()
     # ВЕСЬ УНИВЕРС ВИТРИНЫ, а не только те, кто пушил котировку: цена набора
     # считается по КНИГЕ, и у застывшей бумаги без единого пуша за день она есть
     # ровно так же. Проверка стоит ~0,05 мс на бумагу.
@@ -380,7 +386,7 @@ def apply_vol_sizes(isins: Optional[list] = None) -> Dict[str, dict]:
         row = um.get(isin)
         if not row:
             continue
-        vol_px = _vol_prices(isin)
+        vol_px = _vol_prices(isin, sizes=sizes, ladders=book.get(isin) or {})
         live = {k: p for k, p in vol_px.items() if p is not None}
         if live and isin not in _yoi_grid:
             # набор собирается, а спред взять неоткуда — это работа для движка
@@ -655,6 +661,10 @@ async def _on_quote(isin: str, data: dict) -> None:
     px = data.get("last_price")
     _seed_price(isin, px)
     prev = _last_quote.get(isin)
+    # ВРЕМЯ ПРИЁМА — рядом с котировкой: по нему видно, жив ли стрим. Без метки
+    # умерший сокет замораживал верх стакана навсегда, и потребитель принимал
+    # цену недельной давности за текущую (см. live_sides).
+    data["_ts"] = time.time()
     _last_quote[isin] = data
     # Полный пересчёт заказывает смена цены СДЕЛКИ: она меняет уровень, а с ним
     # весь набор метрик строки.
@@ -1090,25 +1100,45 @@ def _grid_nodes(isin: str, sides: dict, wap) -> list:
     return [round(lo + i * step, 4) for i in range(n)]
 
 
-def live_sides(isin: str) -> dict:
-    """{side: (цена, спред)} по САМОМУ СВЕЖЕМУ верху книги — спред из сетки.
+# Насколько старым может быть котировочный пуш, чтобы им ещё можно было
+# перебивать числа движка. Мёртвый сокет не обновляет _last_quote вовсе, и без
+# порога его последняя котировка навсегда выигрывала бы у снапшота ISS —
+# то есть замороженный верх стакана выдавался бы за текущий.
+_LIVE_SIDE_MAX_AGE_SEC = float(os.getenv("LIVE_SIDE_MAX_AGE_SEC", "120"))
+
+
+def live_sides(isin: str, row: Optional[dict] = None) -> dict:
+    """{side: (цена, спред)} по САМОМУ СВЕЖЕМУ верху книги.
 
     Очередь сторон обходит универс за две-три минуты, и всё это время строка
     показывала спред к прежней цене (приглушённым) или прочерк, хотя ответ уже
     лежал в памяти: сетка даёт спред на ЛЮБОЙ цене интерполяцией между узлами,
-    без солвера и без сети. Здесь берём последний пуш книги и спрашиваем сетку —
-    получается свежая пара «цена + спред к ней», а не пара двухминутной
-    давности. Сетки нет (её строят видимым и при активном фильтре по объёму) —
-    возвращаем пусто, и потребитель остаётся на числах движка."""
+    без солвера и без сети.
+
+    СЕТКУ СПРАШИВАЕМ, ТОЛЬКО ЕСЛИ ЦЕНА УЕХАЛА. Когда движок считал по той же
+    цене, его число ТОЧНЕЕ: узлы сетки хранят уже округлённые до целых б.п.
+    значения, и интерполяция между ними расходится с точным расчётом на
+    единицу. Сетка нужна ровно там, где точного числа к этой цене ещё нет.
+
+    row — строка движка (market_cache["universe_metrics"]); без неё сетка
+    спрашивается всегда."""
     q = _last_quote.get(isin) or {}
+    if not q:
+        return {}
+    if time.time() - float(q.get("_ts") or 0.0) > _LIVE_SIDE_MAX_AGE_SEC:
+        return {}                      # стрим молчит — верх стакана не свежее снапшота
     out = {}
     for side in ("bid", "ask"):
         px = q.get(side)
         if px is None or not (float(px) > 0):
             continue
+        px = round(float(px), 4)
+        if row is not None and row.get(side) is not None \
+                and round(float(row[side]), 4) == px:
+            continue                   # у движка есть точное число к этой цене
         y = yoi_at(isin, px)
         if y is not None:
-            out[side] = (round(float(px), 4), y)
+            out[side] = (px, y)
     return out
 
 
@@ -1277,6 +1307,20 @@ def yoi_at(isin: str, price) -> Optional[int]:
     a, b = vals.get(lo), vals.get(hi)
     if a is None or b is None or hi <= lo:
         return None
+    # РАЗРЫВ ПРАВИЛА ГОРИЗОНТА. Y-IDX считается к погашению или к оферте — что
+    # выгоднее ПО ЭТОЙ цене, — и на цене перелома соседние узлы принадлежат
+    # РАЗНЫМ горизонтам. Прямая между ними даёт число, которого нет ни у одного
+    # из них. Сравниваем наклон интервала с соседним: скачок выдаёт перелом, и
+    # тогда честнее промолчать — потребитель возьмёт точное число движка.
+    step = (b - a) / (hi - lo)
+    for j in (i - 2, i + 1):
+        if 0 <= j < len(nodes) - 1:
+            c, d0 = vals.get(nodes[j]), vals.get(nodes[j + 1])
+            if c is None or d0 is None or nodes[j + 1] <= nodes[j]:
+                continue
+            near = (d0 - c) / (nodes[j + 1] - nodes[j])
+            if abs(step) > 4 * max(abs(near), 1e-9):
+                return None
     return int(round(a + (b - a) * (px - lo) / (hi - lo)))
 
 
@@ -1311,6 +1355,9 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
         ev["accrued_live"] = snap.get("accrued")
         ev["accrued_date"] = _acc_date(snap.get("accrued_date"))
         ev["accrued_missing"] = False
+        # НКД входит в dirty, то есть в КАЖДОЕ число сетки — построенная без
+        # него сетка больше не действительна
+        _yoi_grid.pop(isin, None)
 
     lvq = _lq.get(isin) or {}
     wap = lvq.get("vwap_pct") or snap.get("waprice")
@@ -1369,7 +1416,8 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
                           for k, p in vol_px.items() if p is not None}
 
 
-def _vol_prices(isin: str, face: float = None, accrued: float = None) -> dict:
+def _vol_prices(isin: str, face: float = None, accrued: float = None,
+                sizes: Optional[list] = None, ladders: Optional[dict] = None) -> dict:
     """{"bid:5000000": цена, "ask:5000000": цена} — VWAP-цены наборов активных
     размеров по обеим сторонам. Набор считает тот же vwap_for, что скринер и
     портфель: одна арифметика книги на всё приложение.
@@ -1377,10 +1425,15 @@ def _vol_prices(isin: str, face: float = None, accrued: float = None) -> dict:
     face/accrued — номинал и НКД бумаги (деньги уровня = qty × (номинал × цена%
     + НКД)). Не переданы — берём из строки метрик флоатера; у фикса своя схема
     строки, поэтому он передаёт их явно."""
-    sizes = active_vol_sizes()
+    # sizes/ladders — ЧТОБЫ НЕ ПЛАТИТЬ ЗА ОБЩЕЕ НА КАЖДОЙ БУМАГЕ. get_depth()
+    # не дешёвый геттер: он проходит по всем ISIN всех шардов и при протухшем
+    # шарде пересобирает словарь целиком (services/depth.py). Ответ для всех
+    # бумаг одного прохода одинаков, поэтому снимок берётся один раз снаружи —
+    # тем же приёмом, что _has_book(isin, book). Список размеров тоже задаётся
+    # снаружи: роуту нужны один-два, а не все активные.
+    sizes = sizes if sizes is not None else active_vol_sizes()
     if not sizes:
         return {}
-    from services import depth as depth_svc
     from services.screener_core import vwap_for, vwap_passes
     from services.market_data import market_cache
     if face is None or accrued is None:
@@ -1389,7 +1442,9 @@ def _vol_prices(isin: str, face: float = None, accrued: float = None) -> dict:
         accrued = accrued if accrued is not None else row.get("accrued_settle")
     face = face or 1000.0
     accrued = accrued or 0.0
-    ladders = depth_svc.get_depth().get(isin) or {}
+    if ladders is None:
+        from services import depth as depth_svc
+        ladders = depth_svc.get_depth().get(isin) or {}
     out = {}
     for size in sizes:
         for side, key in (("bid", "b"), ("ask", "a")):
@@ -1586,6 +1641,12 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
             # без биржевого НКД точного числа не бывает (27.08.2026)
             "accrued_missing": snap.get("accrued") is None,
         }
+        # СЕТКА ПОСТРОЕНА НА ПРЕЖНЕМ КОНТЕКСТЕ. Её узлы считались по старому
+        # графику платежей и старому НКД, а живёт она до смены кривых — то есть
+        # пережила бы пересборку контекста и продолжила отдавать числа, которых
+        # точный расчёт уже не даст. Сносим вместе с контекстом.
+        _yoi_grid.pop(isin, None)
+        _grid_cold.pop(isin, None)
     except Exception as e:
         logger.debug("eval ctx %s: %s", isin, e)
         _ctx_fail_reason[type(e).__name__ + ": " + str(e)[:60]] = \

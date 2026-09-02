@@ -104,6 +104,10 @@ def _with_grid(monkeypatch, snap, metrics, last_quote, grid):
     monkeypatch.setattr(mod.live_quotes, "get", lambda i: {})
     monkeypatch.setattr(us, "_last_quote", last_quote)
     monkeypatch.setattr(us, "yoi_at", lambda isin, px: grid.get(round(float(px), 4)))
+    # пуш должен выглядеть свежим: без метки времени live_sides его отвергнет
+    import time as _t
+    for v in last_quote.values():
+        v.setdefault("_ts", _t.time())
     md.market_cache["universe_metrics"] = metrics
     try:
         r = asyncio.run(get_quotes(vol_bid=None, vol_ask=None, since=None, epoch=None))

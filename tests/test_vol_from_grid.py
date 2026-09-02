@@ -28,7 +28,7 @@ def _run(monkeypatch, metrics, *, vol_px=None, grid=None):
     monkeypatch.setattr(mod.live_quotes, "get", lambda i: {})
     # роут импортирует их внутри функции — патчим источник
     import services.universe_stream as us
-    monkeypatch.setattr(us, "_vol_prices", lambda isin: vol_px or {})
+    monkeypatch.setattr(us, "_vol_prices", lambda isin, **kw: vol_px or {})
     monkeypatch.setattr(us, "yoi_at", lambda isin, px: (grid or {}).get(round(px, 4)))
     monkeypatch.setattr(us, "register_vol_sizes", lambda sizes: None)
     md.market_cache["universe_metrics"] = metrics
@@ -57,18 +57,30 @@ def test_price_computed_now_when_row_has_none(monkeypatch):
 
 
 def test_spread_from_grid_when_only_price_is_ready(monkeypatch):
+    """Движок посчитал цену набора, но спред к ней ещё нет: сетка отвечает по
+    ТОЙ ЖЕ цене, поэтому пара остаётся согласованной."""
     got = _run(monkeypatch,
                {"X": {"bid": 99.9, "ask": 100.1, "vol_px": {"bid:5000000": 99.8}}},
                grid={99.8: 250})
-    assert got["X"]["vol_bid_y"] == 250
+    assert got["X"]["vol_bid_px"] == 99.8 and got["X"]["vol_bid_y"] == 250
 
 
-def test_no_grid_no_spread_but_price_still_shown(monkeypatch):
-    """Сетки нет — спред честно отсутствует, но цена набора уже видна."""
+def test_live_price_without_spread_is_not_sent(monkeypatch):
+    """Сетки нет — живую цену набора придержим. Она новее всего в строке, и
+    рядом со спредом от прошлого прохода дала бы рассинхрон 27.08.2026: пара
+    выглядит согласованной и врёт."""
     got = _run(monkeypatch, {"X": {"bid": 99.9, "ask": 100.1}},
                vol_px={"bid:5000000": 99.75}, grid={})
-    assert got["X"]["vol_bid_px"] == 99.75
-    assert "vol_bid_y" not in got["X"]
+    assert "vol_bid_px" not in got["X"] and "vol_bid_y" not in got["X"]
+
+
+def test_engine_price_without_spread_still_goes(monkeypatch):
+    """А цену ОТ ДВИЖКА отдаём как раньше: она уже была в строке, и придержать
+    её значило бы отнять у витрины то, что там и так показывалось."""
+    got = _run(monkeypatch,
+               {"X": {"bid": 99.9, "ask": 100.1, "vol_px": {"bid:5000000": 99.8}}},
+               grid={})
+    assert got["X"]["vol_bid_px"] == 99.8 and "vol_bid_y" not in got["X"]
 
 
 def test_set_not_collected_gives_nothing(monkeypatch):

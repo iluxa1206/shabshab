@@ -432,6 +432,13 @@ async def get_quotes(
         from services.universe_stream import register_vol_sizes
         register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
     snap = await MarketDataService.fetch_board_snapshot()
+    # ОДИН СНИМОК ГЛУБИНЫ НА ЗАПРОС. get_depth() проходит по всем ISIN всех
+    # шардов, а при протухшем — пересобирает словарь целиком; в цикле по трём
+    # тысячам бумаг это десятки миллисекунд блокировки петли на каждом такте.
+    book = None
+    if vol_bid or vol_ask:
+        from services import depth as _depth_svc
+        book = _depth_svc.get_depth()
     # Y-IDX — из событийного движка (universe_stream): он пересчитывает метрики
     # по факту сделки, поэтому спред у торгуемых бумаг здесь живой, а не
     # 10-минутной давности поллера
@@ -481,7 +488,7 @@ async def get_quotes(
         # любой цене интерполяцией, без солвера. Берём последний верх книги и
         # спрашиваем сетку (см. live_sides); сетки нет — остаёмся на числах
         # движка, как раньше.
-        fresh = _us_live_sides(isin) if m else {}
+        fresh = _us_live_sides(isin, m) if m else {}
         for k, px in (("yoi_bid", "bid"), ("yoi_ask", "ask")):
             if px in fresh:
                 it[px], it[k] = fresh[px][0], fresh[px][1]
@@ -517,18 +524,39 @@ async def get_quotes(
                 if not size:
                     continue
                 key = f"{side}:{float(size):.0f}"
-                px = px_map.get(key)
-                if px is None:
+                px, y = px_map.get(key), y_map.get(key)
+                # `key not in px_map`, а НЕ `px is None`: движок кладёт ключ на
+                # каждый размер и пишет None, когда книги на тикет не хватает —
+                # это ОТВЕТ, а не отсутствие ответа. Пока разницы не было,
+                # половина универса (тикет 5 млн собирают 47 % бумаг)
+                # пересчитывалась на каждом запросе вечно и всегда давала тот
+                # же None.
+                if key not in px_map:
                     if live_px is None:
-                        live_px = _us_vol_prices(isin)
+                        # снимок глубины и нужные размеры — снаружи (см.
+                        # _vol_prices): иначе get_depth() пересобирал бы книгу
+                        # всего рынка на каждой бумаге цикла
+                        live_px = _us_vol_prices(
+                            isin, face=m.get("face_px"),
+                            accrued=m.get("accrued_settle"),
+                            sizes=[v for v in (vol_bid, vol_ask) if v],
+                            ladders=(book or {}).get(isin) or {})
                     px = live_px.get(key)
-                y = y_map.get(key)
-                if y is None and px is not None:
-                    y = _us_yoi_at(isin, px)      # из сетки, если она построена
-                if px is not None:
+                if px is not None and y is None:
+                    y = _us_yoi_at(isin, px)   # спред к ЭТОЙ цене, из сетки
+                if px is None:
+                    continue
+                if key in px_map:
+                    # цена от движка: отдаём как раньше, спред — если он есть
                     it[f"vol_{side}_px"] = px
-                if y is not None:
-                    it[f"vol_{side}_y"] = y
+                    if y is not None:
+                        it[f"vol_{side}_y"] = y
+                elif y is not None:
+                    # ЖИВУЮ ЦЕНУ — ТОЛЬКО В ПАРЕ СО СПРЕДОМ. Она новее всего,
+                    # что есть в строке, и рядом со спредом от прошлого прохода
+                    # даёт рассинхрон 27.08.2026: пара выглядит согласованной и
+                    # врёт. Нет спреда к ней — молчим, остаёмся на числах движка.
+                    it[f"vol_{side}_px"], it[f"vol_{side}_y"] = px, y
         items.append(it)
     # ДЕЛЬТА. Такт опроса — секунда, а за секунду меняется десяток строк из трёх
     # тысяч: полный ответ (294 КБ сырых, 54 КБ gzip) был бы на 4/5 повтором
