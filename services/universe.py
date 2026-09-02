@@ -4,8 +4,10 @@
 watchlist) — раньше это были две почти построчные копии в route-модуле, которые
 уже начинали разъезжаться. Route теперь только транспорт/маппинг в схемы.
 """
+import asyncio
 import logging
 import os
+import time
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -22,6 +24,12 @@ from services import instruments_registry
 from services import live_quotes
 
 logger = logging.getLogger(__name__)
+
+# Сколько прогрев универса считает ОДНИМ заходом в поток. Тот же приём, что в
+# движке (universe_stream._HEAVY_SLICE_SEC): счёт держит GIL, и пока идёт кусок,
+# event loop не просыпается. Проход по всем 611 бумагам одним заходом — это
+# десятки секунд немого сайта.
+_PREWARM_SLICE_SEC = float(os.getenv("UNIVERSE_PREWARM_SLICE_SEC", "0.4"))
 
 # МАРЖИ (SM/DM) В ВИТРИНЕ — по требованию, не по умолчанию.
 #
@@ -284,7 +292,6 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
     бумаг за такт — рынок стоял в прочерках, пока догрев доползал до хвоста.
     flows_by (isin → словарь кэша потоков) наполняется прямо здесь, on_ctx(isin,
     u, ref, ctx_like, snap) отдаёт вызывающему собранный контекст."""
-    import asyncio
     want = {i for i in isins if i}
     uni_by = {u["isin"]: u for u in uni if u.get("isin") in want}
     ids = list(uni_by.keys())
@@ -316,9 +323,18 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
     # проде: 33с непрерывного CPU), и всё это время сервер не отвечал никому.
     # Уносим в поток: соединения SQLite открываются внутри вызовов, шаринга
     # между потоками нет, запись прикрыта своим threading.Lock.
-    def _crunch() -> dict:
+    def _crunch(part: list, deadline: Optional[float] = None) -> tuple:
+        """Счёт куска списка. → (метрики, недосчитанные ISIN).
+
+        Кусок ограничен ВРЕМЕНЕМ: расчёт держит GIL, и пока идёт заход, event
+        loop не просыпается вовсе. Проход по всему универсу одним заходом — это
+        десятки секунд, в течение которых сайт не отвечает (замер 02.09: восемь
+        медленных запросов за прогрев). Недосчитанные возвращаются вызывающему,
+        он продолжит следующим заходом."""
         out: dict = {}
-        for isin in ids:
+        for idx, isin in enumerate(part):
+            if deadline is not None and out and time.monotonic() >= deadline:
+                return out, part[idx:]
             u = uni_by[isin]
             snap = board.get(isin, {})
             ref = build_universe_ref(u, isin, cache, secs)
@@ -359,7 +375,9 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
             # аналитика считает по нему, а не по last price (одна сделка, в
             # неликвиде — случайный тонкий принт)
             out[isin]["wap"] = lv.get("vwap_pct") or snap.get("waprice")
+        return out, []
 
+    def _backfill() -> None:
         # backfill coupon_period_days из ФАКТИЧЕСКОГО графика (два последних купона /
         # размещение+первый) — точнее номинального round(365/freq). Схемы уже в руках
         # (fulls, day-кэш), без доп. сети. Пишем только при расхождении; manual-locked
@@ -383,10 +401,20 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
                         source="moex", mark_new=False, keep_source=True)
         except Exception as e:
             logger.warning(f"coupon_period backfill error: {e}")
-        return out
 
+    # СЛАЙСАМИ: объём работы тот же, но между заходами управление возвращается
+    # петле — иначе прогрев всего рынка держит ядро десятками секунд и сайт в
+    # это время не отвечает.
     from services.heavy import run_heavy
-    return await run_heavy(_crunch)
+    out: dict = {}
+    rest = list(ids)
+    while rest:
+        part, rest = await run_heavy(_crunch, rest,
+                                     time.monotonic() + _PREWARM_SLICE_SEC)
+        out.update(part)
+        await asyncio.sleep(0)      # дать петле продышаться между кусками
+    await run_heavy(_backfill)
+    return out
 
 
 async def compute_watch_metrics(uni_rows: List[dict], cache: dict) -> dict:
