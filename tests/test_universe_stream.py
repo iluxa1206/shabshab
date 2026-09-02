@@ -1135,3 +1135,30 @@ def test_grid_is_built_for_visible_without_volume_filter(monkeypatch):
         assert us._grid_nodes_if_needed("RU000A100001", sides, None, {}) == [100.0, 100.1]
     finally:
         us._visible.clear()
+
+
+def test_morning_pass_hands_work_to_the_engine(monkeypatch):
+    """Утренний проход отдаёт движку контексты и потоки, а не выбрасывает их.
+
+    compute_universe_metrics и так строит по каждой бумаге ref и график
+    платежей — самое дорогое в расчёте. Раньше движок собирал всё это заново
+    после переката, по десять бумаг за такт, и рынок стоял в прочерках, пока
+    догрев доползал до хвоста."""
+    us._eval_ctx.clear()
+    us._flow_cache.clear()
+    u = {"isin": "RU000A100001", "base_rate_type": "KEYRATE"}
+    ctx_like = {"ruonia_curve": object(), "keyrate_curve": object(),
+                "calc_date": "2026-09-02", "full_by": {"RU000A100001": {}},
+                "board": {}}
+    try:
+        us.seed_ctx("RU000A100001", u, object(), ctx_like, {"accrued": 12.3})
+        assert "RU000A100001" in us._eval_ctx
+        assert us._eval_ctx["RU000A100001"]["accrued_live"] == 12.3
+
+        # уже прогретую бумагу не перезаписываем: контекст такта свежее утреннего
+        us._eval_ctx["RU000A100001"] = {"marker": "живой"}
+        us.seed_ctx("RU000A100001", u, object(), ctx_like, {"accrued": 99.9})
+        assert us._eval_ctx["RU000A100001"] == {"marker": "живой"}
+    finally:
+        us._eval_ctx.clear()
+        us._flow_cache.clear()

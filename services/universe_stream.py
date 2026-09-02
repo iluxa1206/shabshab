@@ -1593,6 +1593,19 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
     return n
 
 
+def seed_ctx(isin: str, u: dict, ref, ctx_like: dict, snap: dict) -> None:
+    """Контекст расчёта, собранный УТРЕННИМ проходом (universe.compute_universe_
+    metrics), — прямо в движок.
+
+    Тот проход и так строит по каждой бумаге ref и график платежей; раньше он их
+    выбрасывал, и движок после переката собирал всё заново лениво, по десять
+    бумаг за такт. Уже прогретую бумагу не трогаем: свежий контекст такта лучше
+    утреннего, а тратить время на перезапись незачем."""
+    if not isin or isin in _eval_ctx or isin in _fixed_isins:
+        return
+    _store_eval_ctx(isin, u, ref, ctx_like, snap or {})
+
+
 def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = None,
             pending: Optional[list] = None) -> Dict[str, dict]:
     """Синхронный счёт батча (в to_thread). batch = [(isin, quote)].

@@ -597,9 +597,18 @@ async def warmup_caches():
             uni = await instruments_registry.fetch_floater_universe()
             isins = [u["isin"] for u in uni if u.get("isin")]
             if uni:
-                m = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
+                # РЕЗУЛЬТАТ ПРОХОДА — СРАЗУ В ДВИЖОК: контексты расчёта и графики
+                # платежей он строит для всех бумаг всё равно, а движок после
+                # переката собирал их заново по десять штук за такт, и рынок
+                # стоял в прочерках, пока догрев доползал до хвоста.
+                from services import universe_stream as _us
+                m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
+                                                   flows_by=_us._flow_cache,
+                                                   on_ctx=_us.seed_ctx)
                 if m:
                     market_cache["universe_metrics"] = m
+                logger.info("daily 09:00 prewarm: движок получил ctx=%d, потоков=%d",
+                            len(_us._eval_ctx), len(_us._flow_cache))
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
         # календарь выплат — тем же прогревом (плашка выплат в нижней строке

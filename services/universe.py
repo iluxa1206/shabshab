@@ -272,9 +272,18 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             "sm_to_offer": sm_off, "dm_to_offer": dm_off}
 
 
-async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> dict:
+async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
+                                   flows_by: Optional[dict] = None,
+                                   on_ctx=None) -> dict:
     """Фоновый расчёт полных метрик по всему юниверсу (вне watchlist). Данные MOEX
-    батчатся (board snapshot одним запросом) и кэшируются на день. {isin: метрики}."""
+    батчатся (board snapshot одним запросом) и кэшируются на день. {isin: метрики}.
+
+    flows_by / on_ctx — ОТДАЁМ РАБОТУ ДВИЖКУ. Этот проход и так строит по каждой
+    бумаге самое дорогое: контекст расчёта и график платежей. Раньше он их
+    выбрасывал, и движок после переката собирал всё заново лениво, по десять
+    бумаг за такт — рынок стоял в прочерках, пока догрев доползал до хвоста.
+    flows_by (isin → словарь кэша потоков) наполняется прямо здесь, on_ctx(isin,
+    u, ref, ctx_like, snap) отдаёт вызывающему собранный контекст."""
     import asyncio
     want = {i for i in isins if i}
     uni_by = {u["isin"]: u for u in uni if u.get("isin") in want}
@@ -313,11 +322,14 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
             u = uni_by[isin]
             snap = board.get(isin, {})
             ref = build_universe_ref(u, isin, cache, secs)
+            full = full_by.get(isin) or {}
             # средневзвес нужен ДО расчёта: его спред считается той же альт-ценой,
             # что bid/ask (свой счёт по тикам живее биржевого WAPRICE)
             _lv = live_quotes.get(isin) or {}
             out[isin] = enrich_bond(
-                u, ref, full_by.get(isin) or {},
+                u, ref, full,
+                flows_cache=(flows_by.setdefault(isin, {})
+                             if flows_by is not None else None),
                 last=prices.get(isin) or snap.get("last"), prev=snap.get("prev"),
                 accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
                 accrued_date=snap.get("accrued_date"),
@@ -325,6 +337,16 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str) -> d
                 wap=_lv.get("vwap_pct") or snap.get("waprice"),
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
+            if on_ctx is not None:
+                # ctx_like — ровно то, из чего движок собирает свой контекст
+                # (см. universe_stream._store_eval_ctx)
+                try:
+                    on_ctx(isin, u, ref,
+                           {"ruonia_curve": ruonia_curve, "keyrate_curve": keyrate_curve,
+                            "calc_date": calc_date, "full_by": {isin: full},
+                            "board": board}, snap)
+                except Exception as e:
+                    logger.debug("seed ctx %s: %s", isin, e)
             # оборот и средневзвес дня: сначала свой счёт по тикам Alor (живой),
             # биржевые VALTODAY/WAPRICE — запасной путь. Оборот берём БОЛЬШИМ из
             # двух: свой счёт полон только при живом стриме, биржевой отстаёт —
