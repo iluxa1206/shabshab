@@ -49,8 +49,13 @@ def _warn_once(isin, err) -> None:
 def y_idx_many(ctx: dict, prices: Iterable[float]) -> Dict[float, Optional[int]]:
     """{цена: Y-IDX бп} по методике на тёплом контексте (bond_details.load_reprice_ctx).
 
-    ctx без биржевого НКД (`accrued_missing`) считать нельзя: начисление
-    придётся выдумывать, а десятые доли рубля стоят десятков б.п. — молчим.
+    ctx без биржевого НКД считается ПО СВОЕМУ начислению (services/accrued:
+    купон опубликован → спека фиксинга → прошлый купон → индекс+маржа). Раньше
+    здесь стояло молчание — «выдумывать нельзя», — и бумага без биржевого НКД
+    получала прочерк на весь день. Но лестница ошибается на копейки (сверка
+    25.08: 32,93 против факта 32,97), а прочерк не говорит ничего вовсе.
+    Расчёт помечает такое число (`accrued_estimated`), молчим только когда НКД
+    не даёт ни биржа, ни лестница (pricing_status NO_ACCRUED → пустой ответ).
     """
     want: List[float] = []
     for p in prices or []:
@@ -59,7 +64,7 @@ def y_idx_many(ctx: dict, prices: Iterable[float]) -> Dict[float, Optional[int]]
         k = _key(p)
         if k > 0 and k not in want:
             want.append(k)
-    if not want or not ctx or ctx.get("accrued_missing"):
+    if not want or not ctx:
         return {}
     from services.valuation import calculate_valuation_metrics, horizon_at_price
     try:

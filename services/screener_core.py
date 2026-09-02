@@ -694,6 +694,11 @@ def _qty(lvl) -> Optional[float]:
 # иначе протухшее число переживало бы собственный контекст.
 _exact_ctx: dict = {}
 _EXACT_PX_DIGITS = 3
+# Сравнение ЦЕН уровней. Не точное равенство float (цена набора проходит через
+# деление и round) и не «полшага цены»: допуск шириной с шаг склеил бы два
+# СОСЕДНИХ уровня, и средневзвес набора из двух уровней объявлялся бы верхом
+# книги. 1e-6 уже любой арифметической погрешности и уже любого шага цены.
+_PX_EPS = 1e-6
 # Пересборка тёплой бумаги стоит ~58 мс (замер на проде 21.08.2026: всё из
 # кэшей — кривые в памяти, расписание на диске), поэтому окно короткое.
 EXACT_CTX_TTL_SEC = float(os.getenv("SIGNALS_EXACT_CTX_TTL_SEC", "600"))
@@ -787,11 +792,6 @@ def exact_y_idx(isin: str, px: Optional[float]) -> Optional[float]:
     if not _ctx_fresh(rec) or rec[1] is None:
         return None
     ctx, memo = rec[1], rec[2]
-    if ctx.get("accrued_missing"):
-        # НКД неизвестен — «точного» числа не бывает: расчёт начислит своё, и
-        # спред уедет на десятки б.п. (прод 27.08.2026, см. load_reprice_ctx).
-        # Потребитель откатится на наклон от строки метрик, где НКД биржевой.
-        return None
     _sync_ctx_curves(ctx, memo)
     key = round(float(px), _EXACT_PX_DIGITS)
     if key in memo:
@@ -1047,9 +1047,17 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         # ЛУЧШАЯ ЛИ ЗАЯВКА: цена сигнала совпала с верхом стакана своей стороны.
         # Заменяет счёт уровней в уведомлении: «3 ур» описывало механику набора,
         # а стол спрашивает другое — стоит ли эта заявка первой в очереди.
-        top_px = row.get(side)
+        #
+        # Верх берём ИЗ ТОЙ ЖЕ ЛЕСТНИЦЫ, на которой посчитан сам сигнал, а не из
+        # row[side]: bid/ask в метриках приезжают ПОТОКОМ КОТИРОВОК, лестница —
+        # потоком стаканов, и в момент движения цены они расходятся на такт.
+        # Сигнал на новом верху книги приходил без метки ровно тогда, когда она
+        # важнее всего — цена только что улучшилась (РЖД 1Р-26R, 02.09.2026:
+        # событие по 99,60 при котировке, ещё показывавшей прошлый верх).
+        # Та же грабля, что была у якоря Y-IDX (см. exact_y_idx_map ниже).
+        top_px = _px(ladder[0]) if ladder else row.get(side)
         best_px = (price is not None and top_px is not None
-                   and abs(float(price) - float(top_px)) < 1e-9)
+                   and abs(float(price) - float(top_px)) < _PX_EPS)
         out.append({"isin": isin, "name": u.get("name") or isin,
                     "best": best_px,
                     "money_ok_rub": money_ok,

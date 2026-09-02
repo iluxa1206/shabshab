@@ -161,6 +161,9 @@ def calculate_valuation_metrics(
         }
 
     accrued = accrued_override if accrued_override is not None else bond.accrued_rub
+    # НКД посчитан нами, а не взят с биржи: едет в выдачу, чтобы потребитель мог
+    # пометить число как оценку (см. ветку ниже)
+    accrued_estimated = False
 
     # I/O-граница: история индекса — один фетч на запрос, дальше только инжекция
     warnings: list = []
@@ -189,7 +192,15 @@ def calculate_valuation_metrics(
     # bps (РостелP21R 24.08: сигнал 233 bps против 120 верных — ровно разница
     # НКД 11,46 ₽). Ноль законен только в день выплаты, когда период начался
     # сегодня; в остальных случаях верим расписанию, а не снапшоту.
-    if accrued is not None and abs(accrued) < 0.005:
+    # НКД ИСТОЧНИКА НЕТ ВОВСЕ — считаем сам, той же лестницей. Раньше это
+    # состояние было тупиком: потребители точного пути (yidx_exact.y_idx_many,
+    # screener_core.exact_y_idx) просто молчали по флагу accrued_missing, потому
+    # что дальше dirty_price_rub падал на None. Молчание означало прочерк в
+    # мониторе — при том что посчитать начисление есть чем. Оценка хуже
+    # биржевого факта, поэтому она помечается предупреждением, но она НА ДВА
+    # ПОРЯДКА ближе к истине, чем пустая клетка (сверка 25.08: 32,93 против
+    # факта 32,97 по спеке фиксинга, 23,06 против 22,70 по прошлому купону).
+    if accrued is None or abs(accrued) < 0.005:
         # Ноль от биржи посреди купонного периода — почти всегда сбой источника
         # (ISS отдаёт ACCRUEDINT=0), и цена тогда считается «чистой» без
         # накопленного купона: доходность улетает на сотню bps. Считаем сами
@@ -202,10 +213,22 @@ def calculate_valuation_metrics(
                                  base=bond.base, margin_bps=bond.spread_issue_bps,
                                  isin=bond.isin, calc_date=calc_date,
                                  bond=bond, curve=curve)
+        _src = "0" if accrued is not None else "нет"
         if _own and _own > 0.01:
-            warnings.append(f"НКД источника 0 — посчитан сам ({_how}): "
+            warnings.append(f"НКД источника {_src} — посчитан сам ({_how}): "
                             f"{_own:.2f} ₽ на {settle_dt.isoformat()}")
             accrued, accrued_date = _own, settle_dt
+            accrued_estimated = True
+        elif accrued is None:
+            # ни биржи, ни расписания, ни параметров выпуска: dirty не собрать —
+            # честный отказ вместо падения на None
+            return {
+                "clean_price_pct": price, "dirty_price_rub": None,
+                "dm_bps": None, "sm_bps": None, "disc_margin_bps": None, "dm_label": None,
+                "yield_xirr_pct": None, "index_yield_pct": None, "yield_over_index_bps": None,
+                "pricing_status": "NO_ACCRUED",
+                "warnings": warnings + ["НКД не дал ни источник, ни расчёт — цену не оценить"],
+            }
         elif not periods:
             # ни расписания, ни параметров — считать цену «чистой» нельзя
             warnings.append("sanity: НКД источника 0, посчитать его нечем")
@@ -694,6 +717,9 @@ def calculate_valuation_metrics(
         # дата поставки и НКД на неё — то, из чего собран dirty (калькулятор их показывает)
         "settlement_date": settle_dt,
         "accrued_settle_rub": round(accrued, 4) if accrued is not None else None,
+        # НКД не биржевой, а посчитанный лестницей (services/accrued): число
+        # верное по порядку, но не факт — потребитель вправе пометить
+        "accrued_estimated": accrued_estimated,
         "accrued_calc_rub": round(accrued_calc_date, 4) if accrued_calc_date is not None else None,
         "pricing_face_rub": _pricing_face,
         "dm_bps": sm_bps,                      # backward-compat (= simple margin)
