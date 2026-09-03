@@ -508,9 +508,20 @@ def money_upto(levels, px: Optional[float], side: str, face: float,
     return tot or None
 
 
-def best_level(levels, face: float, accrued: float = 0.0) -> Optional[dict]:
-    """Самый «денежный» уровень стороны → {price, qty, money}. Для режима
-    крупной заявки: интересует не сумма книги, а одна большая заявка."""
+def best_level(levels, face: float, accrued: float = 0.0,
+               floor: Optional[float] = None) -> Optional[dict]:
+    """Уровень стороны для режима крупной заявки → {price, qty, money}.
+
+    С порогом (floor) берётся ПЕРВАЯ подходящая заявка ОТ ЛУЧШЕЙ ЦЕНЫ, а не
+    самая денежная из всей лестницы: лестница в depth идёт от верха стакана,
+    и первая проходящая порог — та, что исполнится раньше прочих. Максимум по
+    деньгам уводил сигнал вглубь книги, когда порог проходили сразу несколько
+    уровней: 02.09.2026 у ВЭБ2Р-58 стояли биды 99,72 на 32,9 млн и 99,55 на
+    35,5 млн, обе крупнее порога «от 25 млн», а в уведомление шла нижняя —
+    цена и спред в шапке относились к заявке, до которой рынку ещё идти.
+
+    Без порога (floor=None) правило прежнее — самый денежный уровень: выбирать
+    «первую подходящую» не из чего, когда подходят все."""
     best = None
     for lvl in (levels or []):
         try:
@@ -519,6 +530,10 @@ def best_level(levels, face: float, accrued: float = 0.0) -> Optional[dict]:
             continue
         money = level_money(px, qty, face, accrued)
         if money <= 0:
+            continue
+        if floor is not None:
+            if money >= floor:
+                return {"price": px, "qty": qty, "money": money}
             continue
         if best is None or money > best["money"]:
             best = {"price": px, "qty": qty, "money": money}
@@ -991,11 +1006,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
         top_val = row.get("yoi_ask") if side == "ask" else row.get("yoi_bid")
         single_px = None
         if want and params.get("money_mode") == "single":
-            # Крупная заявка: ищем САМЫЙ денежный уровень стороны. Набор по
-            # лестнице тут не годится — двадцать мелких заявок на 5 млн не то
-            # же самое, что одна заявка на 5 млн.
-            best = best_level(ladder, face, accrued)
-            if not best or best["money"] < money_floor(want):
+            # Крупная заявка: ищем БЛИЖАЙШУЮ К СПРЕДУ заявку не мельче порога.
+            # Набор по лестнице тут не годится — двадцать мелких заявок на
+            # 5 млн не то же самое, что одна заявка на 5 млн.
+            best = best_level(ladder, face, accrued, floor=money_floor(want))
+            if not best:
                 continue
             price = single_px = depth_px = best["price"]
             val = _price_y_idx(isin, row, price, side, exact)

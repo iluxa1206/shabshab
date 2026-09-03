@@ -470,6 +470,32 @@ def test_single_mode_needs_one_big_order():
     assert m["val_bps"] == pytest.approx(300.0 + (100.05 - 100.0) * -100.0, abs=0.2)
 
 
+def test_single_mode_picks_order_nearest_the_spread():
+    """Порог проходят несколько заявок — берём ближайшую к спреду, а не самую
+    денежную: она исполнится раньше, и цифры шапки должны относиться к ней.
+    Случай ВЭБ2Р-58 02.09.2026: биды 99,72 на 32,9 млн и 99,55 на 35,5 млн под
+    фильтром «от 25 млн одной заявкой» — в уведомление шла нижняя."""
+    uni, metrics, _small, _big = _big_small()
+    # лестница бидов идёт ОТ ЛУЧШЕЙ цены; вторая заявка крупнее первой
+    book = {"RU000A0000A1": {"a": [], "b": [[99.72, 31_494], [99.55, 34_043]]}}
+    p = core.normalize_params({"ratings": ["AAA"], "side": "bid",
+                               "min_money_rub": 25e6, "money_mode": "single"})
+    m = core.evaluate(p, uni, metrics, book)[0]
+    assert m["single_px"] == 99.72
+    assert m["money_rub"] == pytest.approx(99.72 / 100 * 1000 * 31_494)
+
+
+def test_single_mode_skips_orders_below_the_floor():
+    """Ближняя к спреду заявка мельче порога — сигнал уходит по следующей
+    подходящей, а не молчит и не берёт мелочь."""
+    uni, metrics, _small, _big = _big_small()
+    book = {"RU000A0000A1": {"a": [], "b": [[99.72, 100], [99.55, 34_043]]}}
+    p = core.normalize_params({"ratings": ["AAA"], "side": "bid",
+                               "min_money_rub": 25e6, "money_mode": "single"})
+    m = core.evaluate(p, uni, metrics, book)[0]
+    assert m["single_px"] == 99.55
+
+
 def test_book_mode_accepts_many_small_orders():
     uni, metrics, small, big = _big_small()
     p = core.normalize_params({"ratings": ["AAA"], "min_money_rub": 5e6,
