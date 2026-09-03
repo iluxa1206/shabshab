@@ -1473,8 +1473,19 @@ def _sides_from(q: Optional[dict], snap: dict) -> dict:
     ВОВСЕ) в этом случае считала, что стороны нет. Спред не считался, а цену в
     строку тут же клал поллер из снапшота: получалась строка «цена есть, спреда
     нет», и висела она до следующего движения книги. На проде 02.09 таких строк
-    было 75 при живых числах в кэше витрины."""
+    было 75 при живых числах в кэше витрины.
+
+    ВОЗРАСТ ПУША СВЕРЯЕТСЯ, как в live_sides: мёртвый шард пула не обновляет
+    _last_quote вовсе, и без проверки движок считал стороны по замороженной
+    книге, а /api/bonds/quotes предпочитал эти bid/ask живому снапшоту ISS —
+    150 бумаг с верхом стакана десятиминутной давности и идеально согласованным
+    с ним спредом, распознать нечем."""
     q = q or {}
+    # Метку ставит _on_quote на КАЖДЫЙ пуш, поэтому её отсутствие — не «очень
+    # старая котировка», а синтетический словарь (тесты, ранние ветки): такой
+    # отбрасывать нечестно, стареем только то, у чего метка есть.
+    if q.get("_ts") and time.time() - float(q["_ts"]) > _LIVE_SIDE_MAX_AGE_SEC:
+        q = {}
     return _sides_of({side: (q.get(side) if q.get(side) is not None
                              else (snap or {}).get(side))
                       for side in ("bid", "ask")})
@@ -1576,7 +1587,11 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
     px = q.get("last_price")
     if px is not None:
         row["last"] = px
-    sides = _sides_of(q)
+    # СТОРОНЫ ИЗ ПУША + СНАПШОТА, как в _crunch: пуш Alor приходит и без
+    # сторон (тик сделки), а row["bid"]/row["ask"] пишутся безусловно и уезжают
+    # на фронт явным null — у ОФЗ гасли обе стороны и все их метрики при живых
+    # ценах в борд-снапшоте.
+    sides = _sides_from(q, snap)
     row["bid"], row["ask"] = sides["bid"], sides["ask"]
     # НКД и вчерашнее закрытие — из борд-снапшота: в справке универса они от
     # часового кэша, а НКД капает каждый день
@@ -1758,7 +1773,12 @@ def seed_begin(market_cache: dict, calc_date) -> None:
     611 вместо 2 — лучше, но всё ещё снос). Если кривые пересоберутся по ходу,
     версия разойдётся и засев будет снесён — это правильно."""
     global _seeded_version
-    _seeded_version = (str(calc_date), _curves_fp(market_cache))
+    _seeded_version = (str(calc_date), _trading_day(), _curves_fp(market_cache))
+    # ДЕНЬ ОБЪЯВЛЯЕТ ЗАСЕВ — он же и сносит потоки прошлого дня. Прогрев
+    # получает _flow_cache на вход (api/main.py), и без этой чистки утренний
+    # проход считал витрину дня на потоках, построенных до переката расписаний
+    # 09:00: сегодняшний купон в них ещё будущий, PV завышен на целый купон.
+    _flow_cache.clear()
 
 
 def seed_count() -> int:
@@ -1900,6 +1920,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
 # Отпечаток кривых живёт в market_data (им пользуются и стрим, и витрина
 # анонсов первички): одна копия на проект, см. curves_fingerprint.
 from services.market_data import curves_fingerprint as _curves_fp
+from services.market_data import _trading_day
 
 
 async def _day_ctx() -> Optional[dict]:
@@ -1932,7 +1953,13 @@ async def _day_ctx() -> Optional[dict]:
         "ruonia_curve": ruonia_curve, "keyrate_curve": keyrate_curve,
         "exp_ks": exp_ks, "exp_ru": exp_ru, "g_curve": g_curve,
         "calc_date": cd or rd or date.today(),
-        "version": (str(cd or date.today()), _curves_fp(market_cache)),
+        # ДЕНЬ РАСПИСАНИЙ — ЧАСТЬ ВЕРСИИ. calc_date перекатывается в полночь, а
+        # купоны/амортизации/оферты приходят из day-кэша с перекатом в 09:00
+        # (market_data._trading_day). Без него поток, построенный ночью на
+        # вчерашнем bondization, переживал перекат и обслуживал весь торговый
+        # день, пока НКД и уровень индекса считались уже по новому расписанию.
+        "version": (str(cd or date.today()), _trading_day(),
+                    _curves_fp(market_cache)),
         "full_by": {},
     }
 

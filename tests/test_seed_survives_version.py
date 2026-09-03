@@ -31,6 +31,12 @@ def _reset():
     us._seeded_version = None
 
 
+def _ver(day, fp):
+    """Версия кэшей — тройка (календарный день, день расписаний, кривые):
+    купоны перекатываются в 09:00, а calc_date в полночь."""
+    return (day, us._trading_day(), fp)
+
+
 def _seed(n=3):
     for i in range(n):
         us._eval_ctx[f"I{i}"] = {"isin": f"I{i}", "base": "KEYRATE"}
@@ -39,10 +45,13 @@ def _seed(n=3):
 
 def test_seeded_context_survives_first_version_check(monkeypatch):
     _reset()
-    _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
+    # ПОРЯДОК КАК В ПРОДЕ (api/main.daily_prewarm): день объявляется ДО прохода,
+    # и seed_begin сносит потоки прошлого дня — контексты и потоки кладёт уже
+    # сам проход, после отметки.
     us.seed_begin({}, date(2026, 9, 2))
-    us._check_version(("2026-09-02", "fp-1"))
+    _seed()
+    us._check_version(_ver("2026-09-02", "fp-1"))
     assert len(us._eval_ctx) == 3 and len(us._flow_cache) == 3
 
 
@@ -51,7 +60,7 @@ def test_unseeded_cache_is_still_dropped():
     кривую, которой уже нет, хуже, чем собрать заново."""
     _reset()
     _seed()
-    us._check_version(("2026-09-02", "fp-1"))
+    us._check_version(_ver("2026-09-02", "fp-1"))
     assert not us._eval_ctx and not us._flow_cache
 
 
@@ -61,7 +70,8 @@ def test_other_version_drops_the_seed(monkeypatch):
     _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
     us.seed_begin({}, date(2026, 9, 2))
-    us._check_version(("2026-09-02", "fp-2"))
+    _seed()
+    us._check_version(_ver("2026-09-02", "fp-2"))
     assert not us._eval_ctx and not us._flow_cache
 
 
@@ -70,7 +80,8 @@ def test_new_day_drops_the_seed(monkeypatch):
     _seed()
     monkeypatch.setattr(us, "_curves_fp", lambda mc: "fp-1")
     us.seed_begin({}, date(2026, 9, 2))
-    us._check_version(("2026-09-03", "fp-1"))
+    _seed()
+    us._check_version(_ver("2026-09-03", "fp-1"))
     assert not us._eval_ctx
 
 

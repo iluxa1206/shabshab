@@ -427,9 +427,14 @@ function Dashboard() {
     wsRef.current = ctrl;
 
     // флаш буфера: все накопленные патчи одним setBonds
+    // preferred_horizon и spread_dur_yrs движок кладёт в патч специально (см.
+    // universe_stream._METRIC_FIELDS): спред уже посчитан К ОФЕРТЕ, а без них
+    // строка продолжала бы мерить срок до ПОГАШЕНИЯ — маркер оферты, сортировка
+    // по сроку и ось X аналитики врали до перезагрузки страницы.
     const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
       "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
-      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps"];
+      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
+      "preferred_horizon", "spread_dur_yrs"];
     // Цена набора тикета и её Y-IDX едут словарями по размерам ("ask:5000000"),
     // потому что размеры выбирает клиент. Раскладываем в те же плоские поля,
     // которыми отвечает /api/bonds, — дальше по строке они неразличимы.
@@ -586,9 +591,17 @@ function Dashboard() {
           if (m !== b) touched = true;
           return m;
         }
-        const same = (q.last == null || q.last === b.last_price_pct)
-          && (q.bid == null || q.bid === b.bid_price_pct)
-          && (q.ask == null || q.ask === b.ask_price_pct)
+        // ПО НАЛИЧИЮ КЛЮЧА, А НЕ ПО ЗНАЧЕНИЮ: last/bid/ask в ответе
+        // /api/bonds/quotes есть ВСЕГДА, и null там значит «заявку сняли» —
+        // это новость, а не «изменений нет». Проверка по значению глотала
+        // снятие стороны: строка уходила в ранний return, applySideQuote с её
+        // флагом hasKey не звалась вовсе, и в ячейке висела цена, которой на
+        // рынке уже нет (у неликвида — часами). eqPx нужен, чтобы null против
+        // отсутствующего поля не считался изменением и не гонял ререндер.
+        const eqPx = (a, c) => (a == null && c == null) || a === c;
+        const same = (!("last" in q) || eqPx(q.last, b.last_price_pct))
+          && (!("bid" in q) || eqPx(q.bid, b.bid_price_pct))
+          && (!("ask" in q) || eqPx(q.ask, b.ask_price_pct))
           && (q.wap == null || q.wap === b.wap_price_pct)
           && (q.vol == null || q.vol === b.val_today)
           && !quoteChanges(b, q, QUOTE_METRIC_FIELDS)

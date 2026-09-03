@@ -100,7 +100,11 @@ export function sideMetricPatch(row, q, patch = null) {
     const at = q[`yoi_${side}_px`];
     if (v == null || at == null) continue;
     const px = patch && pxField in patch ? patch[pxField] : row[pxField];
-    if (px == null || Math.abs(px - at) > 1e-9) continue;   // спред от другой цены
+    // ОКРУГЛЕНИЕ, А НЕ 1e-9: канонический ключ цены в проекте — 3 знака
+    // (universe_stream._px_key). Сверка «до последнего бита» отвергала готовый
+    // спред из-за незначащих знаков (замер 02.09: 2 строки из 588 держали
+    // приглушённое число при посчитанном сервере).
+    if (px == null || Math.round(px * 1000) !== Math.round(at * 1000)) continue;
     if (row[yField] === v && !(patch && yField in patch)) continue;
     (out ||= {})[yField] = v;
   }
