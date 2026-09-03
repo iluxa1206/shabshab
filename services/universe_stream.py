@@ -215,7 +215,12 @@ _flow_cache: Dict[str, dict] = {}
 # ничего не говорит о памяти. Превышение — сброс целиком: следующий такт
 # наполнит заново, это дешевле, чем сложная политика вытеснения на кэше, живущем
 # один торговый день.
-_FLOW_CACHE_MAX_ITEMS = int(os.getenv("UNIVERSE_FLOW_CACHE_ITEMS", "400000"))
+# 400 000 платежей — это ~118 МБ (замер tracemalloc: 294 байта на Cashflow), при
+# том что контейнер уже ловил OOM на 768 МиБ, а стационар витрины (1148 бумаг ×
+# ~38 платежей × 2 ключа ≈ 87к) до потолка не доходит вовсе. Держим 120к ≈ 35 МБ:
+# запас над стационаром есть, а сброс ЦЕЛИКОМ (весь рынок в холодный догрев)
+# перестаёт приходиться на момент, когда память и так на пределе.
+_FLOW_CACHE_MAX_ITEMS = int(os.getenv("UNIVERSE_FLOW_CACHE_ITEMS", "120000"))
 _yoi_grid: Dict[str, tuple] = {}   # isin → (epoch, [узлы], {узел: бп})
 _grid_builds = 0                   # построений сетки с прошлой сводки
 _grid_budget = 0                   # остаток построений сетки в текущем такте
@@ -1125,8 +1130,24 @@ def _flow_cache_items() -> int:
     return sum(len(v[0]) for d in _flow_cache.values() for v in d.values())
 
 
-def _trim_flow_cache() -> None:
-    """Сброс кэша потоков, если он перерос потолок (см. _FLOW_CACHE_MAX_ITEMS)."""
+_flow_trim_ts = 0.0
+_FLOW_TRIM_EVERY_SEC = 10.0
+
+
+def _trim_flow_cache(force: bool = False) -> None:
+    """Сброс кэша потоков, если он перерос потолок (см. _FLOW_CACHE_MAX_ITEMS).
+
+    Зовётся КАЖДЫМ тактом, а не из ветки минутной сводки: та выполняется только
+    когда за минуту была работа (`if (done_since_log or sides_since_log) and …`),
+    то есть ровно в тихие периоды — когда кэш наполняют карточка, лента и стакан,
+    а не движок, — подрезка не срабатывала вовсе. Свой троттлинг дешевле этой
+    зависимости: обход кэша стоит доли миллисекунды, но и его незачем платить
+    каждую секунду."""
+    global _flow_trim_ts
+    now = time.monotonic()
+    if not force and now - _flow_trim_ts < _FLOW_TRIM_EVERY_SEC:
+        return
+    _flow_trim_ts = now
     n = _flow_cache_items()
     if n > _FLOW_CACHE_MAX_ITEMS:
         logger.warning("кэш потоков разросся (%d платежей, %d бумаг) — сбрасываю",
@@ -1535,6 +1556,16 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict,
     hit = _yoi_cache.get(isin)
     if hit and hit[0] == key and time.time() - hit[1] <= _YOI_TTL_SEC:
         got = hit[2]
+        # СЕТКУ ВОССТАНАВЛИВАЕМ И НА ПОПАДАНИИ. Узлы построены выше
+        # (_grid_nodes_if_needed уже списал за них слот _grid_budget), а
+        # значения по ним лежат в том же ответе: ключ кэша включает набор цен,
+        # края и число узлов. Раньше ветка попадания уходила молча — бумага
+        # оставалась без сетки, live_sides по ней молчал, apply_vol_sizes гнал
+        # её по кругу, и слот такта пропадал впустую. Счётчик построений здесь
+        # не растёт: расчёта не было, узлы уже оплачены.
+        if nodes and (_yoi_grid.get(isin) or (None,))[0] != _yoi_cache_epoch:
+            _yoi_grid[isin] = (_yoi_cache_epoch, nodes,
+                               {n: got.get(round(n, 4)) for n in nodes})
     else:
         got = y_idx_many(_with_flows(ev, isin),
                          want + [n for n in nodes if n not in want])
@@ -2718,7 +2749,10 @@ async def metrics_worker() -> None:
                 full_ms = sides_ms = 0.0
                 _depth_msgs = 0
                 last_log = time.time()
-                _trim_flow_cache()      # раз в минуту — дешевле, чем на записи
+            # ПОДРЕЗКА КЭША ПОТОКОВ — В КАЖДОМ ТАКТЕ (свой троттлинг внутри).
+            # Раньше вызов стоял внутри ветки минутной сводки, а она требует
+            # работы за минуту: в тихие часы кэш рос без единой проверки.
+            _trim_flow_cache()
             # СТРАХОВКА ВОЛНЫ: размер тикета мог прийти не по сокету (ручка
             # /api/bonds) — там задачу никто не заводит.
             if _vol_wave_pending:

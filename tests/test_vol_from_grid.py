@@ -74,13 +74,18 @@ def test_live_price_without_spread_is_not_sent(monkeypatch):
     assert "vol_bid_px" not in got["X"] and "vol_bid_y" not in got["X"]
 
 
-def test_engine_price_without_spread_still_goes(monkeypatch):
-    """А цену ОТ ДВИЖКА отдаём как раньше: она уже была в строке, и придержать
-    её значило бы отнять у витрины то, что там и так показывалось."""
+def test_engine_price_without_spread_goes_with_explicit_null(monkeypatch):
+    """Цену ОТ ДВИЖКА отдаём (она уже была в строке — придержать значило бы
+    отнять у витрины показанное), но спред едет рядом ЯВНЫМ null.
+
+    Отсутствующее поле на клиенте прежнее число не стирает: присвоение идёт по
+    наличию ключа. Без явного null в ячейке вставала новая цена набора со
+    спредом от ПРЕДЫДУЩЕЙ цены — пара выглядела согласованной и врала."""
     got = _run(monkeypatch,
                {"X": {"bid": 99.9, "ask": 100.1, "vol_px": {"bid:5000000": 99.8}}},
                grid={})
-    assert got["X"]["vol_bid_px"] == 99.8 and "vol_bid_y" not in got["X"]
+    assert got["X"]["vol_bid_px"] == 99.8
+    assert "vol_bid_y" in got["X"] and got["X"]["vol_bid_y"] is None
 
 
 def test_set_not_collected_gives_nothing(monkeypatch):

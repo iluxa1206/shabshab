@@ -40,6 +40,13 @@ _FREQ_MS = 800         # серверный троттл Alor: не чаще р�
 # биржевой WAPRICE из снапшота; котировки не капятся (их шардирует пул).
 _LIVE_CAP = int(os.getenv("ALOR_LIVE_CAP", "60"))
 _CTX_TTL = 300         # пересборка reprice-контекста per isin, сек
+# БЭКОФФ НЕУДАЧНОЙ СБОРКИ. Отметка успеха (ctx_ts) при отказе не ставится, и без
+# отдельной отметки ПОПЫТКИ полная пересборка (load_reprice_ctx: gather из шести
+# источников + create_bond_ref_data + reconcile_face) запускалась на КАЖДОМ пуше
+# книги — раз в 800 мс на подписанную бумагу, в event loop и молча (лог был
+# debug, в проде выключен). Растёт от 30 с до _CTX_TTL: причина отказа обычно
+# сама не рассасывается (бумаги нет в реестре, MOEX её не отдаёт).
+_CTX_RETRY_MIN = 30.0
 _RECONCILE_SEC = 2.0   # период сверки подписок с фронтом
 # Сеанс дольше этого считаем состоявшимся — только он сбрасывает бэкофф.
 _UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
@@ -47,12 +54,14 @@ _UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
 
 class _Sub:
     __slots__ = ("guid", "kind", "levels_fn", "face", "ctx_ts", "ctx_fp",
-                 "memo", "_logged")
+                 "memo", "_logged", "ctx_try", "ctx_fails")
 
     def __init__(self, guid):
         self.guid = guid
         self.kind = None
         self.levels_fn = None
+        self.ctx_try = 0.0     # время ПОПЫТКИ сборки, ставится и на отказе
+        self.ctx_fails = 0     # подряд неудачных — по ним растёт бэкофф
         self.face = None
         self.ctx_ts = 0.0
         # ОТПЕЧАТОК КРИВЫХ И ВЕРСИЯ СПРАВОЧНИКА рядом с TTL: контекст лестницы
@@ -93,6 +102,18 @@ async def _ensure_ctx(sub: _Sub, isin: str) -> None:
     fp = _ctx_fp(isin)
     if sub.levels_fn is not None and now - sub.ctx_ts < _CTX_TTL and sub.ctx_fp == fp:
         return
+    # СМЕНА ВХОДА СНИМАЕТ БЭКОФФ: отказ был свойством ПРЕЖНИХ кривых и прежней
+    # версии Справочника (бумагу могли завести руками) — на новом входе она
+    # заслуживает попытки, а не паузы до конца таймера. Тот же приём, что
+    # _grid_cold.clear() в движке на смене версии.
+    if sub.ctx_fails and sub.ctx_fp is not None and sub.ctx_fp != fp:
+        sub.ctx_fails = 0
+    # ПОПЫТКА ОТМЕЧАЕТСЯ НЕЗАВИСИМО ОТ ИСХОДА (см. _CTX_RETRY_MIN): иначе отказ
+    # сборки означал полную пересборку на каждом пуше книги.
+    if sub.ctx_fails and now - sub.ctx_try < min(
+            _CTX_RETRY_MIN * (2 ** (sub.ctx_fails - 1)), _CTX_TTL):
+        return
+    sub.ctx_try = now
     from services.orderbook_svc import build_levels_fn
     if sub.kind is None:
         sub.kind = await _detect_kind(isin)
@@ -100,9 +121,18 @@ async def _ensure_ctx(sub: _Sub, isin: str) -> None:
         sub.levels_fn, _cd, sub.face = await build_levels_fn(isin, sub.kind)
         sub.ctx_ts = now
         sub.ctx_fp = fp
+        sub.ctx_fails = 0
         sub.memo = {}     # ctx пересобран → memo невалиден
     except Exception as e:
-        logger.debug(f"alor_ws ctx {isin}: {e}")
+        sub.ctx_fails += 1
+        sub.ctx_fp = fp        # вход, на котором отказало, — чтобы поймать его смену
+        # ПЕРВЫЙ ОТКАЗ — В ЛОГ, дальше молчим до смены исхода: причина отказа не
+        # была видна нигде (debug в проде выключен), а «стакан без метрик»
+        # снаружи неотличим от «метрик ещё нет».
+        if sub.ctx_fails == 1:
+            logger.warning("alor_ws ctx %s: %s — пересборка отложена (бэкофф)", isin, e)
+        else:
+            logger.debug(f"alor_ws ctx {isin}: {e} (отказ №{sub.ctx_fails})")
 
 
 def _px(p) -> float:

@@ -268,6 +268,50 @@ def test_ticket_vwap_spread_computed_server_side(monkeypatch):
     assert row["vol_px"]["bid:5000000"] == pytest.approx(99.0, abs=0.001)
 
 
+def test_grid_is_restored_on_yoi_cache_hit(monkeypatch):
+    """Попадание в _yoi_cache ВОССТАНАВЛИВАЕТ сетку, а не выбрасывает её.
+
+    Узлы строятся до развилки и списывают слот из бюджета такта, но раньше
+    _yoi_grid писался только в ветке промаха: при попадании работа пропадала,
+    бумага оставалась без сетки, live_sides по ней молчал, а apply_vol_sizes
+    гонял её по кругу до истечения TTL."""
+    import services.yidx_exact as ye
+    from services import depth as depth_svc, live_quotes as lq
+    from services.market_data import market_cache
+
+    isin = "RU000A100001"
+    us.register_vol_sizes([5_000_000])
+    monkeypatch.setattr(depth_svc, "get_depth", lambda: {
+        isin: {"a": [[100.0, 9000]], "b": [[99.0, 9000]]}})
+    monkeypatch.setattr(lq, "get", lambda i: {})
+    market_cache["universe_metrics"] = {isin: {"face_px": 1000.0, "accrued_settle": 0.0}}
+    calls = []
+
+    def _many(ctx, prices):
+        calls.append(len(prices))
+        return {round(float(p), 4): int(round(p * 10)) for p in prices}
+    monkeypatch.setattr(ye, "y_idx_many", _many)
+
+    us._eval_ctx[isin] = {"isin": isin}
+    us._grid_budget = 12          # такт выставляет потолок построений сам
+    try:
+        us._fill_side_metrics({}, isin, {"bid": 99.0, "ask": 100.0}, {})
+        assert len(calls) == 1 and isin in us._yoi_grid
+        nodes = us._yoi_grid[isin][1]
+        us._yoi_grid.pop(isin)          # сетку снесли (пришёл биржевой НКД)
+        us._fill_side_metrics({}, isin, {"bid": 99.0, "ask": 100.0}, {})
+        assert len(calls) == 1           # ответ взят из кэша, расчёта не было
+        assert isin in us._yoi_grid      # ...и сетка восстановлена из него
+        assert us._yoi_grid[isin][1] == nodes
+    finally:
+        us._eval_ctx.pop(isin, None)
+        us._yoi_grid.pop(isin, None)
+        us._yoi_cache.pop(isin, None)
+        us._vol_sizes.clear()
+        us._grid_budget = 0
+        market_cache.pop("universe_metrics", None)
+
+
 def test_patch_carries_explicit_null_when_number_is_gone():
     """Число, которого больше нет, уезжает ЯВНЫМ null — иначе фронт держит старое.
 
@@ -1015,17 +1059,42 @@ def test_flow_cache_has_a_ceiling():
     us._flow_cache["RU000A100002"] = {("cut", "2030-01-01"): ([0] * 100, [])}
     assert us._flow_cache_items() == 400
 
-    us._trim_flow_cache()                      # потолок по умолчанию высоко
+    us._trim_flow_cache(force=True)            # потолок по умолчанию высоко
     assert len(us._flow_cache) == 2
 
     import pytest as _pytest
     mp = _pytest.MonkeyPatch()
     mp.setattr(us, "_FLOW_CACHE_MAX_ITEMS", 399)
     try:
-        us._trim_flow_cache()
+        us._trim_flow_cache(force=True)
         assert us._flow_cache == {}
     finally:
         mp.undo()
+
+
+def test_flow_cache_trim_is_throttled_not_skipped():
+    """Подрезка зовётся КАЖДЫМ тактом и throttl-ится сама.
+
+    Раньше вызов стоял внутри ветки минутной сводки, а она выполняется только
+    когда за минуту была работа: в тихие часы — когда кэш наполняют карточка,
+    лента и стакан, а не движок, — проверки не было вовсе, и потолок ≈118 МБ
+    сторожил пустоту."""
+    import pytest as _pytest
+    us._flow_cache.clear()
+    us._flow_cache["RU000A100001"] = {("main", 200): ([0] * 300, [])}
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(us, "_FLOW_CACHE_MAX_ITEMS", 1)
+    try:
+        us._flow_trim_ts = 0.0
+        us._trim_flow_cache()              # первый вызов проходит
+        assert us._flow_cache == {}
+        us._flow_cache["RU000A100001"] = {("main", 200): ([0] * 300, [])}
+        us._trim_flow_cache()              # второй подряд — троттлинг
+        assert len(us._flow_cache) == 1
+    finally:
+        mp.undo()
+        us._flow_cache.clear()
+        us._flow_trim_ts = 0.0
 
 
 def test_level_memo_has_a_ceiling(monkeypatch):

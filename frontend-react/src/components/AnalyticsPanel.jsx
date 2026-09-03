@@ -92,6 +92,10 @@ const SC_PAD = { l: 46, r: 14, t: 12, b: 30 };
 // подпись «1,0г» занимает ~30 px вместо ~22, а ширина графика утраивается —
 // формула ширина/80 давала 20+ тиков, и они наезжали друг на друга.
 const tickGap = (full) => (full ? 110 : 80);
+// Радиус точки в полный экран: viewBox 1:1 к пикселям, поэтому кружок в 3 px
+// на графике втрое большей площади читается как пыль. Множитель тот же порядок,
+// что у полей и кегля (padFull/tickGap) — точка растёт вместе с текстом.
+const dotR = (r, full) => (full ? r * 1.7 : r);
 const padFull = (pad, full) => (full ? {
   ...pad,
   l: Math.round(pad.l * 1.35),
@@ -139,7 +143,7 @@ function ScatterYidx({ rows, focus, onPick, height, full }) {
             {pts.map((p) => {
               const on = hit(p);
               return (
-                <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={on ? 4.4 : 3.2} fill={BCOLOR[p.r]}
+                <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={dotR(on ? 4.4 : 3.2, full)} fill={BCOLOR[p.r]}
                   fillOpacity={on == null ? 0.72 : on ? 0.95 : 0.1}
                   stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0}
                   className="an-pt" onClick={() => onPick && p.iss && onPick(p.iss)}
@@ -188,7 +192,7 @@ function ScatterIssuer({ rows, focus, onPick, height, full }) {
             {pts.map((p) => {
               const on = hit(p);
               return (
-                <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n)) + (on ? 1 : 0)}
+                <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={dotR(3 + Math.min(6, Math.sqrt(p.n)) + (on ? 1 : 0), full)}
                   fill={BCOLOR[p.r]} fillOpacity={on == null ? 0.55 : on ? 0.85 : 0.08}
                   stroke={on ? "var(--fg)" : BCOLOR[p.r]} strokeOpacity={on == null ? 0.9 : on ? 1 : 0.12}
                   className="an-pt" onClick={() => onPick && onPick(p.name)}
@@ -241,10 +245,10 @@ function BoxRows({ entries, note, label, kind, focus, onPick, rowH: rowHIn, full
                   <text x={PAD.l - 6} y={y + 3} className="an-axis" textAnchor="end"
                     fontWeight={on ? 700 : undefined} fill={on ? "var(--fg)" : undefined}>{e.label}</text>
                   {arr.length > 1 && (
-                    <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={7}
+                    <line x1={sx(q1)} y1={y} x2={sx(q3)} y2={y} stroke={e.color} strokeWidth={dotR(7, full)}
                       strokeOpacity={0.35} strokeLinecap="round" />
                   )}
-                  <circle cx={sx(md)} cy={y} r={on ? 5 : 4} fill={e.color}
+                  <circle cx={sx(md)} cy={y} r={dotR(on ? 5 : 4, full)} fill={e.color}
                     stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0} />
                   <text x={Math.min(sx(q3) + 6, W - PAD.r + 4)} y={y + 3} className="an-axis">
                     {Math.round(md)}<tspan className="an-mut"> ({arr.length})</tspan></text>
@@ -472,7 +476,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
                       strokeWidth={ser.key === MARKET ? 1 : on ? 2.4 : 1.6}
                       strokeDasharray={ser.key === MARKET ? "4 3" : undefined} />
                   </>
-                : pts.map((p) => <circle key={p.x} cx={s.sx(p.x)} cy={s.sy(p.y)} r={2.5} fill={c} />)}
+                : pts.map((p) => <circle key={p.x} cx={s.sx(p.x)} cy={s.sy(p.y)} r={dotR(2.5, full)} fill={c} />)}
             </g>
           );
         })}
