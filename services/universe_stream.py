@@ -332,6 +332,24 @@ def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
         _sides_dirty[isin] = prio
 
 
+def _take_dirty_batch() -> list:
+    """Снять пачку из очереди ПОЛНОГО пересчёта: видимые вперёд.
+
+    У очереди сторон приоритет есть с самого начала (_take_sides_batch), у
+    догрева контекстов и сеток — тоже («видимые вперёд»), а у основной очереди —
+    той, что несёт первичную метрику Y-IDX по цене сделки, — не было ни FIFO, ни
+    приоритета: _dirty это set, и порядок в нём задавали хеши строк. При
+    массовой инвалидации (импорт xlsx в Справочнике ставит весь универс разом —
+    ~2 минуты разбора при потолке 60 за такт) строка, которую человек смотрит и
+    которая только что торговалась, могла оказаться в хвосте и ждать всё это
+    время, пока считается неликвид, которого никто не открывал.
+
+    ISIN вторым ключом — ради повторяемости порядка внутри группы."""
+    take = sorted(_dirty, key=lambda i: (not is_visible(i), i))[:_MAX_BATCH]
+    _dirty.difference_update(take)
+    return take
+
+
 def _take_sides_batch() -> tuple:
     """Снять пачку из очереди сторон: (список бумаг, их приоритеты).
 
@@ -462,10 +480,12 @@ def apply_vol_sizes(isins: Optional[list] = None) -> Dict[str, dict]:
         # СТРОКУ ОБНОВЛЯЕМ И ПРИ ПУСТОМ НАБОРЕ: иначе в таблице осталось бы
         # число от ПРОШЛОГО размера тикета — хуже прочерка, потому что выглядит
         # как ответ на текущий фильтр.
-        r = dict(row)
-        r["vol_px"] = vol_px or None
-        r["yoi_vol"] = yoi or None
-        out[isin] = r
+        #
+        # ТОЛЬКО СВОИ ПОЛЯ, а не копия всей строки: копия делается здесь, а
+        # пишется после await, и всё, что за это время посчитал движок
+        # (стороны, Y-IDX по новой цене сделки), затиралось бы числами,
+        # прочитанными до его работы. _store_rows сливает патч по полям.
+        out[isin] = {"vol_px": vol_px or None, "yoi_vol": yoi or None}
     return out
 
 
@@ -1673,6 +1693,13 @@ def _sides_from(q: Optional[dict], snap: dict) -> dict:
                       for side in ("bid", "ask")})
 
 
+# Поля, которые считает ДЕШЁВАЯ ветка (стороны стакана, средневзвес, цены
+# наборов по объёму) — ровно их она и возвращает: всё остальное в её копии
+# строки принадлежит полному пересчёту и записью затёрло бы его работу.
+_SIDE_ROW_FIELDS = ("bid", "ask", "yoi_bid", "yoi_ask",
+                    "wap", "yoi_wap", "vol_px", "yoi_vol")
+
+
 def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
                    pending: Optional[list] = None) -> Dict[str, dict]:
     """Дешёвый пересчёт ТОЛЬКО сторон стакана для бумаг из очереди _sides_dirty.
@@ -1707,7 +1734,10 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
         for side, v in sides.items():
             row[side] = v
         _fill_side_metrics(row, isin, sides, snap, book)
-        out[isin] = row
+        # ТОЛЬКО СВОИ ПОЛЯ (см. apply_vol_sizes): дешёвая ветка считает стороны,
+        # средневзвес и цены наборов — остальное в копии осталось от момента
+        # чтения витрины, до await'а, и записью затирало бы работу движка.
+        out[isin] = {k: row[k] for k in _SIDE_ROW_FIELDS if k in row}
     return out
 
 
@@ -2487,9 +2517,16 @@ def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
         # (merge_universe_metrics) отличает свою устаревшую строку от свежей
         # строки движка и не откатывает её к цене начала прохода.
         _now = time.time()
-        for _r in fl.values():
+        # СЛИЯНИЕ ПО ПОЛЯМ, А НЕ ЗАМЕНА СТРОКИ. Писателей у строки несколько
+        # (полный пересчёт, очередь сторон, волна размера тикета), и каждый
+        # работает по схеме «скопировать строку в heavy-потоке → вернуться в
+        # петлю → записать». Копия и запись разделены await'ом, поэтому две
+        # последовательности переплетаются, и вернувшаяся позже клала строку,
+        # прочитанную РАНЬШЕ: свежие спреды сторон исчезали, а бумага после
+        # этого ни в одну очередь не вставала — событий на неё больше нет.
+        for _i, _r in fl.items():
             _r["_calc_ts"] = _now
-        um.update(fl)
+            um[_i] = {**um.get(_i, {}), **_r}
         market_cache["universe_metrics"] = um
     if fx:
         fm = market_cache.get("fixed_metrics") or {}
@@ -2771,8 +2808,7 @@ async def metrics_worker() -> None:
             _grid_budget = _GRID_BUILD_PER_TICK   # потолок построений на такт
 
             # ПОЛНЫЙ пересчёт — сменившим цену сделки (новый уровень цены).
-            take = list(_dirty)[:_MAX_BATCH]
-            _dirty.difference_update(take)
+            take = _take_dirty_batch()
             if take:
                 # расписания батча — из day-кэша (промах = одна ходка на бумагу в день).
                 # У ОФЗ bondization по ISIN (RU000…) НЕ резолвится — только по
