@@ -84,9 +84,17 @@ CREATE TABLE IF NOT EXISTS discovery_seen(
 );
 CREATE TABLE IF NOT EXISTS enrich_seen(
   isin          TEXT PRIMARY KEY,
-  result        TEXT,            -- not_found | nodata | exotic | filled
+  result        TEXT,            -- not_found | nodata | exotic | filled | fixed
   attempted_at  TEXT,
   parser_ver    INTEGER          -- версия парсера corpbonds на момент попытки
+);
+-- Служебные отметки конвейера, которым нужна ДОЛГОВЕЧНОСТЬ (переживают рестарт).
+-- Первый жилец — дата последнего полного синка: раньше она жила в переменной
+-- поллера, и каждый подъём процесса гнал полный синк заново (на проде 13-35 раз
+-- за торговый день против одного запланированного — деплои).
+CREATE TABLE IF NOT EXISTS meta(
+  k  TEXT PRIMARY KEY,
+  v  TEXT
 );
 """
 
@@ -163,11 +171,35 @@ _MIGRATIONS = [
     # у обычного RUONIA-флоатера; отличие только в построении потока
     # (core.valuation, ветка `linker`; детект — services.linker).
     "ALTER TABLE instruments ADD COLUMN face_index TEXT",
+    # МАРЖА ПО КАРТОЧКЕ БИРЖИ (COUPON_BENCHMARK_SPREAD) — как есть, отдельным
+    # столбцом рядом с рабочей margin_bps. Нужна для СВЕРКИ провенансов: формула
+    # с corpbonds/Cbonds и карточка MOEX иногда расходятся (ГазКап3P29 —
+    # corpbonds «ΣКС + 1.3%» против биржевых +150 bps), и раньше конвейер молча
+    # оставлял то значение, что пришло первым. Расчёт по этой колонке НЕ идёт:
+    # она только поднимает бумагу в ревью (list_bench_mismatch).
+    "ALTER TABLE instruments ADD COLUMN bench_margin_bps INTEGER",
+    "ALTER TABLE instruments ADD COLUMN bench_base TEXT",
+    "ALTER TABLE instruments ADD COLUMN bench_checked_at TEXT",
 ]
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def get_meta(key: str) -> Optional[str]:
+    """Долговечная служебная отметка конвейера (таблица meta) | None."""
+    _ensure()
+    with _conn() as c:
+        r = c.execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
+    return r["v"] if r else None
+
+
+def set_meta(key: str, value: str) -> None:
+    """Записать долговечную отметку конвейера (таблица meta)."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO meta(k, v) VALUES(?,?)", (key, value))
 
 
 def _conn() -> sqlite3.Connection:
@@ -822,24 +854,81 @@ def set_exotic(isin: str, note: str = "") -> None:
     invalidate_params_cache(isin)
 
 
-def reclassify_fixed(isin: str) -> None:
+def reclassify_fixed(isin: str) -> bool:
     """Бумага оказалась фикс-купонной (0 будущих незафикс. купонов) → base='FIXED':
     уходит из флоатер-универса (universe_rows фильтрует по KEYRATE/RUONIA), не
-    прайсится как флоатер. reviewed=0 — на подтверждение админом.
+    прайсится как флоатер. reviewed=0 — на подтверждение админом. → применено?
 
     ОФЗ-ПК исключены: у старой серии купон известен на период вперёд и по всему
     опубликованному хвосту графика равен последнему значению, из-за чего эвристика
     «ставка не менялась» на них ложно срабатывает. Тип бумаги здесь знает не
-    эвристика, а название серии — normalize_ofz_pk ставит им RUONIA правилом."""
+    эвристика, а название серии — normalize_ofz_pk ставит им RUONIA правилом.
+
+    ДВА ВЕТО, гасящих качели вердикта (Башнефть БО-10, Черкизово 1Р8, РУССОЙЛ,
+    ТрансФин 1Р02, Ситиматик ×2 — все шесть висели FIXED при внешнем «флоатер»):
+      • sl_type='floater' — smart-lab о нашей математике не знает, и «ставка не
+        менялась» против его вердикта проигрывает. Раньше smartlab_audit снимал
+        FIXED через clear_base, а следующий инфер ставил его назад — цикл с
+        шагом в месяц (40 сверок в день на 1200 бумаг);
+      • в тексте формулы есть ПЛАВАЮЩИЙ ТРАНШ дальше по номерам купонов
+        («1-16 купоны — 9.5%, 17-20 купоны: R + 2,5%»): реализованные купоны у
+        такой бумаги действительно все одинаковы, но она уже плавает.
+    Бумага под вето остаётся с прежней базой и с reviewed=0 — разбирает админ."""
     _ensure()
     with _lock, _conn() as c:
-        row = c.execute("SELECT short_name FROM instruments WHERE isin=?", (isin,)).fetchone()
+        row = c.execute("SELECT short_name, sl_type, coupon_text FROM instruments "
+                        "WHERE isin=?", (isin,)).fetchone()
         if row and _is_ofz_pk_name(row["short_name"]):
-            return
-        c.execute("UPDATE instruments SET base='FIXED', reviewed=0, updated_at=? "
-                  "WHERE isin=? AND manual_locked=0", (_now(), isin))
+            return False
+        if row and row["sl_type"] == "floater":
+            _log.info("FIXED для %s отклонён: smart-lab видит флоатер", isin)
+            return False
+        if row and _mentions_floating_tranche(row["coupon_text"]):
+            _log.info("FIXED для %s отклонён: в формуле плавающий транш купонов", isin)
+            return False
+        cur = c.execute("UPDATE instruments SET base='FIXED', reviewed=0, updated_at=? "
+                        "WHERE isin=? AND manual_locked=0", (_now(), isin))
+        applied = cur.rowcount > 0
     # бумага уходит из флоатер-универса — витрина и стрим должны узнать сразу
-    invalidate_params_cache(isin)
+    if applied:
+        invalidate_params_cache(isin)
+    return applied
+
+
+def _mentions_floating_tranche(text: Optional[str]) -> bool:
+    """В тексте формулы есть диапазон купонов с плавающей ставкой? Ленивый мост к
+    coupon_calib (парсинг текстов живёт там), сбой парсера вето не выносит."""
+    if not text:
+        return False
+    try:
+        from services.coupon_calib import mentions_floating_tranche
+        return mentions_floating_tranche(text)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def clear_false_fixed() -> list[str]:
+    """Снять base='FIXED' там, где внешняя сверка называет бумагу флоатером
+    (sl_type='floater'). Разовая уборка вердиктов, поставленных до вето в
+    reclassify_fixed: бумага возвращается в base=NULL и заново проходит
+    конвейер (corpbonds → калибратор), маржа остаётся — она из проспекта.
+    → список ISIN, которым база снята."""
+    _ensure()
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT isin FROM instruments WHERE active=1 AND base='FIXED' "
+                         "AND sl_type='floater' AND manual_locked=0").fetchall()
+        isins = [r["isin"] for r in rows]
+        if isins:
+            ph = ",".join("?" * len(isins))
+            c.execute(f"UPDATE instruments SET base=NULL, reviewed=0, margin_check_pp=NULL, "
+                      f"updated_at=? WHERE isin IN ({ph})", [_now(), *isins])
+            # снять негативный кэш обогащения: бумага только что признана
+            # неопределённой, и ждать TTL прошлой попытки («filled» — 7 дней)
+            # незачем — источники должны переспросить её следующим прогоном
+            c.execute(f"DELETE FROM enrich_seen WHERE isin IN ({ph})", isins)
+    for i in isins:
+        invalidate_params_cache(i)
+    return isins
 
 
 def set_has_call(isin: str, value: Optional[bool]) -> None:
@@ -967,6 +1056,46 @@ def list_suspect() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def set_bench_margin(isin: str, base: Optional[str], margin_bps: Optional[int]) -> None:
+    """Запомнить формулу купона ПО КАРТОЧКЕ БИРЖИ (COUPON_BENCHMARK[_SPREAD]).
+    Отдельные колонки, расчёт по ним не идёт: нужны только для сверки с рабочими
+    base/margin_bps (list_bench_mismatch). Отметку ставим всегда, когда биржа
+    ответила, — иначе «сверяли и совпало» неотличимо от «не сверяли»."""
+    _ensure()
+    with _lock, _conn() as c:
+        c.execute("UPDATE instruments SET bench_base=?, bench_margin_bps=?, "
+                  "bench_checked_at=? WHERE isin=?",
+                  (base, margin_bps, _now(), isin))
+
+
+# Порог расхождения «наша маржа vs карточка биржи», с которого бумага идёт в
+# ревью. 10 bps — заведомо больше округления (биржа шлёт проценты с двумя
+# знаками), но меньше типичной ошибки провенанса (ГазКап3P29: 130 против 150).
+_BENCH_MISMATCH_BPS = 10
+
+
+def list_bench_mismatch(min_bps: int = _BENCH_MISMATCH_BPS) -> list[dict]:
+    """Активные бумаги, где рабочая маржа/база расходится с карточкой биржи.
+    База сравнивается только при совпадении типа индекса: карточка знает
+    RREFKEYR/RUONIA, а EXOTIC/FIXED — наш вердикт, и «расхождением» он не
+    является. Расчёт не меняется — это очередь ручной проверки."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, base, margin_bps, bench_base, bench_margin_bps, "
+            "source, issue_date FROM instruments "
+            "WHERE active=1 AND bench_margin_bps IS NOT NULL AND margin_bps IS NOT NULL "
+            "AND base IN ('KEYRATE','RUONIA') AND bench_base IS NOT NULL").fetchall()
+    out = []
+    for r in rows:
+        if r["bench_base"] != r["base"]:
+            out.append({**dict(r), "diff_bps": None})
+        elif abs(int(r["margin_bps"]) - int(r["bench_margin_bps"])) >= min_bps:
+            out.append({**dict(r), "diff_bps": int(r["margin_bps"]) - int(r["bench_margin_bps"])})
+    out.sort(key=lambda x: (x["diff_bps"] is not None, -abs(x["diff_bps"] or 0)))
+    return out
+
+
 def list_incomplete() -> list[dict]:
     """Активные флоатеры без полного набора расчётных параметров (не прайсуемы):
     нужен ручной ввод базы/маржи/погашения (B3-очередь)."""
@@ -1001,6 +1130,24 @@ def isins_missing_issue_date() -> list[str]:
     with _conn() as c:
         rows = c.execute("SELECT isin FROM instruments WHERE active=1 AND "
                          "issue_date IS NULL ORDER BY first_seen DESC").fetchall()
+    return [r["isin"] for r in rows]
+
+
+def isins_bench_unchecked(limit: int) -> list[str]:
+    """Прайсуемые флоатеры, у которых карточка биржи ещё не спрашивалась (или
+    спрашивалась давнее всех) — очередь СВЕРКИ провенансов маржи.
+
+    Отдельная квота нужна потому, что справочник MOEX дёргается только для
+    бумаг с пробелами (нет maturity/issue/базы), а расхождение «наша маржа vs
+    биржевой спред» бывает и у полностью заполненной строки: ровно так висел
+    ГазКап3P29 (у нас КС+130 из формулы corpbonds, у биржи +150)."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin FROM instruments WHERE active=1 AND margin_bps IS NOT NULL "
+            "AND base IN ('KEYRATE','RUONIA') "
+            "ORDER BY (bench_checked_at IS NOT NULL), bench_checked_at LIMIT ?",
+            (limit,)).fetchall()
     return [r["isin"] for r in rows]
 
 
@@ -1197,6 +1344,20 @@ def list_sl_stale(limit: int = 40) -> list[str]:
             "SELECT isin FROM instruments WHERE active=1 "
             "ORDER BY (sl_checked_at IS NOT NULL), sl_checked_at LIMIT ?", (limit,)).fetchall()
     return [r["isin"] for r in rows]
+
+
+def list_blind_sl_fixed() -> list[dict]:
+    """Бумаги без базы, которые smart-lab УЖЕ назвал фиксом (ответ лежит в
+    sl_type с прошлых сверок). Готовый материал для переклассификации БЕЗ СЕТИ:
+    ротация сверки — 40 бумаг в день на весь универс, и ждать месяц, пока
+    очередь дойдёт до каждой, незачем."""
+    _ensure()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT isin, short_name, issue_date, manual_locked FROM instruments "
+            "WHERE active=1 AND base IS NULL AND sl_type='fixed' AND manual_locked=0"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_sl_mismatch() -> list[dict]:
@@ -1532,7 +1693,11 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
 # not_found/nodata — corpbonds доливает свежие выпуски со временем, перечекиваем;
 # exotic — вердикт парсера детерминирован, перечек редкий (до версионирования
 # парсера); filled — бумага уходит из очередей сама, короткий guard от зацикла.
-_ENRICH_TTL_DAYS = {"not_found": 14, "nodata": 14, "exotic": 30, "filled": 7}
+# fixed — «Тип купона: Фикс» прямо со страницы: вердикт про САМУ БУМАГУ, а не
+# про осведомлённость источника, поэтому перечек редкий (сменить тип купона
+# посреди жизни выпуска может только реструктуризация).
+_ENRICH_TTL_DAYS = {"not_found": 14, "nodata": 14, "exotic": 30, "filled": 7,
+                    "fixed": 90}
 
 # СВЕЖИЙ ВЫПУСК — отдельный режим перепопытки. corpbonds доливает новые бумаги
 # с задержкой в недели, а TTL 14 дней всё это время держал флоатер НЕВИДИМЫМ:
@@ -1630,14 +1795,21 @@ def non_fixed_isins() -> set[str]:
     просто непрайсуемые; плюс discovery_seen.is_floater=1 (подтверждён
     bondization'ом). Фильтр только по KEYRATE/RUONIA пропускал их в ФИКСЫ, где
     у флоатера зафиксированный текущий купон cp>0 маскирует его под фикс и
-    поток режется на первом value=None → ложный «YTM к оферте»."""
+    поток режется на первом value=None → ложный «YTM к оферте».
+
+    ВЕРДИКТ РЕЕСТРА СИЛЬНЕЕ ОТМЕТКИ DISCOVERY. Отметка discovery_seen=1 значит
+    лишь «есть будущий купон без суммы» — так выглядит и фикс с офертой, и фикс
+    с неопубликованным хвостом графика. Пока эта отметка была безусловной,
+    бумага с подтверждённым base='FIXED' (тип купона со страницы источника, а не
+    наша эвристика) продолжала исключаться из ФИКСОВ и не показывалась НИГДЕ."""
     _ensure()
     with _conn() as c:
         a = {r[0] for r in c.execute(
             "SELECT isin FROM instruments WHERE active=1 "
             "AND (base IS NULL OR base != 'FIXED')")}
         b = {r[0] for r in c.execute(
-            "SELECT isin FROM discovery_seen WHERE is_floater=1")}
+            "SELECT isin FROM discovery_seen WHERE is_floater=1 AND isin NOT IN "
+            "(SELECT isin FROM instruments WHERE base='FIXED')")}
     return a | b
 
 

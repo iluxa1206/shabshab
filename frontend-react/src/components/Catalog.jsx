@@ -87,6 +87,7 @@ export default function Catalog({ user }) {
   const [specBadOnly, setSpecBadOnly] = useState(false);
   // тип купона разошёлся со smart-lab: наш вывод о базе проверен ЧУЖИМИ данными
   const [slBadOnly, setSlBadOnly] = useState(false);
+  const [benchBadOnly, setBenchBadOnly] = useState(false);
   const [floatersOnly, setFloatersOnly] = useState(true);
   // свежие выпуски (issue_date/first_seen моложе NEW_ISSUE_DAYS): их параметры
   // источники доливают неделями — строки подсвечены, фильтр даёт очередь проверки
@@ -117,6 +118,11 @@ export default function Catalog({ user }) {
   // ISIN свежих выпусков без подтверждения (сервер считает по NEW_ISSUE_DAYS)
   const newSet = useMemo(() => new Set(q.data?.new_issues || []), [q.data]);
 
+  // ISIN, где наша маржа/база спорит с карточкой биржи (объявлено ДО rows:
+  // useMemo ниже читает benchSet в том же рендере)
+  const benchBad = q.data?.bench_mismatch || [];
+  const benchSet = useMemo(() => new Set(benchBad.map((r) => r.isin)), [benchBad]);
+
   const rows = useMemo(() => {
     let items = q.data?.items || [];
     if (missOnly) items = items.filter((r) => !r.priceable);
@@ -124,6 +130,8 @@ export default function Catalog({ user }) {
     // спека расходится с фактом выплат: неверный лаг/окно/режим
     if (specBadOnly) items = items.filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD");
     if (slBadOnly) items = items.filter((r) => r.sl_mismatch);
+    // маржа/база спорит с карточкой биржи: расчёт идёт по нашей, биржевая рядом
+    if (benchBadOnly) items = items.filter((r) => benchSet.has(r.isin));
     // Правила ровно те же, что в мониторе (см. search.js): токены, допуск
     // опечатки, гомоглифы, чужая раскладка. ISIN отдельным haystack — иначе
     // одиночная цифра запроса совпадёт с цифрами любого ISIN.
@@ -132,7 +140,7 @@ export default function Catalog({ user }) {
     }));
     if (specBadOnly) items = [...items].sort((a, b) => (b.spec_err_pp || 0) - (a.spec_err_pp || 0));
     return items;
-  }, [q.data, missOnly, specBadOnly, slBadOnly, newOnly, newSet, query]);
+  }, [q.data, missOnly, specBadOnly, slBadOnly, benchBadOnly, benchSet, newOnly, newSet, query]);
 
   const specBadCount = useMemo(
     () => (q.data?.items || []).filter((r) => r.spec_verdict === "WARN" || r.spec_verdict === "BAD").length,
@@ -195,6 +203,13 @@ export default function Catalog({ user }) {
               {slBadCount} тип купона спорный
             </span>
           )}
+          {benchBad.length > 0 && (
+            <span className="admin-badge admin-warn"
+              title={"Маржа/база расходится с карточкой биржи (расчёт идёт по нашей):\n"
+                + benchBad.map((r) => `${r.short_name} · наш ${r.base}+${r.margin_bps} · биржа ${r.bench_base}+${r.bench_margin_bps}`).join("\n")}>
+              {benchBad.length} маржа спорит с MOEX
+            </span>
+          )}
           {q.data?.offers_no_spec?.length > 0 && (
             <span className="admin-badge admin-warn"
               title={"Будущая оферта, поведение купона не задано (var_type) — считаются к погашению:\n"
@@ -221,6 +236,11 @@ export default function Catalog({ user }) {
             onClick={() => setSlBadOnly(!slBadOnly)}
             title="Тип купона расходится с внешним источником (smart-lab): наш вывод о базе проверен не нашими данными">
             тип купона спорный{slBadCount ? ` (${slBadCount})` : ""}
+          </button>
+          <button className={"chip-btn" + (benchBadOnly ? " on" : "")}
+            onClick={() => setBenchBadOnly(!benchBadOnly)}
+            title="Наша маржа/база расходится с карточкой биржи (COUPON_BENCHMARK): спорят два провенанса — формула из проспекта и биржевой спред. Расчёт идёт по нашей">
+            маржа спорит с MOEX{benchBad.length ? ` (${benchBad.length})` : ""}
           </button>
           <button className={"chip-btn" + (newOnly ? " on" : "")}
             onClick={() => {

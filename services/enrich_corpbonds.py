@@ -39,7 +39,11 @@ _CB_URL = "https://corpbonds.ru/bond/{isin}"
 # флаг has_call рисовал маркер «c», но горизонт прайсинга оставался погашением:
 # _preferred_horizon нечего было сравнивать с ценой (СибурХ1Р04 — колл каждый
 # месяц с 14.12.2026, а спред считался к 2032 году).
-PARSER_VERSION = 5
+# v6 — «Тип купона: Фикс» переклассифицирует бумагу в base='FIXED'. Раньше такая
+# страница давала вердикт nodata, и 310 фиксов, принятых discovery за флоатеры,
+# висели вне обеих витрин. Бамп версии нужен, чтобы прошлые nodata перечекнулись
+# сразу (enrich_pending считает вердикт старой версии протухшим).
+PARSER_VERSION = 6
 
 
 def _parse_formula(f: str) -> dict:
@@ -167,6 +171,12 @@ def parse_corpbonds_html(html: str) -> dict:
     out: dict = {"source": "corpbonds"}
     ctype = kv.get("Тип купона", "")
     out["is_floater"] = "Флоатер" in ctype or "флоатер" in ctype
+    # СЫРОЙ тип купона, трёхзначно: None — строки на странице не было («не
+    # знаем»), иначе текст как есть («Фикс», «Флоатер», «Плавающий»...).
+    # Отсутствие формулы фиксом НЕ является: карточка без формулы бывает и у
+    # флоатера, которого сайт ещё не разобрал. Отличать эти два случая
+    # обязательно — на «Фикс» вызывающий переклассифицирует бумагу.
+    out["coupon_type"] = (ctype or "").strip() or None
     out.update(_parse_formula(kv.get("Формула купона", "")))
     out["maturity_date"] = _to_iso(kv.get("Дата погашения", ""))
     out["face_value"] = _num(kv.get("Номинал", ""))
@@ -193,13 +203,16 @@ def parse_corpbonds_html(html: str) -> dict:
 
 async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -> dict:
     """Обогащение реестра из corpbonds по списку ISIN (обычно suspect + incomplete).
-    Экзотику (инверсные/CPI) → base='EXOTIC'; нормальные флоатеры → base/margin/mode.
+    Экзотику (инверсные/CPI) → base='EXOTIC'; нормальные флоатеры → base/margin/mode;
+    страницы с «Тип купона: Фикс» и без формулы → base='FIXED' (бумага уезжает во
+    вкладку ФИКСОВ, а не висит с base=NULL вне обеих витрин).
     apply=False — сухой прогон (только собрать), без записи. Rate-limit delay сек."""
     import asyncio
     import httpx
     from services import instruments_registry as reg
 
-    stats = {"fetched": 0, "not_found": 0, "exotic": 0, "filled": 0, "confirmed": 0}
+    stats = {"fetched": 0, "not_found": 0, "exotic": 0, "filled": 0, "confirmed": 0,
+             "fixed": 0}
     details = []
     async with httpx.AsyncClient(headers=_UA, timeout=15) as client:
         for isin in isins:
@@ -239,6 +252,31 @@ async def enrich_registry(isins: list, apply: bool = True, delay: float = 0.7) -
                 stats["exotic"] += 1
                 details.append((isin, "EXOTIC", r.get("formula_text")))
                 continue
+            # «Тип купона: Фикс» — ПОЛОЖИТЕЛЬНОЕ знание источника, и его нужно
+            # применять, а не хоронить в вердикт nodata. Discovery заводит
+            # флоатером всё, у чего есть будущий купон без суммы, но так ведёт
+            # себя и фикс с офертой («ставку определит эмитент») и фикс с
+            # неопубликованным хвостом графика: на проде 03.09.2026 таких было
+            # 310 из 1176 активных — бумага с base=NULL не показывается НИ во
+            # флоатерах (нужны KEYRATE/RUONIA), НИ в ФИКСАХ (non_fixed_isins
+            # исключает NULL), и каждые 14 дней жжёт квоту перечеком.
+            # Условие узкое: тип купона на странице БЫЛ, это не флоатер, формулы
+            # нет и своей базы у нас тоже нет (чужой вердикт не перебивает
+            # разобранную формулу из проспекта).
+            ctype = r.get("coupon_type")
+            if (ctype and not r.get("is_floater") and not has_formula
+                    and (reg.get(isin) or {}).get("base") is None):
+                if apply:
+                    ok = reg.reclassify_fixed(isin)
+                    reg.mark_enrich_attempt(isin, "fixed" if ok else "nodata",
+                                            parser_ver=PARSER_VERSION)
+                    if not ok:
+                        # вето reclassify_fixed (ОФЗ-ПК / smart-lab видит флоатер /
+                        # плавающий транш в формуле) — бумага остаётся в ревью
+                        continue
+                stats["fixed"] = stats.get("fixed", 0) + 1
+                details.append((isin, "FIXED", ctype))
+                continue
             if apply:
                 # страница есть, но база/маржа не извлеклись → nodata (перечек по TTL)
                 reg.mark_enrich_attempt(
@@ -275,7 +313,8 @@ async def fetch_corpbonds(isin: str, client=None) -> Optional[dict]:
     считает бумагу флоатером: наши KEYRATE-выпуски с «Тип купона: Фикс» (РОССИУМ)
     отбраковывались целиком, вместе с has_call/амортизацией/рейтингом, которые на
     странице есть. Теперь такие страницы парсятся; формулы в них нет, поэтому
-    base/margin не извлекутся — и вызывающий просто пометит исход 'nodata'."""
+    base/margin не извлекутся, но остаётся сырой coupon_type — по нему вызывающий
+    отличает «сайт говорит Фикс» от «сайт ещё не разобрал выпуск»."""
     import httpx
     url = _CB_URL.format(isin=isin)
     try:

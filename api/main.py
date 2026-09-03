@@ -165,9 +165,13 @@ async def universe_price_poller():
     Данные MOEX кэшируются на день, поэтому тяжёлый прогрев (bondization) — раз/день."""
     from services.universe import compute_universe_metrics
     from services.market_data import market_cache
-    from services.instruments_sync import sync_instruments
+    from services.instruments_sync import last_full_sync, sync_instruments
     await asyncio.sleep(30)  # прогрев: не конкурировать со стартом
-    _last_reg_sync = None
+    # Отметка живёт В РЕЕСТРЕ, а не в этой переменной: процесс поднимается по
+    # нескольку раз в день (деплои), и на памяти процесса полный синк уходил
+    # заново каждый подъём — 13-35 прогонов за торговый день на проде против
+    # одного нужного. Переменная осталась кэшем на цикл, чтобы не читать БД.
+    _last_reg_sync = await asyncio.to_thread(last_full_sync)
     while True:
         try:
             # ежедневный синк реестра инструментов (обнаружение новых бумаг +

@@ -132,8 +132,7 @@ async def validate_priceable() -> dict:
             return
         # фикс-бумага (все купоны зафиксированы) — не флоатер
         if not any(c.get("value") is None for c in coupons):
-            if not row.get("manual_locked"):
-                reg.reclassify_fixed(isin)
+            if not row.get("manual_locked") and reg.reclassify_fixed(isin):
                 reclassified += 1
             return
         # бэк-аут маржи

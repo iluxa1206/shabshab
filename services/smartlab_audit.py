@@ -17,6 +17,12 @@ smart-lab пишет тип купона словами в заголовке с
     заново. Руками зафиксированные (manual_locked) не трогаем.
   • у нас флоатер, там фикс → база могла прийти из проспекта, а ошибаться может
     и сайт. Только помечаем (sl_mismatch=1) — разбирает админ в Справочнике.
+  • у нас база НЕ ОПРЕДЕЛЕНА, там фикс → ставим FIXED (старым выпускам, см.
+    _STALE_BLIND_DAYS). Мы ничего не утверждали, спорить не с чем, а бумага с
+    base=NULL не видна НИ во флоатерах, ни в ФИКСАХ: discovery заводит
+    флоатером всё, у чего есть будущий купон без суммы, и фикс с офертой
+    попадает туда же. На проде 03.09.2026 в этом лимбе висели 310 бумаг из
+    1176 активных — МТС 1P-28, Роснефть 5Р2, РЖД-41, СУЭК, ИАДОМ, РКС Олимп.
 
 Молчание сайта вердиктом не считается: «не знаем» ничего не опровергает.
 """
@@ -47,7 +53,7 @@ async def run(limit: int = SL_AUDIT_LIMIT, isins: Optional[list[str]] = None,
     if not targets:
         return {"checked": 0, "typed": 0, "mismatch": 0, "reverted": 0}
 
-    stats = {"checked": 0, "typed": 0, "mismatch": 0, "reverted": 0}
+    stats = {"checked": 0, "typed": 0, "mismatch": 0, "reverted": 0, "fixed": 0}
     sem = asyncio.Semaphore(_CONCURRENCY)
 
     async with httpx.AsyncClient() as client:
@@ -61,6 +67,16 @@ async def run(limit: int = SL_AUDIT_LIMIT, isins: Optional[list[str]] = None,
             if not apply:
                 return
             verdict = await asyncio.to_thread(reg.set_smartlab_type, isin, sl)
+            if sl == "fixed" and not verdict:
+                # «у нас база НЕ ОПРЕДЕЛЕНА, сайт говорит фикс» — расхождением не
+                # считается (мы ничего не утверждали), но именно этот случай и
+                # держал очередь: discovery заводит флоатером всё, у чего есть
+                # будущий купон без суммы, а фикс с офертой выглядит так же.
+                # Бумага с base=NULL не видна ни во флоатерах, ни в ФИКСАХ.
+                # Только СТАРЫЕ выпуски: у свежего параметры доливает конвейер
+                # (corpbonds/карточка биржи), и его вердикту доверия больше, чем
+                # чужой странице в день размещения.
+                await asyncio.to_thread(_fix_stale_blind, isin, stats)
             if not verdict:
                 return
             stats["mismatch"] += 1
@@ -79,3 +95,46 @@ async def run(limit: int = SL_AUDIT_LIMIT, isins: Optional[list[str]] = None,
 
         await asyncio.gather(*[one(i) for i in targets])
     return stats
+
+
+# Свежий выпуск не отдаём внешней странице: параметры ему доливает наш конвейер,
+# и в первые недели smart-lab обычно ещё зовёт флоатер фиксом.
+_STALE_BLIND_DAYS = 45
+
+
+def apply_known_fixed() -> dict:
+    """Прогнать правило «без базы + smart-lab говорит фикс» по УЖЕ СОБРАННЫМ
+    ответам сайта, без сети. → {checked, fixed}.
+
+    Ротация сверки — 40 бумаг за прогон на ~1200 активных, то есть полный круг
+    занимает месяц. Ответы прошлых кругов лежат в sl_type, и ждать нового захода,
+    чтобы применить к ним правило, незачем: на проде 03.09.2026 таких «без базы,
+    но фикс по сайту» было 210 из 310 слепых."""
+    from services import instruments_registry as reg
+    stats = {"checked": 0, "fixed": 0}
+    for row in reg.list_blind_sl_fixed():
+        stats["checked"] += 1
+        _fix_stale_blind(row["isin"], stats)
+    if stats["fixed"]:
+        logger.info("smart-lab backlog: %d бумаг без базы переклассифицированы в FIXED "
+                    "(проверено %d)", stats["fixed"], stats["checked"])
+    return stats
+
+
+def _fix_stale_blind(isin: str, stats: dict) -> None:
+    """base=NULL + «фикс» со smart-lab → base='FIXED' (синхронная часть)."""
+    from datetime import date
+    from services import instruments_registry as reg
+    row = reg.get(isin) or {}
+    if row.get("base") is not None or row.get("manual_locked"):
+        return
+    try:
+        age = (date.today() - date.fromisoformat((row.get("issue_date") or "")[:10])).days
+    except ValueError:
+        age = _STALE_BLIND_DAYS + 1      # дата размещения неизвестна = не свежий
+    if age <= _STALE_BLIND_DAYS:
+        return
+    if reg.reclassify_fixed(isin):
+        stats["fixed"] = stats.get("fixed", 0) + 1
+        logger.info("smart-lab: %s (%s) без базы, сайт говорит фикс — base=FIXED, "
+                    "бумага уходит во вкладку ФИКСОВ", isin, row.get("short_name"))

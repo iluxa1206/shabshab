@@ -107,10 +107,15 @@ async def sync_instruments() -> dict:
     # частота, номинал), а общая очередь длиной в бэклог до неё не доходит.
     fresh_new = [i for i in reg.new_issue_isins()
                  if not (reg.get(i) or {}).get("base")][:_MAX_SECMASTER_NEW]
+    # СВЕРКА ПРОВЕНАНСОВ маржи: карточка биржи у полностью заполненной строки
+    # иначе не спрашивается никогда (справочник дёргается только для пробелов),
+    # а спорить биржевой спред с формулой из проспекта может и у неё.
+    bench = reg.isins_bench_unchecked(_MAX_SECMASTER_BENCH)
     picked = set(no_mat) | set(incompl)
     picked |= set(fresh_new)
     no_issue = [i for i in reg.isins_missing_issue_date() if i not in picked]
-    missing = list(dict.fromkeys(fresh_new + no_mat + incompl + no_issue))[:_MAX_SECMASTER_PER_RUN]
+    missing = list(dict.fromkeys(
+        fresh_new + no_mat + incompl + no_issue + bench))[:_MAX_SECMASTER_PER_RUN]
     enriched = 0
     exotic: list[tuple[str, str]] = []
     if missing:
@@ -147,6 +152,13 @@ async def sync_instruments() -> dict:
                     upd["base"] = b_base
                 if cur.get("margin_bps") is None and b_bps is not None:
                     upd["margin_bps"] = b_bps
+                # СВЕРКА ПРОВЕНАНСОВ. Формула с corpbonds/Cbonds и карточка биржи
+                # иногда расходятся (ГазКап3P29: «ΣКС + 1.3%» против биржевых
+                # +150 bps — 20 bps прямо в спреде), а конвейер оставлял то
+                # значение, что пришло раньше, молча. Пишем биржевое рядом,
+                # расчёт не трогаем — бумага поднимается в ревью
+                # (reg.list_bench_mismatch, шаг ниже логирует список).
+                reg.set_bench_margin(isin, b_base, b_bps)
             if any(v is not None for k, v in upd.items() if k != "isin"):
                 reg.upsert(upd, source="moex", mark_new=False)
                 enriched += 1
@@ -301,8 +313,40 @@ async def sync_instruments() -> dict:
     try:
         from services import smartlab_audit
         sl_stats = await smartlab_audit.run()
+        # то же правило по УЖЕ собранным ответам сайта, без сети: ротация сверки
+        # 40 бумаг за прогон, а слепых с готовым вердиктом «фикс» — сотни
+        sl_backlog = await asyncio.to_thread(smartlab_audit.apply_known_fixed)
+        sl_stats["fixed"] = sl_stats.get("fixed", 0) + sl_backlog.get("fixed", 0)
     except Exception as e:
         logger.warning("smart-lab audit failed: %s", e)
+
+    # 9b. снять ложный FIXED там, где внешняя сверка видит флоатер. Раньше это
+    #     делал только сам smartlab_audit в момент сверки (clear_base), а
+    #     следующий инфер ставил FIXED назад — качели с шагом в месяц. Вето
+    #     теперь стоит в reclassify_fixed, здесь — разовая уборка накопленного.
+    false_fixed = []
+    try:
+        false_fixed = reg.clear_false_fixed()
+        if false_fixed:
+            logger.warning("ложный FIXED снят у %d бумаг (%s) — база определится "
+                           "заново конвейером", len(false_fixed),
+                           ", ".join(false_fixed[:10]))
+    except Exception as e:
+        logger.warning("clear_false_fixed failed: %s", e)
+
+    # 9c. расхождение «наша маржа vs карточка биржи» — в лог и в ревью.
+    bench_bad = []
+    try:
+        bench_bad = reg.list_bench_mismatch()
+        if bench_bad:
+            logger.warning("МАРЖА расходится с карточкой MOEX у %d бумаг: %s",
+                           len(bench_bad),
+                           "; ".join(f"{b['isin']} {b['short_name']} наш "
+                                     f"{b['base']}+{b['margin_bps']} vs биржа "
+                                     f"{b['bench_base']}+{b['bench_margin_bps']}"
+                                     for b in bench_bad[:8]))
+    except Exception as e:
+        logger.warning("bench mismatch check failed: %s", e)
 
     # итог ночной подготовки: сколько свежих выпусков ушло в день без параметров
     # (их надо проверить руками — Справочник, фильтр «новые»)
@@ -318,6 +362,10 @@ async def sync_instruments() -> dict:
                   "sl_checked": sl_stats.get("checked", 0),
                   "sl_mismatch": sl_stats.get("mismatch", 0),
                   "sl_reverted": sl_stats.get("reverted", 0),
+                  "sl_fixed": sl_stats.get("fixed", 0),
+                  "cb_fixed": cb_stats.get("fixed", 0),
+                  "false_fixed_cleared": len(false_fixed),
+                  "bench_mismatch": len(bench_bad),
                   "br_specs": br_stats.get("written", 0),
                   "spec_checked": bt_stats.get("checked", 0),
                   "spec_bad": bt_stats.get("bad", 0) + bt_stats.get("warn", 0),
@@ -331,8 +379,28 @@ async def sync_instruments() -> dict:
                   "deactivated": traded_stats.get("deactivated", 0),
                   "reactivated": traded_stats.get("reactivated", 0),
                   "synced_at": date.today().isoformat()})
+    # ДОЛГОВЕЧНАЯ отметка «полный синк за сегодня сделан»: раньше её держала
+    # переменная поллера, и каждый подъём процесса гнал синк заново — на проде
+    # 13-35 полных прогонов за торговый день (деплои) вместо одного, то есть
+    # сотни лишних запросов к MOEX/corpbonds под их же rate-limit.
+    reg.set_meta(_LAST_SYNC_KEY, stats["synced_at"])
     logger.info("instruments sync: %s | registry=%s", stats, reg.count())
     return stats
+
+
+# Ключ отметки последнего полного синка в reg.meta (читает поллер).
+_LAST_SYNC_KEY = "last_full_sync"
+
+
+def last_full_sync() -> str | None:
+    """Дата последнего успешного полного синка (ISO) | None — из реестра, не из
+    памяти процесса: рестарт не должен повторять дневную работу."""
+    from services import instruments_registry as reg
+    try:
+        return reg.get_meta(_LAST_SYNC_KEY)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("last_full_sync unreadable: %s", e)
+        return None
 
 
 _MAX_INFER_PER_RUN = 40       # калибровок базы/маржи по истории купонов за прогон
@@ -341,10 +409,14 @@ _MAX_CORPBONDS_PER_RUN = 95   # запросов к corpbonds.ru за прого
                               # Σ квот классов (80) + квота свежих выпусков (15):
                               # иначе новые в голове среза выбивали бы за край
                               # последний класс (даты колла) целиком.
-_MAX_SECMASTER_PER_RUN = 150  # запросов в справочник MOEX за прогон (ПОШТУЧНО:
+_MAX_SECMASTER_PER_RUN = 180  # запросов в справочник MOEX за прогон (ПОШТУЧНО:
                               # /iss/securities/{isin}.json, батча у ISS нет)
 _MAX_SECMASTER_INCOMPLETE = 60   # из них — на непрайсуемые (свежие выпуски вперёд)
 _MAX_SECMASTER_NEW = 40          # выпуски младше NEW_ISSUE_DAYS без базы — вне ротации
+# сверка маржи с карточкой биржи по ПРАЙСУЕМЫМ (у них пробелов нет, и в общий
+# срез они не попадают): 30 за прогон → круг по ~615 флоатерам за три недели.
+# Cap поднят на эту же величину, чтобы квота не съедала хвост очереди.
+_MAX_SECMASTER_BENCH = 30
 # квоты corpbonds-обогащения по классам очереди (Σ = cap): раздельные, чтобы
 # большой incomplete не вытеснял остальные за срез
 _CORPBONDS_QUOTA_INCOMPLETE = 30
@@ -408,11 +480,19 @@ async def infer_missing_params(cap: int = _MAX_INFER_PER_RUN, reg=None) -> dict:
         face = row.get("face_value") or 1000.0
         fx = cc.looks_fixed_coupons(coupons, face, today, amorts)
         if fx:
-            reg.reclassify_fixed(isin)      # reviewed=0 — на подтверждение админом
-            reg.mark_enrich_attempt(isin, "filled")
-            stats["fixed"] += 1
-            logger.info("infer %s: ФИКС %.2f%% (КС ходила на %.1fпп, %d купонов)",
-                        isin, fx["rate"], fx["ks_span_pp"], fx["n"])
+            # reviewed=0 — на подтверждение админом. Вердикт может не примениться
+            # (вето reclassify_fixed: ОФЗ-ПК, внешний «флоатер», плавающий транш
+            # в формуле) — тогда не помечаем попытку успешной, иначе бумага
+            # выпала бы из очереди с неопределённой базой.
+            if reg.reclassify_fixed(isin):
+                reg.mark_enrich_attempt(isin, "filled")
+                stats["fixed"] += 1
+                logger.info("infer %s: ФИКС %.2f%% (КС ходила на %.1fпп, %d купонов)",
+                            isin, fx["rate"], fx["ks_span_pp"], fx["n"])
+                continue
+            stats["fixed_vetoed"] = stats.get("fixed_vetoed", 0) + 1
+            logger.info("infer %s: ФИКС по купонам, но вердикт отклонён вето — "
+                        "бумага остаётся в ревью", isin)
             continue
         spec, why = cc.infer_base_margin(coupons, face, today, amorts)
         if not spec:

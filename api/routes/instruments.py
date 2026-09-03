@@ -199,6 +199,9 @@ async def unreviewed(_admin: dict = Depends(require_admin)):
     return {"items": reg.list_unreviewed(),
             "incomplete": reg.list_incomplete(),
             "suspect": reg.list_suspect(),
+            # маржа/база расходится с карточкой биржи (COUPON_BENCHMARK): два
+            # провенанса спорят, расчёт идёт по нашему — разбирать глазами
+            "bench_mismatch": reg.list_bench_mismatch(),
             "offer_reset": reg.list_offer_reset(),
             "exotic": reg.list_exotic(),
             "offers_no_spec": _offers_no_spec(),
@@ -238,6 +241,9 @@ async def catalog(only_active: bool = True, floaters_only: bool = False,
             "new_issue_days": reg.NEW_ISSUE_DAYS,
             "offers_no_spec": _offers_no_spec(),
             "spec_mismatch": [r["isin"] for r in reg.list_spec_mismatch()],
+            # маржа/база расходится с карточкой биржи (COUPON_BENCHMARK): два
+            # провенанса спорят, расчёт идёт по нашему — разбирать глазами
+            "bench_mismatch": reg.list_bench_mismatch(),
             # тип купона разошёлся с внешним источником (smart-lab): наш вывод о
             # базе проверен НЕ нашими данными, разбирать вручную
             "sl_mismatch": reg.list_sl_mismatch()}
