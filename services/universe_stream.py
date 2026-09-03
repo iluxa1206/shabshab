@@ -171,6 +171,7 @@ _BLANK_SIDES_BATCH = int(os.getenv("UNIVERSE_BLANK_SIDES", "150"))
 # первые места в догреве: он берёт первые N из _eval_ctx, каждый такт
 # натыкался на тот же безнадёжный хвост и не двигался вовсе.
 _GRID_RETRY_SEC = float(os.getenv("UNIVERSE_GRID_RETRY_SEC", "180"))
+_CTX_SCHED_RETRY_SEC = float(os.getenv("UNIVERSE_CTX_SCHED_RETRY_SEC", "600"))
 # Контекстов за такт. Меньше сетевого догрева: каждой бумаге нужно расписание
 # (промах day-кэша = ходка в MOEX), и торопиться тут некуда — это хвост рынка.
 _CTX_WARM_BATCH = int(os.getenv("UNIVERSE_CTX_WARM", "10"))
@@ -219,6 +220,19 @@ _yoi_grid: Dict[str, tuple] = {}   # isin → (epoch, [узлы], {узел: б�
 _grid_builds = 0                   # построений сетки с прошлой сводки
 _grid_budget = 0                   # остаток построений сетки в текущем такте
 _grid_cold: Dict[str, float] = {}  # isin → monotonic неудачной попытки сетки
+# (isin, цена) → monotonic перестройки, после которой сетка на этой цене всё
+# равно промолчала. Без этой метки цена набора, попавшая в дыру между узлами
+# или за перелом горизонта, заказывала перестройку каждым тактом.
+_grid_miss: Dict[tuple, float] = {}
+# isin → monotonic сборки контекста на ПУСТОМ расписании. Такой контекст считает
+# по сгенерированной сетке купонов: без фактических сумм, на неамортизированном
+# остатке и К ПОГАШЕНИЮ вместо оферты — и раньше жил до следующего переката,
+# потому что перестраивать его было некому (warm_ctx пропускает бумагу с любым
+# контекстом, _check_version внутри дня только перепривязывает кривую).
+# Пустое расписание — штатный ответ при осечке ISS (пустое там НЕ кэшируется),
+# поэтому пробуем ещё раз, но не чаще _CTX_SCHED_RETRY_SEC: у части бумаг
+# графика нет и не будет, и долбить источник каждым тактом незачем.
+_ctx_no_sched: Dict[str, float] = {}
 
 # ── состояние ────────────────────────────────────────────────────────────────
 # Вход точного расчёта Y-IDX по ЛЮБОЙ цене (bid/ask/средневзвес): поток, кривая
@@ -240,6 +254,15 @@ _last_quote: Dict[str, dict] = {}    # isin → последний пуш {last_
 # самым крупным собирающимся набором: их под фильтром объёма и смотрят.
 _SIDES_PRIO_LIVE = 0.0        # движение сторон стакана
 _SIDES_PRIO_WAVE = 1.0        # волна нового размера тикета (+ ранг ликвидности)
+# ДВИЖЕНИЕ ГЛУБИНЫ — ТОЖЕ СОБЫТИЕ. Цена набора на тикет собирается по ЛЕСТНИЦЕ,
+# а заказывали пересчёт только цена сделки и цена ВЕРХА книги: срезали объём при
+# неизменном лучшем оффере — и в строке оставалась цена набора, которой в
+# стакане уже нет (на тонкой книге это 10-20 б.п. спреда). Пуш глубины идёт
+# тысячами в минуту, поэтому заказываем не всё подряд: только по бумагам,
+# которые СЕЙЧАС смотрят, только когда фильтр по объёму активен, и не чаще
+# _DEPTH_REQUEUE_SEC на бумагу.
+_DEPTH_REQUEUE_SEC = float(os.getenv("UNIVERSE_DEPTH_REQUEUE_SEC", "20"))
+_depth_queued: Dict[str, float] = {}   # isin → monotonic последнего заказа
 _sides_dirty: Dict[str, float] = {}
 
 
@@ -302,6 +325,40 @@ def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
     cur = _sides_dirty.get(isin)
     if cur is None or prio < cur:
         _sides_dirty[isin] = prio
+
+
+def _take_sides_batch() -> tuple:
+    """Снять пачку из очереди сторон: (список бумаг, их приоритеты).
+
+    ПРИОРИТЕТЫ ЗАПОМИНАЕМ ДО СНЯТИЯ. Хвост, не влезший в дедлайн захода, обязан
+    вернуться в очередь СВОИМ приоритетом: возврат общей меткой волны понижал
+    живое движение книги (_SIDES_PRIO_LIVE = 0) до волны (1.0), и на потоке
+    живых событий бумага, по которой только что двигали заявку, уезжала в конец
+    очереди — то есть ждала дольше всех остальных."""
+    take = sorted(_sides_dirty, key=_sides_dirty.get)[:_sides_batch()]
+    prio = {i: _sides_dirty.get(i, _SIDES_PRIO_WAVE) for i in take}
+    for i in take:
+        _sides_dirty.pop(i, None)
+    return take, prio
+
+
+def _on_depth(isin: str) -> None:
+    """Лестница обновилась — заказать пересчёт цены набора на тикет.
+
+    Ограничения (см. _DEPTH_REQUEUE_SEC): пересчёт нужен только тому, кто на
+    бумагу смотрит, и только когда размер тикета вообще зарегистрирован — без
+    фильтра по объёму цену набора никто не считает и не показывает."""
+    if not _vol_sizes or not is_visible(isin):
+        return
+    now = time.monotonic()
+    if now - _depth_queued.get(isin, 0.0) < _DEPTH_REQUEUE_SEC:
+        return
+    _depth_queued[isin] = now
+    # у ФИКСА дешёвой ветки сторон нет — там всё считает полный проход
+    if isin in _fixed_isins:
+        _dirty.add(isin)
+    else:
+        _queue_sides(isin, _SIDES_PRIO_WAVE)
 
 # ОБЪЁМ ТИКЕТА: размеры, которые сейчас смотрят в браузере. Y-IDX по VWAP-цене
 # набора считается ЗДЕСЬ, по методике, а не линеаризацией в браузере (он
@@ -534,6 +591,10 @@ def stats() -> dict:
             "blank_sides": _blank_sides_count(),
             "ctx_no_accrued": sum(1 for c in _eval_ctx.values()
                                   if c.get("accrued_missing")),
+            # контексты на ПУСТОМ расписании: считают по сгенерированной сетке
+            # купонов, к погашению и на неамортизированном номинале. Стоят в
+            # очереди на пересборку — число должно таять, а не держаться
+            "ctx_no_sched": len(_ctx_no_sched),
             "rate": dict(_last_rate) or None}
 
 
@@ -602,6 +663,18 @@ def _fixed_patch(row: dict) -> dict:
     return out
 
 
+# ЦЕНА, К КОТОРОЙ ПОСЧИТАН ПАТЧ, — ОТДЕЛЬНЫМИ ПОЛЯМИ. Патч уже вёз bid/ask, но
+# фронт коалесцирует пуши одной бумаги в 400-мс окно, и котировка, пришедшая
+# ПОСЛЕ патча метрик, перетирала в буфере именно эти цены: в строку попадала
+# новая цена со спредом, посчитанным к прежней, причём с флагом metrics=true —
+# то есть без приглушения. Ровно рассинхрон 27.08.2026, вернувшийся на WS-путь.
+# Эти четыре поля котировка не трогает (их нет в _broadcast_quote), поэтому
+# сверка «цена расчёта против цены, которая ляжет в строку» переживает склейку.
+# Имена совпадают с HTTP-путём (/api/bonds/quotes), где сверка уже работала.
+_METRIC_PX_FIELDS = {"last": "yoi_px", "bid": "yoi_bid_px",
+                     "ask": "yoi_ask_px", "wap": "yoi_wap_px"}
+
+
 def _metrics_patch(row: dict) -> dict:
     """Патч производных метрик для WS-пуша: фронт мерджит и НЕ зовёт /reprice —
     пересчёт уже сделан здесь, вторая ходка за тем же числом не нужна.
@@ -620,6 +693,10 @@ def _metrics_patch(row: dict) -> dict:
         for k in ("bid", "ask"):
             if k in row:
                 out[k] = row[k]
+        # …и они же вторыми именами, которые котировка не перетирает
+        for k, name in _METRIC_PX_FIELDS.items():
+            if k in row:
+                out[name] = row[k]
     return out
 
 
@@ -825,6 +902,7 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event,
                         _now_ts = time.time()
                         market_cache["depth_ts"] = _now_ts
                         market_cache.setdefault("depth_shard_ts", {})[shard_id] = _now_ts
+                        _on_depth(isin)
                         _depth_msgs += 1
                         st["msgs"] += 1
                         st["last"] = _now_ts
@@ -1004,6 +1082,7 @@ def invalidate_params(isin: Optional[str] = None) -> None:
         _yoi_cache.pop(isin, None)
         _yoi_grid.pop(isin, None)
         _grid_cold.pop(isin, None)
+        _ctx_no_sched.pop(isin, None)
         if isin in _last_quote:
             _dirty.add(isin)
     else:
@@ -1011,6 +1090,8 @@ def invalidate_params(isin: Optional[str] = None) -> None:
         _flow_cache.clear()
         _eval_ctx.clear()
         _grid_cold.clear()
+        _grid_miss.clear()
+        _ctx_no_sched.clear()
         _yoi_cache.clear()
         _yoi_grid.clear()
         _yoi_cache_epoch += 1
@@ -1060,7 +1141,8 @@ def _grid_reach(ladder, face: float, accrued: float) -> Optional[float]:
     return last
 
 
-def _grid_nodes(isin: str, sides: dict, wap) -> list:
+def _grid_nodes(isin: str, sides: dict, wap,
+                book: Optional[dict] = None) -> list:
     """Узлы сетки — по диапазону, ДОСТИЖИМОМУ НАБОРОМ, а не по всей книге.
 
     VWAP тикета лежит между лучшей ценой стороны и ценой последнего взятого
@@ -1073,9 +1155,12 @@ def _grid_nodes(isin: str, sides: dict, wap) -> list:
     Шаг — шаг цены облигации (0,01 п.п.). Если отрезок шире потолка узлов, шаг
     растягивается: интерполяция между соседями честна и на растянутом шаге, а
     дыра в покрытии стоит целого пересчёта на движке."""
-    from services import depth as depth_svc
     from services.market_data import market_cache
-    lad = depth_svc.get_depth().get(isin) or {}
+    # СНИМОК КНИГИ — СНАРУЖИ, когда проверок много подряд: get_depth() не
+    # дешёвый геттер, он проходит по всем ISIN всех шардов и при протухшем
+    # шарде пересобирает словарь целиком (тот же приём, что у _has_book и
+    # _vol_prices(ladders=...)).
+    lad = (book if book is not None else _depth_snapshot()).get(isin) or {}
     row = (market_cache.get("universe_metrics") or {}).get(isin) or {}
     face = row.get("face_px") or 1000.0
     accrued = row.get("accrued_settle") or 0.0
@@ -1142,7 +1227,8 @@ def live_sides(isin: str, row: Optional[dict] = None) -> dict:
     return out
 
 
-def _grid_nodes_if_needed(isin: str, sides: dict, wap, vol_px: dict) -> list:
+def _grid_nodes_if_needed(isin: str, sides: dict, wap, vol_px: dict,
+                          book: Optional[dict] = None) -> list:
     """Узлы сетки — ТОЛЬКО когда её надо строить заново.
 
     Сетка дорога (≈150 мс против 26 мс за три живые цены) и живёт до пересборки
@@ -1161,20 +1247,40 @@ def _grid_nodes_if_needed(isin: str, sides: dict, wap, vol_px: dict) -> list:
         return []
     g = _yoi_grid.get(isin)
     fresh = bool(g) and g[0] == _yoi_cache_epoch
+    todo: list = []          # цены, ради которых перестраиваем свежую сетку
     if fresh:
         live = [p for p in vol_px.values() if p is not None]
         if not live or all(yoi_at(isin, p) is not None for p in live):
             return []
-        # набор уехал за края сетки — строим заново (в пределах бюджета такта)
+        # набор уехал за края сетки — строим заново (в пределах бюджета такта).
+        #
+        # НО ОТКАЗ ЗАПОМИНАЕМ. Причин у молчания yoi_at три: цена вне краёв
+        # (перестройка помогает), дыра между узлами и перелом горизонта
+        # (перестройка даст ТЕ ЖЕ узлы и то же молчание). Без метки бумага
+        # перестраивала сетку каждым тактом по ~150 мс, и так до смены кривой.
+        # Потребитель при этом корректно откатывается на точное число движка.
+        now = time.monotonic()
+        todo = [p for p in live
+                if yoi_at(isin, p) is None
+                and now - _grid_miss.get((isin, _px_key(p)), 0.0) >= _GRID_RETRY_SEC]
+        if not todo:
+            return []
     if _grid_budget <= 0:
         # ПОТОЛОК ТАКТА ВЫБРАН: числа текущих размеров тикета бумага всё равно
         # получит (их цены идут альт-ценами того же батча), а сетку ей построит
         # догрев. Иначе волна размера превращала дешёвую ветку в дорогую на
         # всю очередь разом — см. _GRID_BUILD_PER_TICK.
         return []
-    nodes = _grid_nodes(isin, sides, wap)
+    nodes = _grid_nodes(isin, sides, wap, book)
     if nodes:
         globals()["_grid_budget"] = _grid_budget - 1
+    # МЕТКА — ТОЛЬКО ПОСЛЕ РЕАЛЬНОЙ ПОПЫТКИ. Раньше она ставилась до проверки
+    # бюджета такта, и цена блокировалась на _GRID_RETRY_SEC, хотя перестройки
+    # не было вовсе: расширить сетку под уехавшую цену набора больше некому —
+    # догрев пропускает бумагу со свежей сеткой.
+    if todo:
+        for p in todo:
+            _grid_miss[(isin, _px_key(p))] = time.monotonic()
     return nodes
 
 
@@ -1268,11 +1374,11 @@ def warm_grids(isins: list, board: Optional[dict] = None,
             continue
         sides = _sides_of(q or {})
         wap = (_lq.get(isin) or {}).get("vwap_pct") or (board.get(isin) or {}).get("waprice")
-        nodes = _grid_nodes(isin, sides, wap if (wap or 0) > 0 else None)
+        nodes = _grid_nodes(isin, sides, wap if (wap or 0) > 0 else None, book)
         if not nodes:
             _grid_cold[isin] = time.monotonic()
             continue
-        got = y_idx_many(ev, nodes)
+        got = y_idx_many(_with_flows(ev, isin), nodes)
         if not got:
             _grid_cold[isin] = time.monotonic()
             continue
@@ -1324,7 +1430,8 @@ def yoi_at(isin: str, price) -> Optional[int]:
     return int(round(a + (b - a) * (px - lo) / (hi - lo)))
 
 
-def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
+def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict,
+                       book: Optional[dict] = None) -> None:
     """Y-IDX сторон стакана и средневзвеса дня — ПО МЕТОДИКЕ, одним батчем.
 
     Поток, кривая и база от цены не зависят и уже лежат в _eval_ctx, поэтому
@@ -1355,9 +1462,19 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
         ev["accrued_live"] = snap.get("accrued")
         ev["accrued_date"] = _acc_date(snap.get("accrued_date"))
         ev["accrued_missing"] = False
-        # НКД входит в dirty, то есть в КАЖДОЕ число сетки — построенная без
-        # него сетка больше не действительна
-        _yoi_grid.pop(isin, None)
+        # НКД входит в dirty, то есть в КАЖДОЕ число, посчитанное по цене —
+        # не только в узлы сетки. Раньше сносили одну сетку, а кэш набора цен и
+        # кэш уровней продолжали отдавать числа по ОЦЕНОЧНОМУ начислению:
+        # десятые доли рубля стоят десятков б.п. (27.08.2026 — РЕСОЛизБО5 368
+        # против 382, ВЭБ2Р-53 166 против 188).
+        _drop_price_caches(isin)
+        # ...И СТРОКУ ЦЕЛИКОМ НА ПЕРЕСЧЁТ. Кэши сняты, но саму строку витрины
+        # (yoi/sm/dm/ytm по цене сделки) никто не пересчитывает: она приезжает
+        # из universe_metrics с ОЦЕНОЧНЫМ начислением и тут же дополняется
+        # сторонами, посчитанными уже по биржевому. Тот же пинок стоит в
+        # invalidate_params по тому же поводу.
+        if isin in _last_quote:
+            _dirty.add(isin)
 
     lvq = _lq.get(isin) or {}
     wap = lvq.get("vwap_pct") or snap.get("waprice")
@@ -1366,7 +1483,12 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     for side in sides:
         row[f"yoi_{side}"] = None
     # цены VWAP-наборов по активным размерам тикета — такие же альт-цены
-    vol_px = _vol_prices(isin)
+    # ПУСТАЯ ЛЕСТНИЦА, А НЕ None: _vol_prices читает None как «снимок не
+    # передан» и идёт за get_depth() сам — то есть на каждую бумагу, которой в
+    # снимке нет (мёртвый шард, бумага вне depth-пула), возвращался ровно тот
+    # пер-бумажный обход пула, ради устранения которого снимок и заводился.
+    vol_px = _vol_prices(isin, ladders=((book or {}).get(isin) or {})
+                         if book is not None else None)
     row["vol_px"] = vol_px or None
     row["yoi_vol"] = None
     from services.yidx_exact import y_idx_many
@@ -1379,7 +1501,7 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     # вообще (см. _yoi_grid). Но ТОЛЬКО когда фильтр по объёму кто-то смотрит:
     # без активных размеров тикета сетку некому спрашивать, а платить за неё
     # пришлось бы на каждом движении сторон по всему рынку.
-    nodes = _grid_nodes_if_needed(isin, sides, wap, vol_px)
+    nodes = _grid_nodes_if_needed(isin, sides, wap, vol_px, book)
     # ТОТ ЖЕ НАБОР ЦЕН — ответ уже посчитан. Пересчёт заказывает движение
     # сторон, но в очередь бумага попадает и по другим поводам (волна нового
     # размера тикета, вернувшаяся на прежний уровень заявка), а цена набора по
@@ -1392,7 +1514,8 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
     if hit and hit[0] == key and time.time() - hit[1] <= _YOI_TTL_SEC:
         got = hit[2]
     else:
-        got = y_idx_many(ev, want + [n for n in nodes if n not in want])
+        got = y_idx_many(_with_flows(ev, isin),
+                         want + [n for n in nodes if n not in want])
         # ПУСТОЙ ОТВЕТ НЕ КЭШИРУЕМ: расчёт мог отказать разово (контекст остыл,
         # цена вне модели), а кэш держал бы прочерк ещё минуту — и всё это время
         # строка на экране стояла бы пустой при живых числах в кэше витрины.
@@ -1407,6 +1530,12 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict) -> None:
         if v is not None:
             row[f"yoi_{side}"] = got.get(round(float(v), 4))
     if wap is not None:
+        # ЦЕНА РАСЧЁТА — В СТРОКУ. Спред по средневзвесу считается к тому wap,
+        # который взят ЗДЕСЬ (live_quotes → снапшот), а в строку wap кладёт
+        # _crunch отдельно и из своего источника: пара разъезжалась молча, и
+        # проверить её было нечем — цена расчёта нигде не сохранялась. Теперь
+        # она едет и в патче (_METRIC_PX_FIELDS → yoi_wap_px), как у сторон.
+        row["wap"] = wap
         row["yoi_wap"] = got.get(round(float(wap), 4))
     if vol_px:
         # из батча, если цена в нём была; иначе — из готовой сетки (её в этом
@@ -1491,17 +1620,29 @@ def _sides_from(q: Optional[dict], snap: dict) -> dict:
                       for side in ("bid", "ask")})
 
 
-def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
+def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
+                   pending: Optional[list] = None) -> Dict[str, dict]:
     """Дешёвый пересчёт ТОЛЬКО сторон стакана для бумаг из очереди _sides_dirty.
 
     Уровень цены сделки не менялся — строка метрик остаётся прежней, меняются
     её цено-зависимые числа по bid/ask. Без этого точный спред стороны приезжал
     бы только со следующей СДЕЛКОЙ (у неликвида — часы), а между сделками жила
-    линеаризация в браузере."""
+    линеаризация в браузере.
+
+    deadline/pending — как у _crunch: заход держит GIL, и пока идёт пачка, event
+    loop не просыпается вовсе. Пачку выбирает _sides_batch по среднему времени
+    бумаги, но среднее — прошлое, а бумага бывает дорогой: замер 03.09 —
+    100 бумаг по 120 мс это 12 секунд молчания сайта при бюджете 2,5 с.
+    Недосчитанные возвращаются вызывающему и встают обратно в очередь."""
     from services.market_data import market_cache
     um = market_cache.get("universe_metrics") or {}
+    book = _depth_snapshot()      # один снимок на весь заход (см. _has_book)
     out: Dict[str, dict] = {}
-    for isin in isins:
+    for idx, isin in enumerate(isins):
+        if deadline is not None and out and time.monotonic() >= deadline:
+            if pending is not None:
+                pending.extend(isins[idx:])
+            break
         row = um.get(isin)
         if not row or isin not in _eval_ctx:
             continue
@@ -1512,7 +1653,7 @@ def recrunch_sides(isins: list, board: dict) -> Dict[str, dict]:
         sides = _sides_from(_last_quote.get(isin), snap)
         for side, v in sides.items():
             row[side] = v
-        _fill_side_metrics(row, isin, sides, snap)
+        _fill_side_metrics(row, isin, sides, snap, book)
         out[isin] = row
     return out
 
@@ -1631,6 +1772,49 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
 _ctx_fail_reason: dict = {}
 
 
+def _with_flows(ev: dict, isin: str) -> dict:
+    """Контекст расчёта + кэш потоков ЭТОЙ бумаги — тот же словарь, которым
+    считает витрина (enrich_bond получает _flow_cache.setdefault(isin, {})).
+
+    Подставляем в МОМЕНТ ВЫЗОВА, а не при сборке контекста: _flow_cache.clear()
+    на смене дня и кривых меняет содержимое верхнего словаря, а ссылка на
+    внутренний, положенная в контекст однажды, пережила бы сброс и продолжила
+    отдавать потоки прошлой кривой. Внутри дня словарь тот же самый, так что
+    попадания не теряются."""
+    ev["flows_cache"] = _flow_cache.setdefault(isin, {})
+    return ev
+
+
+def _drop_price_caches(isin: str) -> None:
+    """Снять ВСЁ, что посчитано по ценам этой бумаги: сетку, кэш набора цен и её
+    строки в кэше уровней.
+
+    Три кэша держат производные одного и того же входа (график, НКД, кривая,
+    номинал), поэтому и сниматься обязаны вместе. Раньше пересборка контекста
+    сносила одну сетку, а `_yoi_cache` (TTL 60 с) и `_level_memo` продолжали
+    отдавать числа прежнего расписания: в одной строке ехали два входа."""
+    _yoi_grid.pop(isin, None)
+    _grid_cold.pop(isin, None)
+    _yoi_cache.pop(isin, None)
+    for k in [k for k in _level_memo if k[0] == isin]:
+        _level_memo.pop(k, None)
+
+
+def _grid_ctx_key(ev: dict) -> tuple:
+    """Всё, от чего зависят УЗЛЫ сетки цен. Цены среди этого нет: спред на цене
+    считается из потока, кривой, НКД и графика, а сама цена — аргумент."""
+    ref = ev.get("ref_obj")
+    return (
+        ev.get("accrued_live"), ev.get("accrued_date"), ev.get("calc_date"),
+        id(ev.get("curve")), id(ev.get("ruonia_curve")),
+        len(ev.get("periods") or ()), ev.get("periods"),
+        ev.get("amorts"), ev.get("offers"),
+        getattr(ref, "face_value", None), getattr(ref, "spread_issue_bps", None),
+        getattr(ref, "maturity_date", None), getattr(ref, "coupon_period_days", None),
+        getattr(ref, "base", None), getattr(ref, "face_index", None),
+    )
+
+
 def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
     """Вход точного расчёта Y-IDX по любой цене — на бумагу, на весь день.
 
@@ -1639,6 +1823,16 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
     try:
         from services.bond_details import _acc_date, _periods_from_coupons
         full = (ctx.get("full_by") or {}).get(isin) or {}
+        prev = _eval_ctx.get(isin)
+        periods = _periods_from_coupons(full.get("coupons"))
+        # РАСПИСАНИЕ ПУСТО — контекст ВРЕМЕННЫЙ. Считать по нему можно (лучше
+        # число по сгенерированной сетке, чем прочерк на весь день), но помечаем
+        # и ставим на пересборку: пустой график приходит и штатно — при осечке
+        # ISS, которую слой расписаний не кэширует и повторит.
+        if periods:
+            _ctx_no_sched.pop(isin, None)
+        else:
+            _ctx_no_sched[isin] = time.monotonic()
         _eval_ctx[isin] = {
             "isin": isin, "ref_obj": ref,
             # база ставки нужна не расчёту, а ПЕРЕПРИВЯЗКЕ кривой (см.
@@ -1650,7 +1844,7 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
             "calc_date": ctx["calc_date"],
             "accrued_live": snap.get("accrued"),
             "accrued_date": _acc_date(snap.get("accrued_date")),
-            "periods": _periods_from_coupons(full.get("coupons")),
+            "periods": periods,
             "amorts": full.get("amorts"),
             "offers": full.get("offers"),
             # без биржевого НКД точного числа не бывает (27.08.2026)
@@ -1659,9 +1853,18 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
         # СЕТКА ПОСТРОЕНА НА ПРЕЖНЕМ КОНТЕКСТЕ. Её узлы считались по старому
         # графику платежей и старому НКД, а живёт она до смены кривых — то есть
         # пережила бы пересборку контекста и продолжила отдавать числа, которых
-        # точный расчёт уже не даст. Сносим вместе с контекстом.
-        _yoi_grid.pop(isin, None)
-        _grid_cold.pop(isin, None)
+        # точный расчёт уже не даст.
+        #
+        # НО СНОСИМ НЕ ПО ФАКТУ ВЫЗОВА, А ПО ФАКТУ ИЗМЕНЕНИЯ. Эта функция
+        # зовётся на КАЖДЫЙ промах кэша уровней, то есть на каждую новую цену
+        # сделки, — а от цены узлы сетки не зависят вовсе. Прод 03.09: сеток
+        # 593 из 611 и при этом 25–59 перестроек в минуту при неизменном их
+        # числе, то есть ~150 мс × 25–59 = 4–9 секунд в минуту единственного
+        # счётного потока уходило на снос и восстановление того же самого. Плюс
+        # окно между сносом и догревом, в котором цена набора на тикет
+        # проваливается в медленную очередь.
+        if prev is None or _grid_ctx_key(prev) != _grid_ctx_key(_eval_ctx[isin]):
+            _drop_price_caches(isin)
     except Exception as e:
         logger.debug("eval ctx %s: %s", isin, e)
         _ctx_fail_reason[type(e).__name__ + ": " + str(e)[:60]] = \
@@ -1669,8 +1872,18 @@ def _store_eval_ctx(isin: str, u: dict, ref, ctx: dict, snap: dict) -> None:
         _eval_ctx.pop(isin, None)
 
 
+def _ctx_needs_rebuild(isin: str) -> bool:
+    """Контекста нет — или он собран на пустом расписании и пора попробовать
+    снова (см. _ctx_no_sched)."""
+    if isin not in _eval_ctx:
+        return True
+    at = _ctx_no_sched.get(isin)
+    return at is not None and time.monotonic() - at >= _CTX_SCHED_RETRY_SEC
+
+
 def _ctx_warm_targets(uni_by: dict, limit: int) -> list:
-    """Бумаги юниверса, у которых контекста расчёта нет вовсе.
+    """Бумаги юниверса, у которых контекста расчёта нет вовсе — или он собран на
+    пустом расписании и заслуживает второй попытки.
 
     ПЕРВЫМИ — те, что смотрят прямо сейчас (см. request_bond): человек уже
     открыл карточку, и ждать своей очереди в общем обходе такая бумага не
@@ -1686,14 +1899,14 @@ def _ctx_warm_targets(uni_by: dict, limit: int) -> list:
     # ВИДИМЫЕ — следом за открытой карточкой и раньше остального рынка: строку,
     # на которую человек смотрит, он ждёт, а хвост рынка — нет
     for isin in visible_isins():
-        if isin in _eval_ctx or isin in _fixed_isins or isin not in uni_by:
+        if not _ctx_needs_rebuild(isin) or isin in _fixed_isins or isin not in uni_by:
             continue
         if isin not in out:
             out.append(isin)
         if len(out) >= limit:
             return out
     for isin in uni_by:
-        if isin in _eval_ctx or isin in _fixed_isins or isin in _ctx_wanted:
+        if not _ctx_needs_rebuild(isin) or isin in _fixed_isins or isin in _ctx_wanted:
             continue
         out.append(isin)
         if len(out) >= limit:
@@ -1719,14 +1932,30 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
         if deadline is not None and n and time.monotonic() >= deadline:
             break
         u = (ctx.get("uni_by") or {}).get(isin)
-        if u is None or isin in _eval_ctx:
+        if u is None or not _ctx_needs_rebuild(isin):
             continue
+        had_ctx = isin in _eval_ctx     # пересборка, а не первая сборка
         try:
             from services.universe import build_universe_ref
             ref = build_universe_ref(u, isin, ctx["cache"], ctx["secs"])
         except Exception as e:
             logger.debug("warm ctx %s: %s", isin, e)
             continue
+        # НОМИНАЛ ПРАВИМ ТУТ ЖЕ. build_universe_ref отдаёт номинал из
+        # isins_cache как есть, а у амортизируемых бумаг он стейлится
+        # (БалтЛизП10: кэш 1000 ₽ при остатке 900 ₽). Второй сборщик контекста,
+        # enrich_bond, поправку делает — и на этом контексте считаются спреды
+        # сторон, вся сетка цен и спред набора на объём. Без неё в одной строке
+        # жили числа от двух разных номиналов, а лестница стакана
+        # (load_reprice_ctx) давала третье.
+        # СВОЙ try: сбой поправки не должен лишать бумагу контекста целиком —
+        # прочерк на весь день хуже номинала из кэша.
+        try:
+            from services.bonds import normalize_ref_face
+            normalize_ref_face(ref, (ctx.get("full_by") or {}).get(isin),
+                               ctx["calc_date"])
+        except Exception as e:
+            logger.debug("warm ctx face %s: %s", isin, e)
         _store_eval_ctx(isin, u, ref, ctx, (ctx["board"].get(isin, {}) or {}))
         if isin in _eval_ctx:
             n += 1
@@ -1734,6 +1963,12 @@ def warm_ctx(isins: list, ctx: dict, deadline: Optional[float] = None) -> int:
             # момента бумага стояла в строке с прочерком, и очередь сторон её
             # пропускала (без контекста считать нечем)
             _queue_sides(isin, _SIDES_PRIO_WAVE)
+            # ...И СТРОКУ ЦЕЛИКОМ, если контекст ПЕРЕСОБРАН, а не собран впервые.
+            # Дешёвая ветка переписывает в строке только стороны и средневзвес, а
+            # yoi/sm/dm/ytm остались бы от прежнего входа (пустого расписания) —
+            # в одной строке ехали бы два разных графика.
+            if had_ctx and isin in _last_quote:
+                _dirty.add(isin)
             _ctx_wanted.pop(isin, None)
     return n
 
@@ -1761,6 +1996,12 @@ def seed_skips_report() -> str:
 # Совпала с версией такта — первая сверка версий засев не сносит (см.
 # _check_version). Ставится по окончании прогрева, снимается сменой версии.
 _seeded_version: Optional[tuple] = None
+# Версия Справочника на момент объявления засева: правка спеки/маржи по ходу
+# прохода сносит потоки бумаги через invalidate_params, но проход копит их в
+# своём словаре, которого инвалидация не видит. Отпечаток графика
+# (valuation._schedule_fp) спеку купона не несёт — она живёт в
+# ref_data.coupon_formula, а не в BondRefData.
+_seeded_reg_ver: Optional[int] = None
 
 
 def seed_begin(market_cache: dict, calc_date) -> None:
@@ -1772,13 +2013,60 @@ def seed_begin(market_cache: dict, calc_date) -> None:
     в конце, спасала только хвост (репетиция переката 02.09: 151 контекст из
     611 вместо 2 — лучше, но всё ещё снос). Если кривые пересоберутся по ходу,
     версия разойдётся и засев будет снесён — это правильно."""
-    global _seeded_version
+    global _seeded_version, _seeded_reg_ver
     _seeded_version = (str(calc_date), _trading_day(), _curves_fp(market_cache))
+    # ВЕРСИЯ СПРАВОЧНИКА — РЯДОМ, НО НЕ В КОРТЕЖЕ: _seeded_version сверяется с
+    # ctx["version"] в _check_version и обязана совпадать с ней по форме.
+    _seeded_reg_ver = _registry_version()
     # ДЕНЬ ОБЪЯВЛЯЕТ ЗАСЕВ — он же и сносит потоки прошлого дня. Прогрев
     # получает _flow_cache на вход (api/main.py), и без этой чистки утренний
     # проход считал витрину дня на потоках, построенных до переката расписаний
     # 09:00: сегодняшний купон в них ещё будущий, PV завышен на целый купон.
     _flow_cache.clear()
+
+
+def _registry_version() -> Optional[int]:
+    """Счётчик правок Справочника. Отдельно от версии контекста: та сверяется с
+    ctx["version"] на каждом такте и обязана оставаться тройкой."""
+    try:
+        from services import instruments_registry
+        return instruments_registry.data_version()
+    except Exception:
+        return None
+
+
+def seed_flows(flows_by: dict, market_cache: dict, calc_date) -> int:
+    """Потоки, собранные утренним проходом, — в общий кэш. ТОЛЬКО если версия не
+    сменилась по ходу прохода.
+
+    Проход берёт кривые ОДИН раз в начале и идёт слайсами минуты. Если за это
+    время кривые пересобрались с другим отпечатком, движок один раз чистит
+    _flow_cache (_check_version) и перепривязывает контексты к живой кривой — а
+    засев, писавший напрямую в общий словарь, продолжал наполнять уже очищенный
+    кэш потоками СТАРОЙ кривой. Второй чистки не будет: _memo_version уже новая,
+    свежая кривая пиннится на день, и у хвоста универса до вечера SM/DM/Y-IDX
+    считались на потоке одной кривой при dirty и базе на другой. Контексты
+    перепривязать можно, потоки — нет: их только сносят.
+
+    Возвращает число бумаг, чьи потоки приняты (0 — версия разошлась)."""
+    version = (str(calc_date), _trading_day(), _curves_fp(market_cache))
+    reg = _registry_version()
+    if _seeded_version is not None and _seeded_version != version:
+        logger.warning("засев потоков отброшен: версия разошлась по ходу прохода "
+                       "(%s → %s), потоки строились на прежней кривой",
+                       _seeded_version, version)
+        return 0
+    if _seeded_reg_ver is not None and reg != _seeded_reg_ver:
+        logger.warning("засев потоков отброшен: Справочник правили по ходу прохода "
+                       "(версия %s → %s) — потоки построены по прежней спеке",
+                       _seeded_reg_ver, reg)
+        return 0
+    n = 0
+    for isin, flows in (flows_by or {}).items():
+        if flows:
+            _flow_cache.setdefault(isin, {}).update(flows)
+            n += 1
+    return n
 
 
 def seed_count() -> int:
@@ -1804,6 +2092,20 @@ def seed_ctx(isin: str, u: dict, ref, ctx_like: dict, snap: dict) -> None:
     if isin in _fixed_isins:
         _seed_skips["фикс"] = _seed_skips.get("фикс", 0) + 1
         return
+    # КРИВЫЕ ЗАСЕВА МОГЛИ УСТАРЕТЬ. Проход берёт их ОДИН раз в начале и идёт
+    # слайсами минуты. Если по ходу они пересобрались, движок один раз
+    # перепривязал контексты, которые уже были (_rebind_curves), — а бумаги, до
+    # которых проход ещё не дошёл, легли бы сюда со ссылкой на снятую кривую, и
+    # второй перепривязки им не будет: _check_version срабатывает на смене
+    # версии, а догрев бумагу с готовым контекстом пропускает. Такой контекст не
+    # берём — его соберёт warm_ctx на живой кривой.
+    if _seeded_version is not None:
+        from services.market_data import market_cache as _mc
+        cur = (str(ctx_like.get("calc_date") or _seeded_version[0]),
+               _trading_day(), _curves_fp(_mc))
+        if cur != _seeded_version:
+            _seed_skips["кривые уехали"] = _seed_skips.get("кривые уехали", 0) + 1
+            return
     before = len(_eval_ctx)
     _store_eval_ctx(isin, u, ref, ctx_like, snap or {})
     if len(_eval_ctx) == before:
@@ -1833,6 +2135,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
     else:                       # тестовая инъекция
         build_ref = lambda u, isin, cache, secs: None
     out: Dict[str, dict] = {}
+    book = _depth_snapshot()      # один снимок на весь заход (см. _has_book)
     for idx, (isin, q) in enumerate(batch):
         if deadline is not None and out and time.monotonic() >= deadline:
             if pending is not None:
@@ -1884,13 +2187,19 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
                                "(%s, купонов %d)", isin, _bond_ms,
                                u.get("base") or "?",
                                len((ctx["full_by"].get(isin) or {}).get("coupons") or []))
+            # КОНТЕКСТ — ДО ЗАПИСИ В КЭШ УРОВНЕЙ. Смена входа (график, НКД,
+            # номинал) снимает в _store_eval_ctx все кэши цен бумаги, включая
+            # уровни: положив строку раньше, мы бы тут же сами её и снесли, и
+            # кэш уровней перестал бы попадать вовсе. Порядок «сначала контекст,
+            # потом строка» верен и по смыслу: строка посчитана ровно на этом
+            # входе, а ref к этому моменту уже поправлен enrich (номинал).
+            _store_eval_ctx(isin, u, ref, ctx, snap)
             _level_memo[key] = row
             if len(_level_memo) > _LEVEL_MEMO_MAX:
                 # режем хвост пачкой, а не по одной записи: удалять на каждой
                 # вставке значит платить за это в самом горячем месте
                 for _old in list(_level_memo)[:len(_level_memo) - _LEVEL_MEMO_MAX + 500]:
                     _level_memo.pop(_old, None)
-            _store_eval_ctx(isin, u, ref, ctx, snap)
         else:
             _memo_hits += 1
         row = dict(row)          # кэш неизменяем — наружу копия
@@ -1903,7 +2212,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
         sides = _sides_from(q, _snap)
         for side, v in sides.items():
             row[side] = v
-        _fill_side_metrics(row, isin, sides, _snap)
+        _fill_side_metrics(row, isin, sides, _snap, book)
         snap = ctx["board"].get(isin, {})
         # свой тиковый счёт впереди биржевого (см. services/universe): VALTODAY и
         # WAPRICE из ISS-снапшота отстают, тик уже здесь
@@ -1912,7 +2221,15 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
         vol = max(snap.get("vol") or 0, lv.get("val_today") or 0) or None
         if vol is not None:
             row["val_today"] = vol
-        row["wap"] = lv.get("vwap_pct") or snap.get("waprice") or row.get("wap")
+        # ЦЕНУ РАСЧЁТА НЕ ПЕРЕЗАПИСЫВАЕМ. _fill_side_metrics выше уже положила
+        # в row["wap"] ту цену, к которой посчитан row["yoi_wap"], и она едет
+        # наружу как цена расчёта (yoi_wap_px в патче и в /api/bonds/quotes).
+        # Перечитывание live_quotes здесь — второе, более позднее чтение того же
+        # словаря: между ними лежит весь y_idx_many (13–150 мс), за которые
+        # event loop успевает обновить тик. setdefault оставляем для случая,
+        # когда _fill_side_metrics вышла раньше (нет контекста).
+        if row.get("wap") is None:
+            row["wap"] = lv.get("vwap_pct") or snap.get("waprice")
         out[isin] = row
     return out
 
@@ -1963,6 +2280,17 @@ async def _day_ctx() -> Optional[dict]:
         "full_by": {},
     }
 
+
+def _curves_fp_of(ctx: dict) -> str:
+    """Отпечаток кривых из версии контекста — ПО ИМЕНИ, А НЕ ПО ИНДЕКСУ.
+
+    Версия уже однажды расширялась (день расписаний вставлен вторым элементом,
+    отпечаток уехал с [1] на [2]), а три вызова metrics_persist остались на
+    прежнем [1] — снимок витрины писался и читался под датой торгового дня.
+    Ключ внутри дня переставал меняться вовсе, и после рестарта в таблицу
+    поднимались числа снятой кривой: сверка отпечатка была выключена целиком.
+    Любое следующее расширение версии ломает только эту строку."""
+    return ctx["version"][2]
 
 def _rebind_curves(ctx: Optional[dict] = None) -> int:
     """Новые кривые — в готовые контексты расчёта, на месте.
@@ -2038,6 +2366,16 @@ def _check_version(version: tuple, ctx: Optional[dict] = None) -> None:
         # безнадёжность была свойством ПРОШЛОЙ кривой и прошлой книги — на новой
         # версии бумага заслуживает попытки, а не паузы до истечения таймера
         _grid_cold.clear()
+        _grid_miss.clear()
+        # МЕТКИ ПУСТОГО РАСПИСАНИЯ НЕ СТИРАЕМ, А ОБНУЛЯЕМ ТАЙМЕР. Метка описывает
+        # РАСПИСАНИЕ, а не кривую, и в ветке same_day контексты остаются жить
+        # (_rebind_curves). Стирая её здесь, мы говорили _ctx_needs_rebuild
+        # «контекст здоров» — и бумага с пустым графиком оставалась на
+        # сгенерированной сетке купонов до переката 09:00, а счётчик
+        # ctx_no_sched показывал 0. Срабатывало это на каждом старте: первый же
+        # такт движка приходится на середину засева.
+        for _i in _ctx_no_sched:
+            _ctx_no_sched[_i] = 0.0
         _yoi_cache_epoch += 1
         _memo_version = version
 
@@ -2165,7 +2503,7 @@ def _restore_snapshot(ctx: dict, market_cache: dict) -> int:
     _snapshot_restored = True
     from services import metrics_persist
     snap = metrics_persist.load(calc_date=str(ctx["calc_date"]),
-                                curves_fp=ctx["version"][1])
+                                curves_fp=_curves_fp_of(ctx))
     if not snap:
         return 0
     n = 0
@@ -2230,7 +2568,7 @@ async def _save_snapshot(ctx: dict, market_cache: dict) -> None:
     try:
         await asyncio.to_thread(
             metrics_persist.save,
-            calc_date=str(ctx["calc_date"]), curves_fp=ctx["version"][1],
+            calc_date=str(ctx["calc_date"]), curves_fp=_curves_fp_of(ctx),
             universe=dict(market_cache.get("universe_metrics") or {}),
             fixed=dict(market_cache.get("fixed_metrics") or {}))
     except Exception as e:
@@ -2247,7 +2585,7 @@ async def save_snapshot_now() -> int:
         return 0
     return await asyncio.to_thread(
         metrics_persist.save,
-        calc_date=str(ctx["calc_date"]), curves_fp=ctx["version"][1],
+        calc_date=str(ctx["calc_date"]), curves_fp=_curves_fp_of(ctx),
         universe=dict(market_cache.get("universe_metrics") or {}),
         fixed=dict(market_cache.get("fixed_metrics") or {}))
 
@@ -2371,18 +2709,30 @@ async def metrics_worker() -> None:
             # ждало бы следующей сделки, а до неё жила линеаризация в браузере.
             if _sides_dirty:
                 # порядок — по приоритету: живые движения сторон впереди волны
-                take_s = sorted(_sides_dirty, key=_sides_dirty.get)[:_sides_batch()]
-                for _i in take_s:
-                    _sides_dirty.pop(_i, None)
+                take_s, prio_s = _take_sides_batch()
                 _t0 = time.perf_counter()
-                srows = await run_heavy(recrunch_sides, take_s, ctx["board"])
+                _pend_s: list = []
+                srows = await run_heavy(recrunch_sides, take_s, ctx["board"],
+                                        time.monotonic() + _SIDES_BUDGET_SEC,
+                                        _pend_s)
                 _took = (time.perf_counter() - _t0) * 1000.0
                 sides_ms += _took
+                # НЕДОСЧИТАННОЕ — ОБРАТНО В ОЧЕРЕДЬ, с прежним приоритетом:
+                # иначе бумага, до которой заход не дошёл, ждала бы следующего
+                # события по себе, а не следующего такта
+                for _i in _pend_s:
+                    _queue_sides(_i, prio_s.get(_i, _SIDES_PRIO_WAVE))
                 # цена стороны плавает от книги и глубины — держим скользящее
-                # среднее, по нему следующий такт и выбирает размер пачки
-                globals()["_sides_ms_avg"] = (
-                    _took / len(take_s) if _sides_ms_avg <= 0
-                    else 0.7 * _sides_ms_avg + 0.3 * (_took / len(take_s)))
+                # среднее, по нему следующий такт и выбирает размер пачки.
+                # СРЕДНЕЕ — ПО РЕАЛЬНО ПОСЧИТАННЫМ. В take_s попадают и бумаги,
+                # которые пропускаются даром (нет строки, нет контекста): деля
+                # время на всю пачку, среднее схлопывалось за пять тактов с 28
+                # до 4,7 мс, и пачка росла до потолка — заход на 12 секунд.
+                _n_done = len(srows or ())
+                if _n_done:
+                    globals()["_sides_ms_avg"] = (
+                        _took / _n_done if _sides_ms_avg <= 0
+                        else 0.7 * _sides_ms_avg + 0.3 * (_took / _n_done))
                 if srows:
                     _store_rows(market_cache, srows)
                     sides_since_log += len(srows)

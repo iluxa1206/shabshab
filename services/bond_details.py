@@ -11,7 +11,7 @@ from services.market_data import MarketDataService
 from services import metrics
 from services.bonds import (
     create_bond_ref_data, extract_bond_reference_dict,
-    build_ref_external, external_formula, reconcile_face, amort_remaining_face,
+    build_ref_external, external_formula, normalize_ref_face,
 )
 from services.valuation import calculate_valuation_metrics, pick_horizon
 from services.cashflow import build_cashflow_from_moex
@@ -99,15 +99,9 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
 
     # Номинал: сверяем с фактом купона (value/valueprc); правит тихий фолбэк на 1000
     _cd_face = calc_date or date.today()
-    if reconcile_face(ref_obj, (sched_full or {}).get("coupons"), _cd_face):
+    normalize_ref_face(ref_obj, sched_full, _cd_face)
+    if ref_dict.get("face_value") != ref_obj.face_value:
         ref_dict["face_value"] = ref_obj.face_value
-    # остаток из графика амортизаций авторитетнее кэша: стейл-кэш у
-    # амортизируемых бумаг завышал dirty/SM/DM (БалтЛизП10: 1000 vs 900)
-    _rem = amort_remaining_face((sched_full or {}).get("amorts"), _cd_face,
-                                ref_obj.face_value)
-    if _rem is not None and abs(_rem - ref_obj.face_value) > 0.5:
-        ref_obj.face_value = _rem
-        ref_dict["face_value"] = _rem
 
     # НКД на calc_date из MOEX (приоритет над стейл-кэшем) — для dirty и карточки
     if accrued_live is not None:
@@ -347,11 +341,7 @@ async def load_reprice_ctx(isin: str, cache: dict) -> dict:
         calc_date = rates_date or date.today()
 
     # номинал и НКД — как в карточке (иначе dirty/ставка расходятся)
-    reconcile_face(ref_obj, (sched_full or {}).get("coupons"), calc_date)
-    _rem = amort_remaining_face((sched_full or {}).get("amorts"), calc_date,
-                                ref_obj.face_value)
-    if _rem is not None and abs(_rem - ref_obj.face_value) > 0.5:
-        ref_obj.face_value = _rem
+    normalize_ref_face(ref_obj, sched_full, calc_date)
     accrued_live = snapshot.get(isin, {}).get("accrued")
     accrued_src = snapshot.get(isin, {})
     if accrued_live is None:

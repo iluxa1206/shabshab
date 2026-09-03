@@ -168,3 +168,32 @@ def test_without_seed_missing_curves_still_drop_the_cache():
     _seed(4)
     assert us._rebind_curves(None) == 4
     assert not us._eval_ctx
+
+
+def test_seed_flows_rejected_when_version_moved(monkeypatch):
+    """Аудит 03.09, находка 16: утренний проход берёт кривые один раз и идёт
+    слайсами минуты. Пересобрались кривые по ходу — движок уже почистил
+    _flow_cache, и дописывать туда потоки прежней кривой нельзя: второй чистки
+    не будет, _memo_version уже новая."""
+    from datetime import date as _date
+    us._flow_cache.clear()
+    try:
+        cache = {"fp": "A"}
+        monkeypatch.setattr(us, "_curves_fp", lambda mc: mc.get("fp"))
+        monkeypatch.setattr(us, "_trading_day", lambda: "2026-09-03")
+
+        us.seed_begin(cache, _date(2026, 9, 3))
+        seeded = {"RU000A100001": {("main", 200): ([], [])}}
+
+        # кривые пересобрались по ходу прохода — засев отбрасываем целиком
+        cache["fp"] = "B"
+        assert us.seed_flows(seeded, cache, _date(2026, 9, 3)) == 0
+        assert not us._flow_cache
+
+        # версия та же — потоки принимаем
+        cache["fp"] = "A"
+        assert us.seed_flows(seeded, cache, _date(2026, 9, 3)) == 1
+        assert us._flow_cache["RU000A100001"]
+    finally:
+        us._flow_cache.clear()
+        us._seeded_version = None

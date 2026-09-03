@@ -388,7 +388,7 @@ def test_yoi_cache_skips_recount_of_same_price_set(monkeypatch):
         return {round(float(p), 4): 100 for p in prices}
 
     monkeypatch.setattr("services.yidx_exact.y_idx_many", fake_many)
-    monkeypatch.setattr(us, "_vol_prices", lambda isin: {})
+    monkeypatch.setattr(us, "_vol_prices", lambda isin, **kw: {})
     monkeypatch.setattr("services.live_quotes.get", lambda isin: {})
     us._eval_ctx["RU000A100001"] = {"ref_obj": object()}
     us._yoi_cache.clear()
@@ -708,7 +708,7 @@ def test_recrunch_sides_uses_board_when_no_push(monkeypatch):
     from services.market_data import market_cache
     seen = {}
 
-    def fake_fill(row, isin, sides, snap):
+    def fake_fill(row, isin, sides, snap, book=None):
         seen["sides"] = dict(sides)
         row["yoi_bid"] = 210
 
@@ -748,7 +748,7 @@ def test_warm_grids_stops_at_deadline(monkeypatch):
         return {round(float(p), 4): 200 for p in prices}
 
     monkeypatch.setattr(ye, "y_idx_many", fake_many)
-    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap: [100.0])
+    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap, book=None: [100.0])
     monkeypatch.setattr(us, "_has_book", lambda isin, book=None: True)
     isins = ["RU000A10000%d" % i for i in range(5)]
     for i in isins:
@@ -874,7 +874,10 @@ def test_snapshot_restore_fills_only_missing(monkeypatch):
             lambda **kw: {"universe": {"RU000A100001": {"last": 100.0, "yoi": 100},
                                        "RU000A100002": {"last": 99.0, "yoi": 200}},
                           "fixed": {}, "ts": 0.0})
-        ctx = {"calc_date": "2026-09-01", "version": ("2026-09-01", "fp1")}
+        # версия — ТРОЙКА (calc_date, день расписаний, отпечаток кривых): отпечаток
+        # живёт на [2], и снимок ключуется именно им (см. _curves_fp_of)
+        ctx = {"calc_date": "2026-09-01",
+               "version": ("2026-09-01", "2026-09-01", "fp1")}
         assert us._restore_snapshot(ctx, market_cache) == 1
         um = market_cache["universe_metrics"]
         assert um["RU000A100001"]["yoi"] == 999      # своё, не из снимка
@@ -929,7 +932,8 @@ def test_save_snapshot_now_uses_last_ctx(monkeypatch):
     try:
         us._last_ctx = None
         assert _aio.run(us.save_snapshot_now()) == 0      # такта ещё не было
-        us._last_ctx = {"calc_date": "2026-09-01", "version": ("2026-09-01", "fp1")}
+        us._last_ctx = {"calc_date": "2026-09-01",
+                        "version": ("2026-09-01", "2026-09-01", "fp1")}
         market_cache["universe_metrics"] = {"RU000A100001": {"yoi": 210}}
         assert _aio.run(us.save_snapshot_now()) == 1
         assert seen["calc_date"] == "2026-09-01" and seen["curves_fp"] == "fp1"
@@ -1124,7 +1128,7 @@ def test_grid_is_built_for_visible_without_volume_filter(monkeypatch):
     десятки раз в минуту. Для остального рынка это была бы полуторминутная
     работа впустую."""
     monkeypatch.setattr(us, "active_vol_sizes", lambda: [])
-    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap: [100.0, 100.1])
+    monkeypatch.setattr(us, "_grid_nodes", lambda isin, sides, wap, book=None: [100.0, 100.1])
     monkeypatch.setattr(us, "_grid_budget", 5)     # потолок построений на такт
     us._visible.clear()
     us._yoi_grid.pop("RU000A100001", None)
@@ -1176,7 +1180,7 @@ def test_ctx_picks_up_accrued_when_it_arrives(monkeypatch):
     got = {}
     monkeypatch.setattr("services.yidx_exact.y_idx_many",
                         lambda ctx, prices: {round(float(p), 4): 200 for p in prices})
-    monkeypatch.setattr(us, "_vol_prices", lambda i: {})
+    monkeypatch.setattr(us, "_vol_prices", lambda i, **kw: {})
     monkeypatch.setattr(us, "_grid_nodes_if_needed", lambda *a, **kw: [])
     row = {}
     try:

@@ -39,15 +39,42 @@ MAX_ISINS = int(os.getenv("TAPE_YIDX_MAX_ISINS", "120"))
 # Контекст живёт минутами: кривая и НКД внутри дня меняются медленно, а
 # пересборка на каждый запрос ленты — самая дорогая часть обогащения.
 _CTX_TTL = float(os.getenv("TAPE_YIDX_CTX_TTL", "300"))
-_ctx_cache: dict[str, tuple[float, object]] = {}
+_ctx_cache: dict[str, tuple[float, object, tuple]] = {}
 _FLOAT_BASES = ("KEYRATE", "RUONIA")
+
+
+def _ctx_fp() -> tuple:
+    """Отпечаток входа контекста: кривые + версия Справочника. Число, которым
+    лента помечает сделку, пишется в архив НАВСЕГДА — контекст, замороженный на
+    5 минут, оставлял в нём прикидку по снятой кривой или по прежней спеке."""
+    fp = ver = None
+    try:
+        from services.market_data import curves_fingerprint, market_cache
+        fp = curves_fingerprint(market_cache)
+    except Exception:
+        pass
+    try:
+        from services import instruments_registry
+        ver = instruments_registry.data_version()
+    except Exception:
+        pass
+    return (fp, ver)
+
+
+def drop_ctx_cache(isin: Optional[str] = None) -> None:
+    """Правка Справочника → контекст ленты невалиден (isin=None — массовая)."""
+    if isin:
+        _ctx_cache.pop(isin, None)
+    else:
+        _ctx_cache.clear()
 
 
 async def _metrics_fn(isin: str):
     """metrics_fn(price) для выпуска или None, если посчитать нечем."""
     hit = _ctx_cache.get(isin)
     now = time.monotonic()
-    if hit and now - hit[0] < _CTX_TTL:
+    fp = _ctx_fp()
+    if hit and now - hit[0] < _CTX_TTL and hit[2] == fp:
         return hit[1]
     from services.orderbook_svc import build_metrics_fn
     try:
@@ -55,13 +82,13 @@ async def _metrics_fn(isin: str):
     except Exception as e:                     # нет в реестре, нет кривой, экзотика
         logger.debug("y-idx ленты: %s пропущен (%s)", isin, e)
         fn = None
-    _ctx_cache[isin] = (now, fn)
+    _ctx_cache[isin] = (now, fn, fp)
     return fn
 
 
 def _prune_cache() -> None:
     now = time.monotonic()
-    for k, (at, _) in list(_ctx_cache.items()):
+    for k, (at, *_rest) in list(_ctx_cache.items()):
         if now - at > _CTX_TTL:
             _ctx_cache.pop(k, None)
 

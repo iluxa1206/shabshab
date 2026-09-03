@@ -160,6 +160,30 @@ def reconcile_face(ref: BondRefData, coupons_full, calc_date: date,
     return None
 
 
+def normalize_ref_face(ref: BondRefData, full: Optional[dict],
+                       calc_date: date) -> None:
+    """Привести ref.face_value к факту: сверка с купоном + остаток по графику
+    амортизаций. ЕДИНСТВЕННАЯ копия этой пары — раньше её переписывали в каждом
+    сборщике контекста, и один из них её потерял.
+
+    Аудит конвейера 03.09, находка 3: universe_stream.warm_ctx (контекст бумаге,
+    по которой сегодня не было сделок, а также всем, чей контекст пересобран
+    после правки Справочника или добавлен дискавери среди дня) клал в _eval_ctx
+    сырой ref из isins_cache. Дальше на этом контексте считались спреды сторон,
+    вся сетка цен и спред набора на объём — от завышенного номинала, тогда как
+    yoi в той же строке (её пишет enrich_bond, где поправка есть) считался от
+    верного, а лестница стакана давала третье число.
+
+    full — ответ слоя расписаний ({"coupons": [...], "amorts": [...]}); None или
+    пустой словарь = источник промолчал, номинал остаётся как был.
+    """
+    full = full or {}
+    reconcile_face(ref, full.get("coupons") or [], calc_date)
+    rem = amort_remaining_face(full.get("amorts"), calc_date, ref.face_value)
+    if rem is not None and abs(rem - ref.face_value) > 0.5:
+        ref.face_value = rem
+
+
 def amort_remaining_face(amorts, calc_date: date,
                         current_face: Optional[float] = None) -> Optional[float]:
     """Остаток номинала на calc_date из графика амортизаций MOEX = Σ будущих

@@ -78,10 +78,20 @@ class ConnectionManager:
         if channel == "market" and isin == "*":
             self.market_firehose.add(websocket)
             # снапшот всего, что уже известно — вкладка стартует с полной
-            # картиной, а не ждёт первого движения каждой бумаги
-            for i, snap in list(self.last_market.items()):
+            # картиной, а не ждёт первого движения каждой бумаги.
+            #
+            # СНИМОК БЕРЁМ ВНУТРИ ЦИКЛА, а не материализуем список заранее:
+            # сокет уже в firehose, и патч, разосланный пока мы идём по рынку,
+            # доедет РАНЬШЕ, чем цикл дойдёт до этой бумаги. С заранее снятым
+            # словарём мы следом отправляли бы устаревшую копию поверх свежего
+            # патча — цена и спред откатывались на такт-другой назад.
+            for i in list(self.last_market):
+                snap = self.last_market.get(i)
+                if snap is None:
+                    continue
                 try:
-                    await websocket.send_json({"channel": "market", "isin": i, "data": snap})
+                    await websocket.send_json({"channel": "market", "isin": i,
+                                               "data": dict(snap)})
                 except Exception:
                     self.disconnect(websocket)
                     return

@@ -3,7 +3,8 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { fetchBonds, fetchDepth, fetchMeta, fetchQuotes, connectMarketWs, repriceBond, UnauthorizedError, APP_BASENAME } from "./api.js";
 import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
-  sideMetricPatch, sideMetricChanges, applySideQuote } from "./quotesMerge.js";
+  sideMetricPatch, sideMetricChanges, applySideQuote,
+  streamMetricPatch, wapMetricPatch, applyWapQuote } from "./quotesMerge.js";
 import { sortRows, filterByAdv, filterBySpread } from "./tableRows.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume } from "./vwap.js";
@@ -426,15 +427,13 @@ function Dashboard() {
     );
     wsRef.current = ctrl;
 
-    // флаш буфера: все накопленные патчи одним setBonds
+    // флаш буфера: все накопленные патчи одним setBonds. Список полей патча и
+    // сверка цены, к которой они посчитаны, живут в quotesMerge
+    // (STREAM_LEVEL_KEYS / STREAM_PRICED_KEYS / streamMetricPatch).
     // preferred_horizon и spread_dur_yrs движок кладёт в патч специально (см.
     // universe_stream._METRIC_FIELDS): спред уже посчитан К ОФЕРТЕ, а без них
     // строка продолжала бы мерить срок до ПОГАШЕНИЯ — маркер оферты, сортировка
     // по сроку и ось X аналитики врали до перезагрузки страницы.
-    const METRIC_KEYS = ["yield_over_index_bps", "dm_bps", "disc_margin_bps",
-      "z_model_bps", "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
-      "delta_to_prev_close", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
-      "preferred_horizon", "spread_dur_yrs"];
     // Цена набора тикета и её Y-IDX едут словарями по размерам ("ask:5000000"),
     // потому что размеры выбирает клиент. Раскладываем в те же плоские поля,
     // которыми отвечает /api/bonds, — дальше по строке они неразличимы.
@@ -471,20 +470,37 @@ function Dashboard() {
           // бы свежую цену со спредом от прежнего верха стакана.
           applySideQuote(b, n, "bid", q.bid, "bid" in q);
           applySideQuote(b, n, "ask", q.ask, "ask" in q);
-          if (q.vwap_pct != null) n.wap_price_pct = q.vwap_pct;
+          // средневзвес — той же парой, что стороны: новая цена гасит спред и
+          // уводит прежнее число в y_idx_wap_stale (см. applyWapQuote)
+          applyWapQuote(b, n, q.vwap_pct);
           // оборот дня по тикам: биржевой VALTODAY из снапшота отстаёт, а свой
           // счёт растёт сделка в сделку. Назад не откатываем — патч может
           // прийти от сокета, чей агрегат ещё догоняется архивом.
           if (q.val_today != null && !(b.val_today > q.val_today)) n.val_today = q.val_today;
+          const price = priceNew[b.isin];
           if (q.metrics) {
             // ЯВНЫЙ null СТИРАЕТ число: бэк присылает его, когда считать
             // стало нечем (сторона ушла из книги, контекст остыл). Раньше
             // такие поля пропускались, и в строке жил спред от прошлой цены.
-            for (const k of METRIC_KEYS) if (k in q) n[k] = q[k];
+            //
+            // ЦЕНЫ СВЕРЯЕМ. Буфер выше склеивает патч движка с котировкой,
+            // пришедшей ПОСЛЕ него: цена в склейке — из котировки, спред — из
+            // патча, посчитанного к прежней, а флаг metrics наследуется. Движок
+            // везёт цены расчёта отдельными полями (yoi_px/yoi_bid_px/…),
+            // которых в котировке нет, поэтому пару можно проверить уже после
+            // склейки — см. quotesMerge.streamMetricPatch.
+            const { fields, stale } = streamMetricPatch(q, {
+              last: price != null ? price : b.last_price_pct,
+              bid_price_pct: n.bid_price_pct,
+              ask_price_pct: n.ask_price_pct,
+              wap_price_pct: n.wap_price_pct,
+            });
+            Object.assign(n, fields);
             applyVolPatch(n, q);
-            n._mstale = false;   // производные свежие — строка не dim
+            // stale — число посчитано к другой цене и на экран не пошло: строка
+            // приглушается, а не показывает чужую пару как свежую
+            n._mstale = stale;
           }
-          const price = priceNew[b.isin];
           if (price != null) {
             // CHG (vs пред. закрытие) пересчитываем СРАЗУ на клиенте: prev_close =
             // last − delta (инвариант дня) → delta_new = price − prev_close.
@@ -605,7 +621,8 @@ function Dashboard() {
           && (q.wap == null || q.wap === b.wap_price_pct)
           && (q.vol == null || q.vol === b.val_today)
           && !quoteChanges(b, q, QUOTE_METRIC_FIELDS)
-          && !sideMetricChanges(b, q);
+          && !sideMetricChanges(b, q)
+          && !wapMetricPatch(b, q);
         if (same) return b;              // без изменений — не трогаем ссылку
         touched = true;
         // снимаем метку live: дальше в строке цифры снапшота, и подпись
@@ -629,14 +646,16 @@ function Dashboard() {
         // рынке уже нет — до перезагрузки страницы. У WS-ветки флаг стоял.
         applySideQuote(b, n, "bid", q.bid, "bid" in q);
         applySideQuote(b, n, "ask", q.ask, "ask" in q);
-        if (q.wap != null) n.wap_price_pct = q.wap;
+        applyWapQuote(b, n, q.wap);
         if (q.vol != null) n.val_today = q.vol;
         // РАСЧЁТНЫЕ поля от событийного движка (Y-IDX по сделке и средневзвесу,
         // цена набора на объём и её спред): спред торгуемой бумаги обновляется
         // по факту сделки, а не раз в 10 минут поллером, а число набора —
         // тактом движка, а не перезагрузкой таблицы
+        // по наличию ключа: явный null значит «числа больше нет» (см.
+        // quotesMerge.quoteChanges и api/routes/bonds.py)
         for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
-          if (q[k] != null) n[field] = q[k];
+          if (k in q) n[field] = q[k];
         }
         if (q.yoi != null) n._yoi_stale = false;
         // Спреды сторон — ПОСЛЕ applySideQuote: та гасит спред под новую цену,
@@ -644,6 +663,9 @@ function Dashboard() {
         // сверяется с уже накопленным n, иначе спред сел бы на прошлую цену.
         const sides = sideMetricPatch(b, q, n);
         if (sides) Object.assign(n, sides);
+        // спред по средневзвесу — та же сверка цены расчёта (yoi_wap_px)
+        const wapPatch = wapMetricPatch(b, q, n);
+        if (wapPatch) Object.assign(n, wapPatch);
         return n;
       });
       return touched ? next : prev;      // ничего не поменялось — без ререндера

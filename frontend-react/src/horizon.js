@@ -45,3 +45,33 @@ export function horizonYears(b, today = new Date()) {
   if (Number.isNaN(t)) return null;
   return (t - today.getTime()) / (365.25 * 24 * 3600 * 1000);
 }
+
+/**
+ * Метрики ВЫБРАННОГО ГОРИЗОНТА поверх объекта оценки.
+ *
+ * Верхнеуровневые поля valuation — сверочная база «к погашению» (см.
+ * services/valuation), а бумага может прайситься к оферте. Любой экран,
+ * показывающий Y-IDX/DM/SM/доходность, обязан пройти через этот выбор: аудит
+ * 03.09 нашёл шапку /chart/:isin с R-spread к погашению рядом с линией спреда
+ * к оферте на том же экране (82 б.п. на РЖД 1Р-52R при цене 99.0).
+ *
+ * Цена, НКД и дата поставки от горизонта не зависят и остаются как есть; поток
+ * режется к оферте, а база Y-IDX роллируется до той же даты — поэтому меняются
+ * ровно доходности и спреды.
+ *
+ * sel: "auto" (правило цены на бэке) либо явный ключ "maturity"|"put"|"call" —
+ * ручной свитчер карточки.
+ */
+const HZ_VIEW_KEYS = ["sm_bps", "disc_margin_bps", "yield_xirr_pct",
+                      "index_yield_pct", "yield_over_index_bps"];
+
+export function horizonView(v, sel) {
+  const hzs = (v && v.horizons) || {};
+  let key = (!sel || sel === "auto") ? (v?.preferred_horizon || "maturity") : sel;
+  if (!hzs[key]) key = hzs.maturity ? "maturity" : key;
+  const h = hzs[key];
+  if (!h) return { v, key: "maturity", date: null, pricePct: null };
+  const out = { ...v };
+  for (const k of HZ_VIEW_KEYS) out[k] = h[k] ?? null;
+  return { v: out, key, date: h.date || null, pricePct: h.price_pct ?? null };
+}

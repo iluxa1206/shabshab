@@ -13,9 +13,11 @@ from typing import Dict, List, Optional
 
 from services.market_data import MarketDataService
 from services.bonds import (
-    create_bond_ref_data, build_ref_external, next_coupon_after, reconcile_face,
+    create_bond_ref_data, build_ref_external, next_coupon_after,
+    normalize_ref_face,
 )
 from services.valuation import (calculate_valuation_metrics, horizon_pair,
+                                horizon_at_price,
                                 alt_horizon as _alt_horizon)
 from core.valuation import next_offer_info
 from services.zspread import compute_z_bps
@@ -97,15 +99,10 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     bid = bid if (bid or 0) > 0 else None
     ask = ask if (ask or 0) > 0 else None
 
-    # Номинал: сверяем с фактом купона (value/valueprc). Ловит тихий фолбэк на
-    # 1000, когда бумаги нет в securities-кэше.
-    reconcile_face(ref, coupons_full, calc_date)
-    # остаток из графика амортизаций авторитетнее кэша (стейл-кэш завышал
-    # dirty/SM/DM амортизируемых бумаг — БалтЛизП10 1000 vs 900)
-    from services.bonds import amort_remaining_face
-    _rem = amort_remaining_face(amorts, calc_date, ref.face_value)
-    if _rem is not None and abs(_rem - ref.face_value) > 0.5:
-        ref.face_value = _rem
+    # Номинал: сверка с фактом купона + остаток по графику амортизаций. Одна
+    # копия на проект (services.bonds.normalize_ref_face) — второй сборщик
+    # контекста, universe_stream.warm_ctx, эту поправку когда-то потерял.
+    normalize_ref_face(ref, full, calc_date)
 
     periods = []
     for c in coupons_full:
@@ -189,10 +186,34 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             # Дюрация — ИЗ ТОГО ЖЕ горизонта, что и спред: иначе точка на графике
             # аналитики стоит на сроке до погашения, а её Y-IDX посчитан к оферте.
             dur_hz = _hzm.get("dur_yrs")
-            # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток)
+            # Y-IDX по верху стакана: покупка по ask, продажа по bid (тот же поток).
+            # ГОРИЗОНТ — СВОЙ У КАЖДОЙ ЦЕНЫ. Правило цены сравнивает Y-IDX
+            # горизонтов, а он у каждого уровня свой: на границе безразличия
+            # соседние цены законно выбирают разные горизонты (docstring
+            # horizon_at_price). Раньше здесь брался горизонт ЦЕНЫ СДЕЛКИ и из
+            # него — спреды всех сторон, тогда как движок (_fill_side_metrics →
+            # yidx_exact), лестница стакана (orderbook_svc) и скринер считают
+            # per-price. В поле yoi_ask лежали числа двух разных методик — какой,
+            # зависело от того, кто писал строку последним: прогрев или движок.
+            # Замер на фикстурах: put через 3 мес по 100, last 99.0, ask 100.5 →
+            # 38 б.п. против 250 у всех остальных путей.
+            _hzs = m.get("horizons") or {}
+
+            def _yoi_at(px):
+                if px is None:
+                    return None
+                sel = _hzs.get(horizon_at_price(px, m)) or _hzs.get("maturity") or {}
+                v = (sel.get("y_idx_by_price") or {}).get(px)
+                if v is None:      # горизонт без числа на этой цене — общий фолбэк
+                    v = (m.get("y_idx_by_price") or {}).get(px)
+                return v
+
+            yoi_bid, yoi_ask = _yoi_at(bid), _yoi_at(ask)
+            yoi_wap = _yoi_at(wap)
+            # НАКЛОН — ВНУТРИ ОДНОГО ГОРИЗОНТА: пара проб обязана мериться одной
+            # методикой, иначе разность двух горизонтов выдаст себя за
+            # чувствительность к цене
             _alt = _hzm.get("y_idx_by_price") or m.get("y_idx_by_price") or {}
-            yoi_bid, yoi_ask = _alt.get(bid), _alt.get(ask)
-            yoi_wap = _alt.get(wap)
             # номинал и НКД РОВНО те, из которых собран dirty (амортизация учтена,
             # НКД на дату поставки) — фронт считает ими деньги уровня стакана
             face_px, accrued_settle = m.get("pricing_face_rub"), m.get("accrued_settle_rub")
@@ -342,6 +363,12 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
             # средневзвес нужен ДО расчёта: его спред считается той же альт-ценой,
             # что bid/ask (свой счёт по тикам живее биржевого WAPRICE)
             _lv = live_quotes.get(isin) or {}
+            # ОДНО ЧТЕНИЕ НА БУМАГУ. Ниже эта же цена ложится в строку как
+            # `wap`, и она обязана быть ТОЙ, к которой посчитан yoi_wap: поле
+            # служит ценой расчёта для сверки на клиенте. Второе, более позднее
+            # чтение live_quotes после enrich подменяло её свежим тиком, и
+            # сверка вырождалась в сравнение цены с самой собой.
+            _wap = _lv.get("vwap_pct") or snap.get("waprice")
             out[isin] = enrich_bond(
                 u, ref, full,
                 flows_cache=(flows_by.setdefault(isin, {})
@@ -350,7 +377,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
                 accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
                 accrued_date=snap.get("accrued_date"),
                 bid=snap.get("bid"), ask=snap.get("ask"),
-                wap=_lv.get("vwap_pct") or snap.get("waprice"),
+                wap=_wap,
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
             if on_ctx is not None:
@@ -374,7 +401,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
             # спред по средневзвесу дня посчитан внутри enrich (alt_prices) —
             # аналитика считает по нему, а не по last price (одна сделка, в
             # неликвиде — случайный тонкий принт)
-            out[isin]["wap"] = lv.get("vwap_pct") or snap.get("waprice")
+            out[isin]["wap"] = _wap
         return out, []
 
     def _backfill() -> None:

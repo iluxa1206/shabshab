@@ -20,6 +20,69 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _fp_seq(items) -> int:
+    """Отпечаток последовательности, НЕ ЗАВИСЯЩИЙ ОТ ПОРЯДКА и от типов внутри.
+
+    Витрина (universe.enrich_bond) и движок (bond_details._periods_from_coupons)
+    строят расписание из одного ответа bondization, но по-разному: второй
+    сортирует, первый берёт как пришло. Пока источник отдаёт купоны по
+    возрастанию даты, списки совпадают — но зависеть от этого нельзя: разошёлся
+    порядок, разошёлся ключ, и общий кэш потоков превратился бы в два набора
+    ключей на бумагу, то есть в удвоение работы вместо экономии.
+
+    Сортируем по repr: элементы бывают разнотипными (value=None рядом с float),
+    и прямое сравнение кортежей на таких кидает TypeError.
+    """
+    return hash(tuple(sorted(map(repr, items))))
+
+
+def _schedule_fp(bond: BondRefData, periods, amorts, offers) -> tuple:
+    """Отпечаток ВХОДА, из которого строится поток платежей.
+
+    Ключ кэша потоков нёс только спред выпуска, а сам график — купоны,
+    амортизации, оферты, номинал, дата погашения — в него не входил. Между тем
+    build_cashflows_to_maturity стоит именно на них: без explicit_periods он
+    ГЕНЕРИРУЕТ расписание из issue_date+coupon_period_days, без amorts платит
+    номинал целиком на погашении, без offers не режет поток по оферте.
+
+    Одна осечка выборки bondization (ISS отдал пусто; слой расписаний пустое НЕ
+    кэширует и повторит через секунды) роняла в кэш bullet-поток по
+    сгенерированному расписанию. ISS восстанавливался, цена и номинал шли уже из
+    настоящего графика, а поток приходил ХИТОМ из отравленного кэша — и жил до
+    конца дня, потому что версия кэша (день, кривые, правка Справочника)
+    расхождения графика не видит. У амортизируемой бумаги это сотни б.п. вверх:
+    поток возвращает полный номинал на погашении вместо траншей.
+
+    Отпечаток стоит десятки микросекунд против 36 мс сборки потока на 361
+    платеже. Заодно закрывает перекос ключей ("cut", cut) и ("flat", L), в
+    которых спреда выпуска не было вовсе.
+
+    СБОЙ ОТПЕЧАТКА ВЫКЛЮЧАЕТ КЭШ, А НЕ РОНЯЕТ РАСЧЁТ И НЕ ОТДАЁТ ЧУЖОЙ ПОТОК:
+    на неожиданной форме входа возвращаем уникальный объект — ключ не совпадёт
+    ни с чем, бумага просто посчитается без кэша.
+    """
+    try:
+        return (
+            len(periods or ()),
+            _fp_seq((p[0], p[1], p[2] if len(p) > 2 else None)
+                    for p in (periods or ())),
+            len(amorts or ()),
+            _fp_seq((a.get("date"), a.get("value")) for a in (amorts or ())),
+            len(offers or ()),
+            _fp_seq((o.get("date"), o.get("type"), o.get("price"))
+                    for o in (offers or ())),
+            # СКАЛЯРЫ — ТОЖЕ ЧЕРЕЗ repr: кортеж отпечатка сам становится частью
+            # ключа словаря, и нехэшируемое значение в любом из этих полей
+            # уронило бы расчёт уже на flows_cache.get, за пределами этого try.
+            hash(repr((bond.spread_issue_bps, bond.face_value,
+                       bond.maturity_date, bond.issue_date,
+                       bond.first_coupon_date, bond.coupons_per_year,
+                       bond.coupon_period_days, bond.base, bond.face_index))),
+        )
+    except Exception:
+        return object()
+
+
 def _index_provider(base: str, warnings: list, calc_date: date = None):
     """I/O-граница: история индекса ЦБ фетчится ЗДЕСЬ (раз на запрос), ядро
     получает готовый провайдер. Сбой фетча → warning + провайдер-заглушка
@@ -300,14 +363,21 @@ def calculate_valuation_metrics(
     except Exception:
         pass
 
+    sched_fp = _schedule_fp(bond, periods, amorts, offers)
+
     def _flows(key, build):
         """Поток по ключу: из кэша бумаги либо построить и запомнить.
+
+        Ключ несёт ОТПЕЧАТОК РАСПИСАНИЯ (см. _schedule_fp): другой график
+        купонов, амортизаций или оферт — другой ключ, а не тихий хит потоком,
+        построенным на осечке источника.
 
         Предупреждения сборки запоминаются ВМЕСТЕ с потоком и подмешиваются на
         каждом попадании — иначе строка «спека фиксинга потеряна» появлялась бы
         только при первом расчёте и пропадала при следующей цене."""
         if flows_cache is None:
             return build(warnings)
+        key = (sched_fp, key)
         hit = flows_cache.get(key)
         if hit is not None:
             warnings.extend(hit[1])
@@ -488,12 +558,14 @@ def calculate_valuation_metrics(
     sm_bps = _sane_bps(sm_bps, warnings, "sm")
     disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
     yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
-    y_idx_by_price = {p: _sane_bps(v, warnings, "yield_over_index_alt")
+    y_idx_by_price = {p: _sane_bps(v, warnings, "yield_over_index_alt", alt=True)
                       for p, v in y_idx_by_price.items()}
     # alt-цены проходят ТУ ЖЕ отсечку, что и цена расчёта: уровень стакана — это
     # такое же число наружу, и мусор в нём ничем не лучше мусора в строке
-    ytm_by_price = {p: _sane_pct(v, warnings, "yield_alt") for p, v in ytm_by_price.items()}
-    dm_by_price = {p: _sane_bps(v, warnings, "disc_margin_alt") for p, v in dm_by_price.items()}
+    ytm_by_price = {p: _sane_pct(v, warnings, "yield_alt", alt=True)
+                    for p, v in ytm_by_price.items()}
+    dm_by_price = {p: _sane_bps(v, warnings, "disc_margin_alt", alt=True)
+                   for p, v in dm_by_price.items()}
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
@@ -586,10 +658,11 @@ def calculate_valuation_metrics(
                     continue
                 _y = xirr_yield_pct(_d, cfs_h, calc_date)
                 _dirty_alt_h[_p] = _d
-                ytm_alt_h[_p] = (_sane_pct(round(_y, 4), warnings, "yield_alt_horizon")
+                ytm_alt_h[_p] = (_sane_pct(round(_y, 4), warnings,
+                                           "yield_alt_horizon", alt=True)
                                  if _y is not None else None)
                 y_idx_alt_h[_p] = (_sane_bps(round((_y - idx_y_h) * 100.0), warnings,
-                                             "yield_over_index_alt_horizon")
+                                             "yield_over_index_alt_horizon", alt=True)
                                    if _y is not None else None)
             except Exception as e:
                 logger.warning(f"alt-price horizon Y-IDX error {bond.isin} @{_p}: {e}")
@@ -603,7 +676,7 @@ def calculate_valuation_metrics(
                 try:
                     dm_alt_h[_p] = (_sane_bps(solve_discount_margin_bps(flat_cfs_h, calc_date,
                                                                         _d, L_h),
-                                              warnings, "disc_margin_alt_horizon")
+                                              warnings, "disc_margin_alt_horizon", alt=True)
                                     if _d is not None else None)
                 except Exception as e:
                     logger.warning(f"alt-price horizon DM error {bond.isin} @{_p}: {e}")
@@ -698,9 +771,25 @@ def calculate_valuation_metrics(
     if _sanity:
         sm_bps = disc_margin_bps = yield_over_index_bps = None
         sm_to_offer = dm_to_offer = None
-        y_idx_by_price = {}
+        # ...И ЗАПИСЬ ЦЕНЫ РАСЧЁТА В КАРТАХ ПО ЦЕНАМ — но ТОЛЬКО ЕЁ.
+        #
+        # horizons["maturity"]["y_idx_by_price"] лежит здесь ПО ССЫЛКЕ, поэтому
+        # переприсваивание локальной y_idx_by_price его не трогало: в колонке
+        # Y-IDX стоял прочерк, а витрина, лестница стакана и TG брали из той же
+        # карты число, которое сторож и должен был спрятать.
+        #
+        # ЧУЖИЕ ЦЕНЫ ТРОГАТЬ НЕЛЬЗЯ. Санити — вердикт ОДНОЙ цены, а батчевые
+        # потребители (yidx_exact.y_idx_many, orderbook_svc) передают первым
+        # аргументом ПРОИЗВОЛЬНЫЙ элемент своего набора: лучший бид, нижний узел
+        # сетки, самый нижний уровень книги. Стирая карты целиком, одна безумная
+        # цена в батче гасила бы все остальные — у бумаги в последние дни жизни
+        # нижний узел сетки уводит доходность за 150 %, и молчала бы вся сетка.
+        y_idx_by_price.pop(price, None)
         for _h in horizons.values():
             _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
+            for _m in ("y_idx_by_price", "ytm_by_price", "dm_by_price"):
+                if isinstance(_h.get(_m), dict):
+                    _h[_m].pop(price, None)
             _clear_dur(_h)
 
     # Y-IDX пуст, а статус «успех» — противоречие: так выглядела недоступная
@@ -928,19 +1017,30 @@ _SANE_BPS = (-5000, 15000)
 _SANE_PCT = (-5.0, 150.0)
 
 
-def _sane_bps(v, warnings: list, name: str):
+# ЧУЖАЯ ЦЕНА НЕ СНИМАЕТ МЕТРИКИ ЦЕНЫ РАСЧЁТА. Альт-цены (bid/ask/средневзвес,
+# пробы ±0,5 пп, до 260 узлов сетки и 60 уровней лестницы) проходят ту же
+# отсечку, но ПОШТУЧНО: вышла за границы — молчит именно она. Раньше их
+# предупреждения падали в общий список, по которому взводится строчный sanity,
+# и одна мусорная сторона гасила Y-IDX по цене сделки. Префикс другой — сам
+# текст предупреждения остаётся видимым в карточке.
+_ALT_PREFIX = "sanity(цена): "
+
+
+def _sane_bps(v, warnings: list, name: str, alt: bool = False):
     if v is None:
         return None
     if not (_SANE_BPS[0] <= v <= _SANE_BPS[1]):
-        warnings.append(f"sanity: {name}={v}bps вне [{_SANE_BPS[0]},{_SANE_BPS[1]}]")
+        warnings.append(f"{_ALT_PREFIX if alt else 'sanity: '}"
+                        f"{name}={v}bps вне [{_SANE_BPS[0]},{_SANE_BPS[1]}]")
         return None
     return v
 
 
-def _sane_pct(v, warnings: list, name: str):
+def _sane_pct(v, warnings: list, name: str, alt: bool = False):
     if v is None:
         return None
     if not (_SANE_PCT[0] <= v <= _SANE_PCT[1]):
-        warnings.append(f"sanity: {name}={v}% вне [{_SANE_PCT[0]},{_SANE_PCT[1]}]")
+        warnings.append(f"{_ALT_PREFIX if alt else 'sanity: '}"
+                        f"{name}={v}% вне [{_SANE_PCT[0]},{_SANE_PCT[1]}]")
         return None
     return v

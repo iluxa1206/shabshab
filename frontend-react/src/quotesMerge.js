@@ -30,7 +30,6 @@
  * самом запросе котировок (см. fetchQuotes). */
 export const QUOTE_METRIC_FIELDS = {
   yoi: "yield_over_index_bps",
-  yoi_wap: "y_idx_wap_bps",
   vol_bid_px: "vol_bid_price_pct",
   vol_ask_px: "vol_ask_price_pct",
   vol_bid_y: "y_idx_vol_bid_bps",
@@ -46,10 +45,14 @@ const QUOTE_PRICE_FIELDS = {
   vol: "val_today",
 };
 
-/** Отличается ли хоть одно поле котировки от того, что уже в строке. */
+/** Отличается ли хоть одно поле котировки от того, что уже в строке.
+ *
+ * ПО НАЛИЧИЮ КЛЮЧА: движок кладёт явный null, когда считать стало нечем, и
+ * ручка везёт его как есть (api/routes/bonds.py). Сверка по значению читала
+ * стирание как «изменений нет», и в ячейке оставался спред от прошлой цены. */
 export function quoteChanges(row, q, keys) {
   for (const [k, field] of Object.entries(keys)) {
-    if (q[k] != null && q[k] !== row[field]) return true;
+    if (k in q && q[k] !== row[field]) return true;
   }
   return false;
 }
@@ -60,14 +63,32 @@ export function quoteChanges(row, q, keys) {
  */
 export function mergeStreamedQuote(row, q) {
   const sides = sideMetricPatch(row, q);
-  if (!q || (!quoteChanges(row, q, QUOTE_METRIC_FIELDS) && !sides)) return row;
+  const wap = wapMetricPatch(row, q);
+  if (!q || (!quoteChanges(row, q, QUOTE_METRIC_FIELDS) && !sides && !wap)) return row;
   const n = { ...row };
   for (const [k, field] of Object.entries(QUOTE_METRIC_FIELDS)) {
-    if (q[k] != null) n[field] = q[k];
+    if (k in q) n[field] = q[k];
+  }
+  // ЧИСЛО ПРИЕХАЛО — МЕТКА СНИМАЕТСЯ ЗДЕСЬ ЖЕ. _yoi_stale ставит и снимает
+  // поллер (App.jsx), а на потоковом пути её только ставили: у бумаги на
+  // стриме свежий Y-IDX оставался приглушённым с подписью «спред к прежней
+  // цене» до следующей смены цены сделки.
+  //
+  // НО ТОЛЬКО ПРИ СОВПАДЕНИИ ЦЕНЫ РАСЧЁТА. У бумаги на стриме цена в строке
+  // своя (из push'а), а yoi считался к цене, известной движку: раньше этот
+  // путь ставил число вообще без сверки и снимал приглушение, перетирая
+  // результат более строгой WS-сверки — поллер ходит раз в секунду и всегда
+  // оказывается последним.
+  if ("yoi_px" in q && q.yoi != null && !eqPx3(q.yoi_px, row.last_price_pct)) {
+    n.yield_over_index_bps = row.yield_over_index_bps;
+    n._yoi_stale = true;
+  } else if (q.yoi != null) {
+    n._yoi_stale = false;
   }
   // у бумаги на стриме цены свои, из push'а — сверка со ценой движка тем более
   // обязательна, снапшот тут отстаёт заведомо
   if (sides) Object.assign(n, sides);
+  if (wap) Object.assign(n, wap);
   return n;
 }
 
@@ -111,6 +132,27 @@ export function sideMetricPatch(row, q, patch = null) {
   return out;
 }
 
+/** Спред по СРЕДНЕВЗВЕСУ — с той же сверкой цены, что у сторон.
+ *
+ * Средневзвес в строке и средневзвес, к которому движок посчитал спред, берутся
+ * из разных мест (свой счёт по тикам против биржевого WAPRICE) и расходятся на
+ * такт. Теперь движок кладёт цену расчёта в строку и отдаёт её рядом с числом
+ * (yoi_wap_px) — сверяем.
+ *
+ * ЦЕНЫ РАСЧЁТА НЕТ — ставим как раньше: у бумаг вне движка (их в ответе вчетверо
+ * больше, чем он считает) сверять нечего, а прочерк вместо числа хуже.
+ */
+export function wapMetricPatch(row, q, patch = null) {
+  if (!q || !("yoi_wap" in q)) return null;
+  const v = q.yoi_wap;
+  const at = q.yoi_wap_px;
+  const px = patch && "wap_price_pct" in patch ? patch.wap_price_pct : row.wap_price_pct;
+  if (v != null && at != null
+      && (px == null || Math.round(px * 1000) !== Math.round(at * 1000))) return null;
+  if (row.y_idx_wap_bps === v && !(patch && "y_idx_wap_bps" in patch)) return null;
+  return { y_idx_wap_bps: v };
+}
+
 /** Есть ли в котировке спред стороны, которого нет в строке (для «строка не
  * изменилась» — без этого патч сторон не доехал бы вовсе). */
 export function sideMetricChanges(row, q, patch = null) {
@@ -128,6 +170,19 @@ export function sideMetricChanges(row, q, patch = null) {
 // px === null значит «стороны в книге НЕТ» (котировка — полный снимок верха
 // стакана): гасим и цену, и спред. Пропускать такой случай нельзя — в строке
 // осталась бы цена заявки, которой на рынке уже нет.
+// Новая цена СРЕДНЕВЗВЕСА в строку — по тем же правилам, что у сторон.
+// Спред к прежнему средневзвесу уводим в y_idx_wap_stale (таблица покажет его
+// приглушённым с подписью «спред к прежней цене»), расчётное поле гасим: без
+// этого сверка wapMetricPatch отклоняла новый спред, а СТАРЫЙ оставался в
+// ячейке рядом со свежей ценой и на полной яркости — то есть выдавал себя за
+// посчитанный к ней.
+export function applyWapQuote(b, n, px) {
+  if (px == null || px === b.wap_price_pct) return;
+  n.wap_price_pct = px;
+  if (b.y_idx_wap_bps != null) n.y_idx_wap_stale = b.y_idx_wap_bps;
+  n.y_idx_wap_bps = null;
+}
+
 export function applySideQuote(b, n, side, px, hasKey) {
   const pxField = side === "bid" ? "bid_price_pct" : "ask_price_pct";
   if (px === undefined || (!hasKey && px == null) || px === b[pxField]) return;
@@ -148,3 +203,68 @@ export function applySideQuote(b, n, side, px, hasKey) {
   n[yField] = null;
 }
 
+/** Поля патча движка, посчитанные ПО ЦЕНЕ СДЕЛКИ. */
+export const STREAM_LEVEL_KEYS = [
+  "yield_over_index_bps", "dm_bps", "disc_margin_bps", "z_model_bps",
+  "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
+  "delta_to_prev_close", "preferred_horizon", "spread_dur_yrs",
+];
+
+/** [поле метрики, поле цены расчёта в патче, поле цены в строке]. */
+export const STREAM_PRICED_KEYS = [
+  ["y_idx_bid_bps", "yoi_bid_px", "bid_price_pct"],
+  ["y_idx_ask_bps", "yoi_ask_px", "ask_price_pct"],
+  ["y_idx_wap_bps", "yoi_wap_px", "wap_price_pct"],
+];
+
+// ОКРУГЛЕНИЕ ДО 3 ЗНАКОВ — канонический ключ цены в проекте
+// (universe_stream._px_key), тот же, что в sideMetricPatch.
+const eqPx3 = (a, c) =>
+  a != null && c != null && Math.round(a * 1000) === Math.round(c * 1000);
+
+/**
+ * Метрики WS-патча движка — со сверкой цены, к которой они посчитаны.
+ *
+ * БАГ, ради которого это заведено (аудит 03.09, находка 2): пуши одной бумаги
+ * копятся в 400-мс буфере и склеиваются плоским спредом. Патч движка везёт пару
+ * «цена → её спред» из одного расчёта, но пришедшая ПОСЛЕ него котировка
+ * перетирала в буфере цену, оставив спред от прежней, и флаг metrics
+ * наследовался от прежнего патча. В флаше applySideQuote честно гасил спред под
+ * новую цену, а следующая строка возвращала старое число обратно — и строка
+ * даже не приглушалась. Ровно рассинхрон 27.08.2026 на главном (WS) пути.
+ *
+ * Теперь движок везёт цены расчёта отдельными полями (yoi_px/yoi_bid_px/
+ * yoi_ask_px/yoi_wap_px, см. universe_stream._METRIC_PX_FIELDS), которых нет в
+ * котировке — склейка их не портит.
+ *
+ * prices — цены, которые ОКАЖУТСЯ в строке после этого флаша.
+ * Возвращает {fields, stale}: stale=true — строку надо приглушить, число
+ * посчитано к другой цене и на экран не идёт.
+ *
+ * ЯВНЫЙ null ПРИМЕНЯЕТСЯ ВСЕГДА: «считать стало нечем» верно при любой цене, а
+ * задержать стирание значит оставить в строке спред ушедшей заявки.
+ */
+export function streamMetricPatch(q, prices) {
+  if (!q || !q.metrics) return null;
+  const fields = {};
+  let stale = false;
+  // цены расчёта нет вовсе (старый бэк) — ведём себя как раньше, без сверки
+  const at = "yoi_px" in q ? q.yoi_px : undefined;
+  const lastOk = at === undefined || eqPx3(at, prices.last);
+  if (lastOk && q.yield_over_index_bps != null) fields._yoi_stale = false;
+  for (const k of STREAM_LEVEL_KEYS) {
+    if (!(k in q)) continue;
+    if (q[k] == null || lastOk) fields[k] = q[k];
+    else stale = true;
+  }
+  for (const [yField, atField, pxField] of STREAM_PRICED_KEYS) {
+    if (!(yField in q)) continue;
+    const px = atField in q ? q[atField] : undefined;
+    // сторону, не прошедшую сверку, гасить не нужно: applySideQuote уже увёл
+    // прежнее число в y_idx_*_stale под новую цену
+    if (q[yField] == null || px === undefined || eqPx3(px, prices[pxField])) {
+      fields[yField] = q[yField];
+    }
+  }
+  return { fields, stale };
+}

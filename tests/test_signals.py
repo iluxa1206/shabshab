@@ -1081,8 +1081,9 @@ def test_ctx_takes_accrued_from_board_when_snapshot_misses(monkeypatch):
     monkeypatch.setattr(bd.MarketDataService, "fetch_bond_schedule_full", staticmethod(_full))
     monkeypatch.setattr(bd.MarketDataService, "get_curves", staticmethod(_curves))
     monkeypatch.setattr(bd.MarketDataService, "get_zspread_ctx", staticmethod(_z))
-    monkeypatch.setattr(bd, "reconcile_face", lambda *a, **k: None)
-    monkeypatch.setattr(bd, "amort_remaining_face", lambda *a, **k: None)
+    # поправка номинала живёт одной функцией на проект (bonds.normalize_ref_face);
+    # тут проверяется НКД, номинал искусственный — глушим
+    monkeypatch.setattr(bd, "normalize_ref_face", lambda *a, **k: None)
 
     class _Ref:
         base = "RUONIA"

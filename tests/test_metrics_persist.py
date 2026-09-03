@@ -79,3 +79,28 @@ def test_broken_file_is_not_fatal(cache_dir):
     path = os.path.join(str(cache_dir), "metrics_snapshot.json")
     open(path, "w", encoding="utf-8").write("{не json")
     assert mp.load(calc_date="2026-09-01", curves_fp="fp1") is None
+
+
+def test_snapshot_key_is_curves_fingerprint_not_trading_day(monkeypatch):
+    """Аудит 03.09: версия контекста расширилась с пары до тройки (день
+    расписаний вставлен вторым элементом), а три вызова metrics_persist остались
+    на позиционном [1] — снимок витрины писался и читался под ДАТОЙ ТОРГОВОГО
+    ДНЯ вместо отпечатка кривых. Ключ внутри дня переставал меняться вовсе, и
+    после рестарта в таблицу поднимались числа снятой кривой."""
+    import asyncio
+    from services import universe_stream as us
+
+    ctx = {"calc_date": "2026-09-03",
+           "version": ("2026-09-03", "2026-09-03", "CURVES-FP")}
+    assert us._curves_fp_of(ctx) == "CURVES-FP"
+
+    seen = {}
+
+    def fake_save(*, calc_date, curves_fp, universe, fixed):
+        seen["curves_fp"] = curves_fp
+        return 0
+
+    monkeypatch.setattr("services.metrics_persist.save", fake_save)
+    monkeypatch.setattr(us, "_last_ctx", ctx, raising=False)
+    asyncio.run(us.save_snapshot_now())
+    assert seen["curves_fp"] == "CURVES-FP"

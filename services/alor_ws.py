@@ -46,7 +46,8 @@ _UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
 
 
 class _Sub:
-    __slots__ = ("guid", "kind", "levels_fn", "face", "ctx_ts", "memo", "_logged")
+    __slots__ = ("guid", "kind", "levels_fn", "face", "ctx_ts", "ctx_fp",
+                 "memo", "_logged")
 
     def __init__(self, guid):
         self.guid = guid
@@ -54,6 +55,14 @@ class _Sub:
         self.levels_fn = None
         self.face = None
         self.ctx_ts = 0.0
+        # ОТПЕЧАТОК КРИВЫХ И ВЕРСИЯ СПРАВОЧНИКА рядом с TTL: контекст лестницы
+        # держит ССЫЛКУ на кривую и параметры бумаги, а пересобирался только по
+        # таймеру. Правку маржи/спеки в Справочнике карточка узнавала через 5
+        # минут (строка монитора — на ближайшем такте), а в день восстановления
+        # ставок лестница до 5 минут считалась на дореставрационной кривой.
+        # Ровно это чинили в скринере (_sync_ctx_curves) и в движке
+        # (_check_version → _rebind_curves) — сюда фикс не доехал.
+        self.ctx_fp = None
         self.memo = {}     # price -> {yield_pct, dm_bps, g_spread_bps}
 
 
@@ -63,9 +72,26 @@ async def _detect_kind(isin: str) -> str:
     return "fixed" if any(u.get("isin") == isin for u in fx) else "floater"
 
 
+def _ctx_fp(isin: str) -> tuple:
+    """Отпечаток входа контекста: кривые + версия Справочника."""
+    fp = ver = None
+    try:
+        from services.market_data import curves_fingerprint, market_cache
+        fp = curves_fingerprint(market_cache)
+    except Exception:
+        pass
+    try:
+        from services import instruments_registry
+        ver = instruments_registry.data_version()
+    except Exception:
+        pass
+    return (fp, ver)
+
+
 async def _ensure_ctx(sub: _Sub, isin: str) -> None:
     now = time.time()
-    if sub.levels_fn is not None and now - sub.ctx_ts < _CTX_TTL:
+    fp = _ctx_fp(isin)
+    if sub.levels_fn is not None and now - sub.ctx_ts < _CTX_TTL and sub.ctx_fp == fp:
         return
     from services.orderbook_svc import build_levels_fn
     if sub.kind is None:
@@ -73,6 +99,7 @@ async def _ensure_ctx(sub: _Sub, isin: str) -> None:
     try:
         sub.levels_fn, _cd, sub.face = await build_levels_fn(isin, sub.kind)
         sub.ctx_ts = now
+        sub.ctx_fp = fp
         sub.memo = {}     # ctx пересобран → memo невалиден
     except Exception as e:
         logger.debug(f"alor_ws ctx {isin}: {e}")

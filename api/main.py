@@ -606,16 +606,23 @@ async def warmup_caches():
                 # проход с пустым кэшем расписаний длится дольше, и первый такт
                 # приходится на его середину (см. seed_begin)
                 _, _, _cd, _rd = await MarketDataService.get_curves()
-                _us.seed_begin(market_cache, _cd or _rd or date.today())
+                _seed_day = _cd or _rd or date.today()
+                _us.seed_begin(market_cache, _seed_day)
+                # СВОЙ СЛОВАРЬ, А НЕ ОБЩИЙ: проход идёт минуты на кривых, взятых
+                # в начале. Пересобрались кривые по ходу — движок уже почистил
+                # общий кэш, и дописывать туда потоки прежней кривой нельзя.
+                # Переливаем разом и только при совпадении версии (seed_flows).
+                _seed_flows: dict = {}
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
-                                                   flows_by=_us._flow_cache,
+                                                   flows_by=_seed_flows,
                                                    on_ctx=_us.seed_ctx)
+                _took = _us.seed_flows(_seed_flows, market_cache, _seed_day)
                 if m:
                     market_cache["universe_metrics"] = m
                 logger.info("прогрев старта: универс %d, посчитано %d, движок получил "
-                            "ctx=%d, потоков=%d (%s)",
+                            "ctx=%d, потоков=%d принято=%d (%s)",
                             len(isins), len(m or {}), _us.seed_count(),
-                            len(_us._flow_cache), _us.seed_skips_report())
+                            len(_seed_flows), _took, _us.seed_skips_report())
         progress.advance("warmup", detail="метрики фиксов", force=True)
         await _warm_fixed(market_cache)
         # календарь выплат — тем же прогревом (плашка выплат в нижней строке
@@ -687,16 +694,19 @@ async def daily_prewarm():
                 # всё утро.
                 from services import universe_stream as _us
                 _, _, _cd, _rd = await MarketDataService.get_curves()
-                _us.seed_begin(market_cache, _cd or _rd or date.today())
+                _seed_day = _cd or _rd or date.today()
+                _us.seed_begin(market_cache, _seed_day)
+                _seed_flows: dict = {}      # см. прогрев старта: версия могла уехать
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
-                                                   flows_by=_us._flow_cache,
+                                                   flows_by=_seed_flows,
                                                    on_ctx=_us.seed_ctx)
+                _took = _us.seed_flows(_seed_flows, market_cache, _seed_day)
                 if m:
                     market_cache["universe_metrics"] = m
                 logger.info("daily 09:00 prewarm: универс %d, посчитано %d, движок получил "
-                            "ctx=%d, потоков=%d (%s)",
+                            "ctx=%d, потоков=%d принято=%d (%s)",
                             len(isins), len(m or {}), _us.seed_count(),
-                            len(_us._flow_cache), _us.seed_skips_report())
+                            len(_seed_flows), _took, _us.seed_skips_report())
             await _warm_fixed(market_cache)
             # Календарь выплат: полный поток по универсу считается раз в день и
             # держится в памяти. Без прогрева его первым платил случайный

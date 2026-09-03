@@ -344,6 +344,18 @@ def invalidate_params_cache(isin: str = None) -> None:
         screener_core.drop_exact_cache(isin)
     except Exception:
         pass
+    # Лента сделок держит тёплый metrics_fn на выпуск (TTL 5 мин) и пишет
+    # посчитанное число в АРХИВ — сделки этих пяти минут остались бы с прикидкой
+    # по прежней спеке навсегда.
+    try:
+        from services import trade_yidx
+        trade_yidx.drop_ctx_cache(isin)
+    except Exception:
+        pass
+    # WS-подписки стакана снаружи не достать (subs живёт в теле воркера), но
+    # пинка им и не нужно: _Sub держит рядом с TTL отпечаток входа, куда входит
+    # data_version — он только что увеличился, и ближайший пуш пересоберёт
+    # контекст с memo. См. services/alor_ws._ctx_fp.
 
 
 def calc_params_map() -> Dict[str, dict]:

@@ -12,6 +12,7 @@ import { fmt, baseLabel } from "../format.js";
 import { Brush } from "../charts/index.js";
 import { IconCalendar } from "./icons.jsx";
 import IsinCopy from "./IsinCopy.jsx";
+import { horizonView } from "../horizon.js";
 
 // Полноэкранный график выпуска (своя вкладка, /chart/:isin).
 // Сверху — строка параметров бумаги, ниже — график на всю высоту окна:
@@ -1297,7 +1298,13 @@ export default function ChartPage() {
 
   // ── шапка ─────────────────────────────────────────────────────────────────
   const r = qDetails.data?.reference;
-  const v = qDetails.data?.valuation;
+  // ГОРИЗОНТ ПРАЙСИНГА — ТОТ ЖЕ, ЧТО ВЕЗДЕ. Верхнеуровневые поля valuation
+  // остались сверочной базой «к погашению» (см. services/valuation), а линия
+  // спреда на этом же экране строится к выбранному правилом цены горизонту:
+  // шапка показывала 83 б.п. к погашению рядом с линией на 165 к оферте
+  // (РЖД 1Р-52R при 99.0). horizonView — тот же выбор, что в карточке.
+  const vHz = horizonView(qDetails.data?.valuation, "auto");
+  const v = vHz.v;
   const m = qDetails.data?.market;
   const f = qDetails.data?.floater;
   const row = qRow.data;
@@ -1346,8 +1353,9 @@ export default function ChartPage() {
           {stat("формула", r ? `${baseLabel(r.base_rate_type)} + ${r.spread_bps}` : null)}
           {stat("цена", m?.last_price_pct != null ? fmt.pct(m.last_price_pct) + "%" : null)}
           {/* цветом линии спреда на панели: та же метрика — тот же цвет */}
-          {stat("R-spread", v?.yield_over_index_bps != null
-            ? <span style={cSp}>{v.yield_over_index_bps} bps</span> : null, "hi")}
+          {stat(vHz.key === "maturity" ? "R-spread" : "R-spread (к оферте)",
+            v?.yield_over_index_bps != null
+              ? <span style={cSp}>{v.yield_over_index_bps} bps</span> : null, "hi")}
           {stat("DM", v?.disc_margin_bps != null ? v.disc_margin_bps + " bps" : null)}
           {stat("SM", v?.sm_bps != null ? v.sm_bps + " bps" : null)}
           {stat("спред-дюр.", f?.spread_duration_yrs != null ? fmt.yrs(f.spread_duration_yrs) : null)}

@@ -234,6 +234,7 @@ export const COLS = [
   // средневзвеса и мелким серым его отклонение от базы недели.
   { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "% / R-spread", align: "num", w: 11,
     cell: (b) => <Quote key="wap_price_pct" side="wap" px={b.wap_price_pct} spread={wapSpread(b)}
+      stale={b.y_idx_wap_stale}
       base7={b.y_idx_avg7_bps}
       title={(b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня")
         + "; R-spread посчитан к этой цене по методике (движок метрик)"} /> },

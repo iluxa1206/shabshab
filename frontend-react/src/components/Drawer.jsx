@@ -10,6 +10,7 @@ import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
 import BondTrades from "./BondTrades.jsx";
 import IsinCopy from "./IsinCopy.jsx";
+import { horizonView } from "../horizon.js";
 
 function RefCell({ k, children }) {
   return (
@@ -25,23 +26,9 @@ function RefCell({ k, children }) {
 // оба калькулятора (под введённую цену и на прошлую дату) — подписи и порядок
 // не разъезжаются. Всё считается НА ДАТУ ПОСТАВКИ: цена — котировка своего дня,
 // деньги и НКД — T+1 раб. DM/SM убраны из карточки (первичная метрика — Y-IDX).
-// Метрики ГОРИЗОНТА поверх объекта оценки: цена/НКД/дата поставки от горизонта
-// не зависят, а доходности и спред — зависят (поток режется к оферте, база
-// Y-IDX роллируется до той же даты). sel: "auto" (правило цены на бэке) либо
-// явный ключ "maturity"|"put"|"call" — ручной свитчер карточки.
-const HZ_KEYS = ["sm_bps", "disc_margin_bps", "yield_xirr_pct",
-                 "index_yield_pct", "yield_over_index_bps"];
-
-export function horizonView(v, sel) {
-  const hzs = (v && v.horizons) || {};
-  let key = (!sel || sel === "auto") ? (v?.preferred_horizon || "maturity") : sel;
-  if (!hzs[key]) key = hzs.maturity ? "maturity" : key;
-  const h = hzs[key];
-  if (!h) return { v, key: "maturity", date: null, pricePct: null };
-  const out = { ...v };
-  for (const k of HZ_KEYS) out[k] = h[k] ?? null;
-  return { v: out, key, date: h.date || null, pricePct: h.price_pct ?? null };
-}
+// Выбор горизонта живёт в ../horizon.js — его тянет и страница графика, а
+// тащить туда ради одной функции весь Drawer незачем.
+export { horizonView };
 
 const HZ_LABEL = { maturity: "к погашению", put: "к оферте (пут)", call: "к call" };
 
