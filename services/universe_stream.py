@@ -1067,6 +1067,26 @@ async def universe_stream_pool() -> None:
 
 # ── событийный пересчёт с кэшем уровней ──────────────────────────────────────
 
+def queue_price_change(isins) -> int:
+    """Цена сменилась ПО БИРЖЕ (борд-снапшот ISS) → заказать полный пересчёт.
+
+    Движок слышал только пуш Alor: сделку, которую увидел один ISS (шард пула
+    отвалился, бумага неликвидна и в стриме её нет), никто не заказывал, и
+    строка держала спред к прежней цене до ближайшего десятиминутного прохода
+    витрины, а вне торговых часов — до конца дня. Цену для расчёта _crunch
+    берёт из того же снапшота.
+
+    Бумаги живого стрима сюда не попадают: по ним пуш и так ставит очередь, а
+    снапшот отстаёт от него."""
+    n = 0
+    for isin in isins:
+        if isin in _dirty:
+            continue
+        _dirty.add(isin)
+        n += 1
+    return n
+
+
 def invalidate_params(isin: Optional[str] = None) -> None:
     """Правка Справочника (спека фиксинга, маржа, даты) → строка пересчитывается
     на ближайшем такте. Кэш уровней (isin, цена)→строка держит СТАРЫЕ параметры,
@@ -1083,8 +1103,10 @@ def invalidate_params(isin: Optional[str] = None) -> None:
         _yoi_grid.pop(isin, None)
         _grid_cold.pop(isin, None)
         _ctx_no_sched.pop(isin, None)
-        if isin in _last_quote:
-            _dirty.add(isin)
+        # ПИНОК БЕЗУСЛОВНЫЙ: цену для пересчёта _crunch возьмёт из борд-снапшота,
+        # когда пуша по бумаге не было. Раньше правка Справочника у бумаги вне
+        # стрима (неликвид, свежий выпуск) не доезжала до витрины вовсе.
+        _dirty.add(isin)
     else:
         _level_memo.clear()
         _flow_cache.clear()
@@ -1710,7 +1732,8 @@ def _market_cache_um() -> dict:
     return market_cache.get("universe_metrics") or {}
 
 
-def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
+def _crunch_fixed(u: dict, ctx: dict, q: dict,
+                  px: Optional[float] = None) -> Optional[dict]:
     """Строка ФИКСА по живой цене: YTM/g-спред/z-спред и те же числа по сторонам
     стакана и средневзвесу.
 
@@ -1725,7 +1748,8 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict) -> Optional[dict]:
         return None
     snap = ctx["board"].get(isin, {}) or {}
     row = dict(u)
-    px = q.get("last_price")
+    if px is None:                      # см. _crunch: пуш → борд-снапшот
+        px = q.get("last_price") or snap.get("last")
     if px is not None:
         row["last"] = px
     # СТОРОНЫ ИЗ ПУША + СНАПШОТА, как в _crunch: пуш Alor приходит и без
@@ -2141,7 +2165,15 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
             if pending is not None:
                 pending.extend(i for i, _ in batch[idx:])
             break
+        # ИСТОЧНИК ЦЕНЫ И ИСТОЧНИК СОБЫТИЯ — РАЗНЫЕ ВЕЩИ. Очередь наполняет
+        # пуш Alor, но цену для расчёта берём и из борд-снапшота ISS: пуш
+        # приходит и без last_price (тик книги), а бумага уже снята с очереди
+        # через _dirty.difference_update — заказанный пересчёт терялся на
+        # `if px is None: continue`. Тем же путём доезжает правка Справочника
+        # у бумаги, по которой пуша не было вовсе.
         px = q.get("last_price")
+        if px is None:
+            px = (ctx["board"].get(isin) or {}).get("last")
         u = ctx["uni_by"].get(isin)
         if u is None:
             # ФИКС: своя математика (YTM/g-спред), своя витрина, свой кэш метрик
@@ -2149,7 +2181,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
             if fx is None:
                 continue
             try:
-                row = _crunch_fixed(fx, ctx, q)
+                row = _crunch_fixed(fx, ctx, q, px)
             except Exception as e:
                 logger.debug("fixed crunch %s: %s", isin, e)
                 continue
@@ -2380,6 +2412,38 @@ def _check_version(version: tuple, ctx: Optional[dict] = None) -> None:
         _memo_version = version
 
 
+def merge_universe_metrics(market_cache: dict, metrics: Dict[str, dict],
+                           since: float) -> tuple:
+    """Результат прохода витрины — в кэш, НЕ затирая работу движка.
+
+    Раньше проход делал `market_cache["universe_metrics"] = metrics` — замену
+    ВСЕГО словаря. Проход по ~1300 бумагам режется по времени и длится десятки
+    секунд, а движок всё это время считает строки по сделкам: замена откатывала
+    их к ценам начала прохода и стирала поля, которых у прохода нет вовсе
+    (vol_px / yoi_vol — цена набора на объём и её спред). Пересчёт при этом
+    никто не заказывал: бумага после отката не попадала ни в _dirty, ни в
+    _sides_dirty, и до следующей сделки в строке жили числа «до сделки».
+
+    since — monotonic-независимая отметка (time.time()) НАЧАЛА прохода:
+    строка, посчитанная движком позже, побеждает целиком; более старая
+    сливается по полям, чтобы поля движка пережили проход.
+
+    → (сколько строк оставили за движком, сколько слили)."""
+    um = market_cache.get("universe_metrics") or {}
+    kept = merged = 0
+    out: Dict[str, dict] = {}
+    for isin, row in metrics.items():
+        prev = um.get(isin) or {}
+        if float(prev.get("_calc_ts") or 0.0) > since:
+            out[isin] = prev            # движок посчитал строку уже после старта прохода
+            kept += 1
+            continue
+        merged += 1
+        out[isin] = {**prev, **row, "_calc_ts": since}
+    market_cache["universe_metrics"] = out
+    return kept, merged
+
+
 def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
     """Строки такта — по своим витринам: флоатеры в universe_metrics (его читает
     /api/bonds), фиксы в fixed_metrics (его читает /api/fixed). Один кэш на всех
@@ -2388,6 +2452,12 @@ def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
     fl = {i: r for i, r in rows.items() if i not in fx}
     if fl:
         um = market_cache.get("universe_metrics") or {}
+        # ВРЕМЯ РАСЧЁТА — В СТРОКЕ. По нему десятиминутный проход витрины
+        # (merge_universe_metrics) отличает свою устаревшую строку от свежей
+        # строки движка и не откатывает её к цене начала прохода.
+        _now = time.time()
+        for _r in fl.values():
+            _r["_calc_ts"] = _now
         um.update(fl)
         market_cache["universe_metrics"] = um
     if fx:

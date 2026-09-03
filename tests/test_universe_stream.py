@@ -69,6 +69,39 @@ def test_same_level_computed_once():
     assert r1["RU000A100001"]["yoi"] == r2["RU000A100001"]["yoi"] == 100
 
 
+def test_price_falls_back_to_board_snapshot():
+    """Цена для пересчёта — пуш Alor, а чего в нём нет, берём из борд-снапшота.
+
+    Пуш приходит и без last_price (тик книги), а бумага к этому моменту уже
+    снята с очереди: пересчёт терялся молча. Тем же путём доезжает правка
+    Справочника у бумаги, по которой пуша не было вовсе."""
+    calls = []
+    uni = {"RU000A100001": {"isin": "RU000A100001"}}
+    board = {"RU000A100001": {"last": 99.9}}
+    r = us._crunch([("RU000A100001", {"bid": 99.8})], _ctx(uni, board),
+                   enrich=_enrich_counter(calls))
+    assert [c[1] for c in calls] == [99.9]
+    assert r["RU000A100001"]["last"] == 99.9
+
+
+def test_push_price_wins_over_snapshot():
+    """Пуш свежее снапшота: пока цена в нём есть, снапшот не спрашиваем."""
+    calls = []
+    uni = {"RU000A100001": {"isin": "RU000A100001"}}
+    board = {"RU000A100001": {"last": 99.9}}
+    us._crunch([("RU000A100001", {"last_price": 100.5})], _ctx(uni, board),
+               enrich=_enrich_counter(calls))
+    assert [c[1] for c in calls] == [100.5]
+
+
+def test_registry_edit_pings_bond_without_quote():
+    """Правка Справочника заказывает пересчёт и бумаге вне стрима: цену для неё
+    движок возьмёт из снапшота."""
+    us._dirty.clear()
+    us.invalidate_params("RU000A100001")
+    assert "RU000A100001" in us._dirty
+
+
 def test_new_level_recomputed():
     calls = []
     uni = {"RU000A100001": {"isin": "RU000A100001"}}

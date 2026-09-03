@@ -67,6 +67,10 @@ const FLOATER_FIELDS = {
   bidSpread: "y_idx_bid_bps", askSpread: "y_idx_ask_bps",
   volBidPx: "vol_bid_price_pct", volAskPx: "vol_ask_price_pct",
   volBidSpread: "y_idx_vol_bid_bps", volAskSpread: "y_idx_vol_ask_bps",
+  // «последнее известное число» ячейки: таблица рисует его приглушённым, когда
+  // спреда нет. Оно принадлежит цене ВЕРХА СТАКАНА, поэтому под ценой набора
+  // его показывать нельзя (см. applyVolume).
+  bidStale: "y_idx_bid_stale", askStale: "y_idx_ask_stale",
 };
 
 export function applyVolume(b, ladder, volBid, volAsk, mode = "and", fields = FLOATER_FIELDS) {
@@ -104,6 +108,15 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and", fields = FL
     [fields.askPx]: wantAsk ? (okAsk ? (b[fields.volAskPx] ?? px(ask)) : null) : b[fields.askPx],
     [fields.bidSpread]: wantBid ? (okBid ? (b[fields.volBidSpread] ?? null) : null) : b[fields.bidSpread],
     [fields.askSpread]: wantAsk ? (okAsk ? (b[fields.volAskSpread] ?? null) : null) : b[fields.askSpread],
+    // ПАМЯТЬ ЯЧЕЙКИ ГАСНЕТ ВМЕСТЕ С ЦЕНОЙ. В y_idx_*_stale лежит спред к цене
+    // ВЕРХА СТАКАНА (его кладёт applySideQuote по сырой строке). Под ценой
+    // набора таблица рисовала его приглушённым с подписью
+    // «пересчитывается» — а это другая метрика: разница между лучшей ценой и
+    // глубиной тикета читалась как нулевая, то есть ровно то, ради чего
+    // фильтр включали, исчезало. Своей памяти по цене набора нет, и прочерк
+    // здесь честнее чужого числа.
+    ...(fields.bidStale && wantBid ? { [fields.bidStale]: null } : null),
+    ...(fields.askStale && wantAsk ? { [fields.askStale]: null } : null),
   };
 }
 

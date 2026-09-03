@@ -223,9 +223,18 @@ async def universe_price_poller():
                 # market_cache['last_prices'] уже держит свежим quotes_poller
                 # (board-снапшот MOEX тактом 5с) + live-пуши alor_ws — те же
                 # котировки без единой лишней сессии.
+                # ОТМЕТКА ДО ПРОХОДА: строки, которые движок посчитает ЗА ВРЕМЯ
+                # прохода, новее его результата и переживают запись (см.
+                # universe_stream.merge_universe_metrics).
+                _t0 = time.time()
                 metrics = await compute_universe_metrics(uni, isins, _ISINS_CACHE)
                 if metrics:
-                    market_cache["universe_metrics"] = metrics
+                    from services import universe_stream as _us
+                    _kept, _merged = _us.merge_universe_metrics(
+                        market_cache, metrics, _t0)
+                    if _kept:
+                        logger.info("проход витрины: %d строк оставлено за движком, "
+                                    "%d слито", _kept, _merged)
                 await _warm_fixed(market_cache)
             # рейтинги с corpbonds — НЕ зависят от торговых часов (парсятся всегда),
             # драйн 24/7: cap/цикл, negative-кэш промахов → сходится за проход.
@@ -556,9 +565,22 @@ async def quotes_poller():
                     streamed = live_isins()
                     fresh = {i: v["last"] for i, v in snap.items()
                              if v.get("last") is not None and i not in streamed}
+                    # СМЕНА ЦЕНЫ ПО БИРЖЕ ЗАКАЗЫВАЕТ ПЕРЕСЧЁТ. Движок слышит
+                    # только пуш Alor: сделка, которую увидел один ISS (шард
+                    # пула отвалился, бумаги нет в стриме), не будила ничего, и
+                    # строка держала спред к прежней цене до ближайшего
+                    # десятиминутного прохода витрины. Первый проход (кэш цен
+                    # пуст) очередь не забивает: пинок только там, где прошлая
+                    # цена ИЗВЕСТНА и отличается.
+                    _prev_px = market_cache["last_prices"]
+                    _moved = [i for i, px in fresh.items()
+                              if _prev_px.get(i) is not None and _prev_px[i] != px]
                     market_cache["last_prices"].update(fresh)
                     market_cache["last_prices_ts"].update({i: now for i in fresh})
                     market_cache["quotes_ts"] = now
+                    if _moved:
+                        from services.universe_stream import queue_price_change
+                        queue_price_change(_moved)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -613,12 +635,15 @@ async def warmup_caches():
                 # общий кэш, и дописывать туда потоки прежней кривой нельзя.
                 # Переливаем разом и только при совпадении версии (seed_flows).
                 _seed_flows: dict = {}
+                _t0 = time.time()
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
                                                    flows_by=_seed_flows,
                                                    on_ctx=_us.seed_ctx)
                 _took = _us.seed_flows(_seed_flows, market_cache, _seed_day)
                 if m:
-                    market_cache["universe_metrics"] = m
+                    # СЛИЯНИЕ, А НЕ ЗАМЕНА: движок считает строки всё время
+                    # прохода (минуты на холодном кэше расписаний)
+                    _us.merge_universe_metrics(market_cache, m, _t0)
                 logger.info("прогрев старта: универс %d, посчитано %d, движок получил "
                             "ctx=%d, потоков=%d принято=%d (%s)",
                             len(isins), len(m or {}), _us.seed_count(),
@@ -697,12 +722,13 @@ async def daily_prewarm():
                 _seed_day = _cd or _rd or date.today()
                 _us.seed_begin(market_cache, _seed_day)
                 _seed_flows: dict = {}      # см. прогрев старта: версия могла уехать
+                _t0 = time.time()
                 m = await compute_universe_metrics(uni, isins, _ISINS_CACHE,
                                                    flows_by=_seed_flows,
                                                    on_ctx=_us.seed_ctx)
                 _took = _us.seed_flows(_seed_flows, market_cache, _seed_day)
                 if m:
-                    market_cache["universe_metrics"] = m
+                    _us.merge_universe_metrics(market_cache, m, _t0)
                 logger.info("daily 09:00 prewarm: универс %d, посчитано %d, движок получил "
                             "ctx=%d, потоков=%d принято=%d (%s)",
                             len(isins), len(m or {}), _us.seed_count(),
