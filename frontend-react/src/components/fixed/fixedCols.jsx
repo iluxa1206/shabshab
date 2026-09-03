@@ -76,10 +76,10 @@ export const FIXED_COLS = [
       </td>
     ) },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
-  { key: "g_spread_bid_bps", label: "BID", sub: "% / G-спред", align: "num", sep: true, w: 9,
+  { key: "g_spread_bid_bps", label: "BID", align: "num", sep: true, w: 9,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.g_spread_bid_bps}
       vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
-  { key: "g_spread_ask_bps", label: "ASK", sub: "% / G-спред", align: "num", w: 9,
+  { key: "g_spread_ask_bps", label: "ASK", align: "num", w: 9,
     cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.g_spread_ask_bps}
       vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,

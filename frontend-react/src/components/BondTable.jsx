@@ -216,10 +216,10 @@ export const COLS = [
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
   // спред — да. Стакан идёт ПЕРВЫМ: торгуют по нему, а last — уже история.
-  { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num", sep: true, w: 8,
+  { key: "y_idx_bid_bps", label: "BID", align: "num", sep: true, w: 8,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid_price_pct} spread={b.y_idx_bid_bps}
       stale={b.y_idx_bid_stale} vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
-  { key: "y_idx_ask_bps", label: "ASK", sub: "% / R-spread", align: "num", w: 8,
+  { key: "y_idx_ask_bps", label: "ASK", align: "num", w: 8,
     cell: (b) => <Quote key="ask" side="ask" px={b.ask_price_pct} spread={b.y_idx_ask_bps}
       stale={b.y_idx_ask_stale} vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
   // последняя сделка и всё, что от неё производно (движение, dirty) — своя группа
