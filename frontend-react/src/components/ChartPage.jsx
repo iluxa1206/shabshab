@@ -125,8 +125,8 @@ const LAYER_MAX_DAYS = 730;                   // потолок окна бар�
 // Высота разделителя пейнов у lightweight-charts: priceToCoordinate считает y
 // внутри своего пейна, и плашке спреда нужно смещение верхнего пейна плюс он.
 const PANE_SEP = 1;
-// Плашки-подсказки: отступ от курсора по горизонтали и от верха своей зоны
-const ZT_DX = 12;
+// Плашки-подсказки: отступы от левого края и от верха своей зоны
+const ZT_DX = 8;
 const ZT_TOP = 6;
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -476,14 +476,17 @@ function LoadProgress({ tasks }) {
  * серией больше не нужно.
  *
  * Плашки сквозные для мыши (pointer-events: none): зум и пан работают под ними.
- * По горизонтали идут за курсором; у правого края разворачиваются влево, иначе
- * вылезали бы за канву.
+ * Место у них постоянное — левый верхний угол своей зоны: подсказка, ездящая за
+ * курсором, меняет место и ширину на каждое движение мыши и читается хуже.
  */
 function ZoneTips({ legend, theme, sLabel, vwapOn }) {
   if (!legend?.pos || legend.pos.x == null) return null;
-  const { x, pane0h, ySpread, width } = legend.pos;
-  const flip = width && x > width * 0.62;      // ближе к правому краю — влево
-  const side = flip ? { right: Math.max(4, width - x + ZT_DX) } : { left: x + ZT_DX };
+  const { pane0h, ySpread } = legend.pos;
+  // МЕСТО У ПЛАШКИ ПОСТОЯННОЕ. Пока она ездила за курсором, читать её было
+  // тяжело: строка меняла и место, и ширину на каждый пиксель движения мыши,
+  // и то и дело перекрывала соседние свечи. Левый верхний угол своей зоны —
+  // одно и то же место, глаз находит цифру не глядя.
+  const side = { left: ZT_DX };
   const when = typeof legend.time === "string" ? fmt.date(legend.time)
     : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ");
   const cHi = { color: theme?.up }, cLo = { color: theme?.down };
@@ -491,9 +494,7 @@ function ZoneTips({ legend, theme, sLabel, vwapOn }) {
 
   return (
     <>
-      {/* верх ЦЕНОВОЙ зоны: цена, слои и сделки бара. По вертикали плашка не
-          двигается — прыгающая за точкой подсказка сама себя мешает читать и
-          то и дело закрывает соседние свечи */}
+      {/* левый верхний угол ЦЕНОВОЙ зоны: цена, слои и сделки бара */}
       <div className="cp-zt cp-zt-stack" style={{ ...side, top: ZT_TOP }}>
         <div>
           <b>{when}</b>
@@ -521,7 +522,7 @@ function ZoneTips({ legend, theme, sLabel, vwapOn }) {
           </div>
         ))}
       </div>
-      {/* верх ПАНЕЛИ СПРЕДА: своя цифра рядом со своей линией */}
+      {/* левый верхний угол ПАНЕЛИ СПРЕДА: своя цифра рядом со своей линией */}
       {legend.y != null && ySpread != null && (
         <div className="cp-zt" style={{ ...side, top: pane0h + PANE_SEP + ZT_TOP }}>
           <span style={cSp}>{sLabel} {Math.round(legend.y)} bps</span>
