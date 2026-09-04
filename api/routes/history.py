@@ -478,15 +478,19 @@ async def yidx_aggregate(body: YidxAggBody):
         return {"by": by, "days": days, "dates": [], "series": [], "exact_from": None}
 
     uni = {u["isin"]: u for u in await asyncio.to_thread(instruments_registry.universe_rows)}
-    buckets = {"AAA", "AA", "A", "BBB", "BB", "B"}
+    from services.ratings import rating_to_bucket
 
     def key_of(isin: str):
         u = uni.get(isin)
         if u is None:
             return None
         if by == "rating":
-            r = u.get("rating")
-            return r if r in buckets else "NR"
+            # БАКЕТ, А НЕ СЫРАЯ СТРОКА. В реестре рейтинг лежит СО СТУПЕНЬЮ
+            # («AA-», «A+», «BBB-»), и сравнение с набором грейдов отправляло
+            # каждую такую бумагу в NR: при фильтре по чипу «AA» (это AA+, AA,
+            # AA−) на графике появлялась вторая линия NR, повторяющая первую.
+            # rating_to_bucket — та же бакетизация, что на фронте (ratingBucket).
+            return rating_to_bucket(u.get("rating"))
         return u.get("emitter_name") or None
 
     # {key: {date: [y_idx…]}}
