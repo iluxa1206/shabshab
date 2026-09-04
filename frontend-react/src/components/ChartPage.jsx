@@ -125,9 +125,9 @@ const LAYER_MAX_DAYS = 730;                   // потолок окна бар�
 // Высота разделителя пейнов у lightweight-charts: priceToCoordinate считает y
 // внутри своего пейна, и плашке спреда нужно смещение верхнего пейна плюс он.
 const PANE_SEP = 1;
-// Отступы плашек-подсказок от точки курсора, px
+// Плашки-подсказки: отступ от курсора по горизонтали и от верха своей зоны
 const ZT_DX = 12;
-const ZT_DY = 26;
+const ZT_TOP = 6;
 
 const iso = (d) => d.toISOString().slice(0, 10);
 const isoBack = (days) => iso(new Date(Date.now() - days * 864e5));
@@ -476,12 +476,12 @@ function LoadProgress({ tasks }) {
  * серией больше не нужно.
  *
  * Плашки сквозные для мыши (pointer-events: none): зум и пан работают под ними.
- * Сторона выбирается по курсору — у правого края графика плашки уходят влево,
- * иначе вылезали бы за канву.
+ * По горизонтали идут за курсором; у правого края разворачиваются влево, иначе
+ * вылезали бы за канву.
  */
 function ZoneTips({ legend, theme, sLabel, vwapOn }) {
   if (!legend?.pos || legend.pos.x == null) return null;
-  const { x, yPrice, yVol, ySpread, width } = legend.pos;
+  const { x, pane0h, ySpread, width } = legend.pos;
   const flip = width && x > width * 0.62;      // ближе к правому краю — влево
   const side = flip ? { right: Math.max(4, width - x + ZT_DX) } : { left: x + ZT_DX };
   const when = typeof legend.time === "string" ? fmt.date(legend.time)
@@ -491,41 +491,39 @@ function ZoneTips({ legend, theme, sLabel, vwapOn }) {
 
   return (
     <>
-      {yPrice != null && (
-        <div className="cp-zt" style={{ ...side, top: Math.max(2, yPrice - ZT_DY) }}>
+      {/* верх ЦЕНОВОЙ зоны: цена, слои и сделки бара. По вертикали плашка не
+          двигается — прыгающая за точкой подсказка сама себя мешает читать и
+          то и дело закрывает соседние свечи */}
+      <div className="cp-zt cp-zt-stack" style={{ ...side, top: ZT_TOP }}>
+        <div>
           <b>{when}</b>
           {legend.o != null && <> · O {fmt.pct(legend.o)} <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
           {legend.o == null && legend.h != null && legend.l != null &&
             <> · <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
           {legend.o == null && legend.h == null && legend.c != null &&
             <> · цена {fmt.pct(legend.c)}</>}
+          {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
           {legend.w != null && <span style={cAcc}> · ср.взвес {fmt.pct(legend.w)}</span>}
           {legend.b != null && <span style={cHi}> · покупки {fmt.pct(legend.b)}</span>}
           {legend.sl != null && <span style={cLo}> · продажи {fmt.pct(legend.sl)}</span>}
         </div>
-      )}
-      {/* объём и сделки — у гистограммы, в нижней четверти ценовой зоны */}
-      {(legend.v != null || legend.trades?.length > 0) && yVol != null && (
-        <div className="cp-zt cp-zt-vol" style={{ ...side, top: Math.max(2, yVol - ZT_DY - 8 * (legend.trades?.length || 0)) }}>
-          {legend.v ? <div>объём {fmt.num(legend.v, 0)}</div> : null}
-          {legend.trades?.map((t, i) => (
-            <div key={i} className="cp-legend-trade"
-              style={{ color: t.negotiated ? TRADE_DOT.rps
-                : t.side === "sell" ? TRADE_TRI.sell : TRADE_TRI.buy }}>
-              {t.negotiated ? "● " : t.side === "sell" ? "▼ " : "▲ "}
-              {t.negotiated ? (t.board_title || "РПС")
-                : t.side === "sell" ? "продажа" : "покупка"}
-              {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
-              {tradeSpread(t) != null && <> · {sLabel} {tradeSpread(t)}</>}
-              {t.bar && t.bar.n > 1 &&
-                <> · ещё {t.bar.n - 1} на {fmt.mln(t.bar.value - (t.value || 0))} млн ₽</>}
-            </div>
-          ))}
-        </div>
-      )}
-      {/* спред — у своей точки в нижней панели, вместе с базой расчёта */}
+        {legend.trades?.map((t, i) => (
+          <div key={i} className="cp-legend-trade"
+            style={{ color: t.negotiated ? TRADE_DOT.rps
+              : t.side === "sell" ? TRADE_TRI.sell : TRADE_TRI.buy }}>
+            {t.negotiated ? "● " : t.side === "sell" ? "▼ " : "▲ "}
+            {t.negotiated ? (t.board_title || "РПС")
+              : t.side === "sell" ? "продажа" : "покупка"}
+            {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
+            {tradeSpread(t) != null && <> · {sLabel} {tradeSpread(t)}</>}
+            {t.bar && t.bar.n > 1 &&
+              <> · ещё {t.bar.n - 1} на {fmt.mln(t.bar.value - (t.value || 0))} млн ₽</>}
+          </div>
+        ))}
+      </div>
+      {/* верх ПАНЕЛИ СПРЕДА: своя цифра рядом со своей линией */}
       {legend.y != null && ySpread != null && (
-        <div className="cp-zt" style={{ ...side, top: Math.max(2, ySpread - ZT_DY) }}>
+        <div className="cp-zt" style={{ ...side, top: pane0h + PANE_SEP + ZT_TOP }}>
           <span style={cSp}>{sLabel} {Math.round(legend.y)} bps</span>
           {legend.yPx != null && (
             legend.yPxKind === "ср.взвес" && vwapOn && legend.w != null
@@ -1381,20 +1379,19 @@ export default function ChartPage() {
       // самой точки (то, что рисует линия в режиме «линия»).
       const yd = s.yidx ? param.seriesData.get(s.yidx) : null;
       const pt = yd ? spreadPts.find((x) => x.time === param.time) : null;
-      // КООРДИНАТЫ ЗОН. Цифры стоят не строкой в подвале, а плашками у своих
-      // серий: цена — у точки закрытия, объём — у низа ценовой зоны, спред — у
-      // своей точки в нижней панели. priceToCoordinate отдаёт y ВНУТРИ пейна,
-      // поэтому к спреду прибавляем высоту верхнего пейна и разделитель (1px).
+      // КООРДИНАТЫ ЗОН. Цифры стоят не строкой в подвале, а плашками у верха
+      // своих зон: цена и сделки — в ценовой, спред — в панели спреда. По
+      // горизонтали плашка идёт за курсором, по вертикали стоит на месте.
+      // Высота верхнего пейна нужна, чтобы отсчитать верх нижней панели.
       const ts = chart.timeScale();
-      const priceSeries = s.price || s.hi;
       const pane0h = chart.panes()[0]?.getHeight() ?? 0;
       const yv = yd ? (yd.value ?? yd.close) : null;
       const pos = {
         x: ts.timeToCoordinate(param.time),
-        yPrice: priceSeries ? priceSeries.priceToCoordinate(p.close ?? p.value) : null,
-        yVol: pane0h,
-        ySpread: (s.yidx && yv != null)
-          ? pane0h + PANE_SEP + s.yidx.priceToCoordinate(yv) : null,
+        pane0h,
+        // сам y спреда не нужен (плашка стоит у верха панели), но по нему видно,
+        // что панель вообще есть и точка в ней посчитана
+        ySpread: (s.yidx && yv != null) ? s.yidx.priceToCoordinate(yv) : null,
         width: ts.width(),
       };
       setLegend({
