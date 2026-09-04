@@ -69,8 +69,14 @@ const BIG_THRESHOLDS = [1, 5, 10, 50, 100];   // млн ₽
 const TRADE_DOT = { rps: "#a855f7" };
 const TRADE_TRI = { buy: "#00e676", sell: "#ff1f4b" };
 const TRADE_DOT_R = 4.5;
-const TRI_W = 4.5;    // половина основания треугольника, px
-const TRI_H = 7;      // высота, px
+const TRI_W = 6.5;    // половина основания треугольника, px
+const TRI_H = 10;     // высота, px
+// Дубль тех же стрелок над столбиком объёма: маркер по цене тонет среди свечей
+// и линий слоёв, а полоса объёма внизу свободна — по ней видно ДНИ с крупным
+// принтом даже на сжатом окне. Мельче ценового, чтобы не спорить с ним.
+const VOL_TRI_SCALE = 0.75;
+const VOL_TRI_DY = -11;   // над верхушкой столбика, px
+const VOL_TRI_DX = 5;     // разведение покупки и продажи одного бара, px
 
 // Треугольники рисуем своим примитивом: маркеры серии садятся НАД/ПОД баром, а
 // нужна ровно цена сделки; у point markers формы нет, только круг.
@@ -82,20 +88,24 @@ function tradeMarksPrimitive(getMarks) {
       draw: (target) => target.useMediaCoordinateSpace(({ context: ctx }) => {
         if (!chart || !series) return;
         const ts = chart.timeScale();
-        const { stroke, marks } = getMarks();
+        const { stroke, marks, scale = 1 } = getMarks();
+        const tw = TRI_W * scale, th = TRI_H * scale;
         ctx.save();
         ctx.strokeStyle = stroke;
         ctx.lineWidth = 1.2;
         for (const m of marks) {
           ctx.fillStyle = m.side === "sell" ? TRADE_TRI.sell : TRADE_TRI.buy;
-          const x = ts.timeToCoordinate(m.time);
-          const y = series.priceToCoordinate(m.price);
-          if (x == null || y == null) continue;
+          const x0 = ts.timeToCoordinate(m.time);
+          const y0 = series.priceToCoordinate(m.price);
+          if (x0 == null || y0 == null) continue;
+          // dx/dy — сдвиг в пикселях: дубль над столбиком объёма стоит выше
+          // самого столбика, а две стороны одного бара разводятся по x
+          const x = x0 + (m.dx || 0), y = y0 + (m.dy || 0);
           const dir = m.side === "sell" ? -1 : 1;   // вниз / вверх
           ctx.beginPath();
-          ctx.moveTo(x, y - dir * TRI_H / 2);           // вершина
-          ctx.lineTo(x - TRI_W, y + dir * TRI_H / 2);
-          ctx.lineTo(x + TRI_W, y + dir * TRI_H / 2);
+          ctx.moveTo(x, y - dir * th / 2);           // вершина
+          ctx.lineTo(x - tw, y + dir * th / 2);
+          ctx.lineTo(x + tw, y + dir * th / 2);
           ctx.closePath();
           ctx.fill();
           ctx.stroke();
@@ -1068,6 +1078,28 @@ export default function ChartPage() {
       // светлой каймой и не сливается с телом бара
       bigHost.attachPrimitive(tradeMarksPrimitive(
         () => ({ stroke: theme.bg, marks })));
+    }
+    // ДУБЛЬ НАД ОБЪЁМОМ. Те же стрелки, но привязанные к гистограмме объёма:
+    // y берётся от верхушки столбика (шкала "vol"), а не от цены принта.
+    // Бар, где прошли и покупка, и продажа, разводит стрелки по x.
+    const volSeries = seriesRef.current.vol;
+    if (volSeries && bigDots.length) {
+      const volAt = new Map(candles.map((c) => [String(toTime(c.t, tf)), c.v || 0]));
+      const sides = new Map();
+      for (const t of bigDots) {
+        const k = String(t.time);
+        sides.set(k, (sides.get(k) || new Set()).add(t.side === "sell" ? "sell" : "buy"));
+      }
+      const volMarks = bigDots
+        .filter((t) => volAt.get(String(t.time)) != null)
+        .map((t) => {
+          const both = (sides.get(String(t.time))?.size || 1) > 1;
+          return { time: t.time, price: volAt.get(String(t.time)), side: t.side,
+                   dy: VOL_TRI_DY,
+                   dx: both ? (t.side === "sell" ? VOL_TRI_DX : -VOL_TRI_DX) : 0 };
+        });
+      volSeries.attachPrimitive(tradeMarksPrimitive(
+        () => ({ stroke: theme.bg, marks: volMarks, scale: VOL_TRI_SCALE })));
     }
     dots("dotRps", rpsDots, TRADE_DOT.rps);
     // сделка под курсором — по времени бара: в легенде показываем цену, оборот
