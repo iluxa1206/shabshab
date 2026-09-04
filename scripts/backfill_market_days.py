@@ -69,6 +69,12 @@ def _save_cursor(cur: dict) -> None:
     os.replace(tmp, CURSOR_FILE)
 
 
+def _dates_present(table: str) -> set[str]:
+    """Даты, по которым в таблице уже есть строки, — их пропускает режим --gaps."""
+    with bt._connect() as c:  # noqa: SLF001
+        return {r[0] for r in c.execute(f"SELECT DISTINCT date FROM {table}")}
+
+
 def _earliest(table: str) -> str | None:
     """Самая ранняя уже собранная дата таблицы — точка старта первого прогона:
     ниже неё истории нет, выше её собирает штатный воркер."""
@@ -78,19 +84,28 @@ def _earliest(table: str) -> str | None:
 
 
 async def run_market(market: str, years: float, client: httpx.AsyncClient,
-                     cursor: dict) -> dict:
+                     cursor: dict, gaps: bool = False) -> dict:
     table = "bond_day" if market == "bonds" else "block_day"
     fetch = bt.backfill_bond_day if market == "bonds" else bt.backfill_day
-    start = cursor.get(market) or _earliest(table) or date.today().isoformat()
+    # Режим дыр: курсор не при чём, идём от вчера и берём только даты, по
+    # которым в таблице пусто. Дороже (праздники перезапрашиваются каждый раз),
+    # зато закрывает пропуски, оставленные оборванным прогоном.
+    have = _dates_present(table) if gaps else set()
+    start = (date.today().isoformat() if gaps
+             else (cursor.get(market) or _earliest(table) or date.today().isoformat()))
     d = date.fromisoformat(start) - timedelta(days=1)
     limit = date.today() - timedelta(days=int(years * 365.25))
-    logger.info("%s: идём с %s назад до %s", market, d.isoformat(), limit.isoformat())
+    logger.info("%s%s: идём с %s назад до %s", market, " (дыры)" if gaps else "",
+                d.isoformat(), limit.isoformat())
 
     rows, dates, fails, t0 = 0, 0, 0, time.monotonic()
     while d >= limit:
-        if d.weekday() >= 5:            # сб/вс — торгов по облигациям нет
-            cursor[market] = d.isoformat()
-            _save_cursor(cursor)
+        if d.weekday() >= 5 or (gaps and d.isoformat() in have):
+            # сб/вс торгов по облигациям нет; в режиме дыр пропускаем и даты,
+            # по которым строки уже лежат
+            if not gaps:
+                cursor[market] = d.isoformat()
+                _save_cursor(cursor)
             d -= timedelta(days=1)
             continue
         try:
@@ -105,15 +120,17 @@ async def run_market(market: str, years: float, client: httpx.AsyncClient,
             # двигаем. Повторный прогон с --reset вернётся к ней.
             logger.error("%s %s: пропускаю дату", market, d)
             fails = 0
-            cursor[market] = d.isoformat()
-            _save_cursor(cursor)
+            if not gaps:
+                cursor[market] = d.isoformat()
+                _save_cursor(cursor)
             d -= timedelta(days=1)
             continue
         fails = 0
         rows += n
         dates += 1
-        cursor[market] = d.isoformat()
-        _save_cursor(cursor)
+        if not gaps:
+            cursor[market] = d.isoformat()
+            _save_cursor(cursor)
         if dates % 20 == 0:
             speed = dates / max(time.monotonic() - t0, 1e-9) * 3600
             logger.info("%s: %s, дат %d, строк %d, ~%.0f дат/час",
@@ -130,6 +147,8 @@ async def main() -> None:
     ap.add_argument("--markets", default="both", choices=("both", "bonds", "ndm"))
     ap.add_argument("--reset", action="store_true",
                     help="сбросить курсор и начать с края уже собранных данных")
+    ap.add_argument("--gaps", action="store_true",
+                    help="добить пропущенные даты (курсор игнорируется)")
     args = ap.parse_args()
 
     cursor = {} if args.reset else _load_cursor()
@@ -140,7 +159,8 @@ async def main() -> None:
         # рынки идут параллельно: ndm лёгкий (2-3 страницы на дату) и закончит
         # задолго до bonds, а общий семафор MOEX всё равно держит темп запросов
         for res in await asyncio.gather(
-                *(run_market(m, args.years, client, cursor) for m in markets)):
+                *(run_market(m, args.years, client, cursor, args.gaps)
+                  for m in markets)):
             logger.info("итог %s", res)
 
 
