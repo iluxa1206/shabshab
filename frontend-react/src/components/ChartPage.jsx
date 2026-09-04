@@ -122,6 +122,12 @@ function tradeMarksPrimitive(getMarks) {
   };
 }
 const LAYER_MAX_DAYS = 730;                   // потолок окна баров у бэка
+// Высота разделителя пейнов у lightweight-charts: priceToCoordinate считает y
+// внутри своего пейна, и плашке спреда нужно смещение верхнего пейна плюс он.
+const PANE_SEP = 1;
+// Отступы плашек-подсказок от точки курсора, px
+const ZT_DX = 12;
+const ZT_DY = 26;
 
 const iso = (d) => d.toISOString().slice(0, 10);
 const isoBack = (days) => iso(new Date(Date.now() - days * 864e5));
@@ -458,6 +464,76 @@ function LoadProgress({ tasks }) {
         <LoadTask key={t.key} label={t.label} state={t.state} detail={t.detail} />
       ))}
     </div>
+  );
+}
+
+/** Плашки-подсказки У СВОИХ ЗОН вместо одной строки в подвале.
+ *
+ * Раньше все цифры бара стояли строкой под графиком: глаз уходил от точки под
+ * курсором вниз, читал строку и возвращался обратно — а при включённых слоях
+ * строка ещё и не помещалась в одну линию и обрезалась. Теперь цена стоит у
+ * свечи, объём — у гистограммы, спред — у своей панели; сопоставлять цифру с
+ * серией больше не нужно.
+ *
+ * Плашки сквозные для мыши (pointer-events: none): зум и пан работают под ними.
+ * Сторона выбирается по курсору — у правого края графика плашки уходят влево,
+ * иначе вылезали бы за канву.
+ */
+function ZoneTips({ legend, theme, sLabel, vwapOn }) {
+  if (!legend?.pos || legend.pos.x == null) return null;
+  const { x, yPrice, yVol, ySpread, width } = legend.pos;
+  const flip = width && x > width * 0.62;      // ближе к правому краю — влево
+  const side = flip ? { right: Math.max(4, width - x + ZT_DX) } : { left: x + ZT_DX };
+  const when = typeof legend.time === "string" ? fmt.date(legend.time)
+    : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ");
+  const cHi = { color: theme?.up }, cLo = { color: theme?.down };
+  const cAcc = { color: theme?.vwapC }, cSp = { color: theme?.spread };
+
+  return (
+    <>
+      {yPrice != null && (
+        <div className="cp-zt" style={{ ...side, top: Math.max(2, yPrice - ZT_DY) }}>
+          <b>{when}</b>
+          {legend.o != null && <> · O {fmt.pct(legend.o)} <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
+          {legend.o == null && legend.h != null && legend.l != null &&
+            <> · <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
+          {legend.o == null && legend.h == null && legend.c != null &&
+            <> · цена {fmt.pct(legend.c)}</>}
+          {legend.w != null && <span style={cAcc}> · ср.взвес {fmt.pct(legend.w)}</span>}
+          {legend.b != null && <span style={cHi}> · покупки {fmt.pct(legend.b)}</span>}
+          {legend.sl != null && <span style={cLo}> · продажи {fmt.pct(legend.sl)}</span>}
+        </div>
+      )}
+      {/* объём и сделки — у гистограммы, в нижней четверти ценовой зоны */}
+      {(legend.v != null || legend.trades?.length > 0) && yVol != null && (
+        <div className="cp-zt cp-zt-vol" style={{ ...side, top: Math.max(2, yVol - ZT_DY - 8 * (legend.trades?.length || 0)) }}>
+          {legend.v ? <div>объём {fmt.num(legend.v, 0)}</div> : null}
+          {legend.trades?.map((t, i) => (
+            <div key={i} className="cp-legend-trade"
+              style={{ color: t.negotiated ? TRADE_DOT.rps
+                : t.side === "sell" ? TRADE_TRI.sell : TRADE_TRI.buy }}>
+              {t.negotiated ? "● " : t.side === "sell" ? "▼ " : "▲ "}
+              {t.negotiated ? (t.board_title || "РПС")
+                : t.side === "sell" ? "продажа" : "покупка"}
+              {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
+              {tradeSpread(t) != null && <> · {sLabel} {tradeSpread(t)}</>}
+              {t.bar && t.bar.n > 1 &&
+                <> · ещё {t.bar.n - 1} на {fmt.mln(t.bar.value - (t.value || 0))} млн ₽</>}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* спред — у своей точки в нижней панели, вместе с базой расчёта */}
+      {legend.y != null && ySpread != null && (
+        <div className="cp-zt" style={{ ...side, top: Math.max(2, ySpread - ZT_DY) }}>
+          <span style={cSp}>{sLabel} {Math.round(legend.y)} bps</span>
+          {legend.yPx != null && (
+            legend.yPxKind === "ср.взвес" && vwapOn && legend.w != null
+              ? <span className="cp-zt-mut"> по ср.взвесу</span>
+              : <span className="cp-zt-mut"> по цене {fmt.pct(legend.yPx)}, {legend.yPxKind}</span>)}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1305,8 +1381,25 @@ export default function ChartPage() {
       // самой точки (то, что рисует линия в режиме «линия»).
       const yd = s.yidx ? param.seriesData.get(s.yidx) : null;
       const pt = yd ? spreadPts.find((x) => x.time === param.time) : null;
+      // КООРДИНАТЫ ЗОН. Цифры стоят не строкой в подвале, а плашками у своих
+      // серий: цена — у точки закрытия, объём — у низа ценовой зоны, спред — у
+      // своей точки в нижней панели. priceToCoordinate отдаёт y ВНУТРИ пейна,
+      // поэтому к спреду прибавляем высоту верхнего пейна и разделитель (1px).
+      const ts = chart.timeScale();
+      const priceSeries = s.price || s.hi;
+      const pane0h = chart.panes()[0]?.getHeight() ?? 0;
+      const yv = yd ? (yd.value ?? yd.close) : null;
+      const pos = {
+        x: ts.timeToCoordinate(param.time),
+        yPrice: priceSeries ? priceSeries.priceToCoordinate(p.close ?? p.value) : null,
+        yVol: pane0h,
+        ySpread: (s.yidx && yv != null)
+          ? pane0h + PANE_SEP + s.yidx.priceToCoordinate(yv) : null,
+        width: ts.width(),
+      };
       setLegend({
         time: param.time,
+        pos,
         o: p.open, h: p.high ?? val(s.hi), l: p.low ?? val(s.lo), c: p.close ?? p.value,
         v: param.seriesData.get(s.vol)?.value,
         y: yd ? (yd.value ?? yd.close) : null,
@@ -1535,58 +1628,13 @@ export default function ChartPage() {
         </span>
       </div>
 
-      {/* Строка под курсором рендерится ВСЕГДА: раньше она появлялась только
-          при наведении — блок возникал и исчезал, остаток высоты под график
-          пересчитывался, и график прыгал вместе с масштабом. Пустая строка
-          держит место. */}
+      {/* Цифры бара живут не строкой в подвале, а ПЛАШКАМИ У СВОИХ ЗОН
+          (см. ZoneTips ниже): цена рядом со свечой, объём у гистограммы, спред
+          у своей панели. Глаз не уходит от курсора к подвалу и обратно.
+          Подсказка «наведи курсор» остаётся строкой — пустое место под графиком
+          иначе выглядит как поломка. */}
       <div className="cp-legend">
-        {legend && candles.length > 0 ? (
-          <>
-            <b>{typeof legend.time === "string" ? fmt.date(legend.time)
-              : new Date(legend.time * 1000).toISOString().slice(0, 16).replace("T", " ")}</b>
-            {/* Цвет подписи = цвет серии на графике: глазами видно, к чему цифра
-                относится, без чтения самих слов (ср.взвес — акцент, покупки/
-                продажи — up/down, спред — своя охра) */}
-            {legend.o != null && <> · O {fmt.pct(legend.o)} <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
-            {/* HLC: открытия нет, но коридор дня показать надо */}
-            {legend.o == null && legend.h != null && legend.l != null &&
-              <> · <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
-            {legend.o == null && legend.h == null && legend.c != null &&
-              <> · цена {fmt.pct(legend.c)}</>}
-            {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
-            {legend.w != null && <span style={cAcc}> · ср.взвес {fmt.pct(legend.w)}</span>}
-            {legend.b != null && <span style={cHi}> · покупки {fmt.pct(legend.b)}</span>}
-            {legend.sl != null && <span style={cLo}> · продажи {fmt.pct(legend.sl)}</span>}
-            {/* всё про спред одной группой: иначе «ср.взвес» цены и «ср.взвес»
-                спреда стоят рядом в строке и читаются как одно и то же */}
-            {legend.y != null &&
-              <span style={cSp}> · {sLabel} {Math.round(legend.y)} bps</span>}
-            {/* по какой цене посчитан спред: без этого цифру не сверить с
-                ценовым графиком (средневзвес / закрытие / снапшот дня) */}
-            {legend.y != null && legend.yPx != null && (
-              // цену базы не дублируем, когда она уже стоит в строке слоем
-              // СРЕДНЕВЗВЕС — тогда достаточно назвать саму базу
-              legend.yPxKind === "ср.взвес" && legend.w != null
-                ? <> (по ср.взвесу)</>
-                : <> (по цене {fmt.pct(legend.yPx)}, {legend.yPxKind})</>)}
-            {/* сделки, отмеченные точками на этом баре: цена принта и оборот */}
-            {legend.trades?.map((t, i) => (
-              <span key={i} className="cp-legend-trade"
-                style={{ color: t.negotiated ? TRADE_DOT.rps
-                  : t.side === "sell" ? TRADE_TRI.sell : TRADE_TRI.buy }}>
-                {" · "}{t.negotiated ? "● " : t.side === "sell" ? "▼ " : "▲ "}
-                {t.negotiated ? (t.board_title || "РПС")
-                  : t.side === "sell" ? "продажа" : "покупка"}
-                {" "}{fmt.pct(t.price)} · {fmt.mln(t.value)} млн ₽
-                {/* спред ПО ЦЕНЕ ПРИНТА — тем же reprice, что уровни стакана */}
-                {tradeSpread(t) != null && <> · {sLabel} {tradeSpread(t)}</>}
-                {/* маркер один на бар (самый крупный), остальные — числом */}
-                {t.bar && t.bar.n > 1 &&
-                  <> · ещё {t.bar.n - 1} на {fmt.mln(t.bar.value - (t.value || 0))} млн ₽</>}
-              </span>
-            ))}
-          </>
-        ) : <span className="cp-legend-hint">наведи курсор на график — здесь будут цифры бара</span>}
+        {!legend && <span className="cp-legend-hint">наведи курсор на график — цифры появятся у самих серий</span>}
       </div>
       </div>
 
@@ -1595,6 +1643,8 @@ export default function ChartPage() {
           <LoadProgress tasks={loadTasks} />
           {distOn && <SpreadDist dist={dist} theme={theme}
             geom={distGeom} rightPad={rightPad} />}
+          {candles.length > 0 &&
+            <ZoneTips legend={legend} theme={theme} sLabel={sLabel} vwapOn={on("vwap")} />}
         </div>
       </div>
 
