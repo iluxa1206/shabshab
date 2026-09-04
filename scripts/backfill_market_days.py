@@ -45,6 +45,9 @@ from services.portfolio_db import DB_PATH  # noqa: E402
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("backfill_days")
+# httpx пишет строку на КАЖДЫЙ запрос: за десять лет это ~80 тысяч строк лога
+# ради данных, которые и так видны в курсоре и сводках прогресса
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # курсор кладём рядом с базой: data/ — том, переживающий пересборку контейнера
 CURSOR_FILE = str(DB_PATH.parent / "backfill_days.json")
