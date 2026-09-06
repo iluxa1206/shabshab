@@ -2908,6 +2908,22 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* «≤» приглушён: это признак границы, а не часть числа */
 .pri-le { color: var(--mut); }
 
+/* ---- Первичка: история размещений (факт биржи) ---- */
+/* переключатель «Анонсы / Размещённые» стоит НАД шапкой каждой половины:
+   у них разные фильтры и разная подпись, общий у них только заголовок */
+.pri-switch { align-items: center; gap: 14px; margin-bottom: 6px; }
+/* строка выпуска кликабельна — раскрывает дневную раскладку */
+.pl-tab tbody tr { cursor: pointer; }
+.pl-tab tbody tr.pl-open td { background: var(--hover); }
+.pl-emit { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+/* кнопка расчёта спреда: не должна распирать строку, поэтому кегль ячейки */
+.pl-calc { padding: 0 6px; font-size: 11px; }
+/* разворот: вложенная таблица без своих внешних отступов, приглушённая —
+   она деталь строки, а не второй список */
+.pl-detail > td { padding: 0 0 8px 24px; background: var(--hover); }
+.pl-days { width: auto; opacity: 0.9; }
+.pl-days tbody tr { cursor: default; }
+
 /* ISIN + рейтинги агентств (Эксперт/АКРА) одной строкой под именем выпуска.
    Кегль тот же, что у ISIN, — иначе строка имени растёт и таблица дышит. */
 .isin-row { display: flex; align-items: baseline; gap: 5px; margin-top: 1px; }

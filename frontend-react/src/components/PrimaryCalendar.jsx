@@ -2,12 +2,19 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchPrimaryCalendar } from "../api.js";
 import { fmt } from "../format.js";
+import PlacementHistory from "./PlacementHistory.jsx";
 
 // Анонсы первички: планируемые размещения ДО выхода на биржу (ISIN ещё нет,
 // в мониторе такой бумаги быть не может). Данные внешние (bondresearch.ru),
 // у нас только кэш — своих расчётов на этой вкладке нет и быть не должно.
 
 const TABS = [["all", "Все"], ["float", "Флоатеры"], ["fix", "Фиксы"]];
+
+// Две половины вкладки: ЧУЖОЙ ПРОГНОЗ до выхода на биржу и НАШ ФАКТ после.
+// Разделены жёстко и намеренно: в анонсе ISIN'а ещё нет и объём — ориентир
+// организатора, в истории всё уже состоялось. Смешать их в одной таблице
+// значило бы поставить рядом «≥ 1 000 млн» и реально размещённые 8,6 млрд.
+const VIEWS = [["plan", "Анонсы"], ["done", "Размещённые"]];
 
 const today = () => {
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
@@ -45,6 +52,7 @@ function ModelSpread({ m }) {
 }
 
 export default function PrimaryCalendar() {
+  const [view, setView] = useState("plan");
   const [tab, setTab] = useState("all");
   const [q, setQ] = useState("");
   const [past, setPast] = useState(false);
@@ -73,13 +81,28 @@ export default function PrimaryCalendar() {
     return { all: all.length, new: all.filter((r) => r.is_new).length };
   }, [data]);
 
-  if (isLoading) return <div className="issuer-agg"><div className="ia-hint">Загрузка…</div></div>;
-  if (error) return <div className="issuer-agg"><div className="ia-hint">Не удалось загрузить календарь первички</div></div>;
+  const head = (
+    <div className="ia-head pri-switch">
+      <h2 className="ia-title">Первичка</h2>
+      <span className="seg" role="tablist" aria-label="Что показываем">
+        {VIEWS.map(([id, label]) => (
+          <button key={id} className={"seg-btn" + (view === id ? " active" : "")}
+                  onClick={() => setView(id)}>{label}</button>
+        ))}
+      </span>
+    </div>
+  );
+
+  if (view === "done") {
+    return <div className="issuer-agg pri-cal">{head}<PlacementHistory /></div>;
+  }
+  if (isLoading) return <div className="issuer-agg pri-cal">{head}<div className="ia-hint">Загрузка…</div></div>;
+  if (error) return <div className="issuer-agg pri-cal">{head}<div className="ia-hint">Не удалось загрузить календарь первички</div></div>;
 
   return (
     <div className="issuer-agg pri-cal">
+      {head}
       <div className="ia-head">
-        <h2 className="ia-title">Анонсы первички</h2>
         <span className="ia-hint">
           планируемые размещения до выхода на биржу: ориентир купона — вилка организатора,
           не итог букбилдинга. «Спред модели» — наш расчёт при цене 100 на текущей кривой

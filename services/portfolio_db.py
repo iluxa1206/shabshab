@@ -232,6 +232,62 @@ CREATE TABLE IF NOT EXISTS block_day(
 );
 CREATE INDEX IF NOT EXISTS ix_block_day_date ON block_day(date);
 
+-- ИСТОРИЯ РАЗМЕЩЕНИЙ: дневной итог бордов «Размещение» (PSAU и валютные).
+-- Отдельно от block_day, хотя источник тот же ISS history market=ndm:
+--   • block_day пишется только по бумагам ТЕКУЩЕГО справочника рынка, а
+--     размещение годовой давности могло уже погаситься — такой строки там нет;
+--   • здесь нужны поля, которых block_day не хранит (имя, купон, валюта борда),
+--     и не нужен порог/ретеншен: размещение — событие, оно не устаревает.
+-- Ключ по SECID, а не ISIN: у ОФЗ они не совпадают, а справочник рынка знает
+-- ISIN не для всякой погашённой бумаги (см. services/primary_placements).
+CREATE TABLE IF NOT EXISTS placement_day(
+  secid TEXT NOT NULL,
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD'
+  board TEXT NOT NULL,            -- PSAU | PAUS | PACY
+  isin TEXT,
+  shortname TEXT,
+  numtrades INTEGER,              -- всегда > 0: пустые строки борда не пишем
+  value REAL,                     -- оборот дня в ВАЛЮТЕ борда
+  value_rub REAL,                 -- он же в рублях по курсу дня (NULL — курса нет)
+  price REAL,                     -- CLOSE, % номинала (WAPRICE на этих бордах пуст)
+  volume REAL,                    -- бумаг
+  face REAL,
+  coupon_pct REAL,                -- ставка текущего купона на дату размещения
+  cur TEXT,
+  PRIMARY KEY(secid, date, board)
+);
+CREATE INDEX IF NOT EXISTS ix_placement_date ON placement_day(date);
+CREATE INDEX IF NOT EXISTS ix_placement_isin ON placement_day(isin);
+
+-- Какие даты уже сходили в ISS. Нужна отдельно от placement_day, потому что
+-- «в этот день размещений не было» — это тоже результат: без отметки выходные
+-- и тихие дни перезапрашивались бы на каждом бэкфилле.
+CREATE TABLE IF NOT EXISTS placement_sync(
+  date TEXT PRIMARY KEY,
+  rows INTEGER,
+  at TEXT
+);
+
+-- СПРАВОЧНИК БУМАГ ВСЕГО РЫНКА, включая ПОГАШЕННЫЕ (ISS /iss/securities.json,
+-- group_by=stock_bonds: 15,7 тыс. строк одним проходом за полминуты).
+-- Реестр (instruments.db) знает только то, что мы прайсим — 337 из 1546
+-- размещений года, — а справочник торгуемых бумаг (block_trades.secid_map)
+-- теряет выпуск в день погашения. Здесь живёт то, что нужно ИСТОРИИ: эмитент
+-- (в реестре его нет у неприоритетных бумаг), полное имя, тип и ISIN у ОФЗ,
+-- где SECID с ним не совпадает.
+CREATE TABLE IF NOT EXISTS sec_ref(
+  secid TEXT PRIMARY KEY,
+  isin TEXT,
+  shortname TEXT,
+  name TEXT,
+  emitent_id INTEGER,
+  emitent_title TEXT,
+  type TEXT,                      -- exchange_bond | ofz_bond | subfederal_bond | ...
+  is_traded INTEGER,
+  at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_sec_ref_isin ON sec_ref(isin);
+
 -- Дневной итог БЕЗАДРЕСНЫХ торгов по бумаге и борду (ISS history, весь рынок).
 -- Зачем отдельно от поштучных сделок: живой поток пишет тик по каждой бумаге
 -- юниверса, а по остальному рынку — только от порога TRADES_STREAM_MIN_RUB, и

@@ -1054,6 +1054,18 @@ async def block_trades_worker():
                         logger.info("bond days: %s", await bt.backfill_bond_days(30))
                     except Exception as e:
                         logger.warning("bond days: %s", e)
+                    # История размещений (борды PSAU/PAUS/PACY). Окно короткое:
+                    # глубина заливается разово скриптом, ночью дописывается
+                    # только хвост, а сходившие даты пропускаются по отметке.
+                    try:
+                        from services import primary_placements as pp
+                        # справочник рынка ПЕРЕД размещениями: он даёт эмитента
+                        # и ISIN погашенным бумагам, которых нет ни в реестре,
+                        # ни в справочнике торгуемых
+                        logger.info("sec ref: %s", await pp.sync_sec_ref())
+                        logger.info("placements: %s", await pp.backfill(days=10))
+                    except Exception as e:
+                        logger.warning("placements: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
