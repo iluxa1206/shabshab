@@ -66,6 +66,7 @@ async def get_placements(
                         active)
     from services import placement_analytics as pa
     mets = await run_bg(pa.metrics_map, [r["secid"] for r in rows])
+    debut = await run_bg(pp.debut_map)
     labels = await run_bg(reg.labels_map, [r["isin"] for r in rows if r.get("isin")])
     for r in rows:
         lab = labels.get(r.get("isin") or "") or {}
@@ -98,6 +99,14 @@ async def get_placements(
         r["premium_bps"] = m.get("premium_bps")
         r["after_date"] = m.get("after_date")
         r["spread_err"] = m.get("err")
+        # ДЕБЮТ: цена первых торгов минус цена книги, в пунктах цены. Есть у
+        # втрое большего числа выпусков, чем спред (тот только у флоатеров
+        # реестра), и одинаково читается у фикса и у флоатера
+        d = debut.get(r["secid"]) or {}
+        r["debut_date"] = d.get("date")
+        r["debut_price"] = d.get("close")
+        r["debut_pct"] = (round(d["close"] - r["wa_price"], 2)
+                          if d.get("close") is not None and r.get("wa_price") else None)
     # усечение выдачи должно быть ВИДНО: молча обрезанный список читается как
     # полный рынок первички за период
     return {"rows": rows, "stats": await run_bg(pp.stats),

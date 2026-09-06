@@ -396,6 +396,33 @@ def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
         return [dict(r) for r in c.execute(sql, args)]
 
 
+def debut_map() -> dict[str, dict]:
+    """ПЕРВЫЕ ТОРГИ после книги: {secid: {date, close, waprice}}.
+
+    Зачем рядом со спредом книги: спред считается только флоатерам реестра (227
+    выпусков из 1546), а цена первого дня на бирже есть у 774 — она отвечает на
+    «как рынок встретил выпуск» там, где нашей оценки нет вовсе: у фиксов,
+    субфедов и всего, что мы не прайсим.
+
+    Окно 10 дней: у неликвида торги начинаются не в день размещения. Берём
+    первый день с ценой, а внутри дня — борд с бОльшим оборотом (бумага может
+    идти сразу на TQCB и TQOB, и цена «главного» борда репрезентативнее)."""
+    with _connect() as c:
+        rows = c.execute("""
+            WITH p AS (SELECT secid, MAX(isin) isin, MIN(date) d
+                       FROM placement_day GROUP BY secid),
+                 t AS (SELECT p.secid, MIN(b.date) d0
+                       FROM p JOIN bond_day b ON b.isin = p.isin
+                       WHERE b.date >= p.d AND b.date <= DATE(p.d, '+10 days')
+                         AND b.close IS NOT NULL
+                       GROUP BY p.secid)
+            SELECT t.secid, t.d0 date, b.close, b.waprice
+            FROM t JOIN p ON p.secid = t.secid
+                   JOIN bond_day b ON b.isin = p.isin AND b.date = t.d0
+            GROUP BY t.secid HAVING b.value = MAX(b.value)""").fetchall()
+    return {r["secid"]: dict(r) for r in rows}
+
+
 def days_of(secid: str) -> list[dict]:
     """Дневная раскладка одного выпуска (разворот строки витрины)."""
     with _connect() as c:

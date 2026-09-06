@@ -2938,6 +2938,28 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .sl-block { margin-top: 18px; }
 .sl-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
 .sl-title { margin: 0; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+/* полоска объёма внутри ячейки: масштаб книги виден без чтения цифр. Полоска
+   лежит ПОД числом (position:absolute), иначе она сдвигала бы разряды и
+   колонка переставала читаться столбиком. */
+.pl-bar-wrap { position: relative; display: block; }
+.pl-bar {
+  position: absolute; right: 0; top: 1px; bottom: 1px;
+  background: var(--hover); z-index: 0;
+}
+.pl-bar-val { position: relative; z-index: 1; }
+/* эмитент — кнопка-фильтр, но выглядит как текст: строка и без того кликабельна,
+   вторая «ссылка» в ней спорила бы за внимание */
+.pl-emit-btn {
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.pl-emit-btn:hover { color: var(--fg); text-decoration: underline; }
+/* столбики гистограммы премии: цвет несёт знак, но не он один — ноль отбит
+   линией и подписями «уже/шире» по краям оси */
+.pm-wider { fill: var(--down); fill-opacity: 0.75; }
+.pm-tighter { fill: var(--up); fill-opacity: 0.75; }
+.pm-zero { stroke: var(--mut); stroke-width: 1; stroke-dasharray: 2 2; }
 
 /* ISIN + рейтинги агентств (Эксперт/АКРА) одной строкой под именем выпуска.
    Кегль тот же, что у ISIN, — иначе строка имени растёт и таблица дышит. */

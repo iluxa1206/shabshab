@@ -420,9 +420,26 @@ def market_slices(months: int = 12, only_floaters: bool = True) -> dict:
             })
         return sorted(out, key=lambda x: x[key])
 
+    # КРОСС-СРЕЗ месяц×грейд — для линий графика. Отдельно от плоских агрегатов:
+    # в таблице он был бы простынёй на полсотни строк, а на графике это ровно то,
+    # ради чего срезы и заводились — видно, у кого спред поехал, а у кого стоит.
+    cross: dict[tuple, list[dict]] = {}
+    for it in items:
+        cross.setdefault((it["month"], it["grade"]), []).append(it)
+    month_grade = []
+    for (mo, gr), group in sorted(cross.items()):
+        spr = [g["spread_bps"] for g in group if g["spread_bps"] is not None]
+        month_grade.append({"month": mo, "grade": gr, "issues": len(group),
+                            "spread_med_bps": median(spr) if spr else None,
+                            "value_rub": sum(g["value_rub"] for g in group)})
+
     return {"months": agg(items, "month"), "grades": agg(items, "grade"),
-            "bases": agg(items, "base"), "issues": len(items),
-            "only_floaters": only_floaters}
+            "bases": agg(items, "base"), "month_grade": month_grade,
+            # сырые премии для гистограммы: их полторы сотни, бинует витрина —
+            # ширина корзины зависит от ширины блока, а бэк её не знает
+            "premiums": sorted(it["premium_bps"] for it in items
+                               if it["premium_bps"] is not None),
+            "issues": len(items), "only_floaters": only_floaters}
 
 
 # ─────────────── что было с бумагой сразу после книги (зеркальный слой) ───────────────

@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { fetchPlacements, fetchPlacementDays, fetchPlacementAftermarket,
@@ -6,6 +6,7 @@ import { fetchPlacements, fetchPlacementDays, fetchPlacementAftermarket,
 import { fmt } from "../format.js";
 import { horizonView } from "../horizon.js";
 import CouponFormula from "./CouponFormula.jsx";
+import ColumnsMenu from "./ColumnsMenu.jsx";
 
 // ИСТОРИЯ РАЗМЕЩЕНИЙ — вторая половина вкладки «Первичка»: не анонс, а ФАКТ с
 // биржи (борды «Размещение», ISS history → services/primary_placements).
@@ -28,6 +29,28 @@ const FLOAT_BASES = new Set(["KEYRATE", "RUONIA"]);
 
 const iso = (d) => d.toISOString().slice(0, 10);
 const daysAgo = (n) => iso(new Date(Date.now() - n * 864e5));
+
+// КОЛОНКИ таблицы: описание + рендерер ячейки. Модель, а не жёсткая разметка,
+// нужна ради меню столбцов — их тринадцать, и половина колонок интересна не
+// каждому: спред есть только у флоатеров реестра, дебют — только у торгующихся.
+// Меню (ColumnsMenu) переиспользуем из монитора, оно умеет и порядок.
+const COLS = [
+  { key: "date", label: "Размещение", cls: "left" },
+  { key: "issue", label: "Выпуск", cls: "left" },
+  { key: "emitter", label: "Эмитент", cls: "left" },
+  { key: "rating", label: "Рейтинг", cls: "left" },
+  { key: "coupon", label: "Купон", cls: "left" },
+  { key: "value", label: "Объём", sub: "млн ₽", cls: "num" },
+  { key: "price", label: "Цена", sub: "% номинала", cls: "num" },
+  { key: "debut", label: "Дебют", sub: "п.п. к цене книги", cls: "num" },
+  { key: "spread", label: "Спред", sub: "б.п., Y-IDX по цене книги", cls: "num" },
+  { key: "premium", label: "Премия", sub: "б.п. за месяц на вторичке", cls: "num" },
+  { key: "placed", label: "Размещено", sub: "доля выпуска", cls: "num" },
+  { key: "days", label: "Дней", cls: "num" },
+  { key: "trades", label: "Сделок", cls: "num" },
+];
+export const PL_COL_META = COLS.map(({ key, label, sub }) => ({ key, label, sub }));
+const DEFAULT_COLS = COLS.filter((c) => c.key !== "trades").map((c) => c.key);
 
 // Цена размещения: у подавляющего большинства выпусков ровно 100 — размещение
 // по номиналу. Разброс по дням показываем только когда он есть (доразмещение
@@ -112,6 +135,35 @@ function PlacedCell({ r }) {
   );
 }
 
+// ДЕБЮТ: цена первых торгов минус цена книги, в пунктах цены. Метрика для тех
+// строк, где спреда нет и не будет: он считается только флоатерам реестра (227
+// выпусков из 1546), а первые торги есть у 774 — включая фиксы и субфеды.
+// Знак обязателен: «ушёл выше номинала» и «провалился» — противоположные
+// исходы книги, а не разные величины одного.
+function DebutCell({ r }) {
+  if (r.debut_pct == null) return <span className="mut">—</span>;
+  const v = r.debut_pct;
+  return (
+    <span className={v > 0.02 ? "dm-up" : v < -0.02 ? "dm-down" : undefined}
+          title={`первые торги ${fmt.date(r.debut_date)} по ${fmt.pct(r.debut_price)}`}>
+      {fmt.signed(v, 2)}
+    </span>
+  );
+}
+
+// Объём с полоской внутри ячейки: масштаб книги видно, не читая цифр. Ширина —
+// доля от КРУПНЕЙШЕГО размещения в текущей выборке, поэтому полоска отвечает на
+// «крупное ли это по меркам показанного», а не по меркам всего рынка.
+function ValueCell({ r, max }) {
+  const w = max > 0 && r.value_rub ? Math.max(1, Math.round(100 * r.value_rub / max)) : 0;
+  return (
+    <span className="pl-bar-wrap">
+      <span className="pl-bar" style={{ width: `${w}%` }} aria-hidden="true" />
+      <span className="pl-bar-val">{fmt.mln(r.value_rub) || "—"}</span>
+    </span>
+  );
+}
+
 // Разворот: по каким дням набирался объём. Грузится лениво — раскладка нужна
 // единицам строк, а запрос на каждую превратил бы список в сотню запросов.
 function DayBreakdown({ secid }) {
@@ -182,6 +234,15 @@ function Aftermarket({ secid }) {
 
 export default function PlacementHistory() {
   const [period, setPeriod] = useState(90);
+  // набор и порядок столбцов переживают перезагрузку, как в мониторе
+  const [cols, setCols] = useState(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("plCols") || "null");
+      return Array.isArray(s) && s.length ? s.filter((k) => COLS.some((c) => c.key === k))
+                                          : DEFAULT_COLS;
+    } catch { return DEFAULT_COLS; }
+  });
+  useEffect(() => { localStorage.setItem("plCols", JSON.stringify(cols)); }, [cols]);
   // «идёт сейчас» — книга ещё набирается. Окно периода при этом снимается: такие
   // выпуски стартовали задолго до него (ВТБ капает с ноября), и внутри «3М»
   // фильтр показывал бы пустоту ровно там, где он нужен.
@@ -216,6 +277,71 @@ export default function PlacementHistory() {
 
   const total = useMemo(
     () => rows.reduce((s, r) => s + (r.value_rub || 0), 0), [rows]);
+  const maxValue = useMemo(
+    () => rows.reduce((m, r) => Math.max(m, r.value_rub || 0), 0), [rows]);
+
+  const shown = useMemo(() => cols.map((k) => COLS.find((c) => c.key === k))
+                                  .filter(Boolean), [cols]);
+
+  const moveCol = (key, target) => setCols((prev) => {
+    const i = prev.indexOf(key);
+    if (i < 0) return prev;
+    const j = target === "+1" ? i + 1 : target === "-1" ? i - 1 : prev.indexOf(target);
+    if (j < 0 || j >= prev.length) return prev;
+    const next = [...prev];
+    next.splice(j, 0, next.splice(i, 1)[0]);
+    return next;
+  });
+
+  // клик по эмитенту = «покажи всё, что он занимал»: поиск уже фильтрует по
+  // эмитенту, отдельному экрану тут взяться неоткуда — итог по выборке считается
+  // в шапке теми же числами
+  const cell = (c, r) => {
+    switch (c.key) {
+      case "date": return (
+        <>
+          {fmt.date(r.first_date)}
+          {r.days > 1 && <span className="mut"> …{fmt.date(r.last_date)}</span>}
+          {r.active === 1 && <span className="pl-live" title="книга ещё набирается">•</span>}
+        </>
+      );
+      case "issue": return r.in_registry
+        ? <Link to={`/chart/${r.isin}`} onClick={(e) => e.stopPropagation()}>
+            {r.shortname || r.secid}
+          </Link>
+        : (r.shortname || r.secid);
+      case "emitter": return r.emitter
+        ? <button className="pl-emit-btn" title={`Все выпуски: ${r.emitter}`}
+                  onClick={(e) => { e.stopPropagation(); setQ(r.emitter); }}>
+            {r.emitter}
+          </button>
+        : <span className="mut">—</span>;
+      case "rating": return r.rating || <span className="mut">—</span>;
+      case "coupon": return (
+        <>
+          <span className={"pri-type " + (FLOAT_BASES.has(r.base) ? "pri-fl" : "pri-fx")}>
+            {FLOAT_BASES.has(r.base) ? "флоатер" : r.in_registry ? "фикс" : "—"}
+          </span>
+          {" "}
+          {FLOAT_BASES.has(r.base)
+            ? <CouponFormula base={r.base} spreadBps={r.margin_bps}
+                             couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />
+            : <span title={r.coupon_text || ""}>
+                {r.coupon_pct ? fmt.pct(r.coupon_pct) + "%" : "—"}
+              </span>}
+        </>
+      );
+      case "value": return <ValueCell r={r} max={maxValue} />;
+      case "price": return <PriceCell r={r} />;
+      case "debut": return <DebutCell r={r} />;
+      case "spread": return <SpreadCell r={r} />;
+      case "premium": return <PremiumCell r={r} />;
+      case "placed": return <PlacedCell r={r} />;
+      case "days": return r.days;
+      case "trades": return r.numtrades ?? "—";
+      default: return null;
+    }
+  };
 
   if (isLoading) return <div className="ia-hint">Загрузка…</div>;
   if (error) return <div className="ia-hint">Не удалось загрузить историю размещений</div>;
@@ -227,10 +353,11 @@ export default function PlacementHistory() {
           факт биржи: по какой цене и на какой объём выпуск реально разместился.
           Строка — выпуск целиком, клик разворачивает дни (доразмещения идут
           неделями). Итог дня публикуется вечером, сегодняшних размещений тут ещё нет.
-          Спред считается по кнопке — Y-IDX по цене размещения на ту дату, и только
-          у флоатеров реестра: тип купона и формула известны лишь по бумагам,
-          которые мы прайсим. Период отбирает выпуски по ПЕРВОМУ дню размещения,
-          а объём и цена всегда считаются по всей книге целиком
+          Спред (Y-IDX по цене книги на её дату) есть только у флоатеров реестра;
+          дебют — цена первых торгов минус цена книги — считается у всех, кто
+          вышел на биржу. Период отбирает выпуски по ПЕРВОМУ дню размещения,
+          а объём и цена всегда считаются по всей книге целиком. Клик по эмитенту
+          показывает всё, что он занимал
           {" · "}{rows.length} выпусков · {fmt.mln(total)} млн ₽
           {data?.truncated ? " · список усечён" : ""}
         </span>
@@ -254,6 +381,10 @@ export default function PlacementHistory() {
           </span>
           <button className={"chip-btn" + (big ? " on" : "")} onClick={() => setBig((v) => !v)}
                   title="Размещения от 1 млрд ₽">от 1 млрд</button>
+          <ColumnsMenu visibleCols={cols} meta={PL_COL_META}
+                       onToggle={(k) => setCols((p) => p.includes(k)
+                         ? p.filter((x) => x !== k) : [...p, k])}
+                       onMove={moveCol} onReset={() => setCols(DEFAULT_COLS)} />
           <span className="search-wrap">
             <input className="search" placeholder="Выпуск / эмитент" value={q}
                    onChange={(e) => setQ(e.target.value)} />
@@ -265,18 +396,9 @@ export default function PlacementHistory() {
       <table className="grid packed pl-tab">
         <thead>
           <tr>
-            <th className="left">Размещение</th>
-            <th className="left">Выпуск</th>
-            <th className="left">Эмитент</th>
-            <th className="left">Рейтинг</th>
-            <th className="left">Купон</th>
-            <th className="num" title="млн ₽">Объём</th>
-            <th className="num" title="% номинала">Цена</th>
-            <th className="num" title="базисные пункты, Y-IDX по цене размещения">Спред</th>
-            <th className="num" title="спред через месяц на вторичке минус спред книги: + значит уехал шире">Премия</th>
-            <th className="num" title="доля выпуска, которую разместили">Размещено</th>
-            <th className="num" title="дней в размещении">Дней</th>
-            <th className="num">Сделок</th>
+            {shown.map((c) => (
+              <th key={c.key} className={c.cls} title={c.sub || undefined}>{c.label}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -293,60 +415,24 @@ export default function PlacementHistory() {
                       setOpen(open === r.secid ? null : r.secid);
                     }
                   }}>
-                <td className="left">
-                  {fmt.date(r.first_date)}
-                  {r.days > 1 && <span className="mut"> …{fmt.date(r.last_date)}</span>}
-                  {r.active === 1 && <span className="pl-live" title="книга ещё набирается">•</span>}
-                </td>
-                <td className="left">
-                  {/* настоящая ссылка, а не onClick по span: у выпуска должен
-                      работать средний клик и «открыть в новой вкладке» */}
-                  {r.in_registry
-                    ? <Link to={`/chart/${r.isin}`} onClick={(e) => e.stopPropagation()}>
-                        {r.shortname || r.secid}
-                      </Link>
-                    : (r.shortname || r.secid)}
-                </td>
-                <td className="left pl-emit" title={r.emitter || ""}>{r.emitter || "—"}</td>
-                <td className="left">{r.rating || "—"}</td>
-                {/* Формула тем же компонентом, что в СПИСКЕ и ленте СДЕЛОК:
-                    «КС + 1,50% (4)» из полей реестра, а сырой текст проспекта —
-                    в подсказке. Раньше здесь стоял сам текст, и одна строка
-                    («1-24 купоны: RDi = K + S, где…») растягивала таблицу на
-                    два экрана. Ставка из ISS — купон ДНЯ РАЗМЕЩЕНИЯ: у флоатера
-                    она ноль до первого фиксинга, поэтому она только фолбэк для
-                    бумаг вне реестра. */}
-                <td className="left">
-                  <span className={"pri-type " + (FLOAT_BASES.has(r.base) ? "pri-fl" : "pri-fx")}>
-                    {FLOAT_BASES.has(r.base) ? "флоатер" : r.in_registry ? "фикс" : "—"}
-                  </span>
-                  {" "}
-                  {FLOAT_BASES.has(r.base)
-                    ? <CouponFormula base={r.base} spreadBps={r.margin_bps}
-                        couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />
-                    : <span title={r.coupon_text || ""}>
-                        {r.coupon_pct ? fmt.pct(r.coupon_pct) + "%" : "—"}
-                      </span>}
-                </td>
-                <td className="num">{fmt.mln(r.value_rub) || "—"}</td>
-                <td className="num"><PriceCell r={r} /></td>
-                <td className="num pri-spread" onClick={(e) => e.stopPropagation()}>
-                  <SpreadCell r={r} />
-                </td>
-                <td className="num pri-spread"><PremiumCell r={r} /></td>
-                <td className="num"><PlacedCell r={r} /></td>
-                <td className="num">{r.days}</td>
-                <td className="num">{r.numtrades ?? "—"}</td>
+                {shown.map((c) => (
+                  // клик по ячейке спреда не должен разворачивать строку: там
+                  // живёт кнопка расчёта
+                  <td key={c.key} className={c.cls + (c.key === "spread" ? " pri-spread" : "")}
+                      onClick={c.key === "spread" ? (e) => e.stopPropagation() : undefined}>
+                    {cell(c, r)}
+                  </td>
+                ))}
               </tr>
               {open === r.secid && (
                 <tr className="pl-detail">
-                  <td colSpan={12}><DayBreakdown secid={r.secid} /></td>
+                  <td colSpan={shown.length}><DayBreakdown secid={r.secid} /></td>
                 </tr>
               )}
             </Fragment>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={12} className="left mut">Ничего не найдено</td></tr>
+            <tr><td colSpan={shown.length} className="left mut">Ничего не найдено</td></tr>
           )}
         </tbody>
       </table>
