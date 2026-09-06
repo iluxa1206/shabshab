@@ -45,7 +45,7 @@ describe("вкладка СИГНАЛЫ", () => {
     await openForms();
     // форма стакана и форма крупных сделок — рядом; диапазон спреда есть у
     // обеих, а порог объёма сделки только у второй
-    expect(screen.getAllByText("Диапазон R-spread, бп")).toHaveLength(2);
+    expect(screen.getAllByText("Диапазон spread, бп")).toHaveLength(2);
     expect(screen.getByText("Объём сделки от, млн ₽")).toBeTruthy();
     expect(screen.getByText("Сторона стакана")).toBeTruthy();
   });

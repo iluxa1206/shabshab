@@ -9,7 +9,7 @@ import { HeaderCell } from "./TableHeader.jsx";
 
 afterEach(cleanup);
 
-const COL = { key: "y_idx_bid_bps", label: "BID", sub: "% / R-spread", align: "num" };
+const COL = { key: "y_idx_bid_bps", label: "BID", sub: "% / spread", align: "num" };
 
 function show(progress) {
   const { container } = render(

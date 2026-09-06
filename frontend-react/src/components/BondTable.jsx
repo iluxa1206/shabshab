@@ -1,6 +1,6 @@
 import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
-import { baseLabel, fmt, dmColor, ratingColor, yearsTo } from "../format.js";
+import { baseLabel, fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../format.js";
 import IsinCopyBase from "./IsinCopy.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
@@ -22,7 +22,7 @@ function Chip({ value }) {
   return <span className="dm-chip" style={dmColor(value)}>{fmt.bps(value)} {value >= 0 ? "▲" : "▼"}</span>;
 }
 
-// R-spread по цене СРЕДНЕВЗВЕСА — число бэкенда, посчитанное по методике
+// spread по цене СРЕДНЕВЗВЕСА — число бэкенда, посчитанное по методике
 // (движок метрик считает средневзвес такой же альт-ценой, как bid/ask).
 // Раньше здесь стояла линеаризация от якоря «бэк для этой цены не считает» —
 // с 27.08.2026 считает, а линия через якорь уводила число вслед за якорем.
@@ -31,7 +31,7 @@ export function wapSpread(b) {
   return b.y_idx_wap_bps ?? null;
 }
 
-// Котировка двумя этажами в одной ячейке: чистая цена, под ней R-spread по ней
+// Котировка двумя этажами в одной ячейке: чистая цена, под ней spread по ней
 // же. Две колонки вместо четырёх — глаз читает пару «цена/спред» как одно
 // значение, а не бегает через полтаблицы, чтобы их сопоставить.
 //
@@ -78,15 +78,15 @@ export function Quote({ px, spread, stale, title, vwap, side, base7 }) {
 // VWAP набора тикета по лестнице Alor (объём стороны в ₽ — b._vwap_bid/_vwap_ask).
 function qTitle(b, side) {
   const base = side === "bid"
-    ? "лучшая заявка на покупку (MOEX BID): чистая цена и R-spread по ней (продажа в бид)"
-    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и R-spread по ней (покупка с оффера)";
+    ? "лучшая заявка на покупку (MOEX BID): чистая цена и spread по ней (продажа в бид)"
+    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и spread по ней (покупка с оффера)";
   const vol = side === "bid" ? b._vwap_bid : b._vwap_ask;
   if (!vol) return base;
   const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
   const mln = fmt.num(vol / 1e6, 1);
   return `средневзвешенная цена набора ${mln} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
-    + `; R-spread посчитан к ней по методике (движок метрик, такт ≤5 с)`;
+    + `; spread посчитан к ней по методике (движок метрик, такт ≤5 с)`;
 }
 
 // Маркеры оферты перед датой погашения. p и c — РАЗНЫЕ факты из разных источников,
@@ -121,15 +121,17 @@ export function OfferMarks({ b }) {
 // table-layout: fixed для .grid.cols-fixed в styles.css.
 export const COLS = [
   // ── статика бумаги ──
-  { key: "short_name", label: "INSTRUMENT (Э/А)", align: "left", w: 24,
+  { key: "short_name", label: "INSTRUMENT", align: "left", w: 24,
     cell: (b) => {
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
       return (
         <td className="left name-cell" key="short_name">
           <div className="bond-name">
-            <span className={"fx-cls fx-" + (isOfz ? "ofz" : "corp")}>{isOfz ? "ОФЗ" : "КОРП"}</span>
-            {b.short_name || b.isin}
+            {/* бейдж только у ОФЗ: «КОРП» стоял в 9 строках из 10 и ничего не
+                различал. Из имени слово ОФЗ срезано — его несёт бейдж */}
+            {isOfz && <span className="fx-cls fx-ofz">ОФЗ</span>}
+            {(isOfz ? stripOfz(b.short_name) : b.short_name) || b.isin}
             {/* рейтинг здесь же, цветом бакета (как в фильтрах) — отдельной колонки не держим */}
             {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
             {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}
@@ -162,7 +164,7 @@ export const COLS = [
   // У линкера в этой колонке НЕ спред к базе, а фиксированная ставка купона:
   // складывать её с RUONIA нельзя, по индексу растёт номинал. Значение то же,
   // подпись в подсказке.
-  { key: "spread_issue_bps", label: "SPREAD", sub: "ISS BPS", align: "num", w: 8,
+  { key: "spread_issue_bps", label: "МАРЖА", sub: "ВЫПУСК, БП", align: "num", w: 8,
     cell: (b) => <td className="num" key="spread_issue_bps"
       title={b.face_index ? "фиксированная ставка купона, а не спред к базе: по базе растёт номинал" : undefined}>
       {b.spread_issue_bps != null ? (b.face_index ? "" : "+") + b.spread_issue_bps : <D />}</td> },
@@ -175,7 +177,7 @@ export const COLS = [
   // строки ничего не сообщает.
   // w=17: «p 10.10.2029 (4.2)» — ширина по МАКСИМУМУ формата, иначе появление
   // маркера или второго этажа у одной бумаги дёргает колонку.
-  { key: "maturity_date", label: "MATURITY", sub: "(ЛЕТ) · ОФЕРТА", w: 17,
+  { key: "maturity_date", label: "MATURITY", w: 17,
     // сортировка и окно срока меряют ГОРИЗОНТ ПРАЙСИНГА (см. src/horizon.js) —
     // ту дату, что подсвечена синим; шапка обязана про это сказать, иначе
     // порядок строк выглядит сломанным
@@ -211,7 +213,7 @@ export const COLS = [
         </td>
       );
     } },
-  // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → R-spread (первичная) → SM → DM → Z) ──
+  // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.
   // Сортировка колонки — по Y-IDX: цены разных бумаг между собой несравнимы,
@@ -230,14 +232,14 @@ export const COLS = [
   // Средневзвес дня. У избранного — НАШ VWAP по тикам Alor (живой, тот же, что
   // рисует слой «Средневзвес» на графике), у остальных — биржевой WAPRICE из
   // снапшота MOEX. Отсюда и подпись в title: источники разные.
-  // Спред под ценой — по той же схеме, что у BID/OFFER: R-spread по цене
+  // Спред под ценой — по той же схеме, что у BID/OFFER: spread по цене
   // средневзвеса и мелким серым его отклонение от базы недели.
-  { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "% / R-spread", align: "num", w: 11,
+  { key: "wap_price_pct", label: "СР.ВЗВЕС", sub: "% / spread", align: "num", w: 11,
     cell: (b) => <Quote key="wap_price_pct" side="wap" px={b.wap_price_pct} spread={wapSpread(b)}
       stale={b.y_idx_wap_stale}
       base7={b.y_idx_avg7_bps}
       title={(b._live ? "наш VWAP по сделкам дня (live)" : "WAPRICE MOEX, средневзвес дня")
-        + "; R-spread посчитан к этой цене по методике (движок метрик)"} /> },
+        + "; spread посчитан к этой цене по методике (движок метрик)"} /> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const delta = b.delta_to_prev_close;
@@ -259,8 +261,8 @@ export const COLS = [
     cell: (b) => <td className="num" key="adv_1m_rub"
       title={"средний дневной оборот за 30 дней, ₽ — Σ денег архива часовых баров / "
         + "число торговых дней рынка (не дней, когда торговалась эта бумага)"}>
-      {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
-  { key: "yield_over_index_bps", label: "R-spread", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
+      {fmt.mln1(b.adv_1m_rub) ?? <D />}</td> },
+  { key: "yield_over_index_bps", label: "SPREAD", sub: "IRR−ИНДЕКС", align: "num", grp: true, w: 11,
     cell: (b) => <td className={"num" + ms(b) + (b._yoi_stale ? " q-sp-old" : "")}
       key="yield_over_index_bps"
       title={b._yoi_stale ? "спред к прежней цене сделки — пересчитывается" : undefined}>
@@ -280,7 +282,7 @@ export const COLS = [
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} key="yield_xirr_pct">{b.yield_xirr_pct == null ? <D /> : fmt.pct(b.yield_xirr_pct)}</td> },
   { key: "index_yield_pct", label: "YTM", sub: "RUONIA %", align: "num", w: 7,
-    cell: (b) => <td className="num" key="index_yield_pct" title="доходность роллирования RUONIA до погашения — база R-spread (общая для КС и RUONIA бумаг)">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
+    cell: (b) => <td className="num" key="index_yield_pct" title="доходность роллирования RUONIA до погашения — база spread (общая для КС и RUONIA бумаг)">{b.index_yield_pct == null ? <D /> : fmt.pct(b.index_yield_pct)}</td> },
 ];
 
 // метаданные для меню видимости (без cell-функций)

@@ -394,7 +394,7 @@ export function DayRatesModal({ isin, onClose }) {
                     <th title="официальный накопленный индекс RUONIA ЦБ, нормированный на первый день раскладки (старт 1,0). За концом факта — путь роллирования, из которого считается доходность индекса в Y-IDX">Индекс RUONIA</th>
                     <th className="left" title="ЦБ — опубликованный факт; фвд — форвардная ступень кривой">Ист.</th>
                     <th title="цена закрытия дня из spread_daily">Close %</th>
-                    <th title="Y-IDX того дня из spread_daily — та же серия, что график «Динамика DM»">R-spread</th>
+                    <th title="Y-IDX того дня из spread_daily — та же серия, что график «Динамика DM»">spread</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -407,7 +407,7 @@ export function DayRatesModal({ isin, onClose }) {
               <div className="daylegend">
                 Серые строки — уже реализованный факт ЦБ, светлые — прогноз по кривой.
                 Подсветка фона — выходные (ставка переносится с последнего фиксинга).
-                Close / R-spread берутся из spread_daily — сверка раскладки с историческим
+                Close / spread берутся из spread_daily — сверка раскладки с историческим
                 калькулятором спредов. Индекс RUONIA — официальный накопленный индекс ЦБ,
                 за концом факта продолженный путём роллирования, из которого считается
                 доходность индекса в Y-IDX: отношение его уровней на дату поставки и на
@@ -453,7 +453,7 @@ function WaterfallSection({ w, v, isin }) {
         <KV k="Δ (обязана ≈ 0)" v={fmt.signed(w.pv_gap_rub, 2) + " ₽"} />
         <KV k="YTM (XIRR)" v={fmt.pct(w.yield_pct) + " %"} />
         <KV k="SM / DM" v={`${fmt.bps(v.sm_bps ?? v.dm_bps) ?? "—"} / ${fmt.bps(v.disc_margin_bps) ?? "—"} bps`} />
-        <KV k="RUONIA-ролл · R-spread" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
+        <KV k="RUONIA-ролл · spread" v={`${fmt.pct(v.index_yield_pct) ?? "—"} % · ${fmt.bps(v.yield_over_index_bps) ?? "—"} bps`} />
       </div>
       <div style={{ maxHeight: 380, overflow: "auto" }}>
         <table className="cf-table">

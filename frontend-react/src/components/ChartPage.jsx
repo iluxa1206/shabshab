@@ -53,7 +53,7 @@ const BRUSH_H = 54;   // высота полосы-обзора под граф�
 // Данные слоёв — свой архив (bar_hourly / trade_tick), а не свечи MOEX:
 // средневзвешенная цена часа, стороны сделок по агрессору и крупные принты.
 const LAYERS = [
-  ["vwap", "Средневзвес", "VWAP часа (свой архив) + R-spread по нему на внутридневном масштабе"],
+  ["vwap", "Средневзвес", "VWAP часа (свой архив) + spread по нему на внутридневном масштабе"],
   ["sides", "Покупки/продажи", "VWAP по агрессору: buy и sell отдельными линиями"],
   ["big", "Крупные сделки", "Маркеры отдельных сделок крупнее порога"],
   ["rps", "РПС/блоки", "Адресные сделки (РПС, РПС с ЦК, размещения, выкупы) — "
@@ -266,7 +266,7 @@ const hasAltHorizon = (rows) => !!rows?.some((b) => b.y_idx_alt_bps != null);
 const barSpread = (b, hz = "auto") => atHorizon(b, hz);
 const spreadKindOf = (bars) =>
   (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
-const SPREAD_LABEL = { y: "R-spread", g: "G-спред" };
+const SPREAD_LABEL = { y: "spread", g: "G-спред" };
 // спред по цене самой сделки (бэк считает его тем же reprice, что уровни стакана)
 const tradeSpread = (t) => (t?.y_idx_bps != null ? t.y_idx_bps
   : t?.g_spread_bps != null ? t.g_spread_bps : null);
@@ -974,7 +974,9 @@ export default function ChartPage() {
     const chart = createChart(el, {
       width: Math.max(320, Math.round(el.clientWidth)),
       height: Math.max(260, Math.round(el.clientHeight)),
-      layout: { background: { color: theme.bg }, textColor: theme.mut, fontSize: 11,
+      // 13 px на осях: 11 читалось мелко на широком мониторе, а цифры цены и
+      // спреда — то, ради чего график и открывают
+      layout: { background: { color: theme.bg }, textColor: theme.mut, fontSize: 13,
         panes: { separatorColor: theme.line, separatorHoverColor: theme.line2 } },
       // сетка почти прозрачная: она ориентир, а не рисунок
       grid: { vertLines: { color: alpha(theme.line2, 0.35) },
@@ -1476,7 +1478,7 @@ export default function ChartPage() {
           {stat("формула", r ? `${baseLabel(r.base_rate_type)} + ${r.spread_bps}` : null)}
           {stat("цена", m?.last_price_pct != null ? fmt.pct(m.last_price_pct) + "%" : null)}
           {/* цветом линии спреда на панели: та же метрика — тот же цвет */}
-          {stat(vHz.key === "maturity" ? "R-spread" : "R-spread (к оферте)",
+          {stat(vHz.key === "maturity" ? "spread" : "spread (к оферте)",
             v?.yield_over_index_bps != null
               ? <span style={cSp}>{v.yield_over_index_bps} bps</span> : null, "hi")}
           {stat("DM", v?.disc_margin_bps != null ? v.disc_margin_bps + " bps" : null)}
@@ -1545,7 +1547,7 @@ export default function ChartPage() {
             осталось два состояния, и группа из двух кнопок была лишней рамкой */}
         <button type="button" className={"cp-btn cp-spread-btn" + (smode !== "off" ? " on" : "")}
           aria-pressed={smode !== "off"}
-          title="Панель спреда под ценой (R-spread по средневзвешенной цене)"
+          title="Панель спреда под ценой (spread по средневзвешенной цене)"
           onClick={() => setParam({ sm: smode === "off" ? "line" : "off" })}>СПРЕД</button>
         <span className="cp-hint">колесо — зум · драг — сдвиг · двойной клик по оси — сброс</span>
       </div>

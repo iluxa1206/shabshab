@@ -69,20 +69,17 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
                                     volBid = 0, volAsk = 0, horizon = "auto", onClose }) {
   const isFixed = kind === "fixed";
   const [depth, setDepth] = useState(50);
-  const [full, setFull] = useState(false);
 
-  // WS-стакан (реал-тайм) — приоритет над HTTP-поллингом. Только в режиме
-  // «только заявки» (в full режиме лестницу строит бэк по HTTP). Поллинг остаётся
+  // WS-стакан (реал-тайм) — приоритет над HTTP-поллингом. Поллинг остаётся
   // фолбэком: WS лёг / пусто → рендерим q.data. wsFresh — был ли недавний тик.
   const [wsData, setWsData] = useState(null);
   const [wsOpen, setWsOpen] = useState(false);
   const wsTsRef = useRef(0);
   useEffect(() => {
     setWsData(null);
-    // Подписка живёт во ВСЕХ режимах карточки: поток несёт и обычные уровни, и
-    // полную лестницу (режим «все уровни»), и спред ко второму горизонту — так
-    // что ни «только заявки», ни ручной свитчер горизонта больше не роняют
-    // стакан с 800 мс пуша на 3 с поллинга.
+    // Подписка живёт во всех состояниях карточки: поток несёт уровни и спред ко
+    // второму горизонту — ручной свитчер горизонта не роняет стакан с 800 мс
+    // пуша на 3 с поллинга.
     if (!isin) return undefined;
     const conn = connectOrderbookWs(
       isin,
@@ -93,8 +90,8 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   }, [isin]);
 
   const q = useQuery({
-    queryKey: ["orderbook", isin, depth, full, kind, horizon],
-    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, full, kind: isFixed ? "fixed" : "floater", horizon }, signal),
+    queryKey: ["orderbook", isin, depth, kind, horizon],
+    queryFn: ({ signal }) => fetchOrderbook(isin, { depth, kind: isFixed ? "fixed" : "floater", horizon }, signal),
     enabled: !!isin,
     // WS живой → редкий фолбэк-поллинг (15с); иначе привычные 3с
     refetchInterval: () => (wsOpen && Date.now() - wsTsRef.current < 60000 ? 15000 : 3000),
@@ -102,9 +99,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   });
 
   const d = q.data;
-  // в режиме «все уровни» берём лестницу потока; её может не быть на первом
-  // пуше (ctx ещё собирается) — тогда честно падаем на HTTP-ответ
-  const wsSrc = full ? wsData?.ladder : wsData?.orderbook;
+  const wsSrc = wsData?.orderbook;
   // Живость потока — это состояние СОЕДИНЕНИЯ, а не давность последнего пуша:
   // Alor шлёт стакан только при ИЗМЕНЕНИИ книги, поэтому на спокойной бумаге
   // пушей нет минутами. Прежний порог в 6 с гасил индикатор и возвращал поллинг
@@ -131,7 +126,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   // bids best-first (убывание) → нарезаем depth. WS отдаёт depth 50 — режем под селектор.
   const asks = ob?.asks ? ob.asks.slice(0, depth).slice().reverse() : [];
   const bids = ob?.bids ? ob.bids.slice(0, depth) : [];
-  // лучшие котировки = уровни С заявкой (в full режиме есть пустые синтетические)
+  // лучшие котировки = уровни С заявкой
   const bestAsk = ob?.asks?.filter((l) => l.quantity != null).slice(-1)[0]?.price_pct
     ?? ob?.asks?.[0]?.price_pct ?? null;
   const bestBid = ob?.bids?.find((l) => l.quantity != null)?.price_pct
@@ -195,7 +190,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
   const spreadRef = useRef(null);
   const centeredKey = useRef(null);
   useEffect(() => {
-    const key = `${isin}|${depth}|${full}`;
+    const key = `${isin}|${depth}`;
     if (empty) { if (centeredKey.current === key) centeredKey.current = null; return; }
     if (centeredKey.current === key) return;
     const box = scrollRef.current, row = spreadRef.current;
@@ -205,7 +200,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
     // строки — внешняя панель, отсчёт от неё врёт на высоту шапки
     const br = box.getBoundingClientRect(), rr = row.getBoundingClientRect();
     box.scrollTop += (rr.top - br.top) - (box.clientHeight - rr.height) / 2;
-  }, [isin, depth, full, empty, asks.length, bids.length]);
+  }, [isin, depth, empty, asks.length, bids.length]);
 
   // Легенда подсветки: рисуем только те строки, которые реально сейчас видны в
   // стакане — иначе стол читает про режимы, которых на экране нет.
@@ -223,10 +218,6 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
       </div>
 
       <div className="ob-ctl">
-        <button className={"chip-btn" + (full ? " on" : "")} onClick={() => setFull((v) => !v)}
-          title="Показать все уровни лестницы, не только с заявками">
-          {full ? "Все уровни" : "Только заявки"}
-        </button>
         <span className="ob-depth">
           <span className="ob-depth-lbl">глубина</span>
           <select value={depth} onChange={(e) => setDepth(Number(e.target.value))}>
@@ -257,7 +248,7 @@ export default function Orderbook({ isin, kind, face, accrued, sigVol, sigSide, 
                 <th>Объём</th>
                 {isFixed
                   ? <><th>YTM</th><th>G-спред</th></>
-                  : <><th title="IRR − доходность роллирования RUONIA (единая база для КС и RUONIA бумаг); DM в подсказке уровня">R-spread</th><th>YTM</th></>}
+                  : <><th title="IRR − доходность роллирования RUONIA (единая база для КС и RUONIA бумаг); DM в подсказке уровня">spread</th><th>YTM</th></>}
               </tr>
             </thead>
             <tbody>

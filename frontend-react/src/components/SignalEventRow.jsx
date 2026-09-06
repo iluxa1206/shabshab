@@ -99,9 +99,9 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
         {e.val_bps != null && (
           <>
             <Sep />
-            {/* подпись «R-spread» ушла в подсказку: в первой строке важнее,
+            {/* подпись «spread» ушла в подсказку: в первой строке важнее,
                 чтобы число со знаком уместилось рядом с именем бумаги */}
-            <b className="sb-val num" title="R-spread: IRR − доходность роллирования RUONIA">
+            <b className="sb-val num" title="spread: IRR − доходность роллирования RUONIA">
               {fmt.num(e.val_bps, 0)} бп
               {/* единица уже названа рядом — дельта идёт голым числом */}
               <Delta prev={e.prev_val_bps} cur={e.val_bps}

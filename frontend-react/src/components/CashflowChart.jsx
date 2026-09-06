@@ -15,6 +15,8 @@ export default function CashflowChart({ items, today }) {
   const step = (W - PAD * 2) / n;
   const bw = Math.max(2, step - 2);
   const sh = linearScale([0, max], [0, H - 24]); // сумма купона → высота бара
+  // подписи на барах — только если бар шире самой длинной подписи («1 000»)
+  const labels = bw >= 30;
 
   // позиция линии "сегодня" — граница между прошлым и будущим
   let todayIdx = items.findIndex((c) => c.payment_date >= today);
@@ -37,9 +39,26 @@ export default function CashflowChart({ items, today }) {
               const y = H - h - 12;
               const past = c.payment_date < today;
               return (
-                <rect key={i} x={x.toFixed(1)} y={y.toFixed(1)} width={bw.toFixed(1)} height={h.toFixed(1)}
-                  fill="currentColor" opacity={past ? 0.28 : 0.9}
-                  {...bind(x + bw / 2, y, `${fmt.date(c.payment_date)} · ${past ? "факт" : "прогноз"}\n${fmt.num(c.amount_rub)} ₽ (${fmt.pct(c.coupon_rate_pct)}%)`)} />
+                <g key={i}>
+                  <rect x={x.toFixed(1)} y={y.toFixed(1)} width={bw.toFixed(1)} height={h.toFixed(1)}
+                    fill="currentColor" opacity={past ? 0.28 : 0.9}
+                    {...bind(x + bw / 2, y, `${fmt.date(c.payment_date)} · ${past ? "факт" : "прогноз"}\n${fmt.num(c.amount_rub)} ₽ (${fmt.pct(c.coupon_rate_pct)}%)`)} />
+                  {/* Подписи только когда бар шире текста: у выпуска на 40
+                      купонов они слиплись бы в кашу, и лучше пусто, чем каша.
+                      Ставка — над баром, сумма — внутри него (там есть место
+                      и контраст подложки). */}
+                  {labels && (
+                    <>
+                      <text className="cf-lbl-rate" x={(x + bw / 2).toFixed(1)} y={(y - 3).toFixed(1)}
+                        textAnchor="middle">{fmt.pct(c.coupon_rate_pct)}</text>
+                      {h > 26 && (
+                        <text className={"cf-lbl-sum" + (past ? " cf-lbl-past" : "")}
+                          x={(x + bw / 2).toFixed(1)} y={(y + 13).toFixed(1)}
+                          textAnchor="middle">{fmt.num(c.amount_rub, 0)}</text>
+                      )}
+                    </>
+                  )}
+                </g>
               );
             })}
           </svg>
@@ -48,7 +67,6 @@ export default function CashflowChart({ items, today }) {
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--mut)", marginTop: 6, textTransform: "uppercase", letterSpacing: "0.1em" }}>
         <span>{fmt.date(items[0].payment_date)}</span>
-        <span>факт ▏прогноз · max {fmt.num(max)} ₽</span>
         <span>{fmt.date(items[items.length - 1].payment_date)}</span>
       </div>
     </div>

@@ -234,7 +234,7 @@ function describeBlock(p) {
   const years = rangeTxt(p.years_min, p.years_max, "л");
   return [`от ${fmt.mln(p.min_value_rub)} млн`, labelOfPair(MARKETS, p.markets), bases,
           p.side !== "any" ? labelOfPair(SIDES, p.side) : null,
-          spread ? `R-spread ${spread}` : null,
+          spread ? `spread ${spread}` : null,
           years ? `срок ${years}` : null,
           exceptTxt(p)].filter(Boolean).join(" · ");
 }
@@ -405,7 +405,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     setErr("");
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
     if (smin === "" && smax === "" && minMoney === "") {
-      setErr("Задай диапазон R-spread или объём — иначе условий нет"); return; }
+      setErr("Задай диапазон spread или объём — иначе условий нет"); return; }
     try {
       await onSubmit({ name: name.trim(), kind: "book", params,
                        change_pct: changePct, sound, desktop,
@@ -446,7 +446,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
             tone={(v) => (v === "ask" ? "up" : "down")} />
         </div>
         <div className="sig-field">
-          <label className="sig-label">Диапазон R-spread, бп</label>
+          <label className="sig-label">Диапазон spread, бп</label>
           <RangeInputs min={smin} max={smax} setMin={setSmin} setMax={setSmax} />
         </div>
       </div>
@@ -646,7 +646,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
           <Seg pairs={SIDES} value={side} onChange={setSide} />
         </div>
         <div className="sig-field">
-          <label className="sig-label">Диапазон R-spread, бп</label>
+          <label className="sig-label">Диапазон spread, бп</label>
           <RangeInputs min={smin} max={smax} setMin={setSmin} setMax={setSmax} />
         </div>
       </div>
@@ -759,7 +759,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           {/* оффер красный, бид зелёный — как в ленте событий */}
           <span className={f.params.side === "ask" ? "neg" : "pos"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
-          {d.range ? ` · R-spread ${d.range}` : ""}
+          {d.range ? ` · spread ${d.range}` : ""}
           {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
@@ -830,7 +830,7 @@ function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loadin
 /** Условия книжного фильтра одной строкой — для списка выбора в ленте. */
 function bookNote(p) {
   const d = describe(p);
-  return [d.scope, d.range ? `R-spread ${d.range}` : null,
+  return [d.scope, d.range ? `spread ${d.range}` : null,
           d.years ? `срок ${d.years}` : null, d.moneyTxt].filter(Boolean).join(" · ");
 }
 
@@ -1077,7 +1077,7 @@ export default function SignalsModule() {
                   {/* сторона теперь в плашке (агрессор у сделки, очередь у
                       заявки), здесь остаются только числа */}
                   {h.val_bps != null && (
-                    <><span className="sig-hit-k">R-spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
+                    <><span className="sig-hit-k">spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
                   )}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}

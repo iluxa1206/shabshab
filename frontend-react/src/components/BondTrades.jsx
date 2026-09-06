@@ -12,10 +12,14 @@ import { fetchTrades } from "../api.js";
 // в ленте они помечены значком РПС и не участвуют в средневзвесе (цена
 // договорная). Слою маркеров на графике market=all не нужен — там адресные
 // рисует отдельный слой, иначе одна сделка получила бы два маркера.
-// Спред строки — тот же, что рисует общая лента: R-spread у флоатера, G-спред у
+// Спред строки — тот же, что рисует общая лента: spread у флоатера, G-спред у
 // фикса, посчитанный по цене самой сделки (as-of для прошлых сессий).
 
-const WINDOWS = [1, 7, 30];
+// Окно ленты — максимум, что вообще есть: поштучные тики Alor живут 30 дней,
+// глубже история существует только дневными агрегатами. Переключателя 1/7/30
+// больше нет — выбирать между «часть данных» и «все данные» смысла нет, отбор
+// делает порог объёма.
+const DAYS = 30;
 const LIMIT = 300;
 const DEFAULT_VOL_MLN = 1;
 
@@ -26,7 +30,6 @@ const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 
 export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
-  const [days, setDays] = useState(7);
   // Порог объёма — поле ввода в МИЛЛИОНАХ ₽ (единая денежная единица интерфейса,
   // как в фильтрах вкладки СДЕЛКИ). По умолчанию 1 млн: лента бумаги почти
   // целиком из розничных сделок на пару тысяч, и грузить их каждый раз незачем —
@@ -44,11 +47,11 @@ export default function BondTrades({ isin, kind, onClose }) {
   }, [volInput]);
 
   const q = useQuery({
-    queryKey: ["bond-trades", isin, kind, days, volMln],
+    queryKey: ["bond-trades", isin, kind, volMln],
     // refresh=true дёргает дрейн тиков по бумаге — он и так нужен соседним
     // слоям карточки. Порог объёма фильтрует НА БЭКЕ (min_value в ₽): под
     // лимитом строк тогда остаются крупные принты, а не последние по времени.
-    queryFn: () => fetchTrades(isin, { days, minValue: Math.round(volMln * 1e6),
+    queryFn: () => fetchTrades(isin, { days: DAYS, minValue: Math.round(volMln * 1e6),
                                        limit: LIMIT, kind: isFixed ? "fixed" : "floater",
                                        market: "all" }),
     enabled: !!isin,
@@ -63,21 +66,24 @@ export default function BondTrades({ isin, kind, onClose }) {
   const shown = [...rows].reverse();
   const spreadOf = (r) => (isFixed ? r.g_spread_bps : r.y_idx_bps);
   // сделки СЕГОДНЯШНЕЙ сессии — основным цветом текста, прошлые дни приглушены:
-  // в окне 7/30 дней глаз должен сразу отделять живой день от истории
+  // в окне 30 дней глаз должен сразу отделять живой день от истории
   const today = todayMsk();
+  // Полоса на день: подложка чередуется при СМЕНЕ ДАТЫ, а не через строку —
+  // за 30 дней лента это сплошной столбик цифр, и границу сессии иначе не
+  // видно. Дата у сделки повторяется в каждой строке, но глаз её не считывает.
+  let band = 0, prevDay = null;
+  const bandOf = (r) => {
+    const day = String(r.ts || "").slice(0, 10);
+    if (prevDay !== null && day !== prevDay) band ^= 1;
+    prevDay = day;
+    return band;
+  };
 
   return (
     <div className="ob-panel-inner">
       <div className="ob-head">
         <div className="ob-title">Сделки</div>
         <button className="btn ob-close" onClick={onClose} aria-label="Закрыть ленту сделок">✕</button>
-      </div>
-
-      <div className="ob-ctl bt-ctl">
-        {WINDOWS.map((n) => (
-          <button key={n} className={"chip-btn" + (days === n ? " on" : "")}
-            onClick={() => setDays(n)} title={`окно ${n} дн`}>{n}д</button>
-        ))}
       </div>
 
       <div className="ob-ctl bt-ctl"
@@ -112,16 +118,17 @@ export default function BondTrades({ isin, kind, onClose }) {
                 <th>Цена</th>
                 <th title="агрессор сделки: buy — забрали оффер, sell — отдали в бид">Стор.</th>
                 <th title="объём сделки, млн ₽">Объём</th>
-                <th title={isFixed ? "G-спред по цене сделки" : "R-spread по цене сделки"}>
-                  {isFixed ? "G-спред" : "R-spread"}</th>
+                <th title={isFixed ? "G-спред по цене сделки" : "spread по цене сделки"}>
+                  {isFixed ? "G-спред" : "spread"}</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((r) => {
                 const sp = spreadOf(r);
+                const bd = bandOf(r);
                 return (
                   <tr key={r.trade_id}
-                    className={"bt-row" + (r.negotiated ? " bt-ndm"
+                    className={"bt-row" + (bd ? " bt-band" : "") + (r.negotiated ? " bt-ndm"
                       : r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
                     title={`${r.ts} · ${fmt.num(r.qty, 0)} шт`
                       + (r.side ? ` · агрессор ${r.side}` : "")
@@ -135,7 +142,7 @@ export default function BondTrades({ isin, kind, onClose }) {
                     <td className="bt-side">{r.negotiated ? "РПС"
                       : r.side === "buy" ? "buy"
                       : r.side === "sell" ? "sell" : "—"}</td>
-                    <td>{fmt.mln(r.value) ?? "—"}</td>
+                    <td>{fmt.mln1(r.value) ?? "—"}</td>
                     <td style={sp == null ? undefined : dmColor(sp)}>{fmt.bps(sp) ?? "—"}</td>
                   </tr>
                 );

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import AnHint from "./AnHint.jsx";
+import IssuerLegend, { ICOLORS, OTHER_COLOR, issuerColors } from "./IssuerLegend.jsx";
 import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
 import { fetchYidxHistory } from "../api.js";
 import { horizonYears } from "../horizon.js";
 import {
-  linearScale, niceTicks, linePath, GridY, XTicks,
-  MeasuredSvg, ChartFrame, dateTickIdx, tickLabel, spanDays,
+  linearScale, niceTicks, linePath, GridY, GridX, XTicks,
+  MeasuredSvg, ChartFrame, dateTickIdx, tickLabel, spanDays, termTicks, placeLabels,
 } from "../charts/index.js";
 
 // рейтинг-бакеты и палитра — общие для всего фронта (format.js), своей копии
@@ -105,7 +107,10 @@ const padFull = (pad, full) => (full ? {
   b: pad.b == null ? pad.b : Math.round(pad.b * 1.25),
 } : pad);
 
-// ── Scatter: Y-IDX vs СРОК, цвет = рейтинг ──
+// ── Scatter: Y-IDX vs СРОК, точка = ВЫПУСК ──
+// Свитчер РЕЙТИНГ/ЭМИТЕНТ меняет здесь только РАСКРАСКУ точек, а не состав:
+// сворачивать выпуски в медиану эмитента на этом графике нельзя — весь смысл
+// картинки в том, чтобы видеть разброс бумаг одного имени по сроку.
 // По оси X срок до ГОРИЗОНТА (оферта, если рынок прайсит к ней, иначе
 // погашение) — то же число, что подсвечено синим в колонке MATURITY и по
 // которому отбирает окно срока. Раньше стояла спред-дюрация: она короче срока
@@ -114,7 +119,7 @@ const padFull = (pad, full) => (full ? {
 // глаз нельзя.
 // focus: активный фильтр {type,key} — попавшие под него точки ярче, прочие гаснут;
 // клик по точке ставит/снимает фильтр по эмитенту
-function ScatterYidx({ rows, focus, onPick, height, full }) {
+function ScatterYidx({ rows, focus, onPick, height, full, labels, byIss }) {
   const pts = rows
     .map((b) => ({ b, z: yval(b) }))
     .map(({ b, z }) => ({ b, z, yrs: horizonYears(b) }))
@@ -127,82 +132,40 @@ function ScatterYidx({ rows, focus, onPick, height, full }) {
   const xmin = Math.max(0, xlo);   // срок отрицательным не бывает
   const [ymin, ymax] = padDomain(pts.map((p) => p.y));
   const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.iss === focus.key : p.r === focus.key);
+  const icol = byIss ? issuerColors(rows, emKey) : null;
+  const colorOf = (p) => (byIss ? (icol.get(p.iss) || OTHER_COLOR) : BCOLOR[p.r]);
   return (
-    <MeasuredSvg height={height} label="R-spread vs срок до погашения или оферты">
+    <MeasuredSvg height={height} label="spread vs срок до погашения или оферты">
       {({ W, H, bind }) => {
         const P = padFull(SC_PAD, full);
         const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
         const sy = linearScale([ymin, ymax], [H - P.b, P.t]);
         const nx = Math.max(3, Math.round((W - P.l - P.r) / tickGap(full)));
+        const xt = termTicks(xmin, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }));
         return (
           <>
             <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={P.l} x2={W - P.r}
               lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-            <XTicks ticks={niceTicks(xmin, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - P.b + 14} textClass="an-axis" />
+            <GridX ticks={xt} y1={P.t} y2={H - P.b} lineClass="an-grid an-grid-v" />
+            <XTicks ticks={xt} y={H - P.b + 14} textClass="an-axis" />
             {pts.map((p) => {
               const on = hit(p);
               return (
-                <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={dotR(on ? 4.4 : 3.2, full)} fill={BCOLOR[p.r]}
+                <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={dotR(on ? 4.4 : 3.2, full)} fill={colorOf(p)}
                   fillOpacity={on == null ? 0.72 : on ? 0.95 : 0.1}
                   stroke={on ? "var(--fg)" : "none"} strokeWidth={on ? 1 : 0}
                   className="an-pt" onClick={() => onPick && p.iss && onPick(p.iss)}
                   {...bind(sx(p.x), sy(p.y),
-                    `${p.name}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.r}`)} />
+                    `${p.name}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.r}`
+                    + (p.iss ? `\n${p.iss}` : ""))} />
               );
             })}
+            {labels && placeLabels(pts, sx, sy, W, P.r, full ? 11 : 9).map((l) => (
+              <text key={l.key} x={l.x} y={l.y} className="an-pt-lbl">{l.txt}</text>
+            ))}
             <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
-          </>
-        );
-      }}
-    </MeasuredSvg>
-  );
-}
-
-// ── Scatter агрегированный по эмитенту: точка = (медиана spread dur, медиана
-//    Y-IDX), размер = число бумаг, цвет = доминирующий рейтинг эмитента ──
-function ScatterIssuer({ rows, focus, onPick, height, full }) {
-  const pts = [];
-  for (const [k, bonds] of byIssuer(rows)) {
-    const zs = bonds.map(yval).filter((v) => v != null);
-    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null && v > 0);
-    if (!zs.length || !ds.length) continue;
-    pts.push({ x: median(ds), y: median(zs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
-  }
-  if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
-  const [xlo, xmax] = padDomain(pts.map((p) => p.x));
-  const xmin = Math.max(0, xlo);   // срок отрицательным не бывает
-  const [ymin, ymax] = padDomain(pts.map((p) => p.y));
-  const hit = (p) => (focus == null ? null : focus.type === "issuer" ? p.name === focus.key : p.r === focus.key);
-  return (
-    <MeasuredSvg height={height} label="R-spread vs срок по эмитентам">
-      {({ W, H, bind }) => {
-        const P = padFull(SC_PAD, full);
-        const sx = linearScale([xmin, xmax], [P.l, W - P.r]);
-        const sy = linearScale([ymin, ymax], [H - P.b, P.t]);
-        const nx = Math.max(3, Math.round((W - P.l - P.r) / tickGap(full)));
-        return (
-          <>
-            <GridY ticks={niceTicks(ymin, ymax, 5)} y={sy} x1={P.l} x2={W - P.r}
-              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-            <XTicks ticks={niceTicks(xmin, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - P.b + 14} textClass="an-axis" />
-            {pts.map((p) => {
-              const on = hit(p);
-              return (
-                <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={dotR(3 + Math.min(6, Math.sqrt(p.n)) + (on ? 1 : 0), full)}
-                  fill={BCOLOR[p.r]} fillOpacity={on == null ? 0.55 : on ? 0.85 : 0.08}
-                  stroke={on ? "var(--fg)" : BCOLOR[p.r]} strokeOpacity={on == null ? 0.9 : on ? 1 : 0.12}
-                  className="an-pt" onClick={() => onPick && onPick(p.name)}
-                  {...bind(sx(p.x), sy(p.y),
-                    `${trunc(p.name, 22)}\n${Math.round(p.y)} bps · ${fmt.yrs(p.x)} · ${p.n} шт`)} />
-              );
-            })}
-            <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
-            <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>R-spread, bps</text>
+              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>spread, bps</text>
           </>
         );
       }}
@@ -274,11 +237,11 @@ function IssuerDetail({ rows, issuer, onClear }) {
         const z = yval(b);
         const yrs = horizonYears(b);
         const shown = z != null && yrs != null;
-        const why = b.yield_over_index_bps == null ? "нет R-spread (нет цены)"
-          : z == null ? "R-spread вне бэнда" : "нет срока (перп или дыра в справочнике)";
+        const why = b.yield_over_index_bps == null ? "нет spread (нет цены)"
+          : z == null ? "spread вне бэнда" : "нет срока (перп или дыра в справочнике)";
         return (
           <span key={b.isin} className={"an-sel-chip" + (shown ? "" : " off")}
-            title={shown ? `${b.short_name}: R-spread ${Math.round(z)} bps · ${fmt.yrs(yrs)}` : `${b.short_name}: не на графике — ${why}`}>
+            title={shown ? `${b.short_name}: spread ${Math.round(z)} bps · ${fmt.yrs(yrs)}` : `${b.short_name}: не на графике — ${why}`}>
             {b.short_name}{shown ? ` ${Math.round(z)}` : " ✕"}
           </span>
         );
@@ -299,7 +262,7 @@ function RatingDist({ rows, focus, onPick, rowH, full }) {
     }
     return BUCKETS.filter((k) => g[k]?.length).map((k) => ({ key: k, label: k, arr: g[k], color: BCOLOR[k] }));
   }, [rows]);
-  return <BoxRows entries={entries} label="распределение R-spread по рейтингам"
+  return <BoxRows entries={entries} label="распределение spread по рейтингам"
     kind="rating" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
 }
 
@@ -316,18 +279,16 @@ function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH, full }) {
       arr.push({ key: String(k), label: trunc(String(k)), arr: zs, color: BCOLOR[modalBucket(bonds)], md: median(zs) });
     }
     arr.sort((a, b) => b.md - a.md);
-    const note = arr.length > cap ? `+${arr.length - cap} эмитентов ниже по R-spread скрыто` : null;
+    const note = arr.length > cap ? `+${arr.length - cap} эмитентов ниже по spread скрыто` : null;
     return { entries: arr.slice(0, cap), note };
   }, [rows, cap]);
-  if (!entries.length) return <div className="an-empty">нет эмитентов с валидным R-spread</div>;
-  return <BoxRows entries={entries} note={note} label="распределение R-spread по эмитентам"
+  if (!entries.length) return <div className="an-empty">нет эмитентов с валидным spread</div>;
+  return <BoxRows entries={entries} note={note} label="распределение spread по эмитентам"
     kind="issuer" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
 }
 
 // ── История медианного Y-IDX по рейтингам/эмитентам (точные дневные снапшоты) ──
 const PERIODS = [["1м", 30], ["3м", 91], ["6м", 182], ["12м", 365]];
-// палитра линий эмитентов (рейтинг-цвета заняты бакетами); РЫНОК — нейтральный
-const ICOLORS = ["#4f9cf9", "#f9a04f", "#3fbf7f", "#e05c66", "#b07cf9", "#3fc6c6", "#d4b83f", "#f97cc0"];
 const YH_PAD = { l: 46, r: 14, t: 12, b: 30 };
 const MARKET = "РЫНОК";
 
@@ -431,7 +392,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
   return (
     <>
       <ChartFrame
-        height={height} pad={padFull(YH_PAD, full)} label="динамика R-spread"
+        height={height} pad={padFull(YH_PAD, full)} label="динамика spread" gridX
         data={idxPts} build={build} px={(p, s) => s.sx(p.i)}
         tooltip={(p) => {
           // компактный тултип: при активном фильтре — только его линия,
@@ -455,7 +416,7 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
         }}
         overlay={(s, g) => (
           <text x={g.x0 - 38} y={g.y1 + 4} className="an-axis-lbl"
-            transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>R-spread, bps</text>
+            transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>spread, bps</text>
         )}
       >
         {(s) => series.map((ser, gi) => {
@@ -507,7 +468,6 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
 function RatingLegend() {
   return (
     <div className="an-legend">
-      <span className="an-leg-lbl">цвет:</span>
       {BUCKETS.map((k) => (
         <span key={k} className="an-leg-item">
           <span className="an-leg-swatch" style={{ background: BCOLOR[k] }} />{k}
@@ -536,6 +496,7 @@ function AnCard({ title, hint, ctl, full, onToggleFull, children }) {
     <div className={"an-card" + (full ? " an-full" : "")}>
       <div className="an-title an-head">
         <span className="an-title-txt">{title}</span>
+        <AnHint text={hint} />
         <span className="an-title-ctl">
           {ctl}
           <button type="button" className="an-full-btn" onClick={onToggleFull}
@@ -543,7 +504,6 @@ function AnCard({ title, hint, ctl, full, onToggleFull, children }) {
             aria-label={full ? "свернуть" : "на весь экран"}>{full ? "✕" : "⤢"}</button>
         </span>
       </div>
-      {hint && <div className="an-hint an-sub">{hint}</div>}
       {children}
     </div>
   );
@@ -589,6 +549,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
     return () => window.removeEventListener("keydown", f);
   }, [full]);
 
+  const [labels, setLabels] = useState(false);
   const fullBtn = (k) => ({ full: full === k, onToggleFull: () => setFull((s) => (s === k ? null : k)) });
   const bigH = Math.max(320, vh - 230);
   const scH = full === "scatter" ? bigH : SC_H;
@@ -613,19 +574,26 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
     </span>
   );
   const aggCtl = <AggToggle value={groupBy} onChange={setGroupBy} />;
+  // Подписи точек только в полный экран: в карточке 320 px они перекрыли бы сам
+  // график, а на весь экран место есть и «выпуск — спред» читается без наведения.
+  const lblCtl = full === "scatter" ? (
+    <button type="button" className={"an-tgl-btn an-lbl-btn" + (labels ? " on" : "")}
+      aria-pressed={labels} onClick={() => setLabels((v) => !v)}
+      title="подписи точек: выпуск и спред">ПОДПИСИ</button>
+  ) : null;
 
   return (
     <section className={"analytics" + (full ? " has-full" : "")}>
-      <AnCard title="R-spread vs СРОК" ctl={aggCtl} {...fullBtn("scatter")}
-        hint={byIss ? "спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = эмитент (медиана) · размер = число бумаг · клик = фильтр"
-                    : "спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = выпуск · цвет = рейтинг · клик = фильтр по эмитенту"}>
-        {byIss ? <ScatterIssuer rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />
-               : <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"} />}
+      <AnCard title="spread vs СРОК" ctl={<>{lblCtl}{aggCtl}</>} {...fullBtn("scatter")}
+        hint={"спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = выпуск · цвет = "
+              + (byIss ? "эмитент" : "рейтинг") + " · клик = фильтр по эмитенту"}>
+        <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"}
+          labels={labels && full === "scatter"} byIss={byIss} />
         {focus?.type === "issuer" && <IssuerDetail rows={rows} issuer={focus.key} onClear={() => set(null)} />}
-        <RatingLegend />
+        {byIss ? <IssuerLegend rows={rows} keyFn={emKey} /> : <RatingLegend />}
       </AnCard>
 
-      <AnCard title={byIss ? "R-spread по ЭМИТЕНТАМ" : "R-spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
+      <AnCard title={byIss ? "spread по ЭМИТЕНТАМ" : "spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
         hint="спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n) · клик = фильтр">
         {byIss
           ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH}
@@ -635,7 +603,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
         <RatingLegend />
       </AnCard>
 
-      <AnCard title="R-spread ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
+      <AnCard title="spread ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
         hint={byIss ? "спред по средневзвесу дня · медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
                     : "спред по средневзвесу дня · медиана по рейтинг-бакетам · клик по линии = фильтр"}>
         <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}

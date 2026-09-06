@@ -52,7 +52,11 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
       aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
       // безымянной колонке подсказка объясняет, что это вообще за столбец
       aria-label={col.label || col.title || col.key}
-      title={(col.title ? col.title + ". " : "")
+      // подзаголовок (единицы, база) живёт ТОЛЬКО в подсказке: вторым этажом он
+      // задирал шапку на две строки во всю ширину таблицы ради того, что читают
+      // один раз
+      title={(col.sub ? col.sub + ". " : "")
+             + (col.title ? col.title + ". " : "")
              + (progress && progress.total > 0 && progress.done < progress.total
                ? `Считается: ${progress.done} из ${progress.total}. ` : "")
              + "Клик — сортировка; перетащи, чтобы переставить колонку (Alt+←/→ с клавиатуры)"}
@@ -82,7 +86,7 @@ export function HeaderCell({ col, sort, onSort, onMoveCol, dragRef, dragKey, set
       )}
       {/* подпись — НАД полосой: позиционированная подложка иначе рисуется
           поверх текста в потоке (пусть и полупрозрачно) */}
-      <span className="th-label">{col.label}{col.sub && <><br /><small>{col.sub}</small></>}</span>
+      <span className="th-label">{col.label}</span>
       {onResizeCol && (
         <span className="th-resize" role="presentation" draggable={false}
           title="Потяни — ширина колонки; двойной клик — вернуть по умолчанию"

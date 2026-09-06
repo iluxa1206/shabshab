@@ -36,7 +36,23 @@ export const fmt = {
     const d = a >= 1 ? 1 : 3;
     return m.toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
   },
+  // Тот же млн ₽, но РОВНО один знак — для колонок, где сравнивают величины
+  // столбиком (ADV): три знака у мелочи ломали выравнивание запятых, а точность
+  // «0,049 против 0,035» в среднедневном обороте не нужна. Всё, что меньше
+  // половины десятой, — «<0,1»: ноль означал бы «не торгуется вовсе».
+  mln1: (v) => {
+    if (v == null) return null;
+    if (v === 0) return "0";
+    const m = v / 1e6;
+    if (Math.abs(m) < 0.05) return m > 0 ? "<0,1" : ">−0,1";
+    return m.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  },
 };
+
+// Имя выпуска без префикса «ОФЗ»: класс бумаги уже несёт синий бейдж ОФЗ, и
+// слово в имени дублировало его («ОФЗ ОФЗ 29016»). Если после срезки пусто —
+// возвращаем исходное имя.
+export const stripOfz = (name) => (name || "").replace(/^\s*ОФЗ[\s-]*/i, "").trim() || name || "";
 
 // прочерк-плейсхолдер как React-узел
 export const DASH = "—";

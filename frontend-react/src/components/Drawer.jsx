@@ -61,79 +61,49 @@ export function HorizonSwitch({ v, active, onChange }) {
 
 export function ValCards({ v, priceDate, calc = false, hzKey, hzDate }) {
   const u = (t) => <span className="vc-u"> {t}</span>;
-  // к чему посчитаны цифры плиток — иначе «R-spread 320» к оферте и к погашению
-  // выглядят одинаково, а это разные числа
-  const hzNote = hzKey && hzKey !== "maturity"
-    ? `${HZ_LABEL[hzKey]}${hzDate ? " " + fmt.date(hzDate) : ""}`
-    : "к погашению";
+  // К ЧЕМУ посчитаны цифры — единственная подпись, которая остаётся под числом:
+  // «spread 320» к оферте и к погашению выглядят одинаково, а это разные числа.
+  // Короткий ярлык («к call») под плиткой, дата горизонта — в подсказке: она
+  // уточняет, но занимала вторую строку на каждой из двух плиток.
+  const hzShort = hzKey && hzKey !== "maturity" ? HZ_LABEL[hzKey] : "к погашению";
+  const hzFull = hzShort + (hzKey && hzKey !== "maturity" && hzDate ? " " + fmt.date(hzDate) : "");
   // копейки только пока число короткое: у бумаг с номиналом в миллионы
   // (RU000A1034Q5 — НКД 385 000 ₽) дробная часть не влезала в плитку
   const money = (x) => (x == null ? null : Math.abs(x) >= 1e5 ? fmt.num(x, 0) : fmt.num(x, 2));
   return (
     <div className={"val-cards val-cards-6" + (calc ? " val-cards-calc" : "")}>
-      <div className="vc">
-        <div className="vc-label">R-spread</div>
+      <div className="vc" title={`Спред: YTM бумаги − YTM базы, ${hzFull}`}>
+        <div className="vc-label">spread</div>
         <div className="vc-val" style={{ color: dmColor(v.yield_over_index_bps).color }}>
           {fmt.bps(v.yield_over_index_bps) ?? "—"}{u("bps")}</div>
-        <div className="vc-sub">спред: YTM − база · {hzNote}</div>
+        <div className="vc-sub">{hzShort}</div>
       </div>
-      <div className="vc">
+      <div className="vc" title={`XIRR бумаги (внутренняя доходность потока), ${hzFull}`}>
         <div className="vc-label">YTM</div>
         <div className="vc-val">{fmt.pct(v.yield_xirr_pct) ?? "—"}{u("%")}</div>
-        <div className="vc-sub">XIRR бумаги · {hzNote}</div>
+        <div className="vc-sub">{hzShort}</div>
       </div>
-      <div className="vc">
+      <div className="vc" title="База спреда: доходность роллирования RUONIA (единая для КС и RUONIA бумаг)">
         <div className="vc-label">YTM база</div>
         <div className="vc-val">{fmt.pct(v.index_yield_pct) ?? "—"}{u("%")}</div>
-        <div className="vc-sub">роллирование RUONIA</div>
       </div>
-      <div className="vc">
+      <div className="vc" title={"Чистая цена"
+        + (priceDate ? ` на ${fmt.date(priceDate)}` : "")
+        + (v.dirty_price_rub != null ? `; грязная (с НКД) ${money(v.dirty_price_rub)} ₽` : "")}>
         <div className="vc-label">Цена</div>
         <div className="vc-val">{fmt.pct(v.clean_price_pct) ?? "—"}{u("%")}</div>
-        <div className="vc-sub">грязная {money(v.dirty_price_rub) ?? "—"} ₽
-          {priceDate ? ` · ${fmt.date(priceDate)}` : ""}</div>
+        {/* грязная цена остаётся на виду: по ней платят деньги */}
+        <div className="vc-sub">dirty {money(v.dirty_price_rub) ?? "—"} ₽</div>
       </div>
-      <div className="vc">
+      <div className="vc" title="Накопленный купонный доход на дату поставки">
         <div className="vc-label">НКД (ACI)</div>
         <div className="vc-val">{money(v.accrued_settle_rub) ?? "—"}{u("₽")}</div>
-        <div className="vc-sub">на дату поставки</div>
       </div>
-      <div className="vc">
+      <div className="vc" title="Дата расчётов по сделке: T+1 рабочий день">
         <div className="vc-label">Дата поставки</div>
         <div className="vc-val vc-val-sm">{fmt.date(v.settlement_date) ?? "—"}</div>
-        <div className="vc-sub">T+1 раб. день</div>
       </div>
     </div>
-  );
-}
-
-// специфика флоатера: rate duration мала (до рефиксинга), spread duration = весь
-// кредитный риск до погашения
-function FloaterSection({ f, base }) {
-  if (!f) return null;
-  const baseLbl = baseLabel(base);
-  return (
-    <>
-      <div className="section-title">Флоатер-риск</div>
-      <div className="val-cards">
-        <div className="vc">
-          <div className="vc-label">Спред-дюрация</div>
-          <div className="vc-val">{fmt.num(f.spread_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
-        </div>
-        <div className="vc">
-          <div className="vc-label">Дюрация к ставке</div>
-          <div className="vc-val">{fmt.num(f.rate_duration_yrs, 2) ?? "—"}<span className="vc-u"> лет</span></div>
-          <div className="vc-sub">до рефиксинга {f.days_to_refix != null ? f.days_to_refix + " дн" : "—"}</div>
-        </div>
-      </div>
-      <div className="ref-grid">
-        <RefCell k="Текущий купон">{f.current_coupon_pct != null ? fmt.pct(f.current_coupon_pct) + " %" : null}</RefCell>
-        <RefCell k={`Уровень ${baseLbl}`}>{f.base_rate_pct != null ? fmt.pct(f.base_rate_pct) + " %" : null}</RefCell>
-        <RefCell k="Mod dur (spread)">{fmt.num(f.mod_duration)}</RefCell>
-        <RefCell k="Convexity">{fmt.num(f.convexity, 4)}</RefCell>
-        <RefCell k="PVBP ₽/bp (spread)">{fmt.num(f.pvbp, 4)}</RefCell>
-      </div>
-    </>
   );
 }
 
@@ -173,27 +143,38 @@ function PastCalc({ isin }) {
   return (
     <div className="past-calc">
       <div className="price-calc">
-        <label className="pc-label" htmlFor="pc-past-date">Калькулятор прошлых периодов</label>
-        <input
-          id="pc-past-date" className="pc-input pc-date" type="date"
-          max={new Date(Date.now() - 21 * 3600 * 1000).toISOString().slice(0, 10)}
-          value={dateInput} onChange={(e) => setDateInput(e.target.value)}
-        />
-        <div className="pc-input-wrap">
+        <label className="pc-label" htmlFor="pc-past-date"
+          title={"Расчёт метрик на прошлую дату"
+            + (res?.ok ? `. Кривая ${res.data.curve_mode === "market"
+                ? "рыночная (архив котировок той даты)" : "факт + текущая"}` : "")}>На дату</label>
+        {/* тот же порядок слотов, что у калькулятора выше: подпись слева,
+            пояснение в гибкой середине, поля прижаты вправо — два ряда ввода
+            стоят друг под другом */}
+        {/* В статусе остаётся только ПРЕДУПРЕЖДЕНИЕ: ошибка расчёта и цена не
+            того дня. Режим кривой («рыночная (архив)» / «факт+текущая») —
+            рутина, читают его один раз: ушёл в подсказку к подписи ряда. */}
+        <span className="pc-note">
+          <span className="pc-status">
+            {res && !res.ok ? res.err
+              : res?.ok && res.data.stale_days > 0
+                ? `цена от ${fmt.date(res.data.trade_date)} — в этот день торгов не было`
+                : ""}
+          </span>
+        </span>
+        <span className="pc-fields">
           <input
-            className="pc-input" inputMode="decimal"
-            placeholder={res?.ok && res.data.close != null ? fmt.pct(res.data.close) : "close даты"}
-            value={priceInput} onChange={(e) => setPriceInput(e.target.value)}
+            id="pc-past-date" className="pc-input pc-date" type="date"
+            max={new Date(Date.now() - 21 * 3600 * 1000).toISOString().slice(0, 10)}
+            value={dateInput} onChange={(e) => setDateInput(e.target.value)}
           />
-          <span className="pc-unit">%</span>
-        </div>
-        <span className="pc-status">
-          {mut.isPending ? "пересчёт…"
-            : res?.ok ? `${res.data.stale_days > 0
-                  ? `цена от ${fmt.date(res.data.trade_date)} (в этот день торгов не было) · `
-                  : ""}кривая ${res.data.curve_mode === "market" ? "рыночная (архив)" : "факт+текущая"}`
-            : res && !res.ok ? res.err
-            : ""}
+          <div className="pc-input-wrap">
+            <input
+              className="pc-input" inputMode="decimal"
+              placeholder={res?.ok && res.data.close != null ? fmt.pct(res.data.close) : "close даты"}
+              value={priceInput} onChange={(e) => setPriceInput(e.target.value)}
+            />
+            <span className="pc-unit">%</span>
+          </div>
         </span>
       </div>
       {m && (() => {
@@ -225,7 +206,7 @@ function StaleChips({ m }) {
   return (
     <div className="stale-row">
       {chip("Цена", m.market_timestamp ? m.market_timestamp.slice(0, 10) : (m.calc_date || null), m.last_price_pct != null)}
-      {chip("Ставки", m.rates_date || null)}
+      {chip("Свопы", m.rates_date || null)}
     </div>
   );
 }
@@ -336,7 +317,22 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
     <>
       <StaleChips m={m} />
       <div className="price-calc">
-        <label className="pc-label" htmlFor="pc-price">Калькулятор на дату поставки</label>
+        <label className="pc-label" htmlFor="pc-price" title="Пересчёт метрик на дату поставки">Калькулятор</label>
+        {/* Статус и кнопка сброса — в СВОЁМ блоке: они появляются и исчезают по
+            ходу ввода, и стоя в общем ряду двигали поля (кнопка сброса вообще
+            переносила их на новую строку). Здесь их приход растягивает только
+            гибкую середину. */}
+        <span className="pc-note">
+          {isRepriced && (
+            <button className="pc-reset" onClick={resetCalc}>
+              ↺ рынок {fmt.pct(baseVal.clean_price_pct)}%
+            </button>
+          )}
+          {/* Только ошибка солвера: «рыночная цена» / «под введённую цену»
+              и так видны — по самим полям и по подсветке плиток. */}
+          <span className="pc-status">{spreadErr || ""}</span>
+        </span>
+        <span className="pc-fields">
         <div className="pc-input-wrap">
           <input
             id="pc-price"
@@ -353,7 +349,7 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
           />
           <span className="pc-unit">%</span>
         </div>
-        <div className="pc-input-wrap" title="Целевой R-spread: бэк подбирает чистую цену под него, цена встаёт в поле слева">
+        <div className="pc-input-wrap" title="Целевой spread: бэк подбирает чистую цену под него, цена встаёт в поле слева">
           <input
             id="pc-spread"
             className="pc-input pc-input-bps"
@@ -364,16 +360,6 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
           />
           <span className="pc-unit">bps</span>
         </div>
-        {isRepriced && (
-          <button className="pc-reset" onClick={resetCalc}>
-            ↺ рынок {fmt.pct(baseVal.clean_price_pct)}%
-          </button>
-        )}
-        <span className="pc-status">
-          {repriceMut.isPending || spreadMut.isPending ? "пересчёт…"
-            : spreadErr ? spreadErr
-            : isRepriced ? (spreadInput ? "цена подобрана под спред" : "под введённую цену")
-            : "рыночная цена"}
         </span>
       </div>
       <HorizonSwitch v={vRaw} active={hzView.key} onChange={setHzSel} />
@@ -384,7 +370,7 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
 
       <PastCalc isin={r.isin} />
 
-      <div className="section-title">Референс</div>
+      <div className="section-title">Паспорт</div>
       <div className="ref-grid">
         <RefCell k="Эмитент / имя">{r.short_name}</RefCell>
         <RefCell k="ISIN"><IsinCopy isin={r.isin} className="isin-copy-inl" /></RefCell>
@@ -403,17 +389,43 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
         <RefCell k="Номинал">{fmt.num(r.face_value, 0) + " " + (r.face_unit || "")}</RefCell>
         <RefCell k="Размещение">{fmt.date(r.start_date)}</RefCell>
         <RefCell k="Погашение">{fmt.date(r.maturity_date)}</RefCell>
-        {r.offer_date && <RefCell k={r.offer_kind === "call" ? "Оферта (эмитент/call)" : "Оферта (пут)"}>{fmt.date(r.offer_date) + (r.offer_type ? " · " + r.offer_type : "")}</RefCell>}
+        {/* Ячейка оферты стоит ВСЕГДА, даже когда оферты нет (тогда прочерк):
+            пропуск ячейки сдвигал всю сетку на одну позицию, и у бумаг без
+            оферты «НКД» с «Last price» менялись колонками местами — паспорта
+            двух соседних выпусков переставали читаться друг за другом. */}
+        <RefCell k={!r.offer_date ? "Оферта"
+          : r.offer_kind === "call" ? "Оферта (эмитент/call)" : "Оферта (пут)"}>
+          {r.offer_date ? fmt.date(r.offer_date) + (r.offer_type ? " · " + r.offer_type : "") : null}
+        </RefCell>
         <RefCell k="След. купон">{fmt.date(r.next_coupon_date)}</RefCell>
         <RefCell k="Период / год">{(r.coupon_period_days || "—") + " дн · " + (r.coupons_per_year || "—") + "×"}</RefCell>
         <RefCell k="НКД">{fmt.num(r.accrued_interest) + " ₽"}</RefCell>
-        <RefCell k="Last price">{m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}</RefCell>
+        {/* last price — ОДНА сделка; средневзвес дня рядом в скобках отвечает,
+            типична ли она (в неликвиде last это случайный тонкий принт) */}
+        <RefCell k="Last price">
+          {m.last_price_pct != null ? fmt.pct(m.last_price_pct) + " %" : "нет данных"}
+          {m.wap_price_pct != null && (
+            <span className="rc-dim" title="средневзвешенная цена сегодняшней сессии (взвешена оборотом)">
+              {" (ср.взвес " + fmt.pct(m.wap_price_pct) + " %)"}</span>
+          )}
+        </RefCell>
+        {/* Средний спред за месяц — база сравнения «дорого/дёшево сегодня».
+            Окно кончается вчера (сегодня не сравнивается сам с собой), поэтому
+            рядом стоит дельта сегодняшнего спреда по средневзвесу к этой базе:
+            плюс — бумага торгуется шире своего месяца, минус — уже. */}
+        <RefCell k="spread: месяц / сегодня">
+          {m.spread_avg_30d_bps == null ? "нет истории" : (
+            <span title="средневзвешенный по обороту спред за 30 дней по вчера включительно">
+              {fmt.bps(m.spread_avg_30d_bps) + " bps"}
+              {m.y_idx_wap_bps != null && (
+                <span className="rc-delta" style={dmColor(m.y_idx_wap_bps - m.spread_avg_30d_bps)}
+                  title="отклонение сегодняшнего спреда по средневзвесу от месячной базы">
+                  {" " + fmt.devBps(m.y_idx_wap_bps - m.spread_avg_30d_bps)}</span>
+              )}
+            </span>
+          )}
+        </RefCell>
       </div>
-
-      <FloaterSection f={d.floater} base={r.base_rate_type} />
-
-      <div className="section-title">Купоны · факт + прогноз{cutToOffer ? " · до оферты" : ""}</div>
-      <div className="chart-box"><CashflowChart items={coupons} today={today} /></div>
 
       <div className="section-title">Cashflow{cutToOffer ? " · до оферты " + fmt.date(r.offer_date) : ""} ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>
@@ -440,6 +452,11 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
           </tbody>
         </table>
       </div>
+
+      {/* график купонов идёт ПОСЛЕ таблицы: числа в таблице точные, график —
+          форма потока, и читают его последним */}
+      <div className="section-title">Купоны · факт + прогноз{cutToOffer ? " · до оферты" : ""}</div>
+      <div className="chart-box"><CashflowChart items={coupons} today={today} /></div>
     </>
   );
 }
@@ -566,54 +583,66 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                 )}
                 <button ref={closeRef} className="btn ob-toggle dh-close" onClick={onClose}>ЗАКРЫТЬ</button>
               </div>
+              {/* Шапка — СЕТКА СЛОТОВ, а не строка с переносом: у выпуска
+                  без оферты (или без формулы, как у ОФЗ-ПД) блоки прежде
+                  переезжали в другую позицию, и одна и та же дата у соседних
+                  бумаг оказывалась на разной высоте. Слот пустует — соседи
+                  стоят на месте. Кегль метаданных единый; крупным остаётся
+                  только имя. ISIN со ссылкой — в первой строке справа от
+                  имени: в общем ряду параметров он отнимал четверть ширины,
+                  и три слота перестали помещаться, наезжая друг на друга. */}
               <div className="dh-title">
                 <h2 id="d-name">{data?.reference?.short_name || data?.reference?.name || "—"}</h2>
-                <span className="mono muted">
+                {/* ISIN и ссылка на выпуск — служебные, поэтому мелким серым,
+                    но на уровне имени: так их находят глазами быстрее всего */}
+                <span className="mono muted dh-isin">
                   <IsinCopy isin={isin} className="isin-copy-inl" />
                   {issueUrl(data?.reference?.cbonds_id, data?.reference?.moex_secid) && (
-                    <a className="cat-ext"
+                    <a className="dh-ext"
                       title={data?.reference?.cbonds_id
                         ? "страница выпуска на cbonds" : "страница выпуска на MOEX"}
                       href={issueUrl(data.reference.cbonds_id, data.reference.moex_secid)}
-                      target="_blank" rel="noopener noreferrer">↗</a>
+                      target="_blank" rel="noopener noreferrer">C</a>
                   )}
                 </span>
-                {/* Срок и формула — ключевые параметры выпуска, читаются в шапке
-                    ПЕРВЫМИ: погашение всегда, оферта — если она есть (её дата и
-                    есть горизонт, к которому бумага прайсится), формула купона —
-                    у флоатера. Крупно и основным цветом, не серым служебным:
-                    раньше эти цифры терялись рядом с ISIN. */}
-                {data?.reference?.maturity_date && (
-                  <span className="dh-dates">
-                    {/* срок в скобках — у каждой даты СВОЙ: до погашения и до
-                        оферты это разные горизонты, и именно они решают, к чему
-                        бумага прайсится */}
+
+                <span className="dh-slot dh-slot-mat">
+                  {data?.reference?.maturity_date && (
                     <span className="dh-mat" title="Дата погашения">
                       M {fmt.date(data.reference.maturity_date)}
                       {yearsTo(data.reference.maturity_date) && (
                         <span className="dh-yrs"> ({yearsTo(data.reference.maturity_date)} г)</span>
                       )}
                     </span>
-                    {data?.reference?.offer_date && (
-                      <span className={"dh-offer" + (data.reference.offer_kind === "call" ? " dh-offer-call" : "")}
-                        title={(data.reference.offer_kind === "call" ? "Call-оферта (опцион эмитента)" : "Пут-оферта")}>
-                        {data.reference.offer_kind === "call" ? "C " : "P "}{fmt.date(data.reference.offer_date)}
-                        {yearsTo(data.reference.offer_date) && (
-                          <span className="dh-yrs"> ({yearsTo(data.reference.offer_date)} г)</span>
-                        )}
-                      </span>
-                    )}
-                  </span>
-                )}
-                {!isFixed && data?.reference && (
-                  <span className="dh-formula" title="Формула купона выпуска">
-                    <CouponFormula base={data.reference.base_rate_type}
-                      spreadBps={data.reference.spread_bps}
-                      formula={data.reference.formula}
-                      couponsPerYear={couponsPerYear(data.reference.coupon_period_days,
-                                                     data.reference.coupons_per_year)} />
-                  </span>
-                )}
+                  )}
+                </span>
+
+                {/* оферта — тот самый слот, что раньше сдвигал всё за собой:
+                    её дата и есть горизонт прайсинга, если рынок прайсит к ней */}
+                <span className="dh-slot dh-slot-offer">
+                  {data?.reference?.offer_date && (
+                    <span className={"dh-offer" + (data.reference.offer_kind === "call" ? " dh-offer-call" : "")}
+                      title={(data.reference.offer_kind === "call" ? "Call-оферта (опцион эмитента)" : "Пут-оферта")}>
+                      {data.reference.offer_kind === "call" ? "C " : "P "}{fmt.date(data.reference.offer_date)}
+                      {yearsTo(data.reference.offer_date) && (
+                        <span className="dh-yrs"> ({yearsTo(data.reference.offer_date)} г)</span>
+                      )}
+                    </span>
+                  )}
+                </span>
+
+                <span className="dh-slot dh-slot-formula">
+                  {!isFixed && data?.reference && (
+                    <span className="dh-formula" title="Формула купона выпуска">
+                      <CouponFormula base={data.reference.base_rate_type}
+                        spreadBps={data.reference.spread_bps}
+                        formula={data.reference.formula}
+                        couponsPerYear={couponsPerYear(data.reference.coupon_period_days,
+                                                       data.reference.coupons_per_year)} />
+                    </span>
+                  )}
+                </span>
+
               </div>
             </div>
             <div className="drawer-body">

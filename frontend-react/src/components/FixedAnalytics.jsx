@@ -1,7 +1,11 @@
 import { useMemo, useState } from "react";
 import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
-import { linearScale, linTicks, GridY, XTicks, MeasuredSvg } from "../charts/index.js";
+import {
+  linearScale, linTicks, GridY, GridX, XTicks, MeasuredSvg, termTicks, placeLabels,
+} from "../charts/index.js";
 import { horizonYears } from "../horizon.js";
+import AnHint from "./AnHint.jsx";
+import IssuerLegend, { OTHER_COLOR, issuerColors } from "./IssuerLegend.jsx";
 
 // Аналитика фиксов — зеркало AnalyticsPanel флоатеров: g-спред vs СРОК,
 // распределение g-спреда, профиль срочности.
@@ -70,73 +74,43 @@ const quantile = (a, q) => {
 const SC_PAD = { l: 44, r: 12, t: 12, b: 30 };
 const SC_H = 260;
 
-// ── Scatter: g-спред vs СРОК, цвет = рейтинг ──
-function ScatterGDur({ rows }) {
+// ── Scatter: g-спред vs СРОК, точка = ВЫПУСК ──
+// Свитчер РЕЙТИНГ/ЭМИТЕНТ меняет только РАСКРАСКУ точек (как на вкладке
+// флоатеров): сворачивать выпуски в медиану эмитента здесь нельзя — смысл
+// картинки в разбросе бумаг одного имени по сроку.
+function ScatterGDur({ rows, labels, byIss }) {
   const pts = rows
     .map((b) => ({ b, g: gval(b), yrs: horizonYears(b) }))
     .filter(({ yrs, g }) => yrs != null && yrs > 0 && g != null)
-    .map(({ b, g, yrs }) => ({ x: yrs, y: g, r: norm(b.rating), isin: b.isin, name: b.name }));
+    .map(({ b, g, yrs }) => ({ x: yrs, y: g, r: norm(b.rating), isin: b.isin, name: b.name,
+                              iss: emKey(b) }));
   if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
   const xmax = Math.max(...pts.map((p) => p.x), 1);
   const ymax = Math.max(...pts.map((p) => p.y), 100);
   const ymin = Math.min(...pts.map((p) => p.y), 0);
+  const icol = byIss ? issuerColors(rows, emKey) : null;
+  const colorOf = (p) => (byIss ? (icol.get(p.iss) || OTHER_COLOR) : BCOLOR[p.r]);
   return (
     <MeasuredSvg height={SC_H} label="g-спред vs срок">
       {({ W, H, bind }) => {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
-        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
+        const nx = Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70));
+        const xt = termTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }));
         return (
           <>
             <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
               lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - SC_PAD.b + 14} textClass="an-axis" />
+            <GridX ticks={xt} y1={SC_PAD.t} y2={H - SC_PAD.b} lineClass="an-grid an-grid-v" />
+            <XTicks ticks={xt} y={H - SC_PAD.b + 14} textClass="an-axis" />
             {pts.map((p) => (
-              <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={BCOLOR[p.r]} fillOpacity={0.72}
+              <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.2} fill={colorOf(p)} fillOpacity={0.72}
                 {...bind(sx(p.x), sy(p.y),
-                  `${p.name}\ng-спред: ${Math.round(p.y)} bps\nсрок: ${fmt.yrs(p.x)} · рейтинг: ${p.r}`)} />
+                  `${p.name}\ng-спред: ${Math.round(p.y)} bps\nсрок: ${fmt.yrs(p.x)} · рейтинг: ${p.r}`
+                  + (p.iss ? `\n${p.iss}` : ""))} />
             ))}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
-            <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 38} ${SC_PAD.t + 4})`}>g-спред, bps</text>
-          </>
-        );
-      }}
-    </MeasuredSvg>
-  );
-}
-
-// ── Scatter агрегированный по эмитенту: (медиана срока, медиана g-спреда) ──
-function ScatterIssuer({ rows }) {
-  const pts = [];
-  for (const [k, bonds] of byIssuer(rows)) {
-    const gs = bonds.map(gval).filter((v) => v != null);
-    const ds = bonds.map((b) => horizonYears(b)).filter((v) => v != null && v > 0);
-    if (!gs.length || !ds.length) continue;
-    pts.push({ x: median(ds), y: median(gs), r: modalBucket(bonds), n: bonds.length, name: String(k) });
-  }
-  if (pts.length < 2) return <div className="an-empty">мало данных для scatter</div>;
-  const xmax = Math.max(...pts.map((p) => p.x), 1);
-  const ymax = Math.max(...pts.map((p) => p.y), 100);
-  const ymin = Math.min(...pts.map((p) => p.y), 0);
-  return (
-    <MeasuredSvg height={SC_H} label="g-спред vs срок по эмитентам">
-      {({ W, H, bind }) => {
-        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
-        const sy = linearScale([ymin, ymax], [H - SC_PAD.b, SC_PAD.t]);
-        const nx = Math.min(Math.ceil(xmax), Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70)));
-        return (
-          <>
-            <GridY ticks={linTicks(ymin, ymax, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
-              lineClass="an-grid" textClass="an-axis" label={(v) => Math.round(v)} />
-            <XTicks ticks={linTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }))}
-              y={H - SC_PAD.b + 14} textClass="an-axis" />
-            {pts.map((p) => (
-              <circle key={p.name} cx={sx(p.x)} cy={sy(p.y)} r={3 + Math.min(6, Math.sqrt(p.n))}
-                fill={BCOLOR[p.r]} fillOpacity={0.55} stroke={BCOLOR[p.r]} strokeOpacity={0.9}
-                {...bind(sx(p.x), sy(p.y),
-                  `${p.name}\nмедиана g-спреда: ${Math.round(p.y)} bps · медиана срока: ${fmt.yrs(p.x)}\n${p.n} ${plu(p.n)} · рейтинг: ${p.r}`)} />
+            {labels && placeLabels(pts, sx, sy, W, SC_PAD.r, 9).map((l) => (
+              <text key={l.key} x={l.x} y={l.y} className="an-pt-lbl">{l.txt}</text>
             ))}
             <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={SC_PAD.l - 38} y={SC_PAD.t + 4} className="an-axis-lbl"
@@ -278,7 +252,6 @@ function MaturityProfile({ rows }) {
 function RatingLegend() {
   return (
     <div className="an-legend">
-      <span className="an-leg-lbl">цвет:</span>
       {BUCKETS.map((k) => (
         <span key={k} className="an-leg-item">
           <span className="an-leg-swatch" style={{ background: BCOLOR[k] }} />{k}
@@ -301,27 +274,32 @@ function AggToggle({ value, onChange }) {
 
 export default function FixedAnalytics({ rows }) {
   const [groupBy, setGroupBy] = useState("rating");
+  const [labels, setLabels] = useState(false);
   const byIss = groupBy === "issuer";
   return (
     <section className="analytics">
       <div className="an-card">
         <div className="an-title">G-СПРЕД vs СРОК
-          <span className="an-hint">{byIss ? "спред по средневзвесу дня · срок до погашения (или оферты, если она есть) · точка = эмитент (медиана) · размер = число бумаг · цвет = рейтинг" : "спред по средневзвесу дня · срок до погашения (или оферты, если она есть) · точка = выпуск · цвет = рейтинг · наведи для деталей"}</span>
+          <AnHint text={"спред по средневзвесу дня · срок до погашения (или оферты, если она есть) · точка = выпуск · цвет = "
+            + (byIss ? "эмитент" : "рейтинг") + " · наведи для деталей"} />
+          <button type="button" className={"an-tgl-btn an-lbl-btn" + (labels ? " on" : "")}
+            aria-pressed={labels} onClick={() => setLabels((v) => !v)}
+            title="подписи точек: выпуск и спред">ПОДПИСИ</button>
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
-        {byIss ? <ScatterIssuer rows={rows} /> : <ScatterGDur rows={rows} />}
-        <RatingLegend />
+        <ScatterGDur rows={rows} labels={labels} byIss={byIss} />
+        {byIss ? <IssuerLegend rows={rows} keyFn={emKey} /> : <RatingLegend />}
       </div>
       <div className="an-card">
         <div className="an-title">{byIss ? "G-СПРЕД по ЭМИТЕНТАМ" : "G-СПРЕД по РЕЙТИНГ-БАКЕТАМ"}
-          <span className="an-hint">спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n)</span>
+          <AnHint text={"спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n)"} />
           <AggToggle value={groupBy} onChange={setGroupBy} />
         </div>
         {byIss ? <IssuerDist rows={rows} /> : <RatingDist rows={rows} />}
         <RatingLegend />
       </div>
       <div className="an-card">
-        <div className="an-title">ПРОФИЛЬ СРОЧНОСТИ <span className="an-hint">лет до погашения · бар = число бумаг</span></div>
+        <div className="an-title">ПРОФИЛЬ СРОЧНОСТИ <AnHint text={"лет до погашения · бар = число бумаг"} /></div>
         <MaturityProfile rows={rows} />
       </div>
     </section>

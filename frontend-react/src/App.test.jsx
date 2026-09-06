@@ -82,6 +82,31 @@ const FIXED_PUT = {
 };
 
 /** Ответ на запрос по URL. Неизвестное — пустой объект: тест про рендер, не про данные. */
+// Ответ карточки: минимальный, но со всеми обязательными узлами (reference,
+// market, valuation, cashflow) — без reference карточка падает на первом рендере.
+const BOND_DETAILS = {
+  reference: {
+    isin: BOND.isin, short_name: BOND.short_name, base_rate_type: "KEYRATE",
+    formula: BOND.formula, spread_bps: 120, spread_issue_bps: 120,
+    coupons_per_year: 12, coupon_period_days: 30,
+    maturity_date: BOND.maturity_date, next_coupon_date: BOND.next_coupon_date,
+    accrued_interest: 12.5, face_value: 1000,
+  },
+  market: { last_price_pct: 100.1, calc_date: "2026-08-27", market_timestamp: "2026-08-27T15:00:00Z",
+            rates_date: "2026-08-27", wap_price_pct: 100.15, y_idx_wap_bps: 182,
+            spread_avg_30d_bps: 170 },
+  valuation: { clean_price_pct: 100.1, yield_over_index_bps: 180, yield_xirr_pct: 18.2,
+               index_yield_pct: 16.4, accrued_rub: 12.5, dirty_price_rub: 1013.5,
+               settlement_date: "2026-08-28" },
+  cashflow: [
+    { number: 1, payment_date: "2026-09-01", base_rate_pct: 16.5, coupon_rate_pct: 17.7,
+      amount_rub: 14.5, type: "COUPON" },
+    { number: 2, payment_date: BOND.maturity_date, base_rate_pct: 0, coupon_rate_pct: 0,
+      amount_rub: 1000, type: "REDEMPTION" },
+  ],
+  warnings: [],
+};
+
 function replyFor(url) {
   if (url.includes("/api/me")) return USER;
   if (url.includes("/api/bonds?universe"))
@@ -94,6 +119,9 @@ function replyFor(url) {
   if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27",
                                            features: { fixed: FIXED_ON } };
   if (url.includes("/api/signals")) return [];
+  // карточка выпуска: reference + market + valuation + расписание потоков
+  if (/\/api\/bonds\/RU\w+$/.test(url.split("?")[0])) return BOND_DETAILS;
+  if (url.includes("/api/trades")) return { n: 0, value: 0, trades: [] };
   return {};
 }
 
@@ -161,6 +189,36 @@ describe("монтирование приложения", () => {
     spy.mockRestore();
   });
 
+  it("карточка выпуска монтируется вместе со стаканом и лентой", async () => {
+    // Карточка тянет за собой Drawer + Orderbook + BondTrades — три компонента,
+    // которых нет на первом экране, поэтому монитор-смоук их не проверяет.
+    // Открываем адресом (?isin=...), как это делает ссылка в ленте сигналов.
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/floaters?isin=" + BOND.isin);
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a.join(" ")));
+    stubNetwork();
+    render(<App />);
+    expect(await screen.findByText("ЗАКРЫТЬ")).toBeTruthy();
+    // стакан и лента открыты по умолчанию — обе панели обязаны смонтироваться
+    // стакан и лента открыты по умолчанию — обе панели обязаны смонтироваться
+    expect(await screen.findByLabelText("Закрыть стакан")).toBeTruthy();
+    expect(await screen.findByLabelText("Закрыть ленту сделок")).toBeTruthy();
+    // карточка дорисована целиком: паспорт и график купонов под таблицей потоков
+    expect(await screen.findByText("Паспорт")).toBeTruthy();
+    // Шапка — сетка фиксированных слотов: они на месте ДАЖЕ когда пусты (у этой
+    // бумаги нет оферты). Иначе соседние блоки переезжают в чужие колонки.
+    expect(document.querySelectorAll(".dh-title .dh-slot").length).toBe(3);
+    // паспорт: средневзвес дня рядом с last price и месячная база спреда с дельтой
+    expect(await screen.findByText(/ср\.взвес 100,15/)).toBeTruthy();
+    expect(await screen.findByText(/170 bps/)).toBeTruthy();
+    expect(await screen.findByText("+12")).toBeTruthy();
+    const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
+    expect(fatal).toEqual([]);
+    spy.mockRestore();
+    window.history.pushState({}, "", back);
+  });
+
   it("монитор фиксов монтируется и рисует строку", async () => {
     // Витрина фиксов — клон монитора флоатеров на общих компонентах (BondTable,
     // Toolbar), поэтому ошибка обобщения ломает её так же тихо: сборка зелёная,
@@ -174,7 +232,8 @@ describe("монтирование приложения", () => {
     render(<App />);
 
     await waitFor(() => expect(calls.some((u) => u.includes("/api/fixed"))).toBe(true));
-    expect(await screen.findByText(/ОФЗ 26999/)).toBeTruthy();
+    // имя ОФЗ рисуется без слова «ОФЗ» — его несёт синий бейдж класса
+    expect(await screen.findByText(/26999/)).toBeTruthy();
     // первичные метрики витрины — на месте (g-спред и доходность к погашению)
     expect((await screen.findAllByText("25")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("16,10")).length).toBeGreaterThan(0);
@@ -221,7 +280,7 @@ describe("монтирование приложения", () => {
     await waitFor(() => {
       const names = [...document.querySelectorAll(".bond-name")]
         .map((n) => n.textContent);
-      // в имени рядом стоят класс и рейтинг («КОРПТЕСТ 2Р-02(AA)») — берём
+      // в имени рядом с тикером стоит рейтинг («ТЕСТ 2Р-02(AA)») — берём
       // только сам тикер
       expect(names.map((n) => (n.match(/ТЕСТ \dР-\d+/) || [])[0]).filter(Boolean))
         .toEqual(["ТЕСТ 1Р-01", "ТЕСТ 2Р-02", "ТЕСТ 3Р-03"]);
@@ -237,8 +296,8 @@ describe("монтирование приложения", () => {
     stubNetwork();
     render(<App />);
     // бумага с офертой через 2 года остаётся, пятилетняя без оферты — нет
-    expect(await screen.findByText(/ОФЗ 26998/)).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(/ОФЗ 26999/)).toBeNull());
+    expect(await screen.findByText(/26998/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/26999/)).toBeNull());
     window.history.pushState({}, "", back);
   });
 
@@ -251,7 +310,7 @@ describe("монтирование приложения", () => {
     render(<App />);
     // бумага витрины даёт 25 бп — под окно не попадает, таблица пуста
     // (данные приезжают из кэша react-query или из сети — витрине всё равно)
-    await waitFor(() => expect(screen.queryByText(/ОФЗ 26999/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/26999/)).toBeNull());
     expect(await screen.findByText(/Ничего не найдено по фильтру/)).toBeTruthy();
     window.history.pushState({}, "", back);
   });

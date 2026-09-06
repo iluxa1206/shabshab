@@ -40,3 +40,16 @@ export function XTicks({
     </text>
   ));
 }
+
+// Вертикальная X-сетка: линии по тем же тикам, что и подписи оси. ticks — уже
+// пиксельные X (как у XTicks), чтобы шаг сетки и подписи не разъезжались.
+export function GridX({
+  ticks, y1, y2, stroke = "var(--line-2)", lineClass,
+}) {
+  return ticks.map((t, i) => (
+    <line key={i} x1={t.x} y1={y1} x2={t.x} y2={y2}
+      className={lineClass}
+      stroke={lineClass ? undefined : stroke}
+      strokeWidth={lineClass ? undefined : 1} />
+  ));
+}

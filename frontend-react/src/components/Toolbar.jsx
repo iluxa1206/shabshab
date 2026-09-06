@@ -19,10 +19,10 @@ export default function Toolbar({
   query, setQuery, searchRef, watchCount, shown, total,
   visibleCols, onToggleCol, onResetCols, onMoveCol, colsMeta,
   activeFilters, onResetFilters,
-  // Первичная метрика витрины: у флоатеров одна (R-spread), у фиксов две
+  // Первичная метрика витрины: у флоатеров одна (spread), у фиксов две
   // равноправные (g-спред и YTM) — второе окно рисуется, только когда хост
   // дал ему обработчики.
-  spreadLabel = "R-spread", spreadTitle,
+  spreadLabel = "spread", spreadTitle,
   ytmFrom, setYtmFrom, ytmTo, setYtmTo,
 }) {
   const volTitle = "Размер тикета по сторонам, млн ₽: заполненная сторона пересчитывается "

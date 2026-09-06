@@ -957,7 +957,7 @@ def period_index_pct(isin: str, base: str, coupons: list, face: float,
         elif base in ("KEYRATE", "RUONIA"):
             # Спека не резолвится — купон уйдёт на легаси форвард-проекцию кривой.
             # Это ДРУГАЯ цифра, а не «чуть менее точная»: на ВЭБ2Р-50 разница
-            # 9 bps R-spread. Раньше расхождение было невидимым, и один и тот же
+            # 9 bps spread. Раньше расхождение было невидимым, и один и тот же
             # выпуск по одной цене показывал разные метрики до/после рестарта.
             _spec_lost(isin, base, "coupon_mode/avg_window_days не резолвятся")
     except Exception as e:

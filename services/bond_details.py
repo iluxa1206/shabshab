@@ -144,6 +144,27 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
         "prev_close_dm_bps": None,
     }
 
+    # СРЕДНЕВЗВЕС ДНЯ И СРЕДНИЙ СПРЕД ЗА МЕСЯЦ — контекст для last price.
+    # Витрина показывает обе цифры в строке, карточка их не знала: одна сделка
+    # (last) без средневзвеса дня и без месячной базы не отвечает на вопрос
+    # «дорого сейчас или нет». Обе — из тех же источников, что и таблица:
+    # средневзвес из метрик юниверса, месячная база из часовых баров
+    # (bars.spread_avg_map, окно кончается ВЧЕРА — сегодня не сравнивается сам
+    # с собой). Оба источника необязательные: карточка обязана открыться и
+    # когда движок ещё не прогрелся.
+    try:
+        _um = MarketDataService.universe_metrics().get(isin) or {}
+        market_data["wap_price_pct"] = _um.get("wap")
+        market_data["y_idx_wap_bps"] = _um.get("yoi_wap")
+    except Exception as e:
+        logger.debug("wap для %s не поднялся: %s", isin, e)
+    try:
+        from services import bars as _bars
+        market_data["spread_avg_30d_bps"] = await asyncio.to_thread(
+            lambda: _bars.spread_avg_map(30).get(isin))
+    except Exception as e:
+        logger.debug("средний спред 30д для %s не поднялся: %s", isin, e)
+
     curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
     cfs = []
 

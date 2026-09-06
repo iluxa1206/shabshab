@@ -138,7 +138,7 @@ def test_book_line_layout():
     assert "(+6 %)" in price, "сдвиг — в скобке у своего числа"
     assert first.startswith("🔴")                      # оффер красный
     # число без подписи: в строке это единственное значение в бп
-    assert "171 бп" in first and "R-spread" not in first
+    assert "171 бп" in first and "spread" not in first
     assert "(1,5 г)" in first, "срок — в скобках при имени"
     # порядок шапки: спред → выпуск со сроком; объём уехал к цене
     assert first.index("171 бп") < first.index("Газпн3P13R")

@@ -69,6 +69,14 @@ class BondMarketData(BaseModel):
     is_stale: bool = False
     prev_close_clean_pct: Optional[float] = None
     prev_close_dm_bps: Optional[int] = None
+    # средневзвешенная цена СЕГОДНЯШНЕЙ сессии и спред по ней: last price это
+    # одна сделка (в неликвиде — случайный тонкий принт), средневзвес взвешен
+    # оборотом, поэтому в карточке они стоят рядом
+    wap_price_pct: Optional[float] = None
+    y_idx_wap_bps: Optional[float] = None
+    # средний спред за месяц (оборотом взвешенный, окно кончается ВЧЕРА) — база
+    # сравнения «дорого/дёшево сегодня»; и дельта сегодняшнего wap-спреда к нему
+    spread_avg_30d_bps: Optional[float] = None
 
 # Метрики одного горизонта оценки (погашение / пут-оферта / call-оферта). Поток
 # режется к date, выкуп остатка идёт по price_pct, база Y-IDX (роллирование

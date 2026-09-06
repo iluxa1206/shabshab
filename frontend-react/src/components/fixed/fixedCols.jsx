@@ -1,4 +1,4 @@
-import { fmt, dmColor, ratingColor, yearsTo } from "../../format.js";
+import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
 import { D, IsinCopy, Quote } from "../BondTable.jsx";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
@@ -29,12 +29,13 @@ function qTitle(b, side) {
 
 export const FIXED_COLS = [
   // ── статика бумаги ──
-  { key: "name", label: "INSTRUMENT (Э/А)", align: "left", w: 24,
+  { key: "name", label: "INSTRUMENT", align: "left", w: 24,
     cell: (b) => (
       <td className="left name-cell" key="name">
         <div className="bond-name">
-          <span className={"fx-cls fx-" + b.cls}>{b.cls === "ofz" ? "ОФЗ" : "КОРП"}</span>
-          {b.name || b.isin}
+          {/* бейдж только у ОФЗ (см. BondTable): «КОРП» — шум на каждой строке */}
+          {b.cls === "ofz" && <span className="fx-cls fx-ofz">ОФЗ</span>}
+          {(b.cls === "ofz" ? stripOfz(b.name) : b.name) || b.isin}
           {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
           {b.price_thin && <span className="badge-thin"
             title="Последняя цена MOEX старше 4 дней — бумага не торговалась, YTM и спред сняты с несвежего принта.">тонк</span>}
@@ -52,7 +53,7 @@ export const FIXED_COLS = [
     cell: (b) => <td className="num" key="coupon_pct">{fmt.pct(b.coupon_pct) ?? <D />}</td> },
   // Погашение с годами до него; под ним — дата оферты (поток обрезан на ней,
   // метрики строки посчитаны к выкупу по номиналу — yield-to-put).
-  { key: "maturity_date", label: "MATURITY", sub: "(ЛЕТ) · ОФЕРТА", w: 17,
+  { key: "maturity_date", label: "MATURITY", w: 17,
     // сортировка и окно срока меряют ту дату, к которой посчитаны метрики
     // строки (у фикса поток обрывается на оферте) — см. src/horizon.js
     title: "Срок до даты, к которой посчитаны метрики: оферта, если она есть "
@@ -104,7 +105,7 @@ export const FIXED_COLS = [
   { key: "adv_1m_rub", label: "ADV", sub: "1М, М₽", align: "num", w: 8,
     cell: (b) => <td className="num" key="adv_1m_rub"
       title="средний дневной оборот за 30 дней, ₽ — архив часовых баров / число торговых дней рынка">
-      {fmt.mln(b.adv_1m_rub) ?? <D />}</td> },
+      {fmt.mln1(b.adv_1m_rub) ?? <D />}</td> },
   // ── доходности ──
   { key: "ytm", label: "YTM", sub: "К ПОГАШ. %", align: "num", grp: true, w: 9,
     cell: (b) => <td className={"num" + ms(b)} key="ytm"

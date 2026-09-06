@@ -59,7 +59,7 @@ function valueOf(p, metric, base0) {
   return base0 ? (p.price / base0 - 1) * 100 : null;
 }
 
-const axisLabel = (m) => (m === "spread" ? "R-spread, bps"
+const axisLabel = (m) => (m === "spread" ? "spread, bps"
   : m === "price" ? "цена, % номинала" : "Δ цены, %");
 const fmtVal = (v, m) => (v == null ? "—"
   : m === "spread" ? String(Math.round(v))
@@ -243,7 +243,7 @@ function PickTable({ rows, sel, onToggle, onSetAll, onClear, onOpen, hi, onHi })
             <th className="cmp-cb" />
             <th>выпуск</th><th>isin</th><th>эмитент</th>
             <th className="num">погашение <span className="cmp-mut">(лет)</span></th>
-            <th className="num">цена ср</th><th className="num">R-spread ср</th>
+            <th className="num">цена ср</th><th className="num">spread ср</th>
           </tr>
         </thead>
         <tbody>
@@ -296,7 +296,7 @@ function PickTable({ rows, sel, onToggle, onSetAll, onClear, onOpen, hi, onHi })
                 </td>
                 <td className="num" title="средневзвешенная цена дня (WAP биржи)">
                   {fmt.pct(b.wap_price_pct) ?? "—"}</td>
-                <td className="num" title="R-spread по средневзвешенной цене (посчитан к ней по методике)">
+                <td className="num" title="spread по средневзвешенной цене (посчитан к ней по методике)">
                   {fmt.bps(wap) ?? "—"}</td>
               </tr>
             );
@@ -381,7 +381,7 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
           </span>
         </div>
         <div className="an-hint an-sub">
-          {metric === "spread" ? "R-spread по цене дня — линия на выпуск"
+          {metric === "spread" ? "spread по цене дня — линия на выпуск"
             : metric === "price" ? "чистая цена, % номинала"
             : "изменение цены от первого дня окна, %"}
           {base === "vwap" ? " · средневзвешенная цена дня (архив часовых баров)"

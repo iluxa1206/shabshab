@@ -699,7 +699,7 @@ async def reprice_bond_valuation(
 @router.get("/{isin}/price_from_spread", response_model=RepriceResponse, tags=["Bonds"])
 async def price_from_spread(
     isin: str = Path(...),
-    y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой R-spread, bps"),
+    y_idx: float = Query(..., ge=-5000, le=20000, description="Целевой spread, bps"),
     horizon: str = Query("auto", description="maturity | put | call — горизонт, в котором "
                                              "задан целевой спред (auto = правило цены)"),
 ):

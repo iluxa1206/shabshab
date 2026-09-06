@@ -10,7 +10,7 @@ import { ChartFrame, linearScale, niceTicks, extent, dateTickIdx, tickLabel,
 // выпуска (кучность, выбросы, дрейф уровня) не уходя со стола: полноэкранный
 // график на соседней вкладке ленту закрывает.
 //
-// Две оси Y на выбор: ЦЕНА (% номинала) и R-SPREAD (бп, спред к индексу).
+// Две оси Y на выбор: ЦЕНА (% номинала) и SPREAD (бп, спред к индексу).
 // Спред считает бэк при приходе сделки и отдаёт готовым в строке ленты
 // (y_idx_bps) — здесь ничего не пересчитывается. У мелких принтов и фиксов его
 // нет, поэтому в режиме спреда таких точек на графике не будет, и это сказано
@@ -116,7 +116,7 @@ export default function TradeMiniChart({ isin, name, params }) {
     body = (
       <ChartFrame
         height={HEIGHT} pad={pad} minWidth={240} data={data} build={build}
-        label={`Сделки по ${name || isin}: ${metric === "spread" ? "R-spread" : "цена"}`}
+        label={`Сделки по ${name || isin}: ${metric === "spread" ? "spread" : "цена"}`}
         px={(p, s) => s.sx(p.t)} py={(p, s) => s.sy(p[key])}
         yBadge={(p) => (metric === "spread" ? fmt.bps(p[key]) : fmt.num(p[key], 2))}
         tooltip={(p) => (

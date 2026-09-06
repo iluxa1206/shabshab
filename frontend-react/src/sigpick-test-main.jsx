@@ -13,7 +13,7 @@ const OPTIONS = [
   { id: 2, kind: "book", name: "мои эмитенты", n: 3,
     note: "Балтийский лизинг или ГТЛК или 4 эмитентов" },
   { id: 7, kind: "block", name: "сделки Ф5", n: 107,
-    note: "от 1 млн · биржевые · КС/RUONIA · R-spread 150…600 бп" },
+    note: "от 1 млн · биржевые · КС/RUONIA · spread 150…600 бп" },
   { id: 9, kind: "block", name: "Р5", n: 4,
     note: "от 50 млн · все режимы · любая база" },
   { id: 0, kind: "block", name: "умолчание", n: 31,

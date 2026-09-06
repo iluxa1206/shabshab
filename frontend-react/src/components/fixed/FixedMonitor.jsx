@@ -15,7 +15,7 @@ import FixedAnalytics from "../FixedAnalytics.jsx";
 import { FIXED_COLS, FIXED_COL_META, FIXED_DEFAULT_COLS } from "./fixedCols.jsx";
 
 // МОНИТОР ФИКСОВ — та же витрина, что у флоатеров (App.Dashboard), но по
-// облигациям с фиксированным купоном: вместо R-spread/DM первичны ДВЕ метрики —
+// облигациям с фиксированным купоном: вместо spread/DM первичны ДВЕ метрики —
 // g-спред к КБД ОФЗ и доходность к погашению.
 //
 // Состояние СВОЁ, не общее с флоатерами: ключи URL с префиксом fx, ключи

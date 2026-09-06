@@ -35,7 +35,7 @@ const SC_PAD = { l: 46, r: 14, t: 14, b: 30 };
 // сравнивать выпуски по ней на глаз нельзя.
 //
 // Раньше здесь стояла дюрация именно потому, что «срок» означал срок до
-// ПОГАШЕНИЯ, а Y (R-spread/SM) считался к оферте: бумага с путом через полгода
+// ПОГАШЕНИЯ, а Y (spread/SM) считался к оферте: бумага с путом через полгода
 // вставала на пяти годах со спредом к оферте. С горизонтом это возражение
 // снято — X и Y снова про одну и ту же дату.
 export const AXES = {
@@ -51,8 +51,8 @@ export const AXES = {
   float: {
     x: horizonYears, xLabel: "срок, лет →",
     modes: {
-      yidx: { label: "R-spread", axis: "R-spread, bps", val: (b) => (okG(b.yield_over_index_bps) ? b.yield_over_index_bps : null),
-              custom: (m) => m?.y_idx_bps, fmt: (v) => "R-spread: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
+      yidx: { label: "spread", axis: "spread, bps", val: (b) => (okG(b.yield_over_index_bps) ? b.yield_over_index_bps : null),
+              custom: (m) => m?.y_idx_bps, fmt: (v) => "spread: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
       sm: { label: "SM", axis: "SM, bps", val: (b) => (okG(b.dm_bps) ? b.dm_bps : null),
             custom: (m) => m?.sm_bps, fmt: (v) => "SM: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
     },
@@ -132,7 +132,7 @@ const METRICS = {
     ["dirty_rub", "ГРЯЗНАЯ", "₽", (v) => fmt.num(v, 2)],
   ],
   float: [
-    ["y_idx_bps", "R-spread", "bps", (v) => fmt.bps(v), spreadStyle],
+    ["y_idx_bps", "spread", "bps", (v) => fmt.bps(v), spreadStyle],
     ["sm_bps", "SM", "bps", (v) => fmt.bps(v), spreadStyle],
     ["dm_bps", "DM", "bps", (v) => fmt.bps(v), spreadStyle],
     ["yield_xirr_pct", "YTM МОДЕЛЬ", "%", (v) => fmt.pct(v)],
@@ -351,7 +351,7 @@ export default function CalcModule({ initialKind = "fixed" }) {
                 <tr>
                   <th className="left">ВЫПУСК</th><th className="num">ЦЕНА</th>
                   {isFloat
-                    ? <><th className="num">R-spread</th><th className="num">SM</th></>
+                    ? <><th className="num">spread</th><th className="num">SM</th></>
                     : <><th className="num">YTM</th><th className="num">G-СПРЕД</th><th className="num">ДЮР</th><th className="num">КУПОН</th></>}
                   <th className="num">ПОГАШЕНИЕ</th><th className="num">РЕЙТИНГ</th>
                 </tr>

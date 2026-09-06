@@ -326,7 +326,6 @@ td.mut { color: var(--mut); }
    не касается */
 .grid thead th.left { text-align: center; }
 .grid thead th:last-child { padding-right: 24px; }
-.grid thead th small { display: block; color: var(--mut-2); font-weight: 400; letter-spacing: 0.1em; margin-top: 2px; }
 .grid thead th.sorted { color: var(--fg); }
 .grid thead th.sorted::after { content: " ↓"; }
 .grid thead th.sorted.asc::after { content: " ↑"; }
@@ -388,7 +387,8 @@ td.mut { color: var(--mut); }
 .grid tbody td.mat-cell,
 .tape-table tbody td .mat-cell { padding-top: 4px; padding-bottom: 4px; line-height: 1.15; font-size: 12px; }
 .mat-offer { margin-top: 1px; font-size: 10px; letter-spacing: 0.02em; color: var(--mut-2); }
-.mat-yrs { color: var(--mut-2); }
+.mat-yrs { color: inherit; }   /* годы читаются наравне с датой: в главной строке
+                                  белые, в строке оферты — её серый */
 /* горизонт прайсинга — та дата, к которой посчитан спред строки: синими
    годами в скобках. Сама дата остаётся обычной, синего в колонке немного. */
 .mat-yrs.mat-hz { color: var(--accent); font-weight: 600; }
@@ -531,24 +531,62 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* кнопки в один ряд, переносятся на узком экране; ЗАКРЫТЬ прижата вправо */
 .dh-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .dh-close { margin-left: auto; }
-/* имя занимает всю ширину строки и переносится целиком — эллипсис не нужен */
-.dh-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
-/* Срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл). Основной цвет и
-   жирное начертание: это параметры выпуска, а не служебная подпись, — их читают
-   вместе с именем, и серым мелким они терялись рядом с ISIN. */
-.dh-dates { display: inline-flex; align-items: baseline; gap: 10px; }
-/* погашение — тем же кеглем и шрифтом, что формула купона: это первый параметр,
-   который читают в шапке, и мелкий моноширинный он терялся рядом с ISIN */
-.dh-mat { font-size: 13px; font-weight: 700; color: var(--fg); }
-/* оферта остаётся служебной подписью: мелкая моноширинная, цвет несёт вид
-   (акцент — пут, серый — call эмитента) */
-.dh-offer { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
-  white-space: nowrap; color: var(--accent); }
+/* ШАПКА КАРТОЧКИ — СЕТКА, А НЕ ФЛЕКС С ПЕРЕНОСОМ.
+   Флекс раскладывал блоки подряд, и у выпуска без оферты (или без формулы —
+   ОФЗ-ПД) следующий блок занимал чужое место: одна и та же дата у соседних
+   бумаг оказывалась то в первой строке, то во второй. Сетка держит колонки:
+   погашение │ оферта │ формула. Пустой слот остаётся пустым.
+
+   Строка 1 — имя и, у правого края, ISIN со ссылкой на выпуск: код бумаги
+   служебный, но искать его глазами удобнее на уровне имени, а не в общем ряду
+   параметров. Строка 2 — три слота параметров: их ширины в сумме влезают в
+   панель, поэтому содержимое больше не наезжает друг на друга. */
+.dh-title {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 16px; row-gap: 4px;
+  min-width: 0;
+}
+.drawer-head h2 { grid-column: 1 / 3; }
+/* Слот сжимается и обрезается многоточием, а НЕ вылезает на соседа: nowrap без
+   overflow давал наложение «(5,5 г)C 14.12.2026» на узкой панели. */
+.dh-slot { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Срок бумаги в шапке: M — погашение, P/C — оферта (пут/колл). Кегль внутри
+   ряда параметров ОДИН (13px моно): разнобой 11/13 читался как разная
+   важность, хотя это параметры одного ряда. Свой кегль только у имени (20) и
+   у ISIN строкой выше (15). */
+.dh-mat, .dh-offer, .dh-formula,
+.drawer-head .dh-isin {          /* .drawer-head .mono иначе перебивает кегль */
+  font-family: var(--mono); letter-spacing: 0.02em; white-space: nowrap;
+}
+.dh-mat, .dh-offer, .dh-formula { font-size: 13px; }
+.dh-mat { font-weight: 700; color: var(--fg); }
+/* оферта: цвет несёт вид — акцент у пута, серый у call эмитента */
+.dh-offer { font-weight: 700; color: var(--accent); }
 .dh-offer-call { color: var(--mut); }
-/* срок в скобках — спутник даты, не отдельный факт: тот же цвет, вес обычный */
+/* срок в скобках — спутник даты, не отдельный факт: тот же кегль, вес обычный */
 .dh-yrs { font-weight: 400; color: var(--mut); }
-/* формула купона тем же весом — второй ключевой параметр выпуска */
-.dh-formula { font-size: 13px; font-weight: 700; color: var(--fg); }
+/* формула купона — второй ключевой параметр выпуска */
+.dh-formula { font-weight: 700; color: var(--fg); }
+/* В ШАПКЕ колонки формулы схлопнуты: фиксированные ширины (.cf-base и др.)
+   нужны в ТАБЛИЦЕ, где части выстраиваются друг под другом между строками.
+   В карточке бумага одна, и «RU              (4)» читалось как дыра. */
+.dh-formula .cf { gap: 0.6ch; }
+.dh-formula .cf-base, .dh-formula .cf-op, .dh-formula .cf-mrg, .dh-formula .cf-cpy {
+  width: auto; text-align: left;
+}
+/* ISIN и ссылка на выпуск — в первой строке, у правого края рядом с именем.
+   Кегль на ступень крупнее ряда параметров (15px против 13): код бумаги
+   копируют и сверяют глазами посимвольно, а стоит он в строке имени с
+   кеглем 20 — мелкий моноширинный там читался как сноска. */
+.drawer-head .dh-isin { grid-column: 3; grid-row: 1; justify-self: end;
+  font-size: 15px; color: var(--mut); }
+/* Ссылка на страницу выпуска — синяя «C» (cbonds): стрелка ↗ была мельче
+   кликабельного минимума и не читалась как ссылка. Кегль — как у ISIN рядом. */
+.dh-ext { margin-left: 7px; text-decoration: none; color: var(--accent); font-weight: 700;
+  font-size: 15px; padding: 0 3px; }
+.dh-ext:hover { text-decoration: underline; }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
 .drawer-head .btn { flex-shrink: 0; white-space: nowrap; }
@@ -591,6 +629,10 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    оценка уровня. */
 .bt-row.bt-buy .bt-side { color: var(--up); }
 .bt-row.bt-sell .bt-side { color: var(--down); }
+/* Полоса торгового ДНЯ: подложка меняется на смене даты (не через строку) —
+   в ленте за 30 дней это единственная граница сессий. Ставим до правила .bt-ndm,
+   чтобы акцентная подложка адресной сделки перебивала зебру, а не наоборот. */
+.bt-row.bt-band { background: color-mix(in srgb, var(--fg) 5%, transparent); }
 /* Адресная сделка: агрессора нет, цветом «покупка/продажа» её красить нечем.
    Метка режима — акцентом, вся строка чуть приглушена: по бумаге РПС часто
    и есть весь дневной объём, но цена там договорная и рынку не равна. */
@@ -880,6 +922,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .val-cards-6 .vc-val { font-size: 22px; margin-top: 7px; white-space: nowrap; }
 .val-cards-6 .vc-val-sm { font-size: 18px; }
 .val-cards-6 .vc-sub { margin-top: 6px; }
+/* Подпись под числом осталась только там, где несёт факт (горизонт прайсинга,
+   грязная цена); у остальных плиток низ пустой. Резерв в одну строку держит
+   числа соседей на одной линии — без него ряд «прыгал» по высоте. */
+.val-cards-6 .vc { display: flex; flex-direction: column; }
+.val-cards-6 .vc .vc-sub:last-child { margin-top: auto; padding-top: 6px; }
 @media (max-width: 760px) {
   .val-cards-6 { grid-template-columns: repeat(2, 1fr); }
   .val-cards-6 .vc:nth-child(3n) { border-right: 1px solid var(--line); }
@@ -888,10 +935,27 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 }
 
 /* Калькулятор цены в карточке */
-.price-calc { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
+/* РЯД ВВОДА (калькулятор и «на дату») — три слота сеткой:
+   подпись │ пояснение (гибкое) │ поля.
+   Флекс здесь не годился: статус и кнопка сброса появляются по ходу ввода, и в
+   общем ряду они двигали поля, а на узкой панели переносили их на другую
+   строку — форма «прыгала» ровно в тот момент, когда в неё смотрят. Теперь
+   растягивается только середина: подписи обоих рядов выровнены по левому краю,
+   поля — по правому, и оба ряда стоят друг под другом. */
+.price-calc {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  column-gap: 12px;
+  margin: 4px 0 12px;
+}
+/* пояснение и сброс — в гибкой середине; переполнение обрезаем, а не ломаем ряд */
+.pc-note { display: flex; align-items: center; gap: 10px; min-width: 0; overflow: hidden; }
+/* поля всегда рядом и всегда справа */
+.pc-fields { display: flex; align-items: center; gap: 12px; justify-self: end; }
 .pc-label { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.16em; }
 .pc-input-wrap { position: relative; display: inline-flex; align-items: center; }
-.pc-input { width: 110px; padding: 7px 26px 7px 10px; font-size: 15px; font-family: var(--mono); font-weight: 600;
+.pc-input { width: 130px; padding: 7px 26px 7px 10px; font-size: 15px; font-family: var(--mono); font-weight: 600;
   color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; outline: none; }
 .pc-input:focus { border-color: var(--accent); }
 .pc-unit { position: absolute; right: 9px; font-size: 12px; color: var(--mut); pointer-events: none; }
@@ -918,17 +982,29 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 /* Калькулятор прошлых периодов: дата + цена → метрики как-на-дату */
 .past-calc { margin: 4px 0 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .past-calc .price-calc { margin: 0 0 8px; }
-.pc-date { width: 150px; padding-right: 10px; }
+/* поля по длине содержимого, без лишнего воздуха: цена «101,81 %» и спред
+   «−1373 bps» живут в 130 px, дата «06.09.2026» — в 160 (нативная иконка
+   календаря Chrome съедает ~20 px справа) */
+.pc-date { width: 160px; padding-right: 10px; }
 .past-calc .val-cards { margin-bottom: 0; }
 
+/* Подписи баров графика купонов: ставка над баром, сумма внутри. Кегль
+   служебный — числа тут ориентир, точные значения в таблице cashflow выше. */
+.cf-lbl-rate { fill: var(--mut); font-size: 9px; font-family: var(--mono); pointer-events: none; }
+.cf-lbl-sum { fill: var(--bg); font-size: 9px; font-family: var(--mono); pointer-events: none; }
+.cf-lbl-sum.cf-lbl-past { fill: var(--fg); }
 .section-title { font-size: 11px; font-weight: 600; color: var(--mut); text-transform: uppercase; letter-spacing: 0.2em; margin: 24px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--fg); display: flex; gap: 10px; }
-.section-title::before { content: "—"; color: var(--mut-2); }
 
 .ref-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); margin-bottom: 28px; }
 .ref-cell { padding: 9px 14px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
 .ref-cell:nth-child(2n) { border-right: none; }
 .ref-k { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.12em; }
 .ref-v { font-size: 13px; margin-top: 3px; color: var(--fg); }
+/* спутник значения в паспорте: средневзвес рядом с last price — контекст, а не
+   отдельный факт, поэтому приглушён и мельче */
+.rc-dim { color: var(--mut); font-size: 12px; }
+/* дельта к месячной базе: цвет несёт знак (шире/уже), как в таблице */
+.rc-delta { font-weight: 700; margin-left: 2px; }
 
 .chart-box { border: 1px solid var(--line); padding: 16px; margin-bottom: 28px; }
 .chart-box svg { width: 100%; display: block; }
@@ -1110,11 +1186,22 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-title { font-size: 11px; letter-spacing: .05em; color: var(--fg); margin-bottom: 8px; text-transform: uppercase; }
 .an-title.an-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 4px; }
 .an-title-txt { white-space: nowrap; }
-/* контролы прижаты вправо; подсказка вынесена под заголовок отдельной строкой —
-   в одной строке она рвалась на 5 строк и раздувала шапку карточки */
+/* контролы прижаты вправо */
 .an-title-ctl { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
 .an-hint { font-size: 10px; color: var(--mut-2); text-transform: none; letter-spacing: 0; margin-left: 6px; }
 .an-hint.an-sub { display: block; margin: 0 0 6px; line-height: 1.3; }
+/* методика графика — под кнопкой «i» у заголовка: строкой она занимала три
+   строки текста на каждой из трёх карточек и отжимала сам график вниз */
+.an-hint-wrap { position: relative; display: inline-flex; align-items: center; }
+.an-i-btn { font: italic 700 11px var(--mono); color: var(--mut); background: transparent; line-height: 1;
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.an-i-btn:hover { color: var(--fg); border-color: var(--fg); }
+.an-i-btn.on { color: var(--accent); border-color: var(--accent); }
+.an-i-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.an-hint.an-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; width: max-content;
+  max-width: min(420px, 70vw); margin: 0; padding: 6px 8px; line-height: 1.35; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35); white-space: normal; }
 .an-full-btn { font: 11px var(--mono); color: var(--mut); background: transparent; line-height: 1;
   border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; cursor: pointer; }
 .an-full-btn:hover { color: var(--fg); border-color: var(--fg); }
@@ -1137,6 +1224,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .cf-svg { display: block; touch-action: none; cursor: crosshair; }
 .cf-cross { stroke: var(--mut-2); stroke-width: 1; stroke-dasharray: 3 3; }
 .an-grid { stroke: var(--line); stroke-width: 1; }
+/* Вертикальная сетка срока/времени. Была втрое бледнее горизонтальной
+   (opacity .45 от --line) и на тёмной теме просто не читалась — линии как бы
+   есть, а глазом их нет. Держим тот же тон, что у Y-сетки: обе — одна сетка. */
+.an-grid-v { stroke: var(--line-2); opacity: .55; }
+/* подписи точек scatter (только полный экран) */
+.an-pt-lbl { fill: var(--mut); font-size: var(--an-fs-axis); font-family: var(--mono); pointer-events: none; }
 /* Размеры текста графиков — переменными: в полный экран они растут одним
    местом (.an-card.an-full ниже). Прямые значения тут оставлять нельзя —
    разъедутся при следующей правке. */
@@ -1188,6 +1281,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-tgl-btn + .an-tgl-btn { border-left: 1px solid var(--line); }
 .an-tgl-btn:hover { color: var(--fg); }
 .an-tgl-btn.on { background: var(--accent); color: var(--bg); }
+/* «ПОДПИСИ» стоит рядом с группой РЕЙТИНГ/ЭМИТЕНТ, но это отдельный
+   переключатель — своя рамка, чтобы не читался как третий режим группировки */
+.an-lbl-btn { border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; background: transparent;
+  cursor: pointer; }
 
 /* ── Меню выбора столбцов (дропдаун) ── */
 /* «▾ все рейтинги»: чипы держат крупную шкалу, ступени (AA+/AA−) — здесь */
@@ -1536,7 +1633,7 @@ body.col-resizing * { cursor: col-resize !important; }
 .daymodal .warn-box, .daymodal .loading { margin: 16px; }
 .daymodal-body { overflow: auto; padding: 0 16px 16px; }
 /* на узком экране раскладка шире модалки — таблица КРУТИТСЯ ВНУТРИ окна, а не
-   обрезается: правые колонки (Δ bps, источник, Close, R-spread) иначе просто
+   обрезается: правые колонки (Δ bps, источник, Close, spread) иначе просто
    исчезали, и сверка эталона выглядела как отсутствующая колонка */
 .daytable { min-width: 780px; }
 .cf-table tr.daygroup td { font-weight: 700; font-size: 11.5px; border-top: 1px solid var(--fg);
@@ -2259,7 +2356,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   font-family: var(--ui); font-size: 12px; font-weight: 700; color: var(--bev-hi);
   letter-spacing: normal; text-transform: none;
 }
-.theme-win .drawer-head .mono, .theme-win .dh-dates, .theme-win .sb-pop-sub {
+.theme-win .drawer-head .mono, .theme-win .dh-slot, .theme-win .sb-pop-sub {
   color: #cfd8ff;
 }
 .theme-win .dh-offer { color: #9fe0ff; }
@@ -2270,6 +2367,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
    шапке получит контраст по умолчанию, а не после жалобы. */
 .theme-win .drawer-head > *:not(.dh-actions) .muted,
 .theme-win .drawer-head > *:not(.dh-actions) .cat-ext,
+.theme-win .drawer-head > *:not(.dh-actions) .dh-ext,
 .theme-win .drawer-head > *:not(.dh-actions) a,
 .theme-win .modal-head .muted, .theme-win .ob-head .muted,
 .theme-win .charts-head .muted {
@@ -2594,7 +2692,6 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   border-bottom: 1px solid var(--bev-sh); box-shadow: 0 1px 0 var(--bev-hi);
   gap: 6px;
 }
-.theme-win .section-title::before { content: ""; }
 
 /* Референс — таблица параметров: белое поле, читаемая сетка, чередование строк */
 .theme-win .ref-grid {

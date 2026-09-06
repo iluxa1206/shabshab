@@ -167,13 +167,13 @@ const COLS = [
   // B/S вместо «СТОРОНА»: заголовок был длиннее самих значений (buy/sell)
   { key: "side",   label: "B/S",        align: "left", w: 5,  get: (r) => r.side || "",
     title: "сторона агрессора: buy — сделка по аску, sell — по биду" },
-  { key: "yidx",   label: "R-SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
+  { key: "yidx",   label: "SPREAD", sub: "БП", align: "num", w: 10, get: (r) => r.y_idx_bps,
     title: "спред к индексу по ЦЕНЕ СДЕЛКИ (флоатеры от 1 млн ₽; у мелких принтов и фиксов — прочерк)" },
   // Насколько сделка ушла от того уровня, по которому бумага торговалась неделю:
   // сверху отклонение, под ним сама база (средневзвешенный по обороту спред за
   // предыдущие 7 дней). Сортировка — по отклонению, база справочная.
   { key: "dev7",   label: "ОТКЛ 7Д", sub: "БП / БАЗА", align: "num", w: 10, get: (r) => dev7(r),
-    title: "отклонение R-spread сделки от средневзвешенного по обороту спреда"
+    title: "отклонение spread сделки от средневзвешенного по обороту спреда"
            + " за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)" },
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
   // график и карточка — последней колонкой: у имени они перетягивали взгляд,
@@ -958,8 +958,8 @@ export default function TradesTape() {
             )}
           </div>
 
-          <div className="fgroup" title="R-spread сделки в интервале [от, до], бп; сделки без посчитанного спреда при заданной границе скрыты">
-            <span className="fg-lbl">R-SPREAD</span>
+          <div className="fgroup" title="spread сделки в интервале [от, до], бп; сделки без посчитанного спреда при заданной границе скрыты">
+            <span className="fg-lbl">SPREAD</span>
             <input className="num-input" type="number" step="10" placeholder="от"
               value={spreadMin} onChange={(e) => setSpreadMin(e.target.value)} />
             <span className="fg-lbl">—</span>

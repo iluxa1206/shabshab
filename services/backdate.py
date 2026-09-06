@@ -342,7 +342,7 @@ def _accrue_to_date(accint_fact: float, trade_date: date, d: date, periods,
         # СТАРОГО периода почти в полный купон — dirty завышался на купон, и
         # ex-coupon ветка accrue_to_settle уже не срабатывала (calc и settle
         # лежат в одном новом периоде) → YTM проваливался в ноль
-        # (ФосАгро П2 @ 2026-08-09: 11.74₽ вместо ~0.4₽, R-spread −1453bps).
+        # (ФосАгро П2 @ 2026-08-09: 11.74₽ вместо ~0.4₽, spread −1453bps).
         s2 = p_d[0]
         k = (d - s2).days
         if k <= 0:
@@ -441,7 +441,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         ru_curve_asof = (curve_asof("RUONIA", d, ruonia_curve, _ru_hist)[0]
                          if (ruonia_curve is not None and _ru_hist) else None)
         if ru_curve_asof is None:
-            warnings.append("RUONIA-кривая на дату не восстановлена — R-spread не посчитан")
+            warnings.append("RUONIA-кривая на дату не восстановлена — spread не посчитан")
 
     periods = schedules.get(isin) or schedules.get(secid)
     amorts = sched_full.get("amorts")
@@ -778,7 +778,7 @@ async def asof_bar_metrics(isin: str, days: int, board: Optional[str] = None):
         # ГОРИЗОНТ — по правилу цены, как в карточке, стакане и ленте сделок.
         # Верхнеуровневые поля ответа всегда к погашению: у бумаги с офертой
         # (РЖД 1Р-52R: put 09.10.2029 при погашении 31.03.2036) линия графика
-        # считалась к 2036-му, а R-spread в шапке — к оферте, и одна и та же
+        # считалась к 2036-му, а spread в шапке — к оферте, и одна и та же
         # метрика на одном экране расходилась на сотни б.п.
         h = pick_horizon(m, hz_key)
         # ВТОРОЙ ГОРИЗОНТ считаем тем же прогоном и кладём рядом: свитчер

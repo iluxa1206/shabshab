@@ -1,6 +1,6 @@
 import { useChartSize } from "./useChartSize.js";
 import { useNearestHover, Tooltip } from "./hover.jsx";
-import { GridY, XTicks } from "./Axis.jsx";
+import { GridY, GridX, XTicks } from "./Axis.jsx";
 
 // Общий каркас временн'ых графиков: измеренный размер, поля, Y-сетка с
 // подписями, X-тики, crosshair, бейдж значения на оси Y, тултип, курсор
@@ -27,6 +27,7 @@ export default function ChartFrame({
   tooltip,               // (point) => node (опц.)
   onHoverPoint,          // (point|null) — наружу, для синхронизации
   syncPoint,             // точка чужого курсора: пунктирная вертикаль
+  gridX = false,         // вертикальная сетка по тем же X-тикам, что подписи
   overlay,               // (s, geom, hover) => node поверх (легенда, подписи осей)
   children,              // (s, geom, hover) => svg-содержимое
   boxClass = "cf-box",
@@ -61,6 +62,9 @@ export default function ChartFrame({
           {s.yTicks && (
             <GridY ticks={s.yTicks} y={s.sy} x1={geom.x0} x2={geom.x1}
               lineClass="an-grid" textClass="an-axis" label={s.yFormat} />
+          )}
+          {gridX && s.xTicks && (
+            <GridX ticks={s.xTicks} y1={geom.y1} y2={geom.y0} lineClass="an-grid an-grid-v" />
           )}
           {s.xTicks && <XTicks ticks={s.xTicks} y={geom.y0 + 14} textClass="an-axis" />}
 

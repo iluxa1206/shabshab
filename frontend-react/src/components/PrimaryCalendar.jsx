@@ -114,13 +114,13 @@ export default function PrimaryCalendar() {
             <th className="left">Размещение</th>
             <th className="left">Эмитент</th>
             <th className="left">Рейтинг</th>
-            <th className="num">Объём<small>млн</small></th>
-            <th className="num">Срок<small>лет</small></th>
+            <th className="num" title="млн ₽">Объём</th>
+            <th className="num" title="лет">Срок</th>
             <th className="left">Купон</th>
-            <th className="num">Спред модели<small>бп</small></th>
+            <th className="num" title="базисные пункты">Спред модели</th>
             <th className="left">Частота</th>
-            <th className="num">Ориентир YTM<small>%</small></th>
-            <th className="num">Дюрация<small>лет</small></th>
+            <th className="num" title="проценты годовых">Ориентир YTM</th>
+            <th className="num" title="лет">Дюрация</th>
             <th className="left">Комментарий</th>
           </tr>
         </thead>

@@ -37,7 +37,6 @@ async def fetch_alor_orderbook_snapshot(isin: str, depth: int) -> Optional[dict]
         
     return None
 
-_MAX_LADDER = 60   # потолок синтетических уровней (bounds reprice-компьют)
 
 
 def _level(got: dict, price, qty):
@@ -69,7 +68,6 @@ async def get_depth_all():
 async def get_orderbook(
     isin: str = Path(...),
     depth: int = Query(10, ge=1, le=50),
-    full: bool = Query(False, description="Все уровни лестницы (не только с заявками)"),
     kind: str = Query("floater", description="floater | fixed — набор метрик уровня"),
     horizon: str = Query("auto", description="auto | maturity | put | call — горизонт "
                                              "прайсинга уровней (auto = правило цены)"),
@@ -110,31 +108,18 @@ async def get_orderbook(
     raw_asks = [(e["price"], e.get("volume")) for e in snapshot.get("asks", [])[:depth]
                 if e.get("price") is not None]
 
-    # 5. Уровни к расчёту: в режиме «все уровни» — вся лестница (метрики и на
-    # пустых ценах, для анализа «при какой цене спред станет X»), иначе только
-    # цены с заявками. Сетку лестницы строит та же функция, что у WS-потока.
-    plan = None
-    if full:
-        from services.orderbook_svc import ladder_plan
-        plan = ladder_plan(raw_bids, raw_asks)
-    prices = ([p for p, _q in plan["levels"]] if plan
-              else [p for p, _q in raw_bids] + [p for p, _q in raw_asks])
+    # 5. Уровни к расчёту — цены с заявками.
+    prices = [p for p, _q in raw_bids] + [p for p, _q in raw_asks]
 
-    # СЧЁТ — В ПОТОКЕ ИСПОЛНИТЕЛЯ, НЕ В EVENT LOOP. Лестница на 60 уровней это
-    # XIRR и солвер DM на каждый уровень: даже батчем (один поток на бумагу
-    # вместо одного на цену, ×65 по замеру 28.08.2026) счёт остаётся
-    # процессорным, а карточка поллит ручку раз в 15 с при живом WS и раз в 3 с
-    # без него — в цикле это лаг всего сервера.
+    # СЧЁТ — В ПОТОКЕ ИСПОЛНИТЕЛЯ, НЕ В EVENT LOOP: XIRR и солвер DM на каждый
+    # уровень остаются процессорными даже батчем (один поток на бумагу вместо
+    # одного на цену, ×65 по замеру 28.08.2026), а карточка поллит ручку раз в
+    # 15 с при живом WS и раз в 3 с без него — в цикле это лаг всего сервера.
     from services.heavy import run_heavy
     got = await run_heavy(levels_fn, prices) or {}
 
-    if plan is not None:
-        processed_bids, processed_asks = [], []
-        for p, q in plan["levels"]:
-            (processed_asks if p > plan["mid"] else processed_bids).append(_level(got, p, q))
-    else:
-        processed_bids = [_level(got, p, q) for p, q in raw_bids]
-        processed_asks = [_level(got, p, q) for p, q in raw_asks]
+    processed_bids = [_level(got, p, q) for p, q in raw_bids]
+    processed_asks = [_level(got, p, q) for p, q in raw_asks]
 
     return OrderbookResponse(
         isin=isin,

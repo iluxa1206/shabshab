@@ -458,16 +458,16 @@ export const repriceBond = (isin, price, signal) =>
 // Обратная задача: целевой спред Y-IDX (bps) → чистая цена + метрики под ней
 // (clean_price_pct — найденная цена)
 // horizon — в какой метрике задан целевой спред (маркер карточки: к погашению /
-// к оферте / к call), иначе подобранная цена не сойдётся с плиткой R-spread
+// к оферте / к call), иначе подобранная цена не сойдётся с плиткой spread
 export const priceFromSpread = (isin, yIdx, horizon = "auto", signal) =>
   request(`/api/bonds/${encodeURIComponent(isin)}/price_from_spread?y_idx=${encodeURIComponent(yIdx)}`
     + `&horizon=${encodeURIComponent(horizon)}`, { signal });
 
 // Стакан выпуска (Alor snapshot): bids/asks с per-level SM/DM/YTM (тот же расчёт,
-// что калькулятор карточки, батчем по уровням). full=true — все уровни лестницы.
+// что калькулятор карточки, батчем по уровням).
 // horizon: auto|maturity|put|call — к чему прайсятся уровни (auto = правило цены)
-export const fetchOrderbook = (isin, { depth = 10, full = false, kind = "floater", horizon = "auto" } = {}, signal) =>
-  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&full=${full}&kind=${kind}`
+export const fetchOrderbook = (isin, { depth = 10, kind = "floater", horizon = "auto" } = {}, signal) =>
+  request(`/api/orderbook/${encodeURIComponent(isin)}?depth=${depth}&kind=${kind}`
     + `&horizon=${encodeURIComponent(horizon)}`, { signal });
 
 // Котировки всего рынка одним запросом (цена, верх стакана, средневзвес дня,

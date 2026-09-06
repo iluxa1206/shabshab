@@ -190,35 +190,6 @@ def _levels(sub: _Sub, raw) -> list:
     return [_row(sub, p, q) for p, q in _pairs(raw)]
 
 
-def ladder_prices(raw_bids, raw_asks) -> list:
-    """Цены синтетической лестницы — чтобы досчитать их тем же батчем, что и
-    уровни с заявками. Пустой список, если лестницу строить не из чего."""
-    from services.orderbook_svc import ladder_plan
-    try:
-        plan = ladder_plan(_pairs(raw_bids), _pairs(raw_asks))
-    except Exception:
-        return []
-    return [p for p, _q in (plan or {}).get("levels", [])]
-
-
-def _ladder(sub: _Sub, raw_bids, raw_asks):
-    """Полная лестница цен с метриками на пустых уровнях — то же, что HTTP-режим
-    «все уровни». Сетку строит общая функция, метрики берутся из memo."""
-    from services.orderbook_svc import ladder_plan
-    try:
-        plan = ladder_plan(_pairs(raw_bids), _pairs(raw_asks))
-    except Exception as e:
-        logger.debug("alor_ws ladder: %s", e)
-        return None
-    if not plan:
-        return None
-    bids, asks = [], []
-    for price, qty in plan["levels"]:
-        (asks if price > plan["mid"] else bids).append(_row(sub, price, qty))
-    return {"bids": sorted(bids, key=lambda x: x["price_pct"], reverse=True),
-            "asks": sorted(asks, key=lambda x: x["price_pct"])}
-
-
 def _seed_price(isin: str, px) -> None:
     """Live-цена стрима → единый кэш цен (session_prices). Расчёты бэка
     (метрики юниверса, broadcaster, карточки) видят цену избранного с задержкой
@@ -362,19 +333,13 @@ async def alor_orderbook_ws():
                                 if not manager.orderbook_subscriptions.get(isin):
                                     continue
                                 await _ensure_ctx(sub, isin)
-                                # ЦЕНЫ СЧИТАЕМ ОДНИМ БАТЧЕМ на пуш: и уровни с
-                                # заявками, и синтетические уровни лестницы —
-                                # это цены одной бумаги, поток и база у них общие
-                                _lp = ladder_prices(data.get("bids"), data.get("asks"))
+                                # ЦЕНЫ СЧИТАЕМ ОДНИМ БАТЧЕМ на пуш: это цены одной
+                                # бумаги, поток и база у них общие
                                 await _fill_memo(sub, [p for p, _q in _pairs(data.get("bids"))]
-                                                 + [p for p, _q in _pairs(data.get("asks"))]
-                                                 + _lp)
+                                                 + [p for p, _q in _pairs(data.get("asks"))])
                                 out = {
                                     "orderbook": {"bids": _levels(sub, data.get("bids")),
                                                   "asks": _levels(sub, data.get("asks"))},
-                                    # лестница едет рядом: режим «все уровни» в карточке
-                                    # раньше гасил подписку и падал на поллинг 3 с
-                                    "ladder": _ladder(sub, data.get("bids"), data.get("asks")),
                                     "pricing_status": "SUCCESS", "warnings": [], "src": "ws",
                                 }
                                 await manager.broadcast_orderbook(isin, out)
@@ -383,9 +348,8 @@ async def alor_orderbook_ws():
                                 if not getattr(sub, "_logged", False):
                                     sub._logged = True
                                     logger.info("alor_ws: стакан %s пошёл в эфир "
-                                                "(уровней %d, лестница %s)", isin,
-                                                len(out["orderbook"]["asks"] or []),
-                                                "есть" if out.get("ladder") else "нет")
+                                                "(уровней %d)", isin,
+                                                len(out["orderbook"]["asks"] or []))
                             elif chan == "t":
                                 _seed_price(isin, data.get("price"))
                                 # рублёвый объём считаем и здесь: тик избранной бумаги

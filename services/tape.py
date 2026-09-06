@@ -119,7 +119,7 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp,
 
 
 def _spread_clause(y_min: Optional[float], y_max: Optional[float]) -> tuple[str, list]:
-    """Фильтр по R-spread — только внешним слоем над объединением: у тиков
+    """Фильтр по spread — только внешним слоем над объединением: у тиков
     колонки нет (там литерал NULL), и строки без спреда фильтр отсекает
     осознанно — «спред от X» про сделки, у которых спред посчитан."""
     q, args = "", []

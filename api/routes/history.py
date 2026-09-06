@@ -420,7 +420,7 @@ class YidxAggBody(BaseModel):
 
 @router.post("/aggregate/yidx", tags=["History"])
 async def yidx_aggregate(body: YidxAggBody):
-    """Динамика медианного R-spread по рейтинг-бакетам или топ-эмитентам.
+    """Динамика медианного spread по рейтинг-бакетам или топ-эмитентам.
 
     Источник — bar_daily: спред по СРЕДНЕВЗВЕШЕННОЙ цене дня, та же база, что у
     scatter и box-графиков рядом и у сегодняшней точки, которую достраивает
