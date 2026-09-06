@@ -269,18 +269,24 @@ def announces(limit: int = 200, matched: Optional[bool] = None) -> list[dict]:
     return rows
 
 
-def match_announces(window_before: int = 15, window_after: int = 60) -> dict:
+def match_announces(window_before: int = 45, window_after: int = 60) -> dict:
     """Сверка анонса с фактом размещения. → статистика прогона.
 
     Матч по СЕРИИ внутри имени выпуска («Т Плюс 002Р-03» ↔ анонс «002Р-03»)
     плюс проверка эмитента; окно дат вокруг анонсированной даты размещения,
-    потому что она регулярно едет.
+    потому что она регулярно едет. Назад окно шире, чем вперёд: анонс
+    ДОРАЗМЕЩЕНИЯ («РЖД 001Р-54R, доразмещение») указывает на бумагу, книга
+    которой открылась месяцем раньше.
 
-    score: 1.0 — сошлись серия и эмитент, 0.8 — только серия (эмитента в
-    выгрузке пишут коротким брендом, в справочнике MOEX — полным юрлицом, и
-    «ПКО ПКБ» с «Первое клиентское бюро» не совпадут ничем), 0.5 — эмитент и
-    ровно один кандидат в окне. Ниже 0.5 не сохраняем: ложная привязка хуже
-    отсутствующей, её никто не перепроверит."""
+    ЭМИТЕНТ ОБЯЗАТЕЛЕН. Серия сама по себе не идентификатор: «002Р-03» есть у
+    десятков эмитентов, и первый же прогон на голой серии привязал анонс АЛРОСЫ
+    к «Т Плюс 002Р-03», а Полипласт — к Ростовской области. Отсутствие привязки
+    честнее: пустую ячейку человек перепроверит, ложную — нет.
+
+    score: 1.0 — бренд анонса нашёлся в имени выпуска или в юрлице эмитента;
+    0.9 — сошлось только начало бренда (в выгрузке пишут «ПКО ПКБ», в
+    справочнике MOEX — «Первое клиентское бюро»), такая строка помечена в
+    витрине как требующая взгляда."""
     with _connect() as c:
         anns = [dict(r) for r in c.execute(
             "SELECT key, issuer, series, issue_date, book_date FROM primary_announce "
@@ -309,22 +315,36 @@ def match_announces(window_before: int = 15, window_after: int = 60) -> dict:
         if not cand:
             continue
         n_ser, n_iss = _norm(a.get("series")), _norm(a.get("issuer"))
+        if not n_ser or not n_iss:
+            continue
+        # Нормализация оставляет от кириллического бренда только омоглифы, и
+        # «ВЭБ.РФ» ужимается до двух букв. Короткий ключ подстрокой совпадёт с
+        # чем угодно, поэтому для него требуем ТОЧНОГО равенства имени.
+        strict = len(n_iss) < 4
         best, score = None, 0.0
         for f in cand:
             # СУФФИКС, а не вхождение: серия стоит в конце имени выпуска, а
             # «БО-01» подстрокой сидит внутри «БО-012» — такой матч привязал бы
             # анонс к соседнему выпуску того же эмитента
-            by_series = bool(n_ser) and f["n_name"].endswith(n_ser)
-            by_issuer = bool(n_iss) and (n_iss in f["n_name"] or n_iss in f["n_emit"])
-            s = 1.0 if (by_series and by_issuer) else 0.8 if by_series else 0.0
+            if not f["n_name"].endswith(n_ser):
+                continue
+            head = f["n_name"][:-len(n_ser)] or f["n_name"]   # имя без серии
+            if head == n_iss:
+                s = 1.0
+            elif strict:
+                continue
+            elif n_iss in head or n_iss in f["n_emit"]:
+                s = 1.0
+            elif head[:4] and head[:4] == n_iss[:4]:
+                # бренд выгрузки против юрлица справочника: «ПКО ПКБ» и «Первое
+                # клиентское бюро» не пересекаются ни одной подстрокой, а начало
+                # имени выпуска совпадает — но такую привязку помечаем
+                s = 0.9
+            else:
+                continue
             if s > score:
                 best, score = f, s
-        if score == 0.0:
-            by_iss = [f for f in cand
-                      if n_iss and (n_iss in f["n_name"] or n_iss in f["n_emit"])]
-            if len(by_iss) == 1:
-                best, score = by_iss[0], 0.5
-        if best and score >= 0.5:
+        if best:
             hits.append((best["secid"], score, a["key"]))
 
     if hits:

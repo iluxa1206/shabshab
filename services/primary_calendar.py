@@ -124,6 +124,20 @@ def _read_cache() -> dict:
         return {}
 
 
+def _archive(rows: list[dict]) -> None:
+    """Снимок анонсов → durable-архив (см. placement_analytics.archive_announces).
+
+    Зовётся на ЧТЕНИИ витрины, а не только после успешного обновления: источник
+    отдаёт 304, пока выгрузка не изменилась, и архив, привязанный к ветке
+    «обновлено», на живом сервере не наполнялся вовсе. Архив идемпотентен —
+    строка живёт по своему ключу, лишний вызов только двигает last_seen."""
+    try:
+        from services.placement_analytics import archive_announces
+        archive_announces(rows)
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("архив анонсов: %s", e)
+
+
 def _merge(fresh: list[dict], prev: list[dict], now_iso: str) -> list[dict]:
     """Перенос first_seen со старой выгрузки; новым строкам — сегодняшняя дата.
 
@@ -178,14 +192,7 @@ async def refresh(force: bool = False) -> dict:
         "source_url": URL,
     }
     paths.atomic_write_json(paths.cache_path(CACHE_FILE), doc)
-    # durable-архив анонсов: кэш держит только текущий снимок, а сверка «где
-    # закрылась книга относительно ориентира» живёт годами (см.
-    # services/placement_analytics.archive_announces)
-    try:
-        from services.placement_analytics import archive_announces
-        archive_announces(doc["rows"])
-    except Exception as e:                                       # noqa: BLE001
-        logger.warning("архив анонсов: %s", e)
+    _archive(doc["rows"])
     added = len([r for r in doc["rows"] if r["first_seen"] == now.date().isoformat()])
     return {"status": "updated", "rows": len(doc["rows"]), "added": added}
 
@@ -199,6 +206,7 @@ async def get_calendar() -> dict:
         logger.warning("primary_calendar refresh failed: %s", e)
     doc = _read_cache()
     rows = doc.get("rows") or []
+    _archive(rows)
     today = datetime.now(timezone.utc).date()
     for r in rows:
         fs = r.get("first_seen")
