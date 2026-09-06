@@ -2928,6 +2928,9 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .pl-detail > td { padding: 0 0 8px 24px; background: var(--hover); }
 .pl-days { width: auto; opacity: 0.9; }
 .pl-days tbody tr { cursor: default; }
+/* точка «книга ещё набирается» рядом с датой: у долгоиграющего размещения
+   первый день сам по себе ничего не говорит о том, идёт оно или закрылось */
+.pl-live { margin-left: 6px; color: var(--up); cursor: help; }
 
 /* ISIN + рейтинги агентств (Эксперт/АКРА) одной строкой под именем выпуска.
    Кегль тот же, что у ISIN, — иначе строка имени растёт и таблица дышит. */

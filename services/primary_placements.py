@@ -220,44 +220,68 @@ async def sync_sec_ref(max_pages: int = 250) -> dict:
 
 # ────────────────────────── чтение ──────────────────────────
 
-def _wnd(d_from: Optional[str], d_to: Optional[str]) -> tuple[str, list]:
-    where, args = [], []
-    if d_from:
-        where.append("date >= ?")
-        args.append(d_from)
-    if d_to:
-        where.append("date <= ?")
-        args.append(d_to)
-    return (" WHERE " + " AND ".join(where)) if where else "", args
+# Сколько дней без сделок на борде считаем «размещение ещё идёт». Отсчёт от
+# ПОСЛЕДНЕЙ СОБРАННОЙ ДАТЫ, а не от сегодня: история ISS публикуется вечером и
+# не растёт в выходные — иначе в понедельник утром «идущих» не осталось бы ни
+# одного.
+ACTIVE_DAYS = int(os.getenv("PLACEMENT_ACTIVE_DAYS", "7"))
+# Потолок выдачи. Дефолт держим выше годового объёма (1546 выпусков), чтобы
+# витрина никогда не получала молча обрезанный список; о срезе всё равно
+# сообщаем — см. truncated в api/routes/primary.
+MAX_ROWS = 5000
 
 
 def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
                q: Optional[str] = None, min_rub: float = 0.0,
-               limit: int = 500) -> list[dict]:
+               limit: int = MAX_ROWS, active_only: bool = False) -> list[dict]:
     """Строка = ВЫПУСК: первый день размещения, объём, средневзвешенная цена.
+
+    ОКНО ФИЛЬТРУЕТ ПЕРВЫЙ ДЕНЬ ВЫПУСКА, а не отдельные дни, и агрегат всегда
+    считается по ВСЕЙ его истории. Иначе продолжающееся размещение (250 выпусков
+    из 1546 идут дольше дня, хвосты до 192 дней) обрезалось по границе окна и
+    подписывалось её датой: Сульфур1P2 в окне «3 месяца» выглядел как
+    «разместился 08.06 на 65 млн» вместо «12.11.2025, 264 млн». Дата и деньги
+    врали одновременно, причём тем сильнее, чем длиннее книга.
+
+    active_only — «книга ещё набирается» (сделки на борде за последние
+    ACTIVE_DAYS дней собранной истории). Окно дат при этом НЕ применяется: такие
+    выпуски как раз и стартовали задолго до него — с окном фильтр показывал бы
+    пустоту ровно там, где он нужен.
 
     Средневзвес считаем по объёму в ШТУКАХ, а не по деньгам: у валютного борда
     рублёвый объём зависит от курса дня, и цена размещения (% номинала) от него
     не должна зависеть вовсе."""
-    where, args = _wnd(d_from, d_to)
-    if where:
-        where = where.replace(" WHERE ", " WHERE p.").replace(" AND ", " AND p.")
+    args: list = []
     # ISIN берём из справочника рынка, а не из строки дня: у ОФЗ SECID с ним не
     # совпадает, а в момент записи бумаги могло не быть в справочнике торгуемых.
     sql = (
         "SELECT p.secid, COALESCE(s.isin, p.isin) isin, "
         "MAX(p.shortname) shortname, MAX(s.emitent_title) emitent_moex, "
         "MAX(s.name) full_name, MAX(s.type) sec_type, "
-        "MIN(p.date) first_date, MAX(p.date) last_date, COUNT(*) days, "
+        "MIN(p.date) first_date, MAX(p.date) last_date, "
+        # дней РАЗМЕЩЕНИЯ, а не строк таблицы: бумага может пройти день сразу по
+        # двум бордам (22 таких дня в истории) — это один день, а не два
+        "COUNT(DISTINCT p.date) days, "
         "SUM(p.numtrades) numtrades, SUM(p.value_rub) value_rub, "
         "SUM(p.volume) volume, MAX(p.face) face, MAX(p.coupon_pct) coupon_pct, "
         "MAX(p.cur) cur, "
         "SUM(p.price * p.volume) / NULLIF(SUM(p.volume), 0) wa_price, "
-        "MIN(p.price) price_min, MAX(p.price) price_max "
-        "FROM placement_day p LEFT JOIN sec_ref s ON s.secid = p.secid"
-        + where + " GROUP BY p.secid"
+        "MIN(p.price) price_min, MAX(p.price) price_max, "
+        "MAX(p.date) >= DATE((SELECT MAX(date) FROM placement_day), ?) active "
+        "FROM placement_day p LEFT JOIN sec_ref s ON s.secid = p.secid "
+        "GROUP BY p.secid"
     )
+    args.append(f"-{ACTIVE_DAYS} days")
+
     having = []
+    if active_only:
+        having.append("active = 1")
+    if d_from and not active_only:
+        having.append("first_date >= ?")
+        args.append(d_from)
+    if d_to and not active_only:
+        having.append("first_date <= ?")
+        args.append(d_to)
     if min_rub:
         having.append("value_rub >= ?")
         args.append(min_rub)
@@ -269,7 +293,7 @@ def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
     if having:
         sql += " HAVING " + " AND ".join(having)
     sql += " ORDER BY first_date DESC, value_rub DESC LIMIT ?"
-    args.append(max(1, min(int(limit), 5000)))
+    args.append(max(1, min(int(limit), MAX_ROWS)))
     with _connect() as c:
         return [dict(r) for r in c.execute(sql, args)]
 

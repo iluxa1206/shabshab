@@ -114,6 +114,10 @@ function DayBreakdown({ secid }) {
 
 export default function PlacementHistory() {
   const [period, setPeriod] = useState(90);
+  // «идёт сейчас» — книга ещё набирается. Окно периода при этом снимается: такие
+  // выпуски стартовали задолго до него (ВТБ капает с ноября), и внутри «3М»
+  // фильтр показывал бы пустоту ровно там, где он нужен.
+  const [active, setActive] = useState(false);
   const [type, setType] = useState("all");
   const [q, setQ] = useState("");
   const [big, setBig] = useState(false);
@@ -121,8 +125,9 @@ export default function PlacementHistory() {
   const nav = useNavigate();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["placements", period],
-    queryFn: () => fetchPlacements({ from: daysAgo(period), limit: 5000 }),
+    queryKey: ["placements", period, active],
+    queryFn: () => fetchPlacements(
+      active ? { active: true } : { from: daysAgo(period) }),
     staleTime: 3600e3,
   });
 
@@ -156,16 +161,23 @@ export default function PlacementHistory() {
           неделями). Итог дня публикуется вечером, сегодняшних размещений тут ещё нет.
           Спред считается по кнопке — Y-IDX по цене размещения на ту дату, и только
           у флоатеров реестра: тип купона и формула известны лишь по бумагам,
-          которые мы прайсим
+          которые мы прайсим. Период отбирает выпуски по ПЕРВОМУ дню размещения,
+          а объём и цена всегда считаются по всей книге целиком
           {" · "}{rows.length} выпусков · {fmt.mln(total)} млн ₽
+          {data?.truncated ? " · список усечён" : ""}
         </span>
         <div className="ia-filters">
           <span className="seg" role="tablist" aria-label="Период">
             {PERIODS.map(([d, label]) => (
-              <button key={d} className={"seg-btn" + (period === d ? " active" : "")}
-                      onClick={() => setPeriod(d)}>{label}</button>
+              <button key={d} className={"seg-btn" + (!active && period === d ? " active" : "")}
+                      onClick={() => { setActive(false); setPeriod(d); }}>{label}</button>
             ))}
           </span>
+          <button className={"chip-btn" + (active ? " on" : "")}
+                  onClick={() => setActive((v) => !v)}
+                  title="Книга ещё набирается: сделки на борде за последнюю неделю">
+            Идёт сейчас
+          </button>
           <span className="seg" role="tablist" aria-label="Тип купона">
             {TYPES.map(([id, label]) => (
               <button key={id} className={"seg-btn" + (type === id ? " active" : "")}
@@ -205,6 +217,7 @@ export default function PlacementHistory() {
                 <td className="left">
                   {fmt.date(r.first_date)}
                   {r.days > 1 && <span className="mut"> …{fmt.date(r.last_date)}</span>}
+                  {r.active === 1 && <span className="pl-live" title="книга ещё набирается">•</span>}
                 </td>
                 <td className="left">
                   {r.in_registry

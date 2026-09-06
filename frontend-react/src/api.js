@@ -403,13 +403,14 @@ export const fetchPrimaryCalendar = () => request("/api/primary");
 // ФАКТ размещений с биржи (борды «Размещение», ISS history). Строка = выпуск:
 // первый день, объём, средневзвешенная цена. Анонсам ортогонально — там прогноз
 // организатора ДО выхода на биржу, здесь состоявшийся факт.
-export const fetchPlacements = ({ from, to, q, minRub, limit } = {}) => {
+export const fetchPlacements = ({ from, to, q, minRub, limit, active } = {}) => {
   const p = new URLSearchParams();
   if (from) p.set("from", from);
   if (to) p.set("to", to);
   if (q) p.set("q", q);
   if (minRub) p.set("min_rub", minRub);
   if (limit) p.set("limit", limit);
+  if (active) p.set("active", "1");
   const s = p.toString();
   return request("/api/primary/placements" + (s ? `?${s}` : ""));
 };

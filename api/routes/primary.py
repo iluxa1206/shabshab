@@ -3,6 +3,12 @@ from fastapi import APIRouter, Depends, Path, Query
 
 from api.routes.auth import require_admin
 
+
+def pp_max_rows() -> int:
+    """Дефолт лимита витрины — потолок сервиса (годовой объём вдвое меньше)."""
+    from services.primary_placements import MAX_ROWS
+    return MAX_ROWS
+
 router = APIRouter()
 
 
@@ -38,7 +44,8 @@ async def get_placements(
     date_to: str = Query(None, alias="to", description="YYYY-MM-DD"),
     q: str = Query(None, description="Поиск по имени/SECID"),
     min_rub: float = Query(0, ge=0, description="Порог объёма размещения, ₽"),
-    limit: int = Query(500, ge=1, le=5000),
+    active: bool = Query(False, description="Только те, где книга ещё набирается"),
+    limit: int = Query(pp_max_rows(), ge=1, le=5000),
 ):
     """ФАКТ размещений с биржи: строка = выпуск (первый день, объём, цена).
 
@@ -46,12 +53,17 @@ async def get_placements(
     бордов «Размещение» из ISS (services/primary_placements). Подписи (эмитент,
     тип купона, маржа, рейтинг) подмешиваются из реестра, если бумага в нём
     есть: у выпуска-«однодневки» и у неторгуемого более выпуска их не будет.
+
+    Окно дат фильтрует ПЕРВЫЙ ДЕНЬ выпуска, а объём и цена всегда считаются по
+    всей его истории (см. primary_placements.aggregates). active=1 показывает
+    выпуски, книга которых ещё набирается, и окно тогда не применяется.
     """
     from services import primary_placements as pp
     from services import instruments_registry as reg
     from services.pools import run_bg
 
-    rows = await run_bg(pp.aggregates, date_from, date_to, q, min_rub, limit)
+    rows = await run_bg(pp.aggregates, date_from, date_to, q, min_rub, limit,
+                        active)
     labels = await run_bg(reg.labels_map, [r["isin"] for r in rows if r.get("isin")])
     for r in rows:
         lab = labels.get(r.get("isin") or "") or {}
@@ -66,7 +78,10 @@ async def get_placements(
         r["coupons_per_year"] = lab.get("coupons_per_year")
         r["in_registry"] = bool(lab)
         r.pop("emitent_moex", None)
-    return {"rows": rows, "stats": await run_bg(pp.stats)}
+    # усечение выдачи должно быть ВИДНО: молча обрезанный список читается как
+    # полный рынок первички за период
+    return {"rows": rows, "stats": await run_bg(pp.stats),
+            "truncated": len(rows) >= limit}
 
 
 @router.get("/placements/{secid}/days", tags=["Primary"])
