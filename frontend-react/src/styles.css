@@ -2889,9 +2889,14 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* ---- Первичка (анонсы размещений, внешний источник) ---- */
 .pri-cal .grid tbody tr { cursor: default; }
 .pri-cal .grid tbody td { white-space: nowrap; }
-/* комментарий (серия, оферта, поручители) — единственная длинная колонка:
-   режем её, а не растягиваем таблицу в горизонтальный скролл */
-.pri-comment { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+/* Комментарий (серия, оферта, поручители) колонкой больше не стоит — он уехал
+   в подсказку ячейки формулы. Метка «i» говорит, что подсказка там есть:
+   иначе текст не найти, наводить курсор наугад никто не станет. */
+.pri-note {
+  margin-left: 6px; padding: 0 4px; font-size: 10px; font-style: italic;
+  color: var(--mut); border: 1px solid var(--line); border-radius: 2px;
+  cursor: help;
+}
 .pri-badge {
   margin-left: 8px; padding: 1px 5px; font-size: 10px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--bg); background: var(--up);

@@ -139,12 +139,11 @@ export default function PrimaryCalendar() {
             <th className="left">Рейтинг</th>
             <th className="num" title="млн ₽">Объём</th>
             <th className="num" title="лет">Срок</th>
-            <th className="left">Купон</th>
+            <th className="left">Формула</th>
             <th className="num" title="базисные пункты">Спред модели</th>
             <th className="left">Частота</th>
             <th className="num" title="проценты годовых">Ориентир YTM</th>
             <th className="num" title="лет">Дюрация</th>
-            <th className="left">Комментарий</th>
           </tr>
         </thead>
         <tbody>
@@ -165,22 +164,26 @@ export default function PrimaryCalendar() {
                 {r.volume_raw?.startsWith("≥") ? "≥ " : ""}{fmt.num(r.volume_mln, 0) || "—"}
               </td>
               <td className="num" title={r.term_raw || ""}>{fmt.num(r.term_years, 1) || "—"}</td>
-              <td className="left">
+              {/* Формула = ориентир организатора («КС + не выше 300 бп»), а
+                  комментарий (серия, оферта, поручитель) ушёл в подсказку: он
+                  длиннее всех остальных колонок вместе и растягивал таблицу
+                  ради текста, который читают у одной строки из двадцати. */}
+              <td className="left" title={r.comment || r.coupon_guide || ""}>
                 <span className={"pri-type " + (r.is_floater ? "pri-fl" : "pri-fx")}>
                   {r.is_floater ? "флоатер" : "фикс"}
                 </span>
                 {" "}{guide(r.coupon_guide)}
+                {r.comment && <span className="pri-note">i</span>}
               </td>
               <td className="num pri-spread"><ModelSpread m={r.model} /></td>
               <td className="left">{r.coupon_freq || "—"}</td>
               {/* YTM/дюрация источник считает только по фиксам — у флоатеров пусто */}
               <td className="num" title={r.ytm_raw || ""}>{ytm(r)}</td>
               <td className="num">{fmt.num(r.duration_years, 2) || "—"}</td>
-              <td className="left pri-comment" title={r.comment || ""}>{r.comment || "—"}</td>
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={12} className="left mut">Ничего не найдено</td></tr>
+            <tr><td colSpan={11} className="left mut">Ничего не найдено</td></tr>
           )}
         </tbody>
       </table>
