@@ -4,6 +4,10 @@ from fastapi import APIRouter, Depends, Path, Query
 from api.routes.auth import require_admin
 
 
+# Потолок «облигационного» разрыва цены первых торгов и цены книги, п.п.
+DEBUT_MAX_PP = 10.0
+
+
 def pp_max_rows() -> int:
     """Дефолт лимита витрины — потолок сервиса (годовой объём вдвое меньше)."""
     from services.primary_placements import MAX_ROWS
@@ -105,8 +109,15 @@ async def get_placements(
         d = debut.get(r["secid"]) or {}
         r["debut_date"] = d.get("date")
         r["debut_price"] = d.get("close")
-        r["debut_pct"] = (round(d["close"] - r["wa_price"], 2)
-                          if d.get("close") is not None and r.get("wa_price") else None)
+        gap = (round(d["close"] - r["wa_price"], 2)
+               if d.get("close") is not None and r.get("wa_price") else None)
+        # Разрыв больше DEBUT_MAX_PP — это не дебют облигации, а другая шкала
+        # цены: структурные ноты ВТБ/ГПБ размещаются по 100, а торгуются от
+        # стоимости корзины (54 или 140 на первых торгах). Для настоящего
+        # выпуска десять пунктов за десять дней — дефолтная динамика, а не
+        # приём книги. Цену показываем, число — нет: пусть смотрит человек.
+        r["debut_odd"] = gap is not None and abs(gap) > DEBUT_MAX_PP
+        r["debut_pct"] = None if r["debut_odd"] else gap
     # усечение выдачи должно быть ВИДНО: молча обрезанный список читается как
     # полный рынок первички за период
     return {"rows": rows, "stats": await run_bg(pp.stats),

@@ -141,6 +141,12 @@ function PlacedCell({ r }) {
 // Знак обязателен: «ушёл выше номинала» и «провалился» — противоположные
 // исходы книги, а не разные величины одного.
 function DebutCell({ r }) {
+  // структурная бумага: цена вторички живёт в другой шкале, чем цена книги —
+  // число было бы враньём, но саму цену показать честно
+  if (r.debut_odd) {
+    return <span className="mut" title={`первые торги ${fmt.date(r.debut_date)} по `
+      + `${fmt.pct(r.debut_price)} — несопоставимо с ценой книги`}>≠</span>;
+  }
   if (r.debut_pct == null) return <span className="mut">—</span>;
   const v = r.debut_pct;
   return (
