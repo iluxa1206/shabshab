@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { fetchPlacements, fetchPlacementDays, fetchRepricePast, UnauthorizedError } from "../api.js";
 import { fmt } from "../format.js";
 import { horizonView } from "../horizon.js";
+import CouponFormula from "./CouponFormula.jsx";
 
 // ИСТОРИЯ РАЗМЕЩЕНИЙ — вторая половина вкладки «Первичка»: не анонс, а ФАКТ с
 // биржи (борды «Размещение», ISS history → services/primary_placements).
@@ -213,15 +214,24 @@ export default function PlacementHistory() {
                 </td>
                 <td className="left pl-emit" title={r.emitter || ""}>{r.emitter || "—"}</td>
                 <td className="left">{r.rating || "—"}</td>
+                {/* Формула тем же компонентом, что в СПИСКЕ и ленте СДЕЛОК:
+                    «КС + 1,50% (4)» из полей реестра, а сырой текст проспекта —
+                    в подсказке. Раньше здесь стоял сам текст, и одна строка
+                    («1-24 купоны: RDi = K + S, где…») растягивала таблицу на
+                    два экрана. Ставка из ISS — купон ДНЯ РАЗМЕЩЕНИЯ: у флоатера
+                    она ноль до первого фиксинга, поэтому она только фолбэк для
+                    бумаг вне реестра. */}
                 <td className="left">
                   <span className={"pri-type " + (FLOAT_BASES.has(r.base) ? "pri-fl" : "pri-fx")}>
                     {FLOAT_BASES.has(r.base) ? "флоатер" : r.in_registry ? "фикс" : "—"}
                   </span>
                   {" "}
-                  {/* ставка из ISS = купон, действовавший в день размещения: у
-                      флоатера это ноль до первого фиксинга — там честнее формула
-                      из реестра */}
-                  {r.coupon_text || (r.coupon_pct ? fmt.pct(r.coupon_pct) + "%" : "—")}
+                  {FLOAT_BASES.has(r.base)
+                    ? <CouponFormula base={r.base} spreadBps={r.margin_bps}
+                        couponsPerYear={r.coupons_per_year} formula={r.coupon_text} />
+                    : <span title={r.coupon_text || ""}>
+                        {r.coupon_pct ? fmt.pct(r.coupon_pct) + "%" : "—"}
+                      </span>}
                 </td>
                 <td className="num">{fmt.mln(r.value_rub) || "—"}</td>
                 <td className="num"><PriceCell r={r} /></td>

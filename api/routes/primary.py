@@ -63,6 +63,7 @@ async def get_placements(
         r["margin_bps"] = lab.get("margin_bps")
         r["maturity"] = lab.get("maturity")
         r["coupon_text"] = lab.get("coupon_text")
+        r["coupons_per_year"] = lab.get("coupons_per_year")
         r["in_registry"] = bool(lab)
         r.pop("emitent_moex", None)
     return {"rows": rows, "stats": await run_bg(pp.stats)}
