@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { fetchPlacements, fetchPlacementDays, fetchPlacementAftermarket,
          fetchRepricePast, UnauthorizedError } from "../api.js";
 import { fmt } from "../format.js";
@@ -163,7 +163,7 @@ function DayBreakdown({ secid }) {
 function Aftermarket({ secid }) {
   const { data, isLoading } = useQuery({
     queryKey: ["placement-after", secid],
-    queryFn: () => fetchPlacementAftermarket(secid, 30),
+    queryFn: () => fetchPlacementAftermarket(secid),
     staleTime: 3600e3,
   });
   if (isLoading || !data?.found) return null;
@@ -190,7 +190,6 @@ export default function PlacementHistory() {
   const [q, setQ] = useState("");
   const [big, setBig] = useState(false);
   const [open, setOpen] = useState(null);
-  const nav = useNavigate();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["placements", period, active],
@@ -283,17 +282,29 @@ export default function PlacementHistory() {
         <tbody>
           {rows.map((r) => (
             <Fragment key={r.secid}>
+              {/* строка разворачивается кликом — значит она интерактивный
+                  элемент: клавиатура и скринридер должны это видеть так же */}
               <tr className={open === r.secid ? "pl-open" : undefined}
-                  onClick={() => setOpen(open === r.secid ? null : r.secid)}>
+                  tabIndex={0} role="button" aria-expanded={open === r.secid}
+                  onClick={() => setOpen(open === r.secid ? null : r.secid)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setOpen(open === r.secid ? null : r.secid);
+                    }
+                  }}>
                 <td className="left">
                   {fmt.date(r.first_date)}
                   {r.days > 1 && <span className="mut"> …{fmt.date(r.last_date)}</span>}
                   {r.active === 1 && <span className="pl-live" title="книга ещё набирается">•</span>}
                 </td>
                 <td className="left">
+                  {/* настоящая ссылка, а не onClick по span: у выпуска должен
+                      работать средний клик и «открыть в новой вкладке» */}
                   {r.in_registry
-                    ? <a href="#" onClick={(e) => { e.preventDefault(); e.stopPropagation();
-                        nav(`/chart/${r.isin}`); }}>{r.shortname || r.secid}</a>
+                    ? <Link to={`/chart/${r.isin}`} onClick={(e) => e.stopPropagation()}>
+                        {r.shortname || r.secid}
+                      </Link>
                     : (r.shortname || r.secid)}
                 </td>
                 <td className="left pl-emit" title={r.emitter || ""}>{r.emitter || "—"}</td>

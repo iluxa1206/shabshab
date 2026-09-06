@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { fetchPrimaryAnnounces } from "../api.js";
 import { fmt } from "../format.js";
 
@@ -20,7 +20,6 @@ const guide = (s) => (s || "").replace(/^ставка купона\s*/i, "").tri
 
 export default function AnnounceMatch() {
   const [onlyMatched, setOnlyMatched] = useState(false);
-  const nav = useNavigate();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["primary-announces"],
@@ -84,14 +83,14 @@ export default function AnnounceMatch() {
               <td className="num">{fmt.num(r.volume_mln, 0) || "—"}</td>
               <td className="left">
                 {r.matched_secid ? (
-                  <a href="#" onClick={(e) => { e.preventDefault(); nav(`/chart/${r.matched_secid}`); }}
-                     /* score < 1 — сошлись не по всем признакам: привязку стоит
-                        перепроверить глазами, поэтому она помечена */
-                     title={`${r.fact_name || r.matched_secid} · ${fmt.date(r.fact_date)}`
-                            + (r.match_score < 1 ? ` · привязка по совпадению ${r.match_score}` : "")}>
+                  /* score < 1 — сошлись не по всем признакам: привязку стоит
+                     перепроверить глазами, поэтому она помечена «?» */
+                  <Link to={`/chart/${r.matched_secid}`}
+                        title={`${r.fact_name || r.matched_secid} · ${fmt.date(r.fact_date)}`
+                               + (r.match_score < 1 ? ` · привязка по совпадению ${r.match_score}` : "")}>
                     {fmt.date(r.fact_date) || r.matched_secid}
                     {r.match_score < 1 && <span className="mut">?</span>}
-                  </a>
+                  </Link>
                 ) : <span className="mut">ждём</span>}
               </td>
               <td className="num">{fmt.pct(r.fact_price) || "—"}</td>

@@ -251,14 +251,10 @@ def archive_announces(rows: list[dict]) -> int:
         return cur.rowcount or 0
 
 
-def announces(limit: int = 200, matched: Optional[bool] = None) -> list[dict]:
-    """Архив анонсов, свежие сверху. matched=True — только сведённые с фактом."""
-    q = "SELECT * FROM primary_announce"
-    if matched is True:
-        q += " WHERE matched_secid IS NOT NULL"
-    elif matched is False:
-        q += " WHERE matched_secid IS NULL"
-    q += " ORDER BY COALESCE(issue_date, book_date) DESC LIMIT ?"
+def announces(limit: int = 200) -> list[dict]:
+    """Архив анонсов, свежие сверху."""
+    q = ("SELECT * FROM primary_announce "
+         "ORDER BY COALESCE(issue_date, book_date) DESC LIMIT ?")
     with _connect() as c:
         rows = [dict(r) for r in c.execute(q, (limit,))]
     for r in rows:
@@ -431,7 +427,7 @@ def market_slices(months: int = 12, only_floaters: bool = True) -> dict:
 
 # ─────────────── что было с бумагой сразу после книги (зеркальный слой) ───────────────
 
-def aftermarket(secid: str, days: int = 30) -> dict:
+def aftermarket(secid: str) -> dict:
     """Оборот выпуска в первые дни ЖИЗНИ: вторичка, РПС, выкуп.
 
     Зачем: размещение показывает, сколько бумаги отдали, но не КОМУ и не
@@ -443,6 +439,7 @@ def aftermarket(secid: str, days: int = 30) -> dict:
     выкуп, само размещение), bond_day — безадресные торги всего рынка. Глубина
     у обоих с 2024-01, то есть на всю историю размещений.
     """
+    days = AFTER_TARGET_DAYS      # то же окно, что у премии: «первый месяц жизни»
     with _connect() as c:
         row = c.execute("SELECT MIN(date) d, MAX(isin) isin FROM placement_day "
                         "WHERE secid = ?", (secid,)).fetchone()

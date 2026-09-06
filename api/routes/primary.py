@@ -125,15 +125,14 @@ async def sync_placements(
 
 
 @router.get("/placements/{secid}/aftermarket", tags=["Primary"])
-async def get_aftermarket(secid: str = Path(..., min_length=4, max_length=24),
-                          days: int = Query(30, ge=1, le=180)):
+async def get_aftermarket(secid: str = Path(..., min_length=4, max_length=24)):
     """Первые дни жизни выпуска: вторичка, РПС, выкуп.
 
     Размер книги не говорит, кому бумага досталась: крупный РПС на второй день —
     переупаковка между своими, а не рыночный спрос."""
     from services import placement_analytics as pa
     from services.pools import run_bg
-    return await run_bg(pa.aftermarket, secid, days)
+    return await run_bg(pa.aftermarket, secid)
 
 
 @router.get("/slices", tags=["Primary"])
@@ -149,8 +148,7 @@ async def get_slices(months: int = Query(12, ge=1, le=36),
 
 
 @router.get("/announces", tags=["Primary"])
-async def get_announces(limit: int = Query(200, ge=1, le=2000),
-                        matched: bool = Query(None, description="Только сверенные")):
+async def get_announces(limit: int = Query(200, ge=1, le=2000)):
     """Архив анонсов со сверкой «ориентир организатора ↔ факт размещения».
 
     У сведённой строки видно, где закрылась книга относительно потолка: ориентир
@@ -159,7 +157,7 @@ async def get_announces(limit: int = Query(200, ge=1, le=2000),
     from services import placement_analytics as pa
     from services import primary_placements as pp
     from services.pools import run_bg
-    rows = await run_bg(pa.announces, limit, matched)
+    rows = await run_bg(pa.announces, limit)
     secids = [r["matched_secid"] for r in rows if r.get("matched_secid")]
     if secids:
         mets = await run_bg(pa.metrics_map, secids)

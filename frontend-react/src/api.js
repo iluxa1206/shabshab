@@ -421,17 +421,16 @@ export const fetchPlacementDays = (secid) =>
 
 // Первые дни жизни выпуска: вторичка, РПС, выкуп. Размер книги не говорит,
 // кому бумага досталась — крупный РПС на второй день это переупаковка.
-export const fetchPlacementAftermarket = (secid, days = 30) =>
-  request(`/api/primary/placements/${encodeURIComponent(secid)}/aftermarket?days=${days}`);
+export const fetchPlacementAftermarket = (secid) =>
+  request(`/api/primary/placements/${encodeURIComponent(secid)}/aftermarket`);
 
 // Карта первички: медианные маржа/спред/премия по месяцам, рейтингам, базам.
 export const fetchPrimarySlices = ({ months = 12, floaters = true } = {}) =>
   request(`/api/primary/slices?months=${months}&floaters=${floaters}`);
 
 // Архив анонсов со сверкой «ориентир организатора ↔ факт размещения».
-export const fetchPrimaryAnnounces = ({ limit = 300, matched } = {}) =>
-  request(`/api/primary/announces?limit=${limit}`
-          + (matched == null ? "" : `&matched=${matched}`));
+export const fetchPrimaryAnnounces = ({ limit = 300 } = {}) =>
+  request(`/api/primary/announces?limit=${limit}`);
 
 export const fetchPaymentsCalendar = ({ from, to } = {}) => {
   const p = new URLSearchParams();
