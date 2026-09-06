@@ -218,6 +218,100 @@ async def sync_sec_ref(max_pages: int = 250) -> dict:
     return {"rows": saved, "pages": pages}
 
 
+# ───────────────── паспорт выпуска (объём эмиссии, листинг) ─────────────────
+
+# Сколько погашенных бумаг добираем поштучно за один прогон. Батч знает только
+# торгуемые, а из 1546 размещений года 404 уже погашены — их паспорт стоит по
+# запросу на бумагу, и вываливать эту тысячу в один такт незачем: доля
+# размещения у погашенной бумаги не меняется никогда.
+DETAILS_LAZY_LIMIT = int(os.getenv("PLACEMENT_DETAILS_LIMIT", "250"))
+
+
+def upsert_details(rows: list[tuple]) -> int:
+    """rows: (secid, issue_size, placed, list_level, mat_date, offer_date, face)."""
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out = [(*r, now) for r in rows]
+    with _lock, _connect() as c:
+        # UPDATE, а не INSERT: строка справочника уже создана sync_sec_ref, и
+        # заводить её отсюда значило бы плодить записи без имени и эмитента
+        cur = c.executemany(
+            "UPDATE sec_ref SET issue_size=COALESCE(?, issue_size), "
+            "issue_size_placed=COALESCE(?, issue_size_placed), "
+            "list_level=COALESCE(?, list_level), mat_date=COALESCE(?, mat_date), "
+            "offer_date=COALESCE(?, offer_date), face_value=COALESCE(?, face_value), "
+            "details_at=? WHERE secid=?",
+            [(r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[0]) for r in out])
+        return cur.rowcount or 0
+
+
+def _details_missing(limit: int) -> list[str]:
+    """Размещения, чей паспорт ещё не собран (батч их не знает — погашены)."""
+    with _connect() as c:
+        return [r[0] for r in c.execute(
+            "SELECT DISTINCT p.secid FROM placement_day p "
+            "LEFT JOIN sec_ref s ON s.secid = p.secid "
+            "WHERE s.details_at IS NULL ORDER BY p.date DESC LIMIT ?", (limit,))]
+
+
+async def sync_sec_details(lazy_limit: int = DETAILS_LAZY_LIMIT) -> dict:
+    """Объём эмиссии, размещённый объём, листинг, погашение и оферта → sec_ref.
+
+    Два источника, и это не дублирование:
+      • батч торгуемых бумаг (один запрос на 3,4 тыс. строк) — ЕДИНСТВЕННОЕ
+        место, где биржа отдаёт ISSUESIZEPLACED, то есть сколько выпуска
+        реально размещено. Наша сумма по дням заменой не служит: часть книги
+        могла пройти до начала собранной истории;
+      • поштучный паспорт (`/iss/securities/{secid}`) для погашенных, которых в
+        батче уже нет. Там placed отсутствует — остаётся объём эмиссии, и доля
+        считается по нашей сумме размещённых дней.
+    """
+    from services.market_data import _moex_get
+    from services.block_trades import _iss_rows
+
+    def _f(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    batch, lazy = 0, 0
+    async with httpx.AsyncClient() as client:
+        r = await _moex_get(client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
+                            params={"iss.meta": "off", "iss.only": "securities"},
+                            timeout=60.0)
+        if r is not None and r.status_code == 200:
+            seen, rows = set(), []
+            for x in _iss_rows(r.json(), "securities"):
+                sec = x.get("SECID")
+                if not sec or sec in seen:      # бумага повторяется по бордам
+                    continue
+                seen.add(sec)
+                rows.append((sec, _f(x.get("ISSUESIZE")), _f(x.get("ISSUESIZEPLACED")),
+                             x.get("LISTLEVEL"), x.get("MATDATE") or None,
+                             x.get("OFFERDATE") or None, _f(x.get("FACEVALUE"))))
+            batch = await run_bg(upsert_details, rows)
+        else:
+            logger.warning("паспорта выпусков: батч недоступен (%s)",
+                           r.status_code if r is not None else "timeout")
+
+        missing = await run_bg(_details_missing, lazy_limit)
+        one = []
+        for sec in missing:
+            rr = await _moex_get(client, f"{_ISS}/securities/{sec}.json",
+                                 params={"iss.meta": "off", "iss.only": "description"},
+                                 timeout=20.0)
+            if rr is None or rr.status_code != 200:
+                continue
+            d = {x.get("name"): x.get("value") for x in _iss_rows(rr.json(), "description")}
+            one.append((sec, _f(d.get("ISSUESIZE")), _f(d.get("ISSUESIZEPLACED")),
+                        d.get("LISTLEVEL"), d.get("MATDATE") or None,
+                        d.get("OFFERDATE") or None, _f(d.get("FACEVALUE"))))
+        lazy = await run_bg(upsert_details, one)
+    return {"batch": batch, "lazy": lazy, "lazy_pending": max(len(missing) - len(one), 0)}
+
+
 # ────────────────────────── чтение ──────────────────────────
 
 # Сколько дней без сделок на борде считаем «размещение ещё идёт». Отсчёт от
@@ -258,6 +352,10 @@ def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
         "SELECT p.secid, COALESCE(s.isin, p.isin) isin, "
         "MAX(p.shortname) shortname, MAX(s.emitent_title) emitent_moex, "
         "MAX(s.name) full_name, MAX(s.type) sec_type, "
+        # паспорт выпуска: объём эмиссии и сколько его разместила биржа
+        "MAX(s.issue_size) issue_size, MAX(s.issue_size_placed) issue_size_placed, "
+        "MAX(s.list_level) list_level, MAX(s.mat_date) mat_date, "
+        "MAX(s.offer_date) offer_date, "
         "MIN(p.date) first_date, MAX(p.date) last_date, "
         # дней РАЗМЕЩЕНИЯ, а не строк таблицы: бумага может пройти день сразу по
         # двум бордам (22 таких дня в истории) — это один день, а не два

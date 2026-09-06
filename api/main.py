@@ -1064,6 +1064,14 @@ async def block_trades_worker():
                         # ни в справочнике торгуемых
                         logger.info("sec ref: %s", await pp.sync_sec_ref())
                         logger.info("placements: %s", await pp.backfill(days=10))
+                        # паспорта выпусков (объём эмиссии и сколько размещено)
+                        logger.info("паспорта: %s", await pp.sync_sec_details())
+                        # спред книги и премия к вторичке: пачкой, а не на
+                        # чтении витрины — это backdate-пересчёт с солвером
+                        from services import placement_analytics as pa
+                        logger.info("аналитика первички: %s", await pa.compute())
+                        logger.info("сверка анонсов: %s",
+                                    await run_bg(pa.match_announces))
                     except Exception as e:
                         logger.warning("placements: %s", e)
         except asyncio.CancelledError:

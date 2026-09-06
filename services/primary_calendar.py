@@ -178,6 +178,14 @@ async def refresh(force: bool = False) -> dict:
         "source_url": URL,
     }
     paths.atomic_write_json(paths.cache_path(CACHE_FILE), doc)
+    # durable-архив анонсов: кэш держит только текущий снимок, а сверка «где
+    # закрылась книга относительно ориентира» живёт годами (см.
+    # services/placement_analytics.archive_announces)
+    try:
+        from services.placement_analytics import archive_announces
+        archive_announces(doc["rows"])
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("архив анонсов: %s", e)
     added = len([r for r in doc["rows"] if r["first_seen"] == now.date().isoformat()])
     return {"status": "updated", "rows": len(doc["rows"]), "added": added}
 

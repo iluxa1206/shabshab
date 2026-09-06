@@ -2931,6 +2931,13 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* точка «книга ещё набирается» рядом с датой: у долгоиграющего размещения
    первый день сам по себе ничего не говорит о том, идёт оно или закрылось */
 .pl-live { margin-left: 6px; color: var(--up); cursor: help; }
+/* зеркальный слой в развороте: строка над дневной раскладкой, тем же кеглем,
+   что подсказки — это контекст к размещению, а не вторая таблица */
+.pl-after { display: block; padding: 6px 0 4px; }
+/* срезы рынка: три таблицы подряд, каждой нужен свой заголовок и воздух */
+.sl-block { margin-top: 18px; }
+.sl-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+.sl-title { margin: 0; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
 
 /* ISIN + рейтинги агентств (Эксперт/АКРА) одной строкой под именем выпуска.
    Кегль тот же, что у ISIN, — иначе строка имени растёт и таблица дышит. */

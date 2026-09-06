@@ -288,6 +288,54 @@ CREATE TABLE IF NOT EXISTS sec_ref(
 );
 CREATE INDEX IF NOT EXISTS ix_sec_ref_isin ON sec_ref(isin);
 
+-- РАСЧЁТ ПО РАЗМЕЩЕНИЮ: спред на дату книги и как он разъехался со вторичкой.
+-- Кэш, а не расчёт на чтении: это полный backdate-пересчёт (кривая as-of, НКД
+-- и номинал факт того дня) — 228 флоатеров реестра за год, солвер по каждому.
+-- Ночной такт считает новые строки, витрина читает готовые числа и умеет по
+-- ним сортировать, чего кнопка «посчитать» не давала в принципе.
+CREATE TABLE IF NOT EXISTS placement_metrics(
+  secid TEXT PRIMARY KEY,
+  isin TEXT,
+  place_date TEXT,                -- первый день размещения (на него и считаем)
+  price REAL,                     -- средневзвешенная цена размещения, % номинала
+  y_idx_bps REAL,                 -- Y-IDX по цене размещения на дату размещения
+  dm_bps REAL,
+  curve_mode TEXT,                -- market (архив котировок) | realized (гибрид)
+  after_date TEXT,                -- дата точки вторички («книга + месяц»)
+  after_y_idx_bps REAL,
+  premium_bps REAL,               -- after − размещение: + значит уехал ШИРЕ
+  engine_ver INTEGER,
+  calc_at TEXT,
+  err TEXT                        -- почему не посчитано (пусто = посчитано)
+);
+CREATE INDEX IF NOT EXISTS ix_pl_metrics_isin ON placement_metrics(isin);
+
+-- АРХИВ АНОНСОВ первички. Кэш bondresearch (data/cache/primary_calendar.json)
+-- держит только ТЕКУЩИЙ снимок в 20 строк и перезаписывается — вчерашние
+-- анонсы исчезают бесследно. Без архива нельзя ответить на главный вопрос
+-- вкладки: где закрылась книга относительно ориентира организатора
+-- («КС + не выше 300» → разместились по 150). Строка живёт по своему ключу
+-- (эмитент|серия), payload — снимок анонса целиком на случай смены разметки.
+CREATE TABLE IF NOT EXISTS primary_announce(
+  key TEXT PRIMARY KEY,           -- issuer|series, см. primary_calendar._key
+  issuer TEXT,
+  series TEXT,                    -- «002Р-01» из комментария анонса
+  book_date TEXT,
+  issue_date TEXT,
+  coupon_guide TEXT,              -- ориентир словами, как в выгрузке
+  is_floater INTEGER,
+  volume_mln REAL,
+  ratings TEXT,                   -- как в источнике, через «/»
+  payload TEXT,                   -- json-снимок строки анонса
+  first_seen TEXT,
+  last_seen TEXT,
+  -- результат сверки с фактом (см. services/placement_analytics.match_announces)
+  matched_secid TEXT,
+  matched_at TEXT,
+  match_score REAL                -- на чём сошлись: 1 — серия+эмитент, 0.5 — только эмитент
+);
+CREATE INDEX IF NOT EXISTS ix_announce_secid ON primary_announce(matched_secid);
+
 -- Дневной итог БЕЗАДРЕСНЫХ торгов по бумаге и борду (ISS history, весь рынок).
 -- Зачем отдельно от поштучных сделок: живой поток пишет тик по каждой бумаге
 -- юниверса, а по остальному рынку — только от порога TRADES_STREAM_MIN_RUB, и
@@ -549,6 +597,17 @@ _MIGRATIONS = [
     "ALTER TABLE bar_daily ADD COLUMN horizon TEXT",
     "ALTER TABLE bar_daily ADD COLUMN y_idx_alt_wap_bps REAL",
     "ALTER TABLE bar_daily ADD COLUMN alt_horizon TEXT",
+    # ПАСПОРТ ВЫПУСКА в справочнике рынка: объём эмиссии и сколько его реально
+    # размещено (ISSUESIZEPLACED — биржа считает это сама и честнее нашей суммы
+    # по дням: часть книги могла пройти до окна нашей истории). Плюс листинг,
+    # погашение и оферта — ими режутся срезы первички.
+    "ALTER TABLE sec_ref ADD COLUMN issue_size REAL",
+    "ALTER TABLE sec_ref ADD COLUMN issue_size_placed REAL",
+    "ALTER TABLE sec_ref ADD COLUMN list_level INTEGER",
+    "ALTER TABLE sec_ref ADD COLUMN mat_date TEXT",
+    "ALTER TABLE sec_ref ADD COLUMN offer_date TEXT",
+    "ALTER TABLE sec_ref ADD COLUMN face_value REAL",
+    "ALTER TABLE sec_ref ADD COLUMN details_at TEXT",
 ]
 
 

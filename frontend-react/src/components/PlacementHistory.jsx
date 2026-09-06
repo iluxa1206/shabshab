@@ -1,7 +1,8 @@
 import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { fetchPlacements, fetchPlacementDays, fetchRepricePast, UnauthorizedError } from "../api.js";
+import { fetchPlacements, fetchPlacementDays, fetchPlacementAftermarket,
+         fetchRepricePast, UnauthorizedError } from "../api.js";
 import { fmt } from "../format.js";
 import { horizonView } from "../horizon.js";
 import CouponFormula from "./CouponFormula.jsx";
@@ -19,7 +20,10 @@ const PERIODS = [[90, "3М"], [180, "6М"], [365, "1Г"]];
 // «Фиксы» тут честнее назвать «прочим»: тип купона известен только по реестру,
 // а в нём 337 из 1546 размещений года — остальное (структурные ноты ВТБ,
 // субфеды, бумаги вне нашего прайсинга) в реестр не заводится вовсе.
-const TYPES = [["all", "Все"], ["float", "Флоатеры"], ["fix", "Прочее"]];
+// ОФЗ-аукцион Минфина — отдельный сорт события: цена не 100, а отсечение, и
+// объёмы на два порядка крупнее корпората. В общем списке он ломает восприятие
+// колонки цены, поэтому свой фильтр.
+const TYPES = [["all", "Все"], ["float", "Флоатеры"], ["fix", "Прочее"], ["ofz", "ОФЗ"]];
 const FLOAT_BASES = new Set(["KEYRATE", "RUONIA"]);
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -48,6 +52,14 @@ function PriceCell({ r }) {
 function SpreadCell({ r }) {
   const [st, setSt] = useState(null);   // null | "load" | {bps} | {err}
   const isFloat = r.in_registry && FLOAT_BASES.has(r.base);
+  // ГОТОВОЕ ЧИСЛО ночного расчёта. Кнопка осталась только как страховка для
+  // строк, до которых такт ещё не дошёл: считать спред при отрисовке нельзя —
+  // это backdate-пересчёт с солвером на каждую бумагу.
+  if (r.spread_bps != null) {
+    return <span title={`Y-IDX по цене ${fmt.pct(r.wa_price)} на ${fmt.date(r.first_date)}`}>
+      {fmt.bps(r.spread_bps)}
+    </span>;
+  }
   if (!isFloat) return <span className="mut">—</span>;
   if (st && st.bps != null) {
     return <span title={`Y-IDX по цене ${fmt.pct(r.wa_price)} на ${fmt.date(r.first_date)}`}>
@@ -71,6 +83,35 @@ function SpreadCell({ r }) {
   );
 }
 
+// ПРЕМИЯ РАЗМЕЩЕНИЯ: спред той же бумаги через месяц на вторичке минус спред
+// книги. Плюс — бумага уехала ШИРЕ (книгу закрыли жадно, рынок требует больше),
+// минус — уже (разместились щедро). Знак тут несёт весь смысл, поэтому он
+// рисуется явно, в отличие от колонок спреда.
+function PremiumCell({ r }) {
+  if (r.premium_bps == null) return <span className="mut">—</span>;
+  const v = Math.round(r.premium_bps);
+  return (
+    <span className={v > 0 ? "dm-down" : v < 0 ? "dm-up" : undefined}
+          title={`спред вторички ${fmt.date(r.after_date)} против спреда книги`}>
+      {fmt.devBps(r.premium_bps)}
+    </span>
+  );
+}
+
+// Доля размещённого от объёма эмиссии. Цифру считает сама биржа
+// (ISSUESIZEPLACED); наша сумма по дням — фолбэк и помечается звёздочкой:
+// она знает только собранное окно истории, а книга могла начаться раньше.
+function PlacedCell({ r }) {
+  if (r.placed_pct == null) return <span className="mut">—</span>;
+  const part = r.placed_pct < 99.5;
+  return (
+    <span className={part ? "mut" : undefined}
+          title={r.placed_src === "own" ? "по нашей сумме размещённых дней" : "по данным биржи"}>
+      {fmt.num(r.placed_pct, 0)}%{r.placed_src === "own" && "*"}
+    </span>
+  );
+}
+
 // Разворот: по каким дням набирался объём. Грузится лениво — раскладка нужна
 // единицам строк, а запрос на каждую превратил бы список в сотню запросов.
 function DayBreakdown({ secid }) {
@@ -83,6 +124,8 @@ function DayBreakdown({ secid }) {
   if (error) return <div className="ia-hint">Не удалось загрузить раскладку</div>;
   const rows = data?.rows || [];
   return (
+    <>
+      <Aftermarket secid={secid} />
     <table className="grid packed pl-days">
       <thead>
         <tr>
@@ -109,6 +152,31 @@ function DayBreakdown({ secid }) {
         ))}
       </tbody>
     </table>
+    </>
+  );
+}
+
+// ЗЕРКАЛЬНЫЙ СЛОЙ: что происходило с бумагой сразу после книги. Адресные режимы
+// (РПС, выкуп) против биржевых — это разные вещи: 28 млрд РПС при 0,4 млрд
+// биржевого оборота (ГазКап3P29) значит, что книгу переупаковали между своими,
+// а рынок бумагу не увидел. Ни объём размещения, ни цена этого не показывают.
+function Aftermarket({ secid }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["placement-after", secid],
+    queryFn: () => fetchPlacementAftermarket(secid, 30),
+    staleTime: 3600e3,
+  });
+  if (isLoading || !data?.found) return null;
+  const parts = [...(data.negotiated || []), ...(data.market || [])];
+  if (!parts.length) return <div className="ia-hint pl-after">Месяц после книги: сделок не было</div>;
+  return (
+    <div className="ia-hint pl-after">
+      Месяц после книги:
+      {" "}адресно <b>{fmt.mln(data.negotiated_rub)}</b>
+      {" · "}на бирже <b>{fmt.mln(data.market_rub)}</b> млн ₽
+      {" · "}
+      {parts.map((p) => `${p.board} ${fmt.mln(p.value_rub)}`).join(" · ")}
+    </div>
   );
 }
 
@@ -137,8 +205,9 @@ export default function PlacementHistory() {
     const needle = q.trim().toLowerCase();
     return (data?.rows || []).filter((r) => {
       const isFloat = FLOAT_BASES.has(r.base);
-      if (type === "float" && !isFloat) return false;
-      if (type === "fix" && isFloat) return false;
+      if (type === "float" && (!isFloat || r.is_ofz)) return false;
+      if (type === "fix" && (isFloat || r.is_ofz)) return false;
+      if (type === "ofz" && !r.is_ofz) return false;
       if (big && !(r.value_rub >= 1e9)) return false;
       if (needle && !((r.shortname || "") + " " + (r.emitter || "") + " " + r.secid)
         .toLowerCase().includes(needle)) return false;
@@ -205,6 +274,8 @@ export default function PlacementHistory() {
             <th className="num" title="млн ₽">Объём</th>
             <th className="num" title="% номинала">Цена</th>
             <th className="num" title="базисные пункты, Y-IDX по цене размещения">Спред</th>
+            <th className="num" title="спред через месяц на вторичке минус спред книги: + значит уехал шире">Премия</th>
+            <th className="num" title="доля выпуска, которую разместили">Размещено</th>
             <th className="num" title="дней в размещении">Дней</th>
             <th className="num">Сделок</th>
           </tr>
@@ -251,18 +322,20 @@ export default function PlacementHistory() {
                 <td className="num pri-spread" onClick={(e) => e.stopPropagation()}>
                   <SpreadCell r={r} />
                 </td>
+                <td className="num pri-spread"><PremiumCell r={r} /></td>
+                <td className="num"><PlacedCell r={r} /></td>
                 <td className="num">{r.days}</td>
                 <td className="num">{r.numtrades ?? "—"}</td>
               </tr>
               {open === r.secid && (
                 <tr className="pl-detail">
-                  <td colSpan={10}><DayBreakdown secid={r.secid} /></td>
+                  <td colSpan={12}><DayBreakdown secid={r.secid} /></td>
                 </tr>
               )}
             </Fragment>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={10} className="left mut">Ничего не найдено</td></tr>
+            <tr><td colSpan={12} className="left mut">Ничего не найдено</td></tr>
           )}
         </tbody>
       </table>

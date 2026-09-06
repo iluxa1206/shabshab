@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchPrimaryCalendar } from "../api.js";
 import { fmt } from "../format.js";
 import PlacementHistory from "./PlacementHistory.jsx";
+import PrimarySlices from "./PrimarySlices.jsx";
+import AnnounceMatch from "./AnnounceMatch.jsx";
 
 // Анонсы первички: планируемые размещения ДО выхода на биржу (ISIN ещё нет,
 // в мониторе такой бумаги быть не может). Данные внешние (bondresearch.ru),
@@ -14,7 +16,8 @@ const TABS = [["all", "Все"], ["float", "Флоатеры"], ["fix", "Фик�
 // Разделены жёстко и намеренно: в анонсе ISIN'а ещё нет и объём — ориентир
 // организатора, в истории всё уже состоялось. Смешать их в одной таблице
 // значило бы поставить рядом «≥ 1 000 млн» и реально размещённые 8,6 млрд.
-const VIEWS = [["plan", "Анонсы"], ["done", "Размещённые"]];
+const VIEWS = [["plan", "Анонсы"], ["done", "Размещённые"],
+               ["match", "Сверка"], ["slices", "Срезы"]];
 
 const today = () => {
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
@@ -95,6 +98,12 @@ export default function PrimaryCalendar() {
 
   if (view === "done") {
     return <div className="issuer-agg pri-cal">{head}<PlacementHistory /></div>;
+  }
+  if (view === "match") {
+    return <div className="issuer-agg pri-cal">{head}<AnnounceMatch /></div>;
+  }
+  if (view === "slices") {
+    return <div className="issuer-agg pri-cal">{head}<PrimarySlices /></div>;
   }
   if (isLoading) return <div className="issuer-agg pri-cal">{head}<div className="ia-hint">Загрузка…</div></div>;
   if (error) return <div className="issuer-agg pri-cal">{head}<div className="ia-hint">Не удалось загрузить календарь первички</div></div>;

@@ -64,6 +64,8 @@ async def get_placements(
 
     rows = await run_bg(pp.aggregates, date_from, date_to, q, min_rub, limit,
                         active)
+    from services import placement_analytics as pa
+    mets = await run_bg(pa.metrics_map, [r["secid"] for r in rows])
     labels = await run_bg(reg.labels_map, [r["isin"] for r in rows if r.get("isin")])
     for r in rows:
         lab = labels.get(r.get("isin") or "") or {}
@@ -78,6 +80,24 @@ async def get_placements(
         r["coupons_per_year"] = lab.get("coupons_per_year")
         r["in_registry"] = bool(lab)
         r.pop("emitent_moex", None)
+        # ОФЗ-аукцион Минфина — это не «ещё одно размещение»: другой механизм
+        # (цена отсечения, а не номинал), другой масштаб, свой фильтр в витрине
+        r["is_ofz"] = r.get("sec_type") == "ofz_bond"
+        # ДОЛЯ РАЗМЕЩЁННОГО. Приоритет у цифры биржи (ISSUESIZEPLACED): наша
+        # сумма по дням знает только собранное окно истории, а книга могла
+        # начаться раньше. Фолбэк — своя сумма, тогда помечаем источник.
+        size = r.get("issue_size") or 0
+        placed = r.get("issue_size_placed")
+        src = "moex" if placed else ("own" if r.get("volume") else None)
+        if not placed:
+            placed = r.get("volume")
+        r["placed_pct"] = round(100.0 * placed / size, 1) if (size and placed) else None
+        r["placed_src"] = src
+        m = mets.get(r["secid"]) or {}
+        r["spread_bps"] = m.get("y_idx_bps")
+        r["premium_bps"] = m.get("premium_bps")
+        r["after_date"] = m.get("after_date")
+        r["spread_err"] = m.get("err")
     # усечение выдачи должно быть ВИДНО: молча обрезанный список читается как
     # полный рынок первички за период
     return {"rows": rows, "stats": await run_bg(pp.stats),
@@ -102,3 +122,71 @@ async def sync_placements(
     пропускаются (одна дата = один запрос ISS на каждый борд размещения)."""
     from services import primary_placements as pp
     return await pp.backfill(days=days, force=force)
+
+
+@router.get("/placements/{secid}/aftermarket", tags=["Primary"])
+async def get_aftermarket(secid: str = Path(..., min_length=4, max_length=24),
+                          days: int = Query(30, ge=1, le=180)):
+    """Первые дни жизни выпуска: вторичка, РПС, выкуп.
+
+    Размер книги не говорит, кому бумага досталась: крупный РПС на второй день —
+    переупаковка между своими, а не рыночный спрос."""
+    from services import placement_analytics as pa
+    from services.pools import run_bg
+    return await run_bg(pa.aftermarket, secid, days)
+
+
+@router.get("/slices", tags=["Primary"])
+async def get_slices(months: int = Query(12, ge=1, le=36),
+                     floaters: bool = Query(True, description="Только флоатеры")):
+    """Карта первички: объём и МЕДИАННЫЕ маржа/спред/премия по месяцам,
+    рейтингам и базам купона. Медиана, а не среднее — один десятимиллиардный
+    выпуск с нулевой маржой утаскивает среднее месяца туда, где не размещался
+    никто."""
+    from services import placement_analytics as pa
+    from services.pools import run_bg
+    return await run_bg(pa.market_slices, months, floaters)
+
+
+@router.get("/announces", tags=["Primary"])
+async def get_announces(limit: int = Query(200, ge=1, le=2000),
+                        matched: bool = Query(None, description="Только сверенные")):
+    """Архив анонсов со сверкой «ориентир организатора ↔ факт размещения».
+
+    У сведённой строки видно, где закрылась книга относительно потолка: ориентир
+    почти всегда верхняя граница («КС + не выше 300 бп»), и разница с фактическим
+    спредом — это и есть цена вопроса."""
+    from services import placement_analytics as pa
+    from services import primary_placements as pp
+    from services.pools import run_bg
+    rows = await run_bg(pa.announces, limit, matched)
+    secids = [r["matched_secid"] for r in rows if r.get("matched_secid")]
+    if secids:
+        mets = await run_bg(pa.metrics_map, secids)
+        facts = {r["secid"]: r for r in await run_bg(
+            pp.aggregates, None, None, None, 0.0, pp.MAX_ROWS)}
+        for r in rows:
+            sec = r.get("matched_secid")
+            f, m = facts.get(sec) or {}, mets.get(sec) or {}
+            r["fact_date"] = f.get("first_date")
+            r["fact_name"] = f.get("shortname")
+            r["fact_price"] = f.get("wa_price")
+            r["fact_value_rub"] = f.get("value_rub")
+            r["fact_spread_bps"] = m.get("y_idx_bps")
+    return {"rows": rows}
+
+
+@router.post("/analytics/run", tags=["Primary"])
+async def run_analytics(limit: int = Query(60, ge=1, le=2000),
+                        details: bool = Query(True, description="Обновить паспорта выпусков"),
+                        _admin: dict = Depends(require_admin)):
+    """Ручной прогон аналитики первички: спред книги, премия, сверка анонсов.
+    Тот же расчёт, что ночью, — нужен после наливки истории и смены методики."""
+    from services import placement_analytics as pa
+    from services import primary_placements as pp
+    out = {}
+    if details:
+        out["details"] = await pp.sync_sec_details()
+    out["metrics"] = await pa.compute(limit=limit)
+    out["match"] = await pa.match_announces()
+    return out
