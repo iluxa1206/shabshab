@@ -211,9 +211,6 @@ function StaleChips({ m }) {
   );
 }
 
-// период карточки → код периода полноэкранной страницы /chart/:isin
-const CHART_P_CODE = { 30: "1m", 90: "3m", 180: "6m", 365: "1y" };
-
 function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
   const r = d.reference, m = d.market;
   const baseVal = d.valuation;
@@ -562,12 +559,17 @@ export default function Drawer({ isin, kind, autoOrderbook, sigVol, sigSide, sig
                   title="Полная лента сделок по этому выпуску (вкладка СДЕЛКИ)"
                 >ЛЕНТА ⤢</button>
                 {!isFixed && (
-                  // второй вход в те же графики, минуя панель карточки: полный
-                  // экран в новой вкладке с гибким периодом и zoom/pan
+                  // Второй вход в те же графики, минуя панель карточки: полный
+                  // экран в новой вкладке с гибким периодом и zoom/pan.
+                  // Период в ссылку НЕ кладём: страница открывается своим
+                  // дефолтом (месяц, часовые свечи) одинаково отсюда, из ленты
+                  // сделок и из первички — раньше карточка навязывала свой
+                  // период, и выпуск выглядел по-разному в зависимости от того,
+                  // откуда на него пришли.
                   <a
                     className="btn ob-toggle"
                     target="_blank" rel="noopener noreferrer"
-                    href={`${APP_BASENAME}/chart/${isin}?p=${CHART_P_CODE[period] || "3m"}`}
+                    href={`${APP_BASENAME}/chart/${isin}`}
                     title="Открыть графики на весь экран в новой вкладке"
                   >ГРАФИКИ ⤢</a>
                 )}
