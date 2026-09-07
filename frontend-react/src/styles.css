@@ -597,6 +597,14 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
   text-decoration: underline; text-decoration-style: dotted;
   text-underline-offset: 3px; }
 .dh-ext:hover { color: var(--fg); text-decoration-style: solid; }
+/* «C» проворачивается вокруг своей оси при наведении. Крутится ТОЛЬКО под
+   курсором: постоянное движение в шапке тянет взгляд на служебную ссылку, а
+   рядом живые цены. Нужен inline-block — у строчного элемента transform не
+   применяется вовсе. */
+.dh-ext { display: inline-block; }
+.dh-ext:hover { animation: dh-ext-spin 1.1s linear infinite; }
+@keyframes dh-ext-spin { from { transform: rotateY(0); } to { transform: rotateY(360deg); } }
+@media (prefers-reduced-motion: reduce) { .dh-ext:hover { animation: none; } }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
 .drawer-head .btn { flex-shrink: 0; white-space: nowrap; }
