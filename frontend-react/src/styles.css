@@ -586,11 +586,17 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    как сноска. */
 .drawer-head .dh-isin { grid-column: 2 / -1; grid-row: 1; justify-self: start;
   font-size: 15px; color: var(--mut); }
-/* Ссылка на страницу выпуска — синяя «C» (cbonds): стрелка ↗ была мельче
-   кликабельного минимума и не читалась как ссылка. Кегль — как у ISIN рядом. */
-.dh-ext { margin-left: 7px; text-decoration: none; color: var(--accent); font-weight: 700;
-  font-size: 15px; padding: 0 3px; }
-.dh-ext:hover { text-decoration: underline; }
+/* Ссылка на страницу выпуска — «C» (cbonds): стрелка ↗ была мельче
+   кликабельного минимума и не читалась как ссылка. Кегль — как у ISIN рядом.
+   Цвет НЕ синий: синим в шапке помечен горизонт прайсинга (.dh-offer), и
+   внешняя ссылка рядом с датой оферты читалась как часть той же смысловой
+   группы. Ссылку опознаёт подчёркивание, а не цвет — она служебная и стоит
+   вплотную к ISIN, поэтому живёт в его же сером. */
+.dh-ext { margin-left: 7px; color: var(--mut); font-weight: 700;
+  font-size: 15px; padding: 0 3px;
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 3px; }
+.dh-ext:hover { color: var(--fg); text-decoration-style: solid; }
 .drawer-head h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; }
 .drawer-head .mono { color: var(--mut); font-size: 11px; letter-spacing: 0.06em; flex-shrink: 0; white-space: nowrap; }
 .drawer-head .btn { flex-shrink: 0; white-space: nowrap; }
