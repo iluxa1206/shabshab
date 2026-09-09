@@ -13,6 +13,15 @@ import { Brush } from "../charts/index.js";
 import { IconCalendar } from "./icons.jsx";
 import IsinCopy from "./IsinCopy.jsx";
 import { horizonView } from "../horizon.js";
+import { liveInterval } from "../marketHours.js";
+
+// Такты живого обновления страницы (только в торговые часы, см. marketHours).
+// Свечи ISS кэшируются бэком на 120с — минутный такт по ним бесплатен.
+// Бары/сделки идут через ensure_bars + дрейн тиков Alor: такт 2.5 мин, чтобы
+// свежий час появлялся сам, но налив по бумаге не крутился непрерывно.
+const CANDLES_POLL_MS = 60_000;
+const LAYERS_POLL_MS = 150_000;
+const SPREAD_POLL_MS = 300_000;
 
 // Полноэкранный график выпуска (своя вкладка, /chart/:isin).
 // Сверху — строка параметров бумаги, ниже — график на всю высоту окна:
@@ -610,6 +619,8 @@ export default function ChartPage() {
     queryKey: ["candles", isin, tf],
     queryFn: () => fetchCandles(isin, tf),
     staleTime: 60_000,
+    refetchInterval: liveInterval(CANDLES_POLL_MS),
+    refetchIntervalInBackground: false,
   });
   const qDetails = useQuery({ queryKey: ["bond", isin], queryFn: () => fetchBondDetails(isin) });
   const qRow = useQuery({ queryKey: ["bond-row", isin], queryFn: () => fetchBondRow(isin) });
@@ -658,6 +669,10 @@ export default function ChartPage() {
                                            refresh: !pollingRef.current }),
     enabled: barsOn,
     staleTime: 300_000,
+    // Живой такт идёт с refresh=true (pollingRef поднимается только опросом
+    // досчёта спреда): бэк доливает текущий час инлайн, а не ждёт демона в HH:07.
+    refetchInterval: liveInterval(LAYERS_POLL_MS),
+    refetchIntervalInBackground: false,
   });
   // refresh: false — дренить тики Alor тут не надо: тот же архив уже дотянул
   // запрос часовых баров выше (он делает ta.drain на те же 30 дней), а оба
@@ -680,6 +695,8 @@ export default function ChartPage() {
                                        kind: sKind === "g" ? "fixed" : "floater" }),
     enabled: on("big"),
     staleTime: 300_000,
+    refetchInterval: liveInterval(LAYERS_POLL_MS),
+    refetchIntervalInBackground: false,
     placeholderData: keepPrev,
   });
   const qBlocks = useQuery({
@@ -691,6 +708,8 @@ export default function ChartPage() {
                                              order: "value" }),
     enabled: on("rps"),
     staleTime: 300_000,
+    refetchInterval: liveInterval(LAYERS_POLL_MS),
+    refetchIntervalInBackground: false,
     placeholderData: keepPrev,
   });
 
@@ -700,6 +719,10 @@ export default function ChartPage() {
                                               from: from || isoBack(400), days: 400 }),
     enabled: spreadOn,
     staleTime: 300_000,
+    // Дневная серия спреда: точка сегодняшнего дня — candle-оценка живой
+    // моделью, её и обновляем; прошлое лежит в spread_daily и не пересчитывается.
+    refetchInterval: liveInterval(SPREAD_POLL_MS),
+    refetchIntervalInBackground: false,
   });
 
   const layerPts = useMemo(() => {

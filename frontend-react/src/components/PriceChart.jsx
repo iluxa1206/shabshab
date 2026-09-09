@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchCandles } from "../api.js";
 import { fmt } from "../format.js";
+import { liveInterval } from "../marketHours.js";
 import { linearScale, linTicks, linePath, ChartFrame, dateTickIdx, tickLabel, spanDays } from "../charts/index.js";
 
 const TFS = [["5m", "5м"], ["1h", "1ч"], ["1d", "1д"], ["1w", "1н"]];
@@ -86,6 +87,9 @@ export default function PriceChart({ isin, secid, board, periodDays, syncDate, o
     queryKey: ["candles", isin, secid, board, effTf],
     queryFn: () => fetchCandles(isin, effTf, { secid, board }),
     staleTime: 60_000,
+    // свечи ISS на бэке живут 120с — минутный такт в торговые часы не бьёт по ISS
+    refetchInterval: liveInterval(60_000),
+    refetchIntervalInBackground: false,
   });
   const all = q.data?.candles;
   const candles = useMemo(() => {
