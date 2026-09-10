@@ -162,6 +162,27 @@ async def get_curve_plot(
         rates_date=rates_date, quotes=q_out, samples=samples, warnings=warnings,
     )
 
+@router.get("/gcurve", tags=["Curves"])
+async def get_gcurve():
+    """КБД ОФЗ МосБиржи (zcyc yearyields) точками: срок в годах → zero-yield, %.
+
+    Отдаём ТОТ ЖЕ объект, по которому движок считает g/z-спреды фиксов
+    (MarketDataService.get_gcurve) — витрина ОФЗ обязана рисовать бумаги и
+    кривую в одних координатах, иначе «отклонение от КБД» на графике разойдётся
+    с колонкой G-SPRD. curve_date — дата загруженной кривой: при сбое фетча
+    сервис отдаёт вчерашнюю, и это должно быть видно на странице."""
+    g = await MarketDataService.get_gcurve()
+    if g is None or not g.ok():
+        raise HTTPException(status_code=404, detail="G-curve unavailable")
+    cd = MarketDataService.gcurve_date()
+    return {
+        "curve_date": cd,
+        "stale": cd != date.today().isoformat(),
+        "points": [{"years": x, "yield_pct": round(y * 100.0, 4)}
+                   for x, y in zip(g.xs, g.ys)],
+    }
+
+
 @router.get("", response_model=CurveResponse, tags=["Curves"])
 async def get_curve(
     type: Literal["ruonia", "keyrate"] = Query(..., description="Type of the curve to fetch")

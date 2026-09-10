@@ -121,10 +121,12 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and", fields = FL
 }
 
 // Строка МОНИТОРА ФИКСОВ: те же наборы по лестнице, но подменяются цена стороны
-// и g-спред по ней (см. components/fixed/fixedCols.jsx).
+// и ДОХОДНОСТЬ по ней (см. components/fixed/fixedCols.jsx — под ценой стороны
+// стоит YTM, а не g-спред). Числа набора те же самые: движок считает по ценам
+// тикета и YTM, и g-спред (api/routes/fixed._vol_fields).
 export const FIXED_VOL_FIELDS = {
   bidPx: "bid", askPx: "ask",
-  bidSpread: "g_spread_bid_bps", askSpread: "g_spread_ask_bps",
+  bidSpread: "ytm_bid", askSpread: "ytm_ask",
   volBidPx: "vol_bid_price_pct", volAskPx: "vol_ask_price_pct",
-  volBidSpread: "g_spread_vol_bid_bps", volAskSpread: "g_spread_vol_ask_bps",
+  volBidSpread: "ytm_vol_bid", volAskSpread: "ytm_vol_ask",
 };

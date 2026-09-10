@@ -100,20 +100,22 @@ describe("пара «цена → спред» едет из одного рас
 
 describe("фильтр по объёму на витрине фиксов", () => {
   // Арифметика книги одна на две витрины (src/vwap.js), различаются только
-  // имена чисел, которые она подменяет: у фикса это цена стороны и g-спред.
+  // имена чисел, которые она подменяет: у фикса это цена стороны и ДОХОДНОСТЬ
+  // по ней (под ценой в ячейке стоит YTM, см. fixedCols.jsx).
   const LADDER = { b: [[99.5, 100], [99.0, 5000]], a: [[100.5, 100], [101.0, 5000]] };
   const ROW = {
     isin: "RU000A1FIX01", face_value_rub: 1000, accrued_rub: 10,
-    bid: 99.5, ask: 100.5, g_spread_bid_bps: 120, g_spread_ask_bps: 90,
-    vol_bid_price_pct: 99.1, g_spread_vol_bid_bps: 135,
+    bid: 99.5, ask: 100.5, ytm_bid: 16.1, ytm_ask: 15.8,
+    vol_bid_price_pct: 99.1, ytm_vol_bid: 16.4,
   };
 
-  it("цена стороны и g-спред берутся на объём набора", async () => {
+  it("цена стороны и YTM берутся на объём набора", async () => {
     const { applyVolume, FIXED_VOL_FIELDS } = await import("../../vwap.js");
     const n = applyVolume(ROW, LADDER, 3_000_000, 0, "and", FIXED_VOL_FIELDS);
     expect(n.bid).toBe(99.1);                 // число движка, не верх стакана
-    expect(n.g_spread_bid_bps).toBe(135);
+    expect(n.ytm_bid).toBe(16.4);             // доходность к цене набора
     expect(n.ask).toBe(100.5);                // сторона без фильтра не тронута
+    expect(n.ytm_ask).toBe(15.8);
     expect(n._vwap_bid).toBeGreaterThan(0);
   });
 

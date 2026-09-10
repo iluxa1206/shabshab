@@ -29,6 +29,9 @@ from typing import Optional, Tuple
 
 import httpx
 
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
+
 from core.forwards import BootstrappedForwardCurve, CurveBootstrapper, DiscountCurve
 from services.exceptions import NotFoundException, CalculationException
 
@@ -257,7 +260,7 @@ async def fetch_history_row(secid: str, d: date, board: str = "TQCB") -> Optiona
         "history.columns": "TRADEDATE,CLOSE,LEGALCLOSEPRICE,ACCINT,FACEVALUE",
     }
     try:
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             resp = await client.get(url, params=params, timeout=8)
         if resp.status_code != 200:
             return None
@@ -370,7 +373,7 @@ async def resolve_market(isin: str, board: Optional[str] = None) -> Tuple[str, s
     TQCB/TQRD, у ОФЗ — SU29…/TQOB (по ISIN history отдаёт 0 строк → раньше весь
     as-of путь для ОФЗ-ПК падал на «НКД не восстановился»). board задан явно —
     уважаем его, резолвим только тикер."""
-    from services.market_data import MarketDataService
+    from services.market_data import moex_client, MarketDataService
     secid, primary = await MarketDataService.resolve_secid_board(isin)
     return secid or isin, (board or primary or "TQCB")
 
@@ -436,10 +439,11 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
     # база Y-IDX для всех флоатеров — роллирование RUONIA, тоже as-of этой даты
     if ref_obj.base == "RUONIA":
         ru_curve_asof = curve
+        ru_curve_mode = curve_mode
     else:
         _ru_hist = _index_provider("RUONIA", warnings, None)[1]
-        ru_curve_asof = (curve_asof("RUONIA", d, ruonia_curve, _ru_hist)[0]
-                         if (ruonia_curve is not None and _ru_hist) else None)
+        ru_curve_asof, ru_curve_mode = (curve_asof("RUONIA", d, ruonia_curve, _ru_hist)
+                         if (ruonia_curve is not None and _ru_hist) else (None, None))
         if ru_curve_asof is None:
             warnings.append("RUONIA-кривая на дату не восстановлена — spread не посчитан")
 
@@ -524,6 +528,7 @@ async def load_backdate_ctx(isin: str, d: date, board: Optional[str] = None) -> 
         "curve": curve,
         "ruonia_curve": ru_curve_asof,
         "curve_mode": curve_mode,
+        "ruonia_curve_mode": ru_curve_mode,
         "accrued": float(accrued_asof),
         "close": hist_row.get("close") if hist_row else None,
         "legalclose": hist_row.get("legalclose") if hist_row else None,
@@ -586,7 +591,7 @@ async def fetch_history_range(secid: str, d_from: date, d_till: date,
            f"boards/{board}/securities/{secid}.json")
     out, start = [], 0
     try:
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             while True:
                 params = {
                     "iss.meta": "off", "start": start,
@@ -1197,5 +1202,6 @@ def reprice_asof(ctx: dict, price: float) -> dict:
         accrued_basis="calc",
     )
     m["warnings"] = sorted(set((m.get("warnings") or []) + ctx["ctx_warnings"]))
-    m["curve_mode"] = ctx["curve_mode"]
+    m["curve_mode"] = ("market" if ctx["curve_mode"] == ctx.get("ruonia_curve_mode") == "market"
+                       else "realized")
     return m

@@ -38,11 +38,40 @@ def _msk_date() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=_MSK_OFFSET)).date().isoformat()
 
 
+# Доля бумаг без биржевого НКД, выше которой дневной снимок помечается
+# деградированным. 10.09.2026 биржевой НКД пропал у всех 619 разом (ISS лёг), и
+# снимок с завышенными спредами лёг в архив как полноценный — график показывал
+# всплеск, которого на рынке не было.
+_DEGRADED_ACCRUED_SHARE = 0.5
+
+
+def _degraded_now() -> bool:
+    """Считается ли витрина СЕЙЧАС на суррогатных данных.
+
+    Не отказ писать, а честная метка: пустая дата в истории тоже ложь, просто
+    другого рода. Метка позволяет пересчитать день, когда источник вернётся,
+    и не считать эти числа эталоном до тех пор.
+    """
+    try:
+        from services import universe_stream
+        st = universe_stream.stats()
+        ctx = st.get("ctx") or 0
+        return bool(ctx and (st.get("ctx_no_accrued") or 0) / ctx > _DEGRADED_ACCRUED_SHARE)
+    except Exception as e:
+        logger.debug("_degraded_now: %s", e)
+        return False
+
+
 def write_snapshot() -> int:
     """Снимок спред-метрик всего юниверса на сегодня (МСК) из market_cache.
-    Возвращает число записанных строк. Идемпотентно (INSERT OR REPLACE)."""
+    Возвращает число записанных строк. Идемпотентно (INSERT OR REPLACE).
+
+    src='snap' — обычный снимок, src='snap_degraded' — тот же снимок, снятый
+    когда биржевого НКД не было (см. _degraded_now): числа пригодны для
+    просмотра, но не для сверок, и подлежат пересчёту."""
     from services.market_data import market_cache, MarketDataService
     d = _msk_date()
+    src = "snap_degraded" if _degraded_now() else "snap"
     rows = []
 
     um = MarketDataService.universe_metrics() or {}
@@ -56,7 +85,7 @@ def write_snapshot() -> int:
         # Рядом кладём спред ко ВТОРОМУ горизонту: график сам выберет ту ветку,
         # что совпадает с сегодняшним горизонтом бумаги.
         rows.append((isin, d, "floater", m.get("last"), m.get("disc_dm"),
-                     None, m.get("z_model"), m.get("ytm"), m.get("yoi"), "snap",
+                     None, m.get("z_model"), m.get("ytm"), m.get("yoi"), src,
                      m.get("horizon"), m.get("y_idx_alt"), m.get("alt_horizon")))
 
     fxm = market_cache.get("fixed_metrics") or {}
@@ -64,7 +93,7 @@ def write_snapshot() -> int:
         if not isin or not isinstance(m, dict):
             continue
         rows.append((isin, d, "fixed", m.get("last"), None,
-                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, "snap",
+                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, src,
                      m.get("horizon"), None, None))
 
     # пишем только строки с хоть каким-то спредом (иначе шум пустых)
@@ -82,8 +111,57 @@ def write_snapshot() -> int:
                 "INSERT OR REPLACE INTO spread_daily(isin,date,kind,price_pct,dm_bps,"
                 "g_spread_bps,z_bps,ytm,y_idx,src,horizon,y_idx_alt,alt_horizon) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", rows[i:i + _SNAP_CHUNK])
-    logger.info("spread snapshot %s: %d строк", d, len(rows))
+    if src != "snap":
+        logger.warning("spread snapshot %s: %d строк ПОМЕЧЕНЫ деградированными "
+                       "(биржевого НКД нет — спреды по графику купонов)", d, len(rows))
+    else:
+        logger.info("spread snapshot %s: %d строк", d, len(rows))
     return len(rows)
+
+
+def previous_day_spreads(before=None) -> dict:
+    """Снимок спредов за ПОСЛЕДНИЙ день до указанного — {isin: {y_idx, price_pct}}.
+
+    База сравнения для сторожа правдоподобия (services.data_health): рынок
+    целиком за сутки на десятки bps не переставляется, если цены стояли.
+    Берём последнюю дату строго раньше сегодняшней, а не «вчера» календарно:
+    после выходных и праздников вчерашнего снимка просто нет.
+    """
+    d = before or _msk_date()
+    try:
+        with _connect() as c:
+            row = c.execute(
+                "SELECT MAX(date) FROM spread_daily WHERE date < ? AND src='snap'",
+                (d,)).fetchone()
+            prev = row and row[0]
+            if not prev:
+                return {}
+            return {r[0]: {"y_idx": r[1], "price_pct": r[2]}
+                    for r in c.execute(
+                        "SELECT isin, y_idx, price_pct FROM spread_daily "
+                        "WHERE date=? AND src='snap'", (prev,))}
+    except Exception as e:
+        logger.warning("previous_day_spreads: %s", e)
+        return {}
+
+
+def drop_degraded(dates=None) -> int:
+    """Сносит снимки, помеченные деградированными (src='snap_degraded').
+
+    Не «удаление истории», а снятие суррогата: такие строки писались, когда
+    биржевого НКД не было, и держать их дальше незачем — вечерний снимок или
+    as-of бэкфилл положат на их место числа на живых данных. Обычные снимки
+    ('snap') и honest-строки не трогаются.
+    """
+    with _lock, _connect() as c:
+        if dates:
+            ds = list(dates)
+            cur = c.execute(
+                f"DELETE FROM spread_daily WHERE src='snap_degraded' "
+                f"AND date IN ({','.join('?' * len(ds))})", ds)
+        else:
+            cur = c.execute("DELETE FROM spread_daily WHERE src='snap_degraded'")
+        return cur.rowcount or 0
 
 
 def read_history(isin: str, days: int = 400) -> List[dict]:

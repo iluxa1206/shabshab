@@ -100,6 +100,10 @@ async def get_placements(
         r["placed_src"] = src
         m = mets.get(r["secid"]) or {}
         r["spread_bps"] = m.get("y_idx_bps")
+        for key in ("curve_mode", "horizon", "horizon_date", "after_price",
+                    "after_curve_mode", "after_err"):
+            r[key] = m.get(key)
+        r["spread_price"] = m.get("price")
         r["premium_bps"] = m.get("premium_bps")
         r["after_date"] = m.get("after_date")
         r["spread_err"] = m.get("err")
@@ -109,8 +113,8 @@ async def get_placements(
         d = debut.get(r["secid"]) or {}
         r["debut_date"] = d.get("date")
         r["debut_price"] = d.get("close")
-        gap = (round(d["close"] - r["wa_price"], 2)
-               if d.get("close") is not None and r.get("wa_price") else None)
+        gap = (round(d["close"] - r["first_price"], 2)
+               if d.get("close") is not None and r.get("first_price") else None)
         # Разрыв больше DEBUT_MAX_PP — это не дебют облигации, а другая шкала
         # цены: структурные ноты ВТБ/ГПБ размещаются по 100, а торгуются от
         # стоимости корзины (54 или 140 на первых торгах). Для настоящего
@@ -188,7 +192,8 @@ async def get_announces(limit: int = Query(200, ge=1, le=2000)):
             f, m = facts.get(sec) or {}, mets.get(sec) or {}
             r["fact_date"] = f.get("first_date")
             r["fact_name"] = f.get("shortname")
-            r["fact_price"] = f.get("wa_price")
+            r["fact_price"] = f.get("first_price")
+            r["fact_curve_mode"] = m.get("curve_mode")
             r["fact_value_rub"] = f.get("value_rub")
             r["fact_spread_bps"] = m.get("y_idx_bps")
     return {"rows": rows}

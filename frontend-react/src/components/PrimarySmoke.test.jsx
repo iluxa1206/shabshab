@@ -7,7 +7,7 @@
 // реестра), структурная бумага с несопоставимой ценой вторички (debut_odd),
 // пустой кросс-срез (спред ещё не считался — линий нет, но панель обязана
 // нарисоваться).
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -21,6 +21,7 @@ const PLACEMENTS = {
       coupons_per_year: 12, coupon_text: "КС + 1,5%", in_registry: true,
       first_date: "2026-08-12", last_date: "2026-08-12", days: 1, numtrades: 42,
       value_rub: 5e9, volume: 5e6, wa_price: 100, price_min: 100, price_max: 100,
+      first_price: 100, spread_price: 100, curve_mode: "market",
       spread_bps: 171, premium_bps: -7, after_date: "2026-09-11",
       placed_pct: 100, placed_src: "moex", debut_pct: 0.35,
       debut_price: 100.35, debut_date: "2026-08-13", active: 0, is_ofz: false },
@@ -70,9 +71,37 @@ beforeEach(() => {
     json: async () => (String(url).includes("/slices") ? SLICES : PLACEMENTS),
   })));
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("смоук вкладки ПЕРВИЧКА", () => {
+  it("реконструкция помечена, причина отсутствия сравнения доступна", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ ...PLACEMENTS, rows: [{ ...PLACEMENTS.rows[0],
+        curve_mode: "realized", premium_bps: null,
+        after_err: "исходный горизонт изменился" }] }) })));
+    render(wrap(<PlacementHistory />));
+    expect(await screen.findByText("≈171")).toBeTruthy();
+    expect(screen.getByTitle("исходный горизонт изменился")).toBeTruthy();
+    expect(screen.getByText("Δ спреда")).toBeTruthy();
+  });
+
+  it("ручной расчёт отправляет цену первого дня, а не среднюю всей истории", async () => {
+    const fetcher = vi.fn(async (_url, options) => ({ ok: true, status: 200,
+      json: async () => String(_url).includes("/reprice?") ? {
+        metrics: { curve_mode: "realized", preferred_horizon: "maturity",
+          horizons: { maturity: { yield_over_index_bps: 123 } } },
+      } : { ...PLACEMENTS, rows: [{ ...PLACEMENTS.rows[0],
+        first_price: 100, wa_price: 99, spread_bps: null }] },
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    render(wrap(<PlacementHistory />));
+    fireEvent.click(await screen.findByText("считать"));
+    await waitFor(() => expect(fetcher.mock.calls.some(([u]) => String(u).includes("/reprice?"))).toBe(true));
+    const [url] = fetcher.mock.calls.find(([u]) => String(u).includes("/reprice?"));
+    expect(new URL(url, "http://localhost").searchParams.get("price")).toBe("100");
+    expect(await screen.findByText("≈123")).toBeTruthy();
+  });
+
   it("таблица размещений рисуется со всеми колонками", async () => {
     render(wrap(<PlacementHistory />));
     expect(await screen.findByText("ТЕСТ 1Р-01")).toBeTruthy();

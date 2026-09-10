@@ -297,7 +297,7 @@ CREATE TABLE IF NOT EXISTS placement_metrics(
   secid TEXT PRIMARY KEY,
   isin TEXT,
   place_date TEXT,                -- первый день размещения (на него и считаем)
-  price REAL,                     -- средневзвешенная цена размещения, % номинала
+  price REAL,                     -- средневзвешенная цена ПЕРВОГО дня, % номинала
   y_idx_bps REAL,                 -- Y-IDX по цене размещения на дату размещения
   dm_bps REAL,
   curve_mode TEXT,                -- market (архив котировок) | realized (гибрид)
@@ -502,6 +502,13 @@ CREATE INDEX IF NOT EXISTS ix_signal_events_user ON signal_events(user_email, fi
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;
 # «duplicate column name» на свежей базе — норма, глотаем
 _MIGRATIONS = [
+    "ALTER TABLE placement_metrics ADD COLUMN horizon TEXT",
+    "ALTER TABLE placement_metrics ADD COLUMN horizon_date TEXT",
+    "ALTER TABLE placement_metrics ADD COLUMN after_price REAL",
+    "ALTER TABLE placement_metrics ADD COLUMN after_curve_mode TEXT",
+    "ALTER TABLE placement_metrics ADD COLUMN after_err TEXT",
+    "ALTER TABLE placement_metrics ADD COLUMN input_fingerprint TEXT",
+    "ALTER TABLE placement_metrics ADD COLUMN calc_status TEXT",
     "ALTER TABLE spread_daily ADD COLUMN y_idx REAL",
     "ALTER TABLE spread_daily ADD COLUMN src TEXT",
     "ALTER TABLE spread_daily ADD COLUMN engine_ver INTEGER",

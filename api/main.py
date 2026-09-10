@@ -396,6 +396,42 @@ async def _stream_alert(problems: dict) -> None:
         "✅ <b>Стримы ожили</b> — данные снова идут")
 
 
+_health_alerted: dict = {}
+
+
+async def _health_alert(problems: dict) -> None:
+    """Тревога сторожа здоровья данных: числа на экране перестали быть верными.
+
+    Отдельная от стримов формулировка: там «данных нет», а тут хуже — данные
+    есть, выглядят обычно и при этом неверны. Такое молчание и стоило нам
+    10.09.2026 половины торгового дня."""
+    await _watch_alert(
+        _health_alerted, problems, "⚠️ <b>Данные под вопросом</b>",
+        "<i>Спреды и графики могут быть неверны, пока это так.</i>",
+        "✅ <b>Данные в норме</b> — источники и расчёт сошлись")
+
+
+async def data_health_watchdog(period_sec: int = 600):
+    """Сторож здоровья данных: источники, свежесть, правдоподобие, движок.
+
+    Отдельный демон, а не довесок к существующим: те сторожат ТРАНСПОРТ (стрим
+    молчит, диск кончился, петля лагает), а этот — СОДЕРЖАНИЕ. Транспорт
+    10.09.2026 был в полном порядке ровно тогда, когда числа врали вдвое.
+    """
+    from services import data_health
+    await asyncio.sleep(180)   # дать прогреву закончиться, иначе алерт на пустом
+    while True:
+        try:
+            problems = await run_bg(data_health.all_problems)
+            if problems:
+                logger.warning("здоровье данных: %s",
+                               "; ".join(problems.values()))
+            await _health_alert(problems)
+        except Exception as e:
+            logger.warning("data_health_watchdog: %s", e)
+        await asyncio.sleep(period_sec)
+
+
 async def stream_watchdog(period_sec: int = 300):
     """Сторож молчания стримов Alor.
 
@@ -538,7 +574,34 @@ async def loop_lag_watchdog():
                     pass
 
 
-QUOTES_POLL_INTERVAL = float(os.getenv("QUOTES_POLL_INTERVAL", "5"))
+# ТАКТ КОТИРОВОК. Пятисекундный такт круглосуточно стоил бирже 36 700 запросов
+# в сутки — три полных дампа бордов каждые 5 с, 17 часов подряд, — и 10.09.2026
+# наш адрес перестали пускать к iss.moex.com.
+#
+# Столько котировок через ISS не нужно: цены, bid и ask по ВСЕМУ рынку приходят
+# push-стримом Alor (depth-пул покрывает весь универс). У ISS остаётся то, чего
+# Alor не даёт, и оно делится по времени жизни:
+#   • НКД, вчерашнее закрытие, дата поставки — ДНЕВНЫЕ, меняются раз в сутки;
+#   • средневзвес и оборот дня — растут внутри сессии, но не посекундно.
+# Отсюда два такта вместо одного пятисекундного.
+# 120 с — компромисс: средневзвес и оборот столько «стоят» безболезненно, а для
+# цены этот такт вообще запасной путь (основной — push Alor), нужный лишь когда
+# шард стрима отвалился.
+QUOTES_POLL_INTERVAL = float(os.getenv("QUOTES_POLL_INTERVAL", "120"))
+# ОСОБОГО ТАКТА «НИКТО НЕ СМОТРИТ» НЕТ. Соблазн был: закрыты все вкладки —
+# опрашивай реже. Но за витриной живут сигналы (такт 3 с) и телеграм-алерты,
+# они работают как раз при закрытых вкладках, и цены бумаг ВНЕ стрима Alor
+# отставали бы на весь idle-такт — звонок приходил бы с опозданием. Экономия
+# от idle мелкая (сотни запросов), цена — тихо протухшие сигналы.
+# Дневной блок (НКД/prev/settledate): раз в полчаса с запасом — НКД появляется
+# на начало дня, prev после закрытия, чаще смотреть незачем.
+QUOTES_DAILY_REFRESH_SEC = float(os.getenv("QUOTES_DAILY_REFRESH_SEC", "1800"))
+
+
+def _quotes_interval(now=None) -> float:
+    """Такт котировок. Один на все состояния — см. комментарий выше о том,
+    почему «никто не смотрит» не повод опрашивать реже."""
+    return QUOTES_POLL_INTERVAL
 
 
 async def quotes_poller():
@@ -560,10 +623,20 @@ async def quotes_poller():
     from services.market_data import market_cache
     from services.universe_stream import live_isins
     await asyncio.sleep(20)      # даём стартовому прогреву занять сеть первым
+    _daily_at = float("-inf")    # дневной блок ещё не брали
     while True:
         try:
             if _in_moex_trading_hours():
-                snap = await MarketDataService.fetch_board_snapshot(force=True)
+                # ДНЕВНОЙ БЛОК — по своему расписанию. Первый заход после старта
+                # обязателен: без НКД и prev витрина считает на суррогате
+                # (см. services/valuation, авария 10.09.2026).
+                _now = time.monotonic()
+                if _now - _daily_at >= QUOTES_DAILY_REFRESH_SEC:
+                    await MarketDataService.fetch_board_snapshot(
+                        force=True, only="securities")
+                    _daily_at = _now
+                snap = await MarketDataService.fetch_board_snapshot(
+                    force=True, only="marketdata")
                 if snap:
                     now = time.time()
                     streamed = live_isins()
@@ -589,7 +662,7 @@ async def quotes_poller():
             raise
         except Exception as e:
             logger.warning(f"quotes poller error: {e}")
-        await asyncio.sleep(QUOTES_POLL_INTERVAL if _in_moex_trading_hours()
+        await asyncio.sleep(_quotes_interval() if _in_moex_trading_hours()
                             else WS_IDLE_INTERVAL)
 
 
@@ -747,6 +820,10 @@ async def daily_prewarm():
                 logger.info("prewarm календаря выплат: событий %d", len(cal["events"]))
             except Exception as e:
                 logger.warning("prewarm календаря выплат: %s", e)
+            # ОТМЕТКА УСПЕХА — для сторожа свежести. 10.09.2026 прогрев не
+            # состоялся (ISS лежал с 06:22), и день пошёл на вчерашних данных
+            # молча: снаружи «сервис работает», а под ним старые расписания.
+            market_cache["prewarm_at"] = time.time()
             logger.info("daily 09:00 prewarm: готово (расписаний %d)",
                         len(MarketDataService._full_mem))
         except Exception as e:
@@ -955,7 +1032,13 @@ async def hourly_bars_worker():
         await asyncio.sleep(max(60.0, (nxt - now).total_seconds()))
 
 
-BLOCK_POLL_INTERVAL = int(os.getenv("BLOCK_POLL_INTERVAL", "60"))     # опрос ленты, сек
+# ТАКТ ЛЕНТЫ СДЕЛОК. Минутный опрос стоил ~2 000 запросов к ISS в сутки (две
+# сквозные ленты — bonds и ndm — на каждый такт) и после разгрузки котировок
+# стал самым тяжёлым потребителем. Страница вмещает 5 000 сделок, за 150 секунд
+# торгов их столько не набирается — значит запрос по-прежнему один на рынок, а
+# тактов втрое меньше. Появление сделки в ленте задержится на минуту-две, что
+# незаметно: ISS и так отдаёт её с задержкой около 15 минут.
+BLOCK_POLL_INTERVAL = int(os.getenv("BLOCK_POLL_INTERVAL", "150"))    # опрос ленты, сек
 BLOCK_WORKER = os.getenv("BLOCK_WORKER", "1") not in ("0", "false", "False")
 
 
@@ -1361,6 +1444,7 @@ async def lifespan(app: FastAPI):
     _daemon("disk-watchdog", disk_watchdog)
     # живой сокет ≠ свежая лента: сторож меряет, доезжают ли сделки вовремя
     _daemon("feed-watchdog", feed_lag_watchdog)
+    _daemon("data-health-watchdog", data_health_watchdog)
     from services.tg_notify import tg_signal_worker
     from services.tg_poll import tg_poll_worker
     _daemon("tg-signals", tg_signal_worker)

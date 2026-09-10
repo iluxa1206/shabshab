@@ -42,9 +42,9 @@ const COLS = [
   { key: "coupon", label: "Купон", cls: "left" },
   { key: "value", label: "Объём", sub: "млн ₽", cls: "num" },
   { key: "price", label: "Цена", sub: "% номинала", cls: "num" },
-  { key: "debut", label: "Дебют", sub: "п.п. к цене книги", cls: "num" },
-  { key: "spread", label: "Спред", sub: "б.п., Y-IDX по цене книги", cls: "num" },
-  { key: "premium", label: "Премия", sub: "б.п. за месяц на вторичке", cls: "num" },
+  { key: "debut", label: "Дебют", sub: "п.п. к цене первого дня", cls: "num" },
+  { key: "spread", label: "Спред", sub: "б.п., Y-IDX по цене первого дня", cls: "num" },
+  { key: "premium", label: "Δ спреда", sub: "б.п. за месяц на вторичке", cls: "num" },
   { key: "placed", label: "Размещено", sub: "доля выпуска", cls: "num" },
   { key: "days", label: "Дней", cls: "num" },
   { key: "trades", label: "Сделок", cls: "num" },
@@ -66,56 +66,52 @@ function PriceCell({ r }) {
   );
 }
 
-// Спред НА ДАТУ РАЗМЕЩЕНИЯ по цене размещения — «сколько платили за риск, когда
-// книга закрылась». Считается ПО КНОПКЕ и только для флоатеров реестра: это
-// полный backdate-пересчёт (кривая as-of, НКД/номинал факт того дня), гонять
-// его на все 1500 строк списка нельзя. У фиксов той же кнопки нет намеренно:
-// backdate-движок здесь флоатерный, а G-спред фикса пришлось бы считать другим
-// путём — лучше пусто, чем цифра из другой методики в одной колонке.
+// Начальный спред всегда относится к цене ПЕРВОГО дня. Средняя цена всей
+// истории остаётся отдельной колонкой и не используется в прайсинге старта.
 function SpreadCell({ r }) {
-  const [st, setSt] = useState(null);   // null | "load" | {bps} | {err}
+  const [st, setSt] = useState(null);
+  const calcKey = `${r.isin}|${r.first_date}|${r.first_price}`;
+  const local = st?.key === calcKey ? st : null;
   const isFloat = r.in_registry && FLOAT_BASES.has(r.base);
-  // ГОТОВОЕ ЧИСЛО ночного расчёта. Кнопка осталась только как страховка для
-  // строк, до которых такт ещё не дошёл: считать спред при отрисовке нельзя —
-  // это backdate-пересчёт с солвером на каждую бумагу.
-  if (r.spread_bps != null) {
-    return <span title={`Y-IDX по цене ${fmt.pct(r.wa_price)} на ${fmt.date(r.first_date)}`}>
-      {fmt.bps(r.spread_bps)}
+  const bps = r.spread_bps ?? local?.bps;
+  const mode = r.spread_bps != null ? r.curve_mode : local?.mode;
+  const price = r.spread_bps != null ? r.spread_price : r.first_price;
+  if (bps != null) {
+    const reconstructed = mode !== "market";
+    return <span title={`Y-IDX по цене ${fmt.pct(price)} на ${fmt.date(r.first_date)}`
+      + (reconstructed ? " · реконструкция кривой" : " · архив рыночных кривых")
+      + (r.horizon_date ? ` · горизонт ${fmt.date(r.horizon_date)}` : "")}>
+      {reconstructed && "≈"}{fmt.bps(bps)}
     </span>;
   }
-  if (!isFloat) return <span className="mut">—</span>;
-  if (st && st.bps != null) {
-    return <span title={`Y-IDX по цене ${fmt.pct(r.wa_price)} на ${fmt.date(r.first_date)}`}>
-      {fmt.bps(st.bps)}
-    </span>;
+  if (!isFloat || r.first_price == null) {
+    return <span className="mut" title={r.spread_err || "Нет цены первого дня"}>—</span>;
   }
-  if (st === "load") return <span className="mut">…</span>;
-  if (st?.err) return <span className="mut" title={st.err}>ошибка</span>;
+  if (local?.loading) return <span className="mut">…</span>;
+  if (local?.err) return <span className="mut" title={local.err}>ошибка</span>;
   return (
     <button className="chip-btn pl-calc" onClick={async () => {
-      setSt("load");
+      setSt({ key: calcKey, loading: true });
       try {
-        const d = await fetchRepricePast(r.isin, { date: r.first_date, price: r.wa_price });
+        const d = await fetchRepricePast(r.isin, { date: r.first_date, price: r.first_price });
         const v = horizonView(d.metrics, "auto").v;
-        setSt({ bps: v.yield_over_index_bps });
+        setSt({ key: calcKey, bps: v.yield_over_index_bps, mode: d.metrics.curve_mode,
+                err: v.yield_over_index_bps == null ? "Спред не посчитан" : null });
       } catch (e) {
         if (e instanceof UnauthorizedError) throw e;
-        setSt({ err: e?.message || "не посчитано" });
+        setSt({ key: calcKey, err: e?.message || "не посчитано" });
       }
     }}>считать</button>
   );
 }
 
-// ПРЕМИЯ РАЗМЕЩЕНИЯ: спред той же бумаги через месяц на вторичке минус спред
-// книги. Плюс — бумага уехала ШИРЕ (книгу закрыли жадно, рынок требует больше),
-// минус — уже (разместились щедро). Знак тут несёт весь смысл, поэтому он
-// рисуется явно, в отличие от колонок спреда.
+// Изменение самого выпуска; движение сопоставимого рынка здесь не вычитается.
 function PremiumCell({ r }) {
-  if (r.premium_bps == null) return <span className="mut">—</span>;
+  if (r.premium_bps == null) return <span className="mut" title={r.after_err || "Нет сопоставимой точки"}>—</span>;
   const v = Math.round(r.premium_bps);
   return (
     <span className={v > 0 ? "dm-down" : v < 0 ? "dm-up" : undefined}
-          title={`спред вторички ${fmt.date(r.after_date)} против спреда книги`}>
+          title={`спред вторички ${fmt.date(r.after_date)} минус спред первого дня; тот же горизонт, без поправки на рынок`}>
       {fmt.devBps(r.premium_bps)}
     </span>
   );
@@ -359,10 +355,10 @@ export default function PlacementHistory() {
           факт биржи: по какой цене и на какой объём выпуск реально разместился.
           Строка — выпуск целиком, клик разворачивает дни (доразмещения идут
           неделями). Итог дня публикуется вечером, сегодняшних размещений тут ещё нет.
-          Спред (Y-IDX по цене книги на её дату) есть только у флоатеров реестра;
-          дебют — цена первых торгов минус цена книги — считается у всех, кто
+          Спред (Y-IDX по цене первого дня) есть только у флоатеров реестра;
+          дебют — цена первых торгов минус цена первого дня размещения — считается у всех, кто
           вышел на биржу. Период отбирает выпуски по ПЕРВОМУ дню размещения,
-          а объём и цена всегда считаются по всей книге целиком. Клик по эмитенту
+          а объём и колонка «Цена» считаются по всей истории размещения. Клик по эмитенту
           показывает всё, что он занимал
           {" · "}{rows.length} выпусков · {fmt.mln(total)} млн ₽
           {data?.truncated ? " · список усечён" : ""}

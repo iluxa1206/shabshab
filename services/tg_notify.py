@@ -440,7 +440,12 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
     if isin:
         sub.append(isin)
 
-    head_line = f"{_icon(m, kind, side, icons)}  " + " · ".join(b for b in head if b)
+    # Восклицание сразу за маркером стороны: «первая в очереди» — свойство
+    # самой заявки, его читают вместе со значком, а не в хвосте подписи
+    # (слово best там остаётся, оно объясняет знак).
+    bang = "❕" if m.get("best") else ""
+    head_line = (f"{_icon(m, kind, side, icons)}{bang}  "
+                 + " · ".join(b for b in head if b))
     return (head_line, " · ".join(px), " · ".join(b for b in sub if b),
             " · ".join(b for b in foot if b))
 

@@ -27,6 +27,9 @@ from typing import Optional
 
 import httpx
 
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
+
 from services.portfolio_db import DB_PATH, _connect, _lock
 
 logger = logging.getLogger(__name__)
@@ -328,7 +331,7 @@ async def face_units() -> dict:
     now = _time.monotonic()
     if _units["map"] and now - _units["at"] < _UNITS_TTL:
         return _units["map"]
-    from services.market_data import MarketDataService
+    from services.market_data import moex_client, MarketDataService
     listing = await MarketDataService.fetch_bond_listing()
     m = {i: (v.get("face_unit") or "").upper() for i, v in (listing or {}).items()}
     if m:                     # пустой ответ ISS не должен обнулять карту
@@ -430,7 +433,7 @@ async def drain(isin: str, days: int = ALOR_HISTORY_DAYS, board: Optional[str] =
     from services.bars import fetch_daily_face
     from services.backdate import resolve_market
     secid, brd = await resolve_market(isin, board)
-    async with httpx.AsyncClient() as mc:
+    async with moex_client() as mc:
         faces = await fetch_daily_face(mc, secid or isin, brd or "TQCB",
                                        frm.date().isoformat(), today.isoformat())
 
@@ -547,7 +550,7 @@ async def repair_fx_values(days: int = 30, tol: float = 0.01,
                 "  WHERE b.trade_id=t.trade_id AND b.isin=t.isin)",
                 (isin, frm)).fetchall()
 
-    async with httpx.AsyncClient() as mc:
+    async with moex_client() as mc:
         for isin in sorted(pool):
             rows = await asyncio.to_thread(_rows, isin)
             if not rows:

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import AnHint from "./AnHint.jsx";
 import IssuerLegend, { ICOLORS, OTHER_COLOR, issuerColors } from "./IssuerLegend.jsx";
 import { fmt, RT_BUCKETS, RT_BUCKET_COLOR, ratingBucket } from "../format.js";
-import { fetchYidxHistory } from "../api.js";
+import { fetchYidxHistory, fetchYidxDispersion } from "../api.js";
 import { horizonYears } from "../horizon.js";
 import {
   linearScale, niceTicks, linePath, GridY, GridX, XTicks,
@@ -465,6 +465,111 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
   );
 }
 
+// ── Разброс Y-IDX по текущему срезу верхней витрины ──
+function DispersionHistory({ rows, period, height, full }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const isinsKey = useMemo(() => rows.map((b) => b.isin).sort().join(","), [rows]);
+  useEffect(() => {
+    if (!isinsKey) { setData({ points: [] }); return; }
+    const ac = new AbortController();
+    setErr(null);
+    setData(null);
+    fetchYidxDispersion(period, isinsKey.split(","), ac.signal)
+      .then(setData)
+      .catch((e) => { if (e.name !== "AbortError") setErr(e.message || "ошибка"); });
+    return () => ac.abort();
+  }, [period, isinsKey]);
+
+  if (err) return <div className="an-empty">не загрузилось: {err}</div>;
+  if (!data) return <div className="an-empty">загрузка…</div>;
+  const pts = data.points || [];
+  if (!pts.length) return <div className="an-empty">нет достаточно плотной истории в выбранном бакете</div>;
+  const dates = pts.map((p) => p.date);
+  const span = spanDays(dates);
+  // Шкала описывает ЦЕНТР распределения. Если включить в неё каждый хвост,
+  // один стейл/тонкий выпуск на 1100 bps сплющивает весь p25–p75 в волосок и
+  // превращает полезный график dispersion в облако точек.
+  const vals = pts.flatMap((p) => [p.p25, p.med, p.p75]);
+  const [ymin, ymax] = padDomain(vals);
+  const build = (g) => {
+    const sx = linearScale([0, Math.max(pts.length - 1, 1)], [g.x0, g.x1]);
+    const sy = linearScale([ymin, ymax], [g.y0, g.y1]);
+    const nx = Math.max(3, Math.min(8, Math.round(g.iw / tickGap(full))));
+    return { sx, sy, yTicks: niceTicks(ymin, ymax, 5), yFormat: (v) => Math.round(v),
+      xTicks: dateTickIdx(dates, nx).map((i) => ({ x: sx(i), label: tickLabel(dates[i], span) })) };
+  };
+  return <ChartFrame height={height} pad={padFull(YH_PAD, full)} label="разброс spread по времени" gridX
+    data={pts.map((p, i) => ({ ...p, i }))} build={build} px={(p, s) => s.sx(p.i)} py={(p, s) => s.sy(p.med)}
+    yBadge={(p) => `${Math.round(p.med)} bps`}
+    tooltip={(p) => <><div className="an-tt-h">{fmt.date(p.date)}</div>
+      <div>медиана {Math.round(p.med)} · n{p.n}</div>
+      <div>p25–p75 {Math.round(p.p25)}–{Math.round(p.p75)} bps</div></>}
+    overlay={(s, g) => <text x={g.x0 - 38} y={g.y1 + 4} className="an-axis-lbl"
+      transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>spread, bps</text>}>
+    {(s) => {
+      const upper = linePath(pts, (_, i) => s.sx(i), (p) => s.sy(p.p75));
+      const lower = linePath(pts.slice().reverse(), (_, i) => s.sx(pts.length - 1 - i), (p) => s.sy(p.p25));
+      return <>
+      <path d={`${upper} ${lower.replace(/^M/, "L")} Z`}
+        fill="var(--spread)" opacity=".2" />
+      <path d={linePath(pts, (_, i) => s.sx(i), (p) => s.sy(p.med))} fill="none" stroke="var(--spread)" strokeWidth={full ? 2.4 : 1.7} />
+    </>;
+    }}
+  </ChartFrame>;
+}
+
+// Гистограмма отвечает на другой вопрос, чем история выше: не «как менялся
+// разброс», а «где сейчас сосредоточены бумаги выбранного верхними фильтрами
+// среза». Поэтому работает прямо по живым строкам витрины, без новой истории.
+function SpreadHistogram({ rows, height, full }) {
+  const values = rows.map((b) => ({ b, z: yval(b) })).filter((p) => p.z != null);
+  if (values.length < 2) return <div className="an-empty">мало бумаг с валидным spread</div>;
+  const [xmin, xmax] = padDomain(values.map((p) => p.z), 0.02);
+  // Корзина ~15 bps показывает форму распределения заметно лучше прежнего
+  // правила sqrt(n), которое при широком диапазоне склеивало соседние цены в
+  // один слишком грубый столбец. Потолок сохраняет читаемую ширину столбца.
+  const count = Math.max(10, Math.min(32, Math.ceil((xmax - xmin) / 15)));
+  const step = (xmax - xmin) / count;
+  const bins = Array.from({ length: count }, (_, i) => ({
+    lo: xmin + i * step, hi: xmin + (i + 1) * step, items: [], n: 0,
+  }));
+  for (const p of values) {
+    const i = Math.max(0, Math.min(count - 1, Math.floor((p.z - xmin) / step)));
+    bins[i].items.push(p);
+    bins[i].n += 1;
+  }
+  const maxN = Math.max(...bins.map((b) => b.n), 1);
+  const med = median(values.map((p) => p.z));
+  const build = (g) => {
+    const sx = linearScale([xmin, xmax], [g.x0, g.x1]);
+    const sy = linearScale([0, maxN], [g.y0, g.y1]);
+    return {
+      sx, sy, yTicks: niceTicks(0, maxN, 4), yFormat: (v) => Math.round(v),
+      xTicks: niceTicks(xmin, xmax, 5).map((v) => ({ x: sx(v), label: Math.round(v) })),
+    };
+  };
+  return <ChartFrame height={height} pad={padFull(YH_PAD, full)} label="распределение бумаг по spread" gridX
+    data={bins.filter((b) => b.n)} build={build} px={(b, s) => s.sx((b.lo + b.hi) / 2)} py={(b, s) => s.sy(b.n)}
+    yBadge={(b) => `${b.n} шт.`}
+    tooltip={(b) => <><div className="an-tt-h">{Math.round(b.lo)}–{Math.round(b.hi)} bps</div>
+      <div>{b.n} {b.n === 1 ? "бумага" : "бумаг"}</div></>}
+    overlay={(s, g) => <>
+      <line x1={s.sx(med)} x2={s.sx(med)} y1={g.y1} y2={g.y0} stroke="var(--fg)" strokeWidth={1} strokeDasharray="3 3" />
+      <text x={s.sx(med) + 4} y={g.y1 + 12} className="an-axis">мед. {Math.round(med)}</text>
+      <text x={g.x0 - 38} y={g.y1 + 4} className="an-axis-lbl"
+        transform={`rotate(-90 ${g.x0 - 38} ${g.y1 + 4})`}>бумаг, шт.</text>
+      <text x={g.x0} y={g.y0 + 26} className="an-axis-lbl">spread, bps →</text>
+    </>}>
+    {(s, g) => bins.filter((b) => b.n).map((b) => {
+      const x = s.sx(b.lo) + 1;
+      const w = Math.max(1, s.sx(b.hi) - s.sx(b.lo) - 2);
+      const y = s.sy(b.n);
+      return <rect key={b.lo} x={x} y={y} width={w} height={g.y0 - y} fill="var(--spread)" opacity=".72" />;
+    })}
+  </ChartFrame>;
+}
+
 function RatingLegend() {
   return (
     <div className="an-legend">
@@ -529,7 +634,8 @@ const YH_H = 220;
 export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   const [groupBy, setGroupBy] = useState("rating");
   const [period, setPeriod] = useState(91);
-  const [full, setFull] = useState(null); // "scatter" | "dist" | "hist"
+  const [dispView, setDispView] = useState("history");
+  const [full, setFull] = useState(null); // "scatter" | "dist" | "hist" | "disp"
   const vh = useViewportH();
   const byIss = groupBy === "issuer";
   const set = (f) => onFocus && onFocus(f);
@@ -554,6 +660,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   const bigH = Math.max(320, vh - 230);
   const scH = full === "scatter" ? bigH : SC_H;
   const yhH = full === "hist" ? bigH : YH_H;
+  const dispH = full === "disp" ? bigH : YH_H;
   // box-график в полный экран: строки растягиваются по высоте окна (иначе
   // 3 рейтинг-бакета висели полоской вверху пустого экрана), эмитентов
   // показываем столько, сколько влезает при комфортной высоте строки
@@ -565,7 +672,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
     : undefined;
   const distCap = full === "dist" ? Math.max(ISSUER_CAP, distN) : ISSUER_CAP;
 
-  const periodCtl = (
+  const periodCtl = () => (
     <span className="an-toggle" role="group" aria-label="период">
       {PERIODS.map(([l, d]) => (
         <button key={d} type="button" className={"an-tgl-btn" + (period === d ? " on" : "")}
@@ -574,6 +681,14 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
     </span>
   );
   const aggCtl = <AggToggle value={groupBy} onChange={setGroupBy} />;
+  const dispViewCtl = (
+    <span className="an-toggle" role="group" aria-label="вид графика разброса">
+      {[['history', 'Динамика'], ['histogram', 'Распределение']].map(([v, l]) => (
+        <button key={v} type="button" className={"an-tgl-btn" + (dispView === v ? " on" : "")}
+          aria-pressed={dispView === v} onClick={() => setDispView(v)}>{l}</button>
+      ))}
+    </span>
+  );
   // Подписи точек только в полный экран: в карточке 320 px они перекрыли бы сам
   // график, а на весь экран место есть и «выпуск — спред» читается без наведения.
   const lblCtl = full === "scatter" ? (
@@ -603,11 +718,20 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
         <RatingLegend />
       </AnCard>
 
-      <AnCard title="spread ДИНАМИКА" ctl={<>{periodCtl}{aggCtl}</>} {...fullBtn("hist")}
+      <AnCard title="spread ДИНАМИКА" ctl={<>{periodCtl()}{aggCtl}</>} {...fullBtn("hist")}
         hint={byIss ? "спред по средневзвесу дня · медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
                     : "спред по средневзвесу дня · медиана по рейтинг-бакетам · клик по линии = фильтр"}>
         <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}
           focus={focus} onPick={byIss ? pickIssuer : pickRating} full={full === "hist"} />
+      </AnCard>
+
+      <AnCard title="РАЗБРОС spread" ctl={dispViewCtl} {...fullBtn("disp")}
+        hint={dispView === "history"
+          ? "тот же набор бумаг, что в верхней витрине · период задаётся в графике «spread Динамика» · полоса = p25–p75 · линия = медиана"
+          : "тот же набор бумаг, что в верхней витрине · столбец = число выпусков в диапазоне spread · пунктир = медиана"}>
+        {dispView === "history" ? <>
+          <DispersionHistory rows={rows} period={period} height={dispH} full={full === "disp"} />
+        </> : <SpreadHistogram rows={rows} height={dispH} full={full === "disp"} />}
       </AnCard>
     </section>
   );

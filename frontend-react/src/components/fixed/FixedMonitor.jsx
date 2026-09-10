@@ -36,6 +36,14 @@ const WS_FLUSH_MS = 400;
 // котировок, иначе в ней навсегда застыли бы последние цифры стрима.
 const LIVE_FRESH_MS = 15000;
 
+// Переименования ключей колонок (для сохранённого набора и его ширин):
+// под ценой стороны теперь доходность, а не g-спред.
+const COL_RENAMED = {
+  g_spread_bid_bps: "ytm_bid",
+  g_spread_ask_bps: "ytm_ask",
+  g_spread_wap_bps: "ytm_wap",
+};
+
 const initialParams = () => new URLSearchParams(window.location.search);
 const ls = (k, d = "") => localStorage.getItem(k) ?? d;
 
@@ -172,7 +180,11 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   });
   const [visibleCols, setVisibleCols] = useState(() => {
     try {
-      const s = JSON.parse(localStorage.getItem("cols_fx") || "null");
+      const raw = JSON.parse(localStorage.getItem("cols_fx") || "null");
+      // Ячейки котировок стали «цена / YTM», и ключи колонок уехали вместе со
+      // смыслом. Сохранённый набор переименовываем на месте: иначе у всех, кто
+      // хоть раз трогал меню столбцов, три колонки просто исчезли бы.
+      const s = Array.isArray(raw) ? raw.map((k) => COL_RENAMED[k] || k) : raw;
       if (!Array.isArray(s) || !s.length) return FIXED_DEFAULT_COLS;
       // колонки, добавленные после последнего сохранения набора, показываем
       const known = new Set(JSON.parse(localStorage.getItem("cols_known_fx") || "[]"));
@@ -181,7 +193,10 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     } catch { return FIXED_DEFAULT_COLS; }
   });
   const [colWidths, setColWidths] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("colw_fx") || "{}") || {}; } catch { return {}; }
+    try {
+      const w = JSON.parse(localStorage.getItem("colw_fx") || "{}") || {};
+      return Object.fromEntries(Object.entries(w).map(([k, v]) => [COL_RENAMED[k] || k, v]));
+    } catch { return {}; }
   });
   const searchRef = useRef(null);
 

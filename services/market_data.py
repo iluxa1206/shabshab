@@ -183,23 +183,133 @@ def call_offers_asof(isin: str, offers: Optional[list], asof: date) -> Optional[
 
 # Ограничитель параллельных коннектов к MOEX ISS. iss.moex.com флаки под нагрузкой
 # (ConnectTimeout при burst) — держим низкую конкуренцию.
+def _moex_proxy():
+    """Прокси для запросов к MOEX ISS. Пустое значение = прямое соединение.
+
+    Понадобился 10.09.2026: с прод-VPS (REG.RU, Москва) путь до iss.moex.com
+    режется по домену — TLS на 443 не встаёт вовсе, а на 80 промежуточное
+    устройство отдаёт фейковый «302 Moved Permanently, Server: Apache/2.2.6
+    (Fedora)» с Location на тот же адрес. Остальной https с той же машины
+    работает, и сам ISS жив: из другой сети отвечает нормально. То есть чинить
+    это в коде нечем — нужен другой сетевой путь, и вот его переключатель.
+
+    Читается на каждый вызов, а не при импорте: узел меняют в .env и
+    перезапускают контейнер, а не пересобирают образ."""
+    return (os.getenv("MOEX_PROXY") or "").strip() or None
+
+
+def moex_client(**kw) -> httpx.AsyncClient:
+    """httpx-клиент для ISS — единственное место, где решается, каким путём
+    идти. Все запросы к MOEX обязаны строиться через него, иначе появится
+    ветка, которую переключатель MOEX_PROXY не накрывает."""
+    proxy = _moex_proxy()
+    if proxy:
+        kw.setdefault("proxy", proxy)
+    return httpx.AsyncClient(**kw)
+
+
 _MOEX_SEM = asyncio.Semaphore(5)
+
+# --- предохранитель ISS -----------------------------------------------------
+# Когда iss.moex.com отваливается ЦЕЛИКОМ (10.09.2026: TCP 443 не открывался
+# несколько часов), каждый запрос держал слот _MOEX_SEM весь свой таймаут
+# (6-20с) вместо ~50мс. Пропускная способность падала в сотни раз, а фон
+# (движок, поллеры, бэкфилл) продолжал лить запросы — очередь на семафоре
+# росла до минут: /reprice отвечал через 750с, сайт «висел», хотя CPU был
+# занят на 4%. Ждали, а не считали.
+#
+# Предохранитель размыкает цепь после _CB_FAILS подряд отказов: дальше
+# _moex_get отдаёт None СРАЗУ, не занимая слот семафора. Раз в cooldown
+# пропускается ОДНА проба; успех — цепь замкнута, отказ — cooldown удваивается
+# до потолка. Вызывающие уже умеют жить с None (кэши, prev-close, НРД), так
+# что снаружи это не новый режим, а тот же деградированный — но быстрый.
+_CB_FAILS = 8
+_CB_COOLDOWN_MIN = 30.0
+_CB_COOLDOWN_MAX = 300.0
+
+_cb_fails = 0
+_cb_open_until = 0.0       # 0 — цепь замкнута
+_cb_cooldown = _CB_COOLDOWN_MIN
+_cb_probing = False        # проба в полёте: остальных не пускаем
+
+
+def _cb_allow() -> bool:
+    """Пускать ли запрос в ISS. False — цепь разомкнута, ходить бессмысленно."""
+    global _cb_probing
+    if not _cb_open_until:
+        return True
+    if time.monotonic() < _cb_open_until or _cb_probing:
+        return False
+    _cb_probing = True     # до первого await — гонок нет, пробующий ровно один
+    return True
+
+
+def _cb_ok() -> None:
+    global _cb_fails, _cb_open_until, _cb_cooldown, _cb_probing
+    if _cb_open_until:
+        logger.warning("MOEX ISS отвечает — предохранитель замкнут")
+    _cb_fails = 0
+    _cb_open_until = 0.0
+    _cb_cooldown = _CB_COOLDOWN_MIN
+    _cb_probing = False
+
+
+def _cb_fail() -> None:
+    global _cb_fails, _cb_open_until, _cb_cooldown, _cb_probing
+    if _cb_probing:                     # проба не удалась — сразу новый простой
+        _cb_probing = False
+        _cb_cooldown = min(_cb_cooldown * 2, _CB_COOLDOWN_MAX)
+        _cb_open_until = time.monotonic() + _cb_cooldown
+        return
+    _cb_fails += 1
+    if _cb_fails >= _CB_FAILS and not _cb_open_until:
+        _cb_cooldown = _CB_COOLDOWN_MIN
+        _cb_open_until = time.monotonic() + _cb_cooldown
+        logger.warning(
+            "MOEX ISS не отвечает (%d отказов подряд) — предохранитель разомкнут "
+            "на %.0fс, запросы к ISS отдают None без ожидания",
+            _cb_fails, _cb_cooldown)
+
+
+def iss_breaker_state() -> dict:
+    """Состояние предохранителя — для вкладки СТАТУС и диагностики: «данные
+    старые» иначе не отличить от «считаем медленно»."""
+    left = max(0.0, _cb_open_until - time.monotonic()) if _cb_open_until else 0.0
+    return {"open": bool(_cb_open_until), "fails": _cb_fails,
+            "reopen_in_sec": round(left, 1), "cooldown_sec": _cb_cooldown}
 
 
 async def _moex_get(client: httpx.AsyncClient, url: str, *, params=None, timeout: float = 6.0):
     """GET к MOEX под семафором. Fail-fast на таймаут (ретрай таймаута под нагрузкой
-    только копит задержку). Ретрай один раз только на 429/5xx. None если не удалось."""
-    async with _MOEX_SEM:
-        for attempt in range(2):
-            try:
-                resp = await client.get(url, params=params, timeout=timeout)
-            except (httpx.TimeoutException, httpx.TransportError):
-                return None
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt == 0:
-                await asyncio.sleep(0.4)
-                continue
-            return resp
-    return None
+    только копит задержку). Ретрай один раз только на 429/5xx. None если не удалось.
+
+    Под разомкнутым предохранителем возвращает None не заходя в семафор."""
+    if not _cb_allow():
+        return None
+    try:
+        async with _MOEX_SEM:
+            for attempt in range(2):
+                try:
+                    resp = await client.get(url, params=params, timeout=timeout)
+                except (httpx.TimeoutException, httpx.TransportError):
+                    _cb_fail()
+                    return None
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                    await asyncio.sleep(0.4)
+                    continue
+                # 5xx после ретрая — ISS лежит, счёт тот же, что у таймаута.
+                # 429 нейтрален: это троттлинг живого сервера, не отказ.
+                if resp.status_code in (500, 502, 503, 504):
+                    _cb_fail()
+                elif resp.status_code != 429:
+                    _cb_ok()
+                return resp
+        return None
+    finally:
+        # Пробующий обязан снять флаг на ЛЮБОМ исходе (429, чужое исключение,
+        # отмена таска) — иначе разомкнутая цепь больше никого не пробует
+        # и не замкнётся уже после того, как ISS поднимется.
+        globals()["_cb_probing"] = False
 
 
 def _load_schedule_cache() -> dict:
@@ -309,7 +419,7 @@ class MarketDataService:
         if cls._gcurve is not None and cls._gcurve_date == today:
             return cls._gcurve
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await _moex_get(
                     client, "https://iss.moex.com/iss/engines/stock/zcyc.json",
                     params={"iss.meta": "off", "iss.only": "yearyields"}, timeout=10)
@@ -325,6 +435,12 @@ class MarketDataService:
         except Exception as e:
             return cls._stale_gcurve(f"G-curve fetch error: {e}")
         return cls._gcurve
+
+    @classmethod
+    def gcurve_date(cls) -> Optional[str]:
+        """Дата загруженной КБД (ISO) или None. Витрина ОФЗ показывает возраст
+        кривой: при сбое фетча get_gcurve отдаёт вчерашнюю (см. _stale_gcurve)."""
+        return cls._gcurve_date
 
     @classmethod
     def _stale_gcurve(cls, reason: str):
@@ -417,7 +533,7 @@ class MarketDataService:
             pass
         out: Dict[str, str] = {}
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await client.get(
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
                     params={"iss.only": "securities", "iss.meta": "off",
@@ -462,7 +578,7 @@ class MarketDataService:
             pass
         out: Dict[str, float] = {}
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await client.get(
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
                     params={"iss.only": "securities", "iss.meta": "off",
@@ -582,7 +698,7 @@ class MarketDataService:
         if hit:
             return hit.get("secid") or isin, hit.get("board")
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await _moex_get(
                     client, "https://iss.moex.com/iss/securities.json",
                     params={"q": isin, "iss.meta": "off", "limit": 10}, timeout=8)
@@ -632,7 +748,7 @@ class MarketDataService:
             # ПАГИНИРУЕМ по start=, иначе у длинных месячных бумаг (12 лет = 144
             # купона) поток обрывается на 100-м купоне: пробел купоны→погашение в
             # годы, SM/z валятся в минус. amorts/offers приходят с первой страницей.
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 start, PAGE, guard = 0, 100, 0
                 while guard < 40:  # backstop: 40·100 = 4000 купонов хватит любому
                     guard += 1
@@ -832,7 +948,7 @@ class MarketDataService:
             except Exception:
                 pass
 
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             await asyncio.gather(*(fetch_one(client, i) for i in missing))
         # обновляем кэш только по реально полученным
         new = {i: out[i] for i in missing if i in out}
@@ -922,7 +1038,7 @@ class MarketDataService:
             except Exception:
                 pass
 
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             await asyncio.gather(*(fetch_one(client, i) for i in missing))
         for isin in missing:
             if isin in out:
@@ -971,7 +1087,7 @@ class MarketDataService:
             except Exception:
                 pass
 
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             await asyncio.gather(*(fetch_one(client, i) for i in isins))
         return out
 
@@ -986,7 +1102,9 @@ class MarketDataService:
     _SNAP_BOARDS = ("TQCB", "TQOB", "TQRD")
 
     @classmethod
-    async def fetch_board_snapshot(cls, force: bool = False) -> Dict[str, dict]:
+    async def fetch_board_snapshot(cls, force: bool = False,
+                                   boards: Optional[tuple] = None,
+                                   only: Optional[str] = None) -> Dict[str, dict]:
         """{isin: {'prev','accrued','prev_date','last','vol','bid','ask','waprice'}} по бордам
         _SNAP_BOARDS одним запросом на борд — для фонового расчёта метрик юниверса без 453
         per-isin вызовов.
@@ -1011,20 +1129,66 @@ class MarketDataService:
         async with cls._board_snap_lock:
             if not force and cls._board_snap and time.time() - cls._board_snap_ts < _SNAP_TTL:
                 return cls._board_snap
-            return await cls._fetch_board_snapshot_inner()
+            return await cls._fetch_board_snapshot_inner(boards, only)
+
+    # Блок securities несёт НКД, вчерашнее закрытие и дату поставки — это
+    # ДНЕВНЫЕ величины: НКД пересчитывается на начало дня, prev появляется после
+    # закрытия. Блок marketdata несёт средневзвес и оборот дня — они растут
+    # внутри сессии. Раньше оба тянулись вместе каждые 5 секунд, хотя половина
+    # ответа заведомо не менялась (и стоила нам доступа к ISS 10.09.2026).
+    _DAILY_FIELDS = ("prev", "accrued", "accrued_date", "prev_date")
+    _INTRADAY_FIELDS = ("last", "waprice", "vol", "bid", "ask")
 
     @classmethod
-    async def _fetch_board_snapshot_inner(cls) -> Dict[str, dict]:
+    def _merge_board_rows(cls, prev: Dict[str, dict], fresh: Dict[str, dict],
+                          only: Optional[str], full_boards: bool) -> Dict[str, dict]:
+        """Слияние свежего захода с прежним снимком.
+
+        Полный заход (оба блока, все борды) заменяет снимок целиком — иначе
+        делистингованные бумаги жили бы в нём вечно. Частичный обновляет ТОЛЬКО
+        свои поля: marketdata-заход не имеет права обнулить НКД, добытый дневным
+        заходом, иначе спред снова поедет на суррогате (авария 10.09.2026).
+        """
+        if only is None and full_boards:
+            return fresh
+        keep = (cls._INTRADAY_FIELDS if only == "marketdata"
+                else cls._DAILY_FIELDS if only == "securities" else None)
+        merged = dict(prev)
+        for isin, row in fresh.items():
+            prev_row = merged.get(isin)
+            if prev_row is None or keep is None:
+                merged[isin] = row
+            else:
+                merged[isin] = {**prev_row,
+                                **{k: row[k] for k in keep if k in row}}
+        return merged
+
+    @classmethod
+    async def _fetch_board_snapshot_inner(cls, boards: Optional[tuple] = None,
+                                          only: Optional[str] = None) -> Dict[str, dict]:
+        """boards=None — все борды. only='marketdata' тянет ТОЛЬКО внутридневные
+        поля (средневзвес/оборот/цены), 'securities' — только дневные (НКД/prev).
+
+        Частичный результат ПОДМЕШИВАЕТСЯ к прежнему снимку по полям: опрос
+        marketdata не должен стирать НКД, добытый утренним заходом."""
+        want = tuple(boards) if boards else cls._SNAP_BOARDS
         out: Dict[str, dict] = {}
         try:
-            async with httpx.AsyncClient() as client:
-                for board in cls._SNAP_BOARDS:
+            async with moex_client() as client:
+                for board in want:
                     resp = await _moex_get(
                         client,
                         f"https://iss.moex.com/iss/engines/stock/markets/bonds/boards/{board}/securities.json",
-                        params={"iss.only": "securities,marketdata",
-                                "securities.columns": "SECID,ISIN,PREVPRICE,PREVWAPRICE,PREVLEGALCLOSEPRICE,ACCRUEDINT,PREVDATE,SETTLEDATE",
-                                "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY,BID,OFFER"},
+                        params={
+                            # ISIN и SECID нужны всегда: по ним склеиваются блоки
+                            "iss.only": ("securities,marketdata" if only is None
+                                         else f"securities,{only}" if only == "marketdata"
+                                         else only),
+                            "securities.columns": (
+                                "SECID,ISIN" if only == "marketdata" else
+                                "SECID,ISIN,PREVPRICE,PREVWAPRICE,PREVLEGALCLOSEPRICE,"
+                                "ACCRUEDINT,PREVDATE,SETTLEDATE"),
+                            "marketdata.columns": "SECID,LAST,LCURRENTPRICE,WAPRICE,VALTODAY,BID,OFFER"},
                         timeout=15)
                     if resp is None or resp.status_code != 200:
                         continue
@@ -1096,7 +1260,9 @@ class MarketDataService:
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")
         if out:
-            cls._board_snap = out
+            cls._board_snap = cls._merge_board_rows(
+                cls._board_snap, out, only,
+                full_boards=len(want) == len(cls._SNAP_BOARDS))
             cls._board_snap_ts = time.time()
         return out
 
@@ -1134,7 +1300,7 @@ class MarketDataService:
                f"securities/{security}/candles.json")
         raw: List[dict] = []
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 # iss.reverse=true → СВЕЖИЕ свечи первыми (проверено на живом ISS),
                 # страница 500 строк. Одной страницы мало: 1ч×45д ≈ 630 баров,
                 # 5м(1-мин)×4д ≈ 2500 — без пагинации старый хвост окна молча
@@ -1215,7 +1381,7 @@ class MarketDataService:
         маркер флоатера. Дедуп по ISIN (бумага в нескольких бордах — берём с maturity)."""
         out: Dict[str, dict] = {}
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await _moex_get(
                     client,
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
@@ -1314,7 +1480,7 @@ class MarketDataService:
             async with sem:
                 await one(client, isin)
 
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             await asyncio.gather(*(guarded(client, i) for i in isins))
         return out
 
@@ -1420,7 +1586,7 @@ class MarketDataService:
                     # и понять, что график недокачан, было неоткуда
                     logger.warning("fetch_coupon_schedules %s: %s — не кэшируем", isin, e)
 
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 await asyncio.gather(*(fetch_one(client, i) for i in missing))
             _save_schedule_cache({"date": today, "items": disk})
         # тот же фильтр «эха», что в fetch_bond_schedule_full: этот путь кормит
@@ -1434,7 +1600,7 @@ class MarketDataService:
         _moex_get (семафор/ретраи) — раньше route ходил httpx напрямую."""
         out: List[dict] = []
         try:
-            async with httpx.AsyncClient() as client:
+            async with moex_client() as client:
                 resp = await _moex_get(
                     client, "https://iss.moex.com/iss/securities.json",
                     params={"q": q, "iss.meta": "off", "limit": 50,

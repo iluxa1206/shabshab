@@ -38,6 +38,7 @@ from typing import Optional
 
 import httpx
 
+from services.market_data import moex_client
 from services.portfolio_db import _connect, _lock
 from services.screener_core import money_floor
 
@@ -115,7 +116,7 @@ async def board_ccy_map(client: Optional[httpx.AsyncClient] = None,
         return _board_ccy["map"]
     from services.market_data import _moex_get
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     out = {}
     try:
         for mkt in MARKETS:          # bonds — безадресные, ndm — РПС/размещения
@@ -160,7 +161,7 @@ async def secid_map(client: Optional[httpx.AsyncClient] = None,
         return _secmap["map"]
     from services.market_data import _moex_get
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     try:
         r = await _moex_get(
             client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
@@ -402,7 +403,7 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
     """
     from services.market_data import _moex_get
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     secmap = await secid_map(client)
     bccy = await board_ccy_map(client)
     cursor = None if from_start else get_cursor(market)
@@ -451,11 +452,49 @@ async def sweep_market(market: str, client: Optional[httpx.AsyncClient] = None,
             "cursor": last}
 
 
+# Как часто добираем безадресную ленту ради поля yld при живом стриме.
+# 15 минут: ISS и так отдаёт сделки с задержкой около этого, так что колонка
+# «ДОХ-ТЬ» заполняется не позже, чем заполнялась раньше.
+_BONDS_BACKFILL_SEC = float(os.getenv("BLOCK_BONDS_BACKFILL_SEC", "900"))
+_bonds_at = float("-inf")
+
+
+def markets_to_sweep() -> tuple:
+    """Какие ленты ISS читать в этот проход.
+
+    Адресные (ndm) — всегда: подписки на них у брокера нет в принципе.
+    Безадресные (bonds) — ТОЛЬКО когда стрим Alor их не покрывает. При живом
+    стриме сквозная лента bonds дублирует те же сделки с задержкой 15 минут
+    (склейка по TRADENO, дублей не возникает), то есть платит бирже за данные,
+    которые уже пришли пушем. Стрим встал — фолбэк включается сам, и курсор
+    догоняет пропущенное страницами (см. _MAX_PAGES).
+    """
+    try:
+        from services.trades_stream import covers_market
+        if covers_market():
+            # РЕДКИЙ ДОБОР bonds. Стрим даёт сделку мгновенно, но без поля yld
+            # (биржевая доходность) — его считает биржа, и в тике его нет.
+            # Раньше колонку «ДОХ-ТЬ» заполняла ISS-копия, вытесняя тик из
+            # выдачи. Чтобы колонка не стала прочерком навсегда, проходим по
+            # bonds раз в _BONDS_BACKFILL_SEC: это ~70 запросов в день вместо
+            # 1 020, а доходность доезжает с той же задержкой, что и прежде.
+            global _bonds_at
+            now = time.monotonic()
+            if now - _bonds_at >= _BONDS_BACKFILL_SEC:
+                _bonds_at = now
+                return MARKETS
+            return ("ndm",)
+    except Exception as e:
+        logger.debug("markets_to_sweep: %s", e)
+    return MARKETS
+
+
 async def sweep(from_start: bool = False, with_metrics: bool = True) -> dict:
-    """Проход по обоим рынкам одним клиентом. Последовательно: ISS под общим
+    """Проход по нужным рынкам одним клиентом. Последовательно: ISS под общим
     семафором market_data, параллелить нечего."""
-    async with httpx.AsyncClient() as client:
-        res = [await sweep_market(m, client, from_start=from_start) for m in MARKETS]
+    markets = MARKETS if from_start else markets_to_sweep()
+    async with moex_client() as client:
+        res = [await sweep_market(m, client, from_start=from_start) for m in markets]
     out = {"markets": res, "saved": sum(x["saved"] for x in res),
            "seen": sum(x["seen"] for x in res)}
     if with_metrics and out["saved"]:
@@ -617,6 +656,24 @@ def reset_metrics(isins: list[str]) -> int:
     return done
 
 
+def requeue_metrics_window(frm: str, till: str) -> dict:
+    """Возвращает в очередь сделки, СПРЕД КОТОРЫХ СЧИТАЛСЯ в окне аварии.
+
+    Ключ — metrics_at, а не время сделки: испорчены не те строки, что торговались
+    в эти часы, а те, которым спред посчитали на суррогатных данных. Вчерашняя
+    сделка, оценённая сегодня утром, испорчена; сегодняшняя, оценённая после
+    починки, — нет.
+    """
+    out = {}
+    with _lock, _connect() as c:
+        for table in ("trade_tick", "block_trade"):
+            cur = c.execute(
+                f"UPDATE {table} SET y_idx_bps=NULL, dm_bps=NULL, metrics_at=NULL "
+                f"WHERE metrics_at>=? AND metrics_at<=?", (frm, till))
+            out[table] = cur.rowcount or 0
+    return out
+
+
 async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
     """Досчитывает спред новым сделкам. → сколько строк обновлено.
 
@@ -702,7 +759,7 @@ async def backfill_day(d: str, client: Optional[httpx.AsyncClient] = None) -> in
     """Дневные РПС-агрегаты за одну дату (весь рынок ndm — 185-250 строк)."""
     from services.market_data import _moex_get
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     secmap = await secid_map(client)
     bccy = await board_ccy_map(client)
     from services import fx as fx_svc
@@ -777,7 +834,7 @@ async def backfill_bond_day(d: str, client: Optional[httpx.AsyncClient] = None) 
     from services.market_data import _moex_get
     from services import fx as fx_svc
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     secmap = await secid_map(client)
     bccy = await board_ccy_map(client)
     rates = {(ccy, d): await run_bg(fx_svc.rate_on, ccy, d) for ccy in set(bccy.values())}
@@ -826,7 +883,7 @@ async def snapshot_bond_day_today(client: Optional[httpx.AsyncClient] = None) ->
     на каждом такте: VALTODAY растёт по ходу сессии."""
     from services.market_data import _moex_get
     own = client is None
-    client = client or httpx.AsyncClient()
+    client = client or moex_client()
     secmap = await secid_map(client)
     bccy = await board_ccy_map(client)
     day = datetime.now(_MSK).date().isoformat()
@@ -904,7 +961,7 @@ async def backfill_bond_days(days: int = 30, force: bool = False) -> dict:
     have = set() if force else await run_bg(bond_days_present)
     today = datetime.now(_MSK).date()
     saved, days_done = 0, []
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         for k in range(1, max(days, 1) + 1):
             d = (today - timedelta(days=k)).isoformat()
             if d in have:
@@ -930,7 +987,7 @@ async def backfill(days: int = BLOCK_BACKFILL_DAYS, force: bool = False) -> dict
     have = set() if force else days_present()
     today = datetime.now(_MSK).date()
     saved, fetched = 0, 0
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         await secid_map(client)
         for i in range(1, days + 1):
             d = (today - timedelta(days=i)).isoformat()

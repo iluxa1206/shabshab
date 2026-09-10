@@ -39,13 +39,11 @@ FREQ_WORDS = {
 
 # База плавающего купона в тексте ориентира. КС = ключевая ставка.
 _BASES = [
-    (re.compile(r"\bкс\b|ключев", re.I), "KEYRATE"),
-    (re.compile(r"ruonia|руони", re.I), "RUONIA"),
+    (re.compile(r"\bкс\b|ключев(?:ая|ой|ую)\s+ставк[а-я]*", re.I), "KEYRATE"),
+    (re.compile(r"ruonia|руониа?", re.I), "RUONIA"),
 ]
 
 _NUM = r"\d+(?:[.,]\d+)?"
-# «не выше 300 бп» / «+ 150 бп» — маржа флоатера в БАЗИСНЫХ ПУНКТАХ
-_RE_BPS = re.compile(rf"\+?\s*(?:(?P<cap>не\s+выше|до)\s*)?(?P<v>{_NUM})\s*(?:б\.?\s?п|бп|bp)", re.I)
 # «не выше 17,5%» / «24%» / «24,00 - 25,50%» — ставка фикса в ПРОЦЕНТАХ
 _RE_RANGE_PCT = re.compile(rf"(?P<lo>{_NUM})\s*[-–—]\s*(?P<hi>{_NUM})\s*%", re.I)
 _RE_PCT = re.compile(rf"(?:(?P<cap>не\s+выше|до)\s*)?(?P<v>{_NUM})\s*%", re.I)
@@ -73,18 +71,27 @@ def parse_coupon_guide(text: str | None) -> dict | None:
 
     base = next((b for rx, b in _BASES if rx.search(t)), None)
     if base:
-        # флоатер: маржа к базе. Проценты в тексте флоатера не встречаются,
-        # но если организатор напишет «КС + 3%» — тоже маржа, ×100 в бп.
-        m = _RE_BPS.search(t)
-        if m:
-            v = _f(m.group("v"))
-            return {"kind": "floater", "base": base, "margin_bps": v,
-                    "bound": "max" if m.group("cap") else "exact"}
-        m = _RE_PCT.search(t)
-        if m:
-            return {"kind": "floater", "base": base, "margin_bps": _f(m.group("v")) * 100,
-                    "bound": "max" if m.group("cap") else "exact"}
-        return None
+        # Разбираем выражение сразу после базы, чтобы не потерять знак или
+        # принять конец диапазона за единственное точное значение.
+        base_match = next(rx.search(t) for rx, b in _BASES if b == base and rx.search(t))
+        tail = t[base_match.end():]
+        m = re.match(rf"\s*(?P<sign>[+\-−–—])?\s*(?P<cap>не\s+выше|до)?\s*"
+                     rf"(?P<lo>{_NUM})(?:\s*[-–—]\s*(?P<hi>{_NUM}))?\s*"
+                     r"(?P<unit>б\.?\s?п\.?|bp|%)", tail, re.I)
+        if not m:
+            return None
+        factor = (100 if m.group("unit") == "%" else 1)
+        factor *= -1 if m.group("sign") in ("-", "−", "–", "—") else 1
+        lo = _f(m.group("lo")) * factor
+        hi = _f(m.group("hi")) * factor if m.group("hi") else lo
+        result = {"kind": "floater", "base": base, "margin_bps": max(lo, hi),
+                  "bound": "max" if m.group("cap") else "exact"}
+        if m.group("hi"):
+            # Сочетание потолка с вилкой неоднозначно, не угадываем смысл.
+            if m.group("cap"):
+                return None
+            result.update(bound="range", margin_bps_low=min(lo, hi))
+        return result
 
     # фикс: сначала вилка, иначе одиночная ставка
     m = _RE_RANGE_PCT.search(t)
@@ -130,7 +137,8 @@ def maturity_for(row: dict):
 async def _spread_one(spec: dict, freq: int, maturity, rate_pct: float | None = None):
     """Один прогон движка при цене 100. Возвращает (спред в бп, дюрация)."""
     if spec["kind"] == "floater":
-        r = await price_floater(spec["base"], spec["margin_bps"], freq, maturity, 100.0)
+        r = await price_floater(spec["base"], rate_pct if rate_pct is not None else spec["margin_bps"],
+                                freq, maturity, 100.0)
         m = r["metrics"]
         return m.get("y_idx_bps"), m.get("spread_dur_yrs")
     r = await price_fixed(rate_pct if rate_pct is not None else spec["rate_pct"],
@@ -152,7 +160,7 @@ async def price_row(row: dict) -> dict | None:
         return None
     # класс из ориентира должен биться с флагом источника; расходится — верим
     # ТЕКСТУ ориентира (там написана сама формула), но помечаем строку
-    mismatch = spec["kind"] == "floater" and not row.get("is_floater")
+    mismatch = (spec["kind"] == "floater") != bool(row.get("is_floater"))
     freq = parse_freq(row.get("coupon_freq"))
     maturity = maturity_for(row)
     if not freq or not maturity:
@@ -162,7 +170,11 @@ async def price_row(row: dict) -> dict | None:
         bps, dur = await _spread_one(spec, freq, maturity)
         low = None
         if spec["bound"] == "range":
-            low, _ = await _spread_one(spec, freq, maturity, spec.get("rate_pct_low"))
+            low, _ = await _spread_one(spec, freq, maturity,
+                                       spec.get("margin_bps_low") if spec["kind"] == "floater"
+                                       else spec.get("rate_pct_low"))
+            if low is None:
+                return None
     except CustomBondError as e:
         logger.info("первичка %s: спред не посчитан (%s)", row.get("issuer"), e.message)
         return None
@@ -219,7 +231,7 @@ def _key(rows: list[dict]) -> tuple:
     from datetime import date
     from services.market_data import curves_fingerprint, market_cache
     src = repr([(r.get("issuer"), r.get("coupon_guide"), r.get("coupon_freq"),
-                 r.get("issue_date"), r.get("book_date"), r.get("term_years"))
+                 r.get("issue_date"), r.get("book_date"), r.get("term_years"), r.get("is_floater"))
                 for r in rows])
     return (str(market_cache.get("calc_date") or date.today()),
             curves_fingerprint(market_cache),

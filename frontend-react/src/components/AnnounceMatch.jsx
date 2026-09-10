@@ -94,7 +94,11 @@ export default function AnnounceMatch() {
                 ) : <span className="mut">ждём</span>}
               </td>
               <td className="num">{fmt.pct(r.fact_price) || "—"}</td>
-              <td className="num pri-spread">{fmt.bps(r.fact_spread_bps) || "—"}</td>
+              <td className="num pri-spread" title={r.fact_curve_mode === "market"
+                ? "Архив рыночных кривых" : "Реконструкция кривой"}>
+                {r.fact_spread_bps != null && r.fact_curve_mode !== "market" && "≈"}
+                {fmt.bps(r.fact_spread_bps) || "—"}
+              </td>
             </tr>
           ))}
           {rows.length === 0 && (

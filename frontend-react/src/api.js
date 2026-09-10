@@ -174,16 +174,23 @@ export const fetchStatus = () => request("/api/status");
 
 export const fetchCurvePlot = (type) => request(`/api/curves/plot?type=${type}`);
 
+// КБД ОФЗ (zcyc МосБиржи) точками «срок в годах → zero-yield, %» — та же
+// кривая, по которой движок считает g/z-спреды фиксов. Публикуется раз в день.
+export const fetchGCurve = () => request("/api/curves/gcurve");
+
 export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);
 
 // Индекс RUONIA по дням: ставка ЦБ, официальный индекс (публикуется с 2010-01-11)
 // и наш расчётный на тех же ставках — сверка нашей механики с эталоном.
 export const fetchRuoniaIndex = (days = 400) => request(`/api/curves/ruonia-index?days=${days}`);
 
-export function fetchBonds({ withVal, universe, extra, volBid, volAsk, signal }) {
+export function fetchBonds({ withVal, universe, extra, volBid, volAsk, cols, signal }) {
   let url;
   if (universe) {
     url = `/api/bonds?universe=true&limit=2000`;
+    // ВИДИМЫЕ КОЛОНКИ — бэку: движок не тратит такт на спреды сторон, когда их
+    // колонки выключены (см. universe_stream.register_metric_scope)
+    if (cols?.length) url += `&cols=${encodeURIComponent(cols.join(","))}`;
     // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
     if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
     // размеры тикета — чтобы бэк посчитал Y-IDX цены набора ПО МЕТОДИКЕ
@@ -217,6 +224,12 @@ export const fetchBondRow = async (isin) => {
 // isins — отфильтрованный набор таблицы: график согласован с фильтрами дашборда.
 export const fetchYidxHistory = (days, by, isins, signal) =>
   request(`/api/history/aggregate/yidx`, { method: "POST", json: { days, by, isins }, signal });
+
+// Разброс Y-IDX по тому же отфильтрованному набору ISIN, что и верхняя витрина.
+export const fetchYidxDispersion = (days, isins, signal) =>
+  request(`/api/history/dispersion/yidx`, {
+    method: "POST", json: { days, isins }, signal,
+  });
 
 // Сырые дневные ряды Y-IDX/цены по нескольким выпускам (вкладка СРАВНЕНИЕ) —
 // одна линия на бумагу. base: "close" — вечерний снапшот (глубокая история),

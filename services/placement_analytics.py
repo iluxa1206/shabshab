@@ -8,10 +8,8 @@
    год — это 228 прогонов солвера, на каждую отрисовку витрины их не запустить.
    Кэш заодно делает колонку сортируемой и годной для агрегатов.
 
-2. **Премия размещения** — тот же спред через месяц на вторичке. Отвечает на
-   вопрос, который иначе задать некому: занял эмитент дёшево или доплатил.
-   Знак: `premium_bps > 0` — бумага уехала ШИРЕ (на вторичке требуют больше,
-   книгу закрыли жадно), `< 0` — уже (разместились щедро, рынок разобрал).
+2. **Изменение спреда** — вторичка минус первый день на том же горизонте.
+   Знак: `premium_bps > 0` — шире, `< 0` — уже. Движение рынка не вычитается.
 
 3. **Срезы** — объём и медианная маржа/спред по месяцам, рейтингам и базам.
 
@@ -23,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -35,7 +34,7 @@ from services.pools import run_bg
 logger = logging.getLogger(__name__)
 
 # Версия расчёта: смена методики двигает её, и ночной такт пересчитывает всё.
-ANALYTICS_VER = 1
+ANALYTICS_VER = 2
 _FLOAT_BASES = ("KEYRATE", "RUONIA")
 
 # Точка «после книги». Окно, а не конкретный день: у неликвида торгов в нужную
@@ -43,10 +42,7 @@ _FLOAT_BASES = ("KEYRATE", "RUONIA")
 AFTER_TARGET_DAYS = int(os.getenv("PLACEMENT_AFTER_DAYS", "30"))
 AFTER_MIN_DAYS = int(os.getenv("PLACEMENT_AFTER_MIN", "20"))
 AFTER_MAX_DAYS = int(os.getenv("PLACEMENT_AFTER_MAX", "45"))
-# До этого возраста строка со ссылкой на будущее ещё перепроверяется: у
-# размещения моложе месяца точки вторички просто не существует. Дальше её
-# отсутствие — окончательный ответ (бумага не торгуется), и дёргать нечего.
-AFTER_RETRY_DAYS = AFTER_MAX_DAYS + 15
+# Периодический пересмотр нужен и старым выпускам: архив может дозаполниться.
 
 
 # ────────────────────────── кэш метрик ──────────────────────────
@@ -55,134 +51,172 @@ def save_metrics(rows: list[dict]) -> int:
     if not rows:
         return 0
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    out = [(r["secid"], r.get("isin"), r.get("place_date"), r.get("price"),
-            r.get("y_idx_bps"), r.get("dm_bps"), r.get("curve_mode"),
-            r.get("after_date"), r.get("after_y_idx_bps"), r.get("premium_bps"),
-            ANALYTICS_VER, now, r.get("err")) for r in rows]
+    fields = ("secid", "isin", "place_date", "price", "y_idx_bps", "dm_bps",
+              "curve_mode", "after_date", "after_y_idx_bps", "premium_bps",
+              "horizon", "horizon_date", "after_price", "after_curve_mode",
+              "after_err", "input_fingerprint", "calc_status", "engine_ver", "calc_at")
+    fields += ("err",)
+    out = [tuple(({**r, "engine_ver": ANALYTICS_VER, "calc_at": now}).get(k)
+                 for k in fields) for r in rows]
     with _lock, _connect() as c:
         cur = c.executemany(
-            "INSERT INTO placement_metrics(secid,isin,place_date,price,y_idx_bps,"
-            "dm_bps,curve_mode,after_date,after_y_idx_bps,premium_bps,engine_ver,"
-            "calc_at,err) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(secid) DO UPDATE SET isin=excluded.isin,"
-            "place_date=excluded.place_date, price=excluded.price,"
-            "y_idx_bps=excluded.y_idx_bps, dm_bps=excluded.dm_bps,"
-            "curve_mode=excluded.curve_mode, after_date=excluded.after_date,"
-            "after_y_idx_bps=excluded.after_y_idx_bps, premium_bps=excluded.premium_bps,"
-            "engine_ver=excluded.engine_ver, calc_at=excluded.calc_at, err=excluded.err",
-            out)
+            f"INSERT INTO placement_metrics({','.join(fields)}) "
+            f"VALUES({','.join('?' for _ in fields)}) ON CONFLICT(secid) DO UPDATE SET "
+            + ','.join(f"{k}=excluded.{k}" for k in fields if k != "secid"), out)
         return cur.rowcount or 0
 
 
 def metrics_map(secids=None) -> dict[str, dict]:
-    q = "SELECT * FROM placement_metrics"
-    args: list = []
+    q = "SELECT * FROM placement_metrics WHERE engine_ver=?"
+    args: list = [ANALYTICS_VER]
     ids = [s for s in (secids or []) if s]
     if secids is not None:
         if not ids:
             return {}
         if len(ids) <= 900:
-            q += f" WHERE secid IN ({','.join('?' * len(ids))})"
-            args = ids
+            q += f" AND secid IN ({','.join('?' * len(ids))})"
+            args += ids
     with _connect() as c:
         return {r["secid"]: dict(r) for r in c.execute(q, args)}
 
 
-def _after_point(isin: str, place_date: str) -> tuple[Optional[str], Optional[float]]:
-    """Спред вторички через ~месяц после книги: ближайший к цели день в окне.
+def _after_point(isin: str, place_date: str) -> Optional[dict]:
+    """Ближайший к +30 дню торговый день; внутри дня — самый оборотный борд.
 
-    Источник — суточные снимки spread_daily (та же метрика Y-IDX, что в
-    мониторе), поэтому премия сравнивает одно с одним."""
+    Используем цену закрытия реальных торгов, а не кэш рассчитанного спреда.
+    Горизонт и обе кривые проверяются при повторном прайсинге ниже.
+    """
+    target = (date.fromisoformat(place_date) + timedelta(days=AFTER_TARGET_DAYS)).isoformat()
     with _connect() as c:
-        rows = c.execute(
-            "SELECT date, y_idx FROM spread_daily WHERE isin = ? AND y_idx IS NOT NULL "
-            "AND date >= DATE(?, ?) AND date <= DATE(?, ?)",
-            (isin, place_date, f"+{AFTER_MIN_DAYS} days",
-             place_date, f"+{AFTER_MAX_DAYS} days")).fetchall()
-    if not rows:
-        return None, None
-    target = date.fromisoformat(place_date) + timedelta(days=AFTER_TARGET_DAYS)
-    best = min(rows, key=lambda r: abs((date.fromisoformat(r["date"]) - target).days))
-    return best["date"], float(best["y_idx"])
+        r = c.execute(
+            "SELECT date, close price, board FROM bond_day WHERE isin=? "
+            "AND date BETWEEN DATE(?, ?) AND DATE(?, ?) "
+            "AND numtrades > 0 AND value > 0 AND close > 0 "
+            "ORDER BY ABS(julianday(date)-julianday(?)), date, value DESC, board LIMIT 1",
+            (isin, place_date, f"+{AFTER_MIN_DAYS} days", place_date,
+             f"+{AFTER_MAX_DAYS} days", target)).fetchone()
+    return dict(r) if r else None
 
 
-def pending(limit: int) -> list[str]:
-    """Что считать: новые выпуски и те, у кого точка вторички ещё не созрела.
+def _input_rows() -> list[dict]:
+    from services import primary_placements as pp, instruments_registry as reg
+    from services.backdate import HONEST_ENGINE_VERSION
+    rows = pp.aggregates(limit=pp.MAX_ROWS)
+    labels = reg.labels_map()
+    revisions = reg.pricing_revisions()
+    for r in rows:
+        isin = r.get("isin") or r["secid"]
+        lab = labels.get(isin) or {}
+        r["base"] = lab.get("base")
+        payload = (isin, r["first_date"], r.get("first_price"), lab,
+                   revisions.get(isin), HONEST_ENGINE_VERSION)
+        r["input_fingerprint"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return rows
 
-    Пересчёт по версии движка — сюда же: сменилась методика, значит старые
-    строки не сопоставимы с новыми, а именно сопоставимость и есть смысл этой
-    таблицы."""
+
+def pending(limit: int, inputs: Optional[list[dict]] = None) -> list[str]:
+    """Изменённые входы сразу, временный сбой через час, обновление через сутки.
+
+    Постоянный пропуск пересматривается при изменении реестра/цены/версии.
+    Старые даты также обновляются: архив торгов и кривых может дозаполниться.
+    Сначала самые давно проверенные — свежие незрелые выпуски не вытесняют архив.
+    """
+    inputs = _input_rows() if inputs is None else inputs
     with _connect() as c:
-        rows = c.execute(
-            "SELECT p.secid FROM (SELECT secid, MIN(date) d FROM placement_day "
-            "  GROUP BY secid) p "
-            "LEFT JOIN placement_metrics m ON m.secid = p.secid "
-            "WHERE m.secid IS NULL "
-            "   OR m.engine_ver IS NOT ? "
-            "   OR (m.after_y_idx_bps IS NULL AND m.err IS NULL "
-            "       AND p.d >= DATE('now', ?)) "
-            "ORDER BY p.d DESC LIMIT ?",
-            (ANALYTICS_VER, f"-{AFTER_RETRY_DAYS} days", limit)).fetchall()
-    return [r["secid"] for r in rows]
+        saved = {r["secid"]: dict(r) for r in c.execute("SELECT * FROM placement_metrics")}
+    now = datetime.now(timezone.utc)
+    eligible = []
+    for r in inputs:
+        m = saved.get(r["secid"]) or {}
+        changed = (m.get("engine_ver") != ANALYTICS_VER or
+                   m.get("input_fingerprint") != r["input_fingerprint"])
+        try:
+            checked = datetime.fromisoformat(m.get("calc_at") or "").replace(tzinfo=timezone.utc)
+        except ValueError:
+            checked = datetime.min.replace(tzinfo=timezone.utc)
+        delay = timedelta(hours=1 if m.get("calc_status") == "retry" else 24)
+        if changed or (m.get("calc_status") != "unsupported" and now - checked >= delay):
+            eligible.append((not changed, checked, r.get("base") not in _FLOAT_BASES, r["secid"]))
+    eligible.sort()
+    return [s for _, _, _, s in eligible[:max(0, limit)]]
+
+
+def _curve_mode(ctx: dict) -> str:
+    # Y-IDX флоатера КС зависит и от OIS RUONIA: архив одной IRS недостаточен.
+    modes = (ctx.get("curve_mode"), ctx.get("ruonia_curve_mode"))
+    return "market" if all(m == "market" for m in modes) else "realized"
+
+
+def _date_text(value) -> Optional[str]:
+    return value.isoformat() if isinstance(value, date) else value
 
 
 async def compute(limit: int = 60) -> dict:
-    """Считает спред размещения и премию пачкой. → статистика прогона.
-
-    Не флоатеры реестра тоже получают строку — с err: иначе они попадали бы в
-    очередь каждую ночь вечно. Спред у них не считается принципиально (движок
-    backdate флоатерный), и «нет числа» — это ответ, а не пробел."""
-    from services import instruments_registry as reg
-    from services import primary_placements as pp
+    """Обе даты переоцениваются одним движком на одном типе и дате горизонта."""
     from services.backdate import load_backdate_ctx, reprice_asof
     from services.valuation import pick_horizon
 
-    secids = await run_bg(pending, limit)
-    if not secids:
-        return {"pending": 0, "done": 0}
-    rows = {r["secid"]: r for r in await run_bg(pp.aggregates, None, None, None, 0.0,
-                                                pp.MAX_ROWS)}
-    labels = await run_bg(reg.labels_map)
+    inputs = await run_bg(_input_rows)
+    secids = await run_bg(pending, limit, inputs)
+    rows = {r["secid"]: r for r in inputs}
     out, ok, skipped, failed = [], 0, 0, 0
     for sec in secids:
-        r = rows.get(sec)
-        if not r:
-            continue
+        r = rows[sec]
         isin = r.get("isin") or sec
-        lab = labels.get(isin) or {}
-        base = lab.get("base")
         rec = {"secid": sec, "isin": isin, "place_date": r["first_date"],
-               "price": r.get("wa_price")}
-        if base not in _FLOAT_BASES:
-            rec["err"] = "не флоатер реестра"
+               "price": r.get("first_price"), "input_fingerprint": r["input_fingerprint"],
+               "calc_status": "ok"}
+        if r.get("base") not in _FLOAT_BASES:
+            rec.update(err="не флоатер реестра", calc_status="unsupported")
             skipped += 1
             out.append(rec)
             continue
         if rec["price"] is None:
-            rec["err"] = "нет цены размещения"
+            rec.update(err="нет цены первого дня размещения", calc_status="retry")
             skipped += 1
             out.append(rec)
             continue
         try:
             ctx = await load_backdate_ctx(isin, date.fromisoformat(r["first_date"]))
-            m = reprice_asof(ctx, rec["price"])
-            # горизонт — тот, что выбрало ПРАВИЛО ЦЕНЫ (та же функция, что у
-            # витрин): спред к оферте и спред к погашению нельзя складывать в
-            # одну колонку, см. services/valuation.pick_horizon
+            m = await run_bg(reprice_asof, ctx, rec["price"])
             hz = pick_horizon(m, "auto")
-            rec["y_idx_bps"] = hz.get("yield_over_index_bps")
-            rec["dm_bps"] = hz.get("disc_margin_bps")
-            rec["curve_mode"] = ctx.get("curve_mode")
-        except Exception as e:                                   # noqa: BLE001
-            rec["err"] = f"{type(e).__name__}: {e}"[:200]
+            rec.update(y_idx_bps=hz.get("yield_over_index_bps"),
+                       dm_bps=hz.get("disc_margin_bps"), curve_mode=_curve_mode(ctx),
+                       horizon=hz.get("horizon"), horizon_date=_date_text(hz.get("date")))
+            if rec["y_idx_bps"] is None:
+                rec.update(err="нет спреда на дату размещения", calc_status="retry")
+            elif not rec["horizon_date"]:
+                rec["after_err"] = "неизвестна дата исходного горизонта"
+            else:
+                point = await run_bg(_after_point, isin, r["first_date"])
+                if not point:
+                    rec["after_err"] = f"нет торговой точки в окне {AFTER_MIN_DAYS}–{AFTER_MAX_DAYS} дней"
+                else:
+                    rec.update(after_date=point["date"], after_price=point["price"])
+                    after_ctx = await load_backdate_ctx(isin, date.fromisoformat(point["date"]),
+                                                       board=point["board"])
+                    after_m = await run_bg(reprice_asof, after_ctx, point["price"])
+                    # Не используем pick_horizon: при отсутствии запрошенного ключа
+                    # он молча подставляет maturity. Колл другого месяца тоже не подходит.
+                    after_hz = (after_m.get("horizons") or {}).get(rec["horizon"]) or {}
+                    rec["after_curve_mode"] = _curve_mode(after_ctx)
+                    if _date_text(after_hz.get("date")) != rec["horizon_date"]:
+                        rec["after_err"] = "исходный горизонт на дату вторички отсутствует или изменился"
+                    elif after_hz.get("yield_over_index_bps") is None:
+                        rec.update(after_err="нет спреда вторички", calc_status="retry")
+                    else:
+                        rec["after_y_idx_bps"] = after_hz["yield_over_index_bps"]
+                        if rec["curve_mode"] == rec["after_curve_mode"] == "market":
+                            rec["premium_bps"] = rec["after_y_idx_bps"] - rec["y_idx_bps"]
+                        else:
+                            rec["after_err"] = "сравнение недоступно: одна из кривых реконструирована"
+        except Exception as e:  # сбой одной даты не лишает остальных выпусков расчёта
+            key = "after_err" if rec.get("y_idx_bps") is not None else "err"
+            rec.update({key: f"{type(e).__name__}: {e}"[:200], "calc_status": "retry"})
             failed += 1
-            out.append(rec)
-            continue
-        after_date, after = await run_bg(_after_point, isin, r["first_date"])
-        rec["after_date"], rec["after_y_idx_bps"] = after_date, after
-        if after is not None and rec["y_idx_bps"] is not None:
-            rec["premium_bps"] = after - rec["y_idx_bps"]
-        ok += 1
+        if rec.get("y_idx_bps") is not None:
+            ok += 1
         out.append(rec)
     saved = await run_bg(save_metrics, out)
     return {"pending": len(secids), "done": saved, "priced": ok,
@@ -397,7 +431,7 @@ def market_slices(months: int = 12, only_floaters: bool = True) -> dict:
             "base": base or "—",
             "value_rub": r.get("value_rub") or 0.0,
             "margin_bps": lab.get("margin_bps"),
-            "spread_bps": m.get("y_idx_bps"),
+            "spread_bps": m.get("y_idx_bps") if m.get("curve_mode") == "market" else None,
             "premium_bps": m.get("premium_bps"),
         })
 

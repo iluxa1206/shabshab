@@ -18,6 +18,9 @@ from datetime import date, timedelta
 from typing import Dict, Optional
 
 import httpx
+
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -135,7 +138,7 @@ async def get_fx() -> dict:
     source: Dict[str, str] = {}
     label = None
 
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         try:
             tom, upd = await _fetch_tom(client)
             if tom:
@@ -348,7 +351,7 @@ async def backfill_history(days: int = 400) -> dict:
     frm = till - timedelta(days=max(days, 1))
     saved = 0
     got: Dict[str, Dict[str, float]] = {}
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         for secid, ccy in _TOM_SECIDS.items():
             try:
                 hist = await _moex_history(client, secid, frm.isoformat(),

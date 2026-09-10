@@ -36,6 +36,9 @@ from typing import Optional
 
 import httpx
 
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
+
 from services.portfolio_db import _connect, _lock
 from services.pools import run_bg
 
@@ -112,7 +115,7 @@ def days_present() -> set[str]:
 async def fetch_date(d: str, client: httpx.AsyncClient, secmap: dict,
                      bccy: dict, rates: dict) -> int:
     """Все борды размещения за одну дату → база. → сколько строк записано."""
-    from services.market_data import _moex_get
+    from services.market_data import moex_client, _moex_get
     saved = 0
     for board in BOARDS:
         start = 0
@@ -148,7 +151,7 @@ async def backfill(days: int = BACKFILL_DAYS, force: bool = False) -> dict:
     have = set() if force else await run_bg(days_present)
     today = datetime.now(_MSK).date()
     saved, fetched = 0, 0
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         secmap = await secid_map(client)
         bccy = await board_ccy_map(client)
         ccys = {c for b, c in bccy.items() if b in BOARDS and c != "SUR"}
@@ -195,7 +198,7 @@ async def sync_sec_ref(max_pages: int = 250) -> dict:
     торгуемых бумаг забывает выпуск в день погашения."""
     from services.market_data import _moex_get
     saved, start, pages = 0, 0, 0
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         while pages < max_pages:
             r = await _moex_get(
                 client, f"{_ISS}/securities.json",
@@ -277,7 +280,7 @@ async def sync_sec_details(lazy_limit: int = DETAILS_LAZY_LIMIT) -> dict:
             return None
 
     batch, lazy = 0, 0
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         r = await _moex_get(client, f"{_ISS}/engines/stock/markets/bonds/securities.json",
                             params={"iss.meta": "off", "iss.only": "securities"},
                             timeout=60.0)
@@ -349,7 +352,13 @@ def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
     # ISIN берём из справочника рынка, а не из строки дня: у ОФЗ SECID с ним не
     # совпадает, а в момент записи бумаги могло не быть в справочнике торгуемых.
     sql = (
+        "WITH first_dates AS (SELECT secid, MIN(date) d FROM placement_day GROUP BY secid), "
+        "first_prices AS (SELECT p.secid, "
+        "SUM(p.price*p.volume)/NULLIF(SUM(p.volume),0) first_price "
+        "FROM placement_day p JOIN first_dates f ON p.secid=f.secid AND p.date=f.d "
+        "WHERE p.price > 0 AND p.volume > 0 GROUP BY p.secid) "
         "SELECT p.secid, COALESCE(s.isin, p.isin) isin, "
+        "MAX(fp.first_price) first_price, "
         "MAX(p.shortname) shortname, MAX(s.emitent_title) emitent_moex, "
         "MAX(s.name) full_name, MAX(s.type) sec_type, "
         # паспорт выпуска: объём эмиссии и сколько его разместила биржа
@@ -363,10 +372,12 @@ def aggregates(d_from: Optional[str] = None, d_to: Optional[str] = None,
         "SUM(p.numtrades) numtrades, SUM(p.value_rub) value_rub, "
         "SUM(p.volume) volume, MAX(p.face) face, MAX(p.coupon_pct) coupon_pct, "
         "MAX(p.cur) cur, "
-        "SUM(p.price * p.volume) / NULLIF(SUM(p.volume), 0) wa_price, "
+        "SUM(CASE WHEN p.price > 0 AND p.volume > 0 THEN p.price*p.volume END) / "
+        "NULLIF(SUM(CASE WHEN p.price > 0 AND p.volume > 0 THEN p.volume END),0) wa_price, "
         "MIN(p.price) price_min, MAX(p.price) price_max, "
         "MAX(p.date) >= DATE((SELECT MAX(date) FROM placement_day), ?) active "
         "FROM placement_day p LEFT JOIN sec_ref s ON s.secid = p.secid "
+        "LEFT JOIN first_prices fp ON fp.secid = p.secid "
         "GROUP BY p.secid"
     )
     args.append(f"-{ACTIVE_DAYS} days")

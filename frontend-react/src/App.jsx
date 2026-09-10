@@ -26,6 +26,7 @@ import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import FixedMonitor from "./components/fixed/FixedMonitor.jsx";
+import OfzDesk from "./components/fixed/OfzDesk.jsx";
 import CalcModule from "./components/CalcModule.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
@@ -66,13 +67,27 @@ const REPRICE_MIN_MS = 2000;
 // подписок Alor, стрим лёг, торгов нет) — снова обновляется тактом 5с.
 const LIVE_FRESH_MS = 15000;
 const initialParams = () => new URLSearchParams(window.location.search);
+// Тумблеры слоёв (/api/meta.features) приезжают ВТОРЫМ запросом, а меню
+// рисуется сразу — из-за этого выключенная вкладка успевала мигнуть и пропасть.
+// Помним последний ответ и стартуем с него: первый визит по-прежнему считает
+// слой включённым (пустая витрина лучше пропавшего меню у старого бэка).
+const FEATURES_KEY = "desk.features";
+const initialMeta = () => {
+  const base = { calc_date: null, rates_date: null };
+  try {
+    const f = JSON.parse(localStorage.getItem(FEATURES_KEY) || "null");
+    return f ? { ...base, features: f } : base;
+  } catch {
+    return base;
+  }
+};
 
 function Dashboard() {
   const { user, onLogout } = useAuth();
   const [bonds, setBonds] = useState([]);
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [errMsg, setErrMsg] = useState("");
-  const [meta, setMeta] = useState({ calc_date: null, rates_date: null });
+  const [meta, setMeta] = useState(initialMeta);
   const [live, setLive] = useState(false);
 
   // три независимые группы фильтров (AND-пересечение; пустая группа = все).
@@ -239,6 +254,11 @@ function Dashboard() {
   }, [theme]);
   useEffect(() => { localStorage.setItem("watch", JSON.stringify(watch)); }, [watch]);
   useEffect(() => { localStorage.setItem("cols", JSON.stringify(visibleCols)); }, [visibleCols]);
+  // ЗЕРКАЛО В REF, а не зависимость загрузки: набор колонок нужен запросу, но
+  // менять его — не повод перезагружать таблицу. Ref читается в момент запроса,
+  // поэтому бэк всегда получает актуальный набор.
+  const visibleColsRef = useRef(visibleCols);
+  useEffect(() => { visibleColsRef.current = visibleCols; }, [visibleCols]);
   // снимок известных на этой сборке колонок — база для авто-показа новых (см. выше)
   useEffect(() => { localStorage.setItem("cols_known", JSON.stringify(DEFAULT_COLS)); }, []);
   // порядок колонок нормализован — дальше он пользовательский, не трогаем
@@ -299,7 +319,10 @@ function Dashboard() {
     abortRef.current = ctrl;
     setStatus("loading");
     try {
+      // visibleCols едут на бэк: движок пропускает счёт того, чего никто не
+      // видит (спреды сторон). См. universe_stream.register_metric_scope.
       const r = await fetchBonds({ universe: true, extra: watch, volBid, volAsk,
+                                  cols: visibleColsRef.current,
                                   signal: ctrl.signal });
       const items = r.items || [];
       setBonds(items);
@@ -318,7 +341,13 @@ function Dashboard() {
     }
   }, [onLogout]);
 
-  useEffect(() => { fetchMeta().then(setMeta).catch(() => {}); }, []);
+  useEffect(() => {
+    fetchMeta().then((m) => {
+      setMeta(m);
+      try { localStorage.setItem(FEATURES_KEY, JSON.stringify(m.features || {})); }
+      catch { /* private mode */ }
+    }).catch(() => {});
+  }, []);
   useEffect(() => { loadBonds(); }, [loadBonds]);
   // watchlist меняет обогащение (live + наш DM) — перезагружаем (юниверс из кэша, быстро)
   const firstWatch = useRef(true);
@@ -978,6 +1007,10 @@ function Dashboard() {
             в монитор флоатеров, а не в пустую витрину */}
         <Route path="/fixed" element={fixedOn
           ? <FixedMonitor onOpen={openDrawer} showAnalytics={showAnalytics} />
+          : <Navigate to="/floaters" replace />} />
+        {/* витрина ОФЗ — тот же слой фиксов, поэтому под тем же флагом */}
+        <Route path="/fixed/ofz" element={fixedOn
+          ? <OfzDesk onOpen={openDrawer} />
           : <Navigate to="/floaters" replace />} />
         <Route path="/calc" element={<CalcModule />} />
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />

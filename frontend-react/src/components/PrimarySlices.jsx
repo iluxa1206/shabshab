@@ -14,7 +14,7 @@ import { MeasuredSvg, linearScale, linePath, GridY, XTicks,
 //   маржа  — что написано в проспекте (КС + N);
 //   спред  — что это значит в Y-IDX на дату книги (маржа к КС и маржа к RUONIA
 //            несопоставимы напрямую, а спред сопоставим);
-//   премия — куда спред уехал через месяц на вторичке.
+//   изменение — куда спред уехал через месяц на вторичке.
 
 const MONTHS = [[6, "6М"], [12, "1Г"], [24, "2Г"]];
 
@@ -88,7 +88,7 @@ function PremiumHist({ values }) {
   }
   const maxN = Math.max(...bins.map((b) => b.n), 1);
   return (
-    <MeasuredSvg height={160} minWidth={280} label="Распределение премии размещения">
+    <MeasuredSvg height={160} minWidth={280} label="Распределение изменения спреда">
       {({ W, H, bind }) => {
         const pad = { l: 10, r: 10, t: 8, b: 20 };
         const sx = linearScale([lo, hi], [pad.l, W - pad.r]);
@@ -105,7 +105,7 @@ function PremiumHist({ values }) {
                                `${b.a}…${b.b} б.п.\n${b.n} выпусков`)} />
               );
             })}
-            {/* ноль — граница смысла: слева книга оказалась щедрой, справа жадной */}
+            {/* слева спред сузился, справа расширился */}
             <line x1={zero} x2={zero} y1={pad.t} y2={H - pad.b} className="pm-zero" />
             <XTicks y={H - 6} ticks={[{ x: zero, label: "0" }]} />
             <text x={pad.l} y={H - 6} fill="var(--mut)" fontSize="9">уже</text>
@@ -133,7 +133,7 @@ function Table({ title, rows, keyName, hint }) {
             <th className="num" title="млн ₽">Объём</th>
             <th className="num" title="базисные пункты, медиана">Маржа</th>
             <th className="num" title="базисные пункты, медиана Y-IDX на дату книги">Спред</th>
-            <th className="num" title="медиана: спред через месяц минус спред книги">Премия</th>
+            <th className="num" title="медиана: спред через месяц минус спред книги">Δ спреда</th>
           </tr>
         </thead>
         <tbody>
@@ -180,9 +180,10 @@ export default function PrimarySlices() {
       <div className="ia-head">
         <span className="ia-hint">
           медианы, а не средние: один гигантский выпуск иначе задаёт весь месяц.
-          Маржа — из проспекта, спред — Y-IDX по цене книги на её дату, премия —
-          насколько спред уехал через месяц на вторичке (плюс = шире, книгу
-          закрыли жадно){" · "}{data?.issues ?? 0} выпусков
+          Маржа — из реестра, спред — Y-IDX по цене первого дня.
+          В медианах спреда — только архивные рыночные кривые.
+          Δ спреда — изменение через месяц на том же горизонте (плюс = шире),
+          без поправки на движение рынка{" · "}{data?.issues ?? 0} выпусков
         </span>
         <div className="ia-filters">
           <span className="seg" role="tablist" aria-label="Глубина">
@@ -214,10 +215,9 @@ export default function PrimarySlices() {
 
       <div className="sl-block">
         <div className="sl-head">
-          <h3 className="sl-title">Премия за месяц после книги</h3>
+          <h3 className="sl-title">Изменение спреда за месяц</h3>
           <span className="ia-hint">
-            слева — разместились щедро и бумага сузилась, справа — книгу закрыли
-            жадно и спред уехал шире
+            слева — спред сузился, справа — расширился; движение рынка не вычитается
           </span>
         </div>
         <PremiumHist values={data?.premiums || []} />

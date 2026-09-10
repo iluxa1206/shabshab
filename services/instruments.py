@@ -17,6 +17,9 @@ from typing import Dict, List, Optional, Set
 
 import httpx
 
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
+
 from services.market_data import MarketDataService, _moex_get
 
 from services.paths import cache_path as _cache_path
@@ -93,7 +96,7 @@ async def _fetch_descriptions(isins: List[str]) -> Dict[str, dict]:
         except Exception:
             pass
 
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         await asyncio.gather(*(fetch_one(client, i) for i in missing))
     new = {i: out[i] for i in missing if i in out}
     if new:

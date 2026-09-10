@@ -212,6 +212,18 @@ td.mut { color: var(--mut); }
   background: transparent; border: 1px solid var(--line-2); border-radius: 3px; }
 .fx-rt-chip.on { color: var(--bg) !important; }
 
+/* --- Витрина ОФЗ (/fixed/ofz): доходности поверх КБД --- */
+.ofz-desk { padding-bottom: 24px; }
+/* Кривая — линия РЫНКА, поэтому нейтральный акцент, а не цвет знака: цветом
+   здесь говорят только точки (выше кривой дешевле, ниже дороже). */
+.ofz-kbd { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 5 3; opacity: .85; }
+.ofz-pt { fill: var(--mut); fill-opacity: .7; cursor: pointer; }
+.ofz-pt.cheap { fill: var(--up); fill-opacity: .85; }
+.ofz-pt.rich { fill: var(--down); fill-opacity: .85; }
+.ofz-pt:hover { fill-opacity: 1; stroke: var(--fg); stroke-width: 1; }
+.ofz-stale { color: var(--down); }
+.ofz-tbl { margin-top: 8px; }
+
 /* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
 .pchart { margin-bottom: 20px; }
 .pchart-ctl { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
@@ -1294,6 +1306,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role="button"]:foc
 .an-sel-clear:hover { color: var(--fg); }
 /* переключатель агрегации Рейтинг/Эмитент */
 .an-toggle { float: right; display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.an-disp-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin: 6px 0; }
+.an-disp-ctl .an-toggle { float: none; }
+.an-disp-label { font: 9px var(--mono); color: var(--mut-2); letter-spacing: .04em; }
+.an-tgl-btn:disabled { color: var(--line-2); cursor: default; }
 .an-tgl-btn { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--mut);
   background: transparent; border: 0; padding: 2px 8px; cursor: pointer; }
 .an-tgl-btn + .an-tgl-btn { border-left: 1px solid var(--line); }

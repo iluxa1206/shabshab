@@ -11,6 +11,9 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional
 
 import httpx
+
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -57,7 +60,7 @@ async def get_benchmarks(days: int = 180) -> dict:
     frm = (date.today() - timedelta(days=days)).isoformat()
     data: Dict[str, dict] = {}
     try:
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             for code, (secid, label) in BENCHMARKS.items():
                 try:
                     items = await _fetch_one(client, secid, frm)

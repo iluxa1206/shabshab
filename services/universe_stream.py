@@ -358,6 +358,13 @@ def _take_sides_batch() -> tuple:
     живое движение книги (_SIDES_PRIO_LIVE = 0) до волны (1.0), и на потоке
     живых событий бумага, по которой только что двигали заявку, уезжала в конец
     очереди — то есть ждала дольше всех остальных."""
+    if not sides_needed():
+        # Колонок сторон никто не видит и фильтров стакана нет — очередь
+        # ЧИСТИМ, а не копим: иначе к моменту, когда колонку снова включат,
+        # накопится хвост в тысячи бумаг и первый же такт уйдёт в него целиком.
+        # Заказ вернётся — вернётся и волна (см. queue_sides_wave).
+        _sides_dirty.clear()
+        return [], {}
     take = sorted(_sides_dirty, key=_sides_dirty.get)[:_sides_batch()]
     prio = {i: _sides_dirty.get(i, _SIDES_PRIO_WAVE) for i in take}
     for i in take:
@@ -398,6 +405,77 @@ _VOL_MAX_SIZES = int(os.getenv("UNIVERSE_VOL_MAX", "6"))
 _VOL_SIZE_MAX_RUB = 1e11
 _vol_sizes: Dict[float, float] = {}     # размер, ₽ → monotonic последнего спроса
 _vol_wave_pending = False               # размер увидели впервые — раздать спреды
+
+
+# ЗАКАЗ МЕТРИК ПО ВИДИМЫМ КОЛОНКАМ. Спреды к биду и офферу считаются отдельной
+# очередью (_sides_dirty) — по логам прода это 240-790 строк в минуту по ~11 мс
+# на строку. Работа полезна ровно до тех пор, пока эти колонки кто-то видит: при
+# выключенных они забирали ядро у счёта того, что на экране есть.
+#
+# Тот же принцип, что у register_vol_sizes: клиент говорит, что смотрит, движок
+# считает заказанное. TTL общий — вкладку закрыли, через десять минут заказ
+# истёк.
+_SIDE_COLS = frozenset(("y_idx_bid_bps", "y_idx_ask_bps"))
+_scope: Dict[str, float] = {}          # ключ колонки → когда заказывали
+# Проверка фильтров сигналов лезет в SQLite, а спрашивают её на каждом такте —
+# держим ответ минуту.
+_SIDES_FILTER_TTL = 60.0
+_sides_filter: dict = {"at": 0.0, "need": False}
+
+
+def register_metric_scope(cols) -> None:
+    """Колонки, которые клиент сейчас видит. Вход режем: приходит снаружи."""
+    now = time.monotonic()
+    had_sides = bool(_scope.keys() & _SIDE_COLS)
+    for c in list(cols or [])[:64]:
+        if isinstance(c, str) and 0 < len(c) <= 64:
+            _scope[c] = now
+    for k in [k for k, t in _scope.items() if now - t > _VOL_TTL_SEC]:
+        _scope.pop(k, None)
+    if not had_sides and (_scope.keys() & _SIDE_COLS):
+        # КОЛОНКУ ТОЛЬКО ЧТО ВКЛЮЧИЛИ. Пока её не смотрели, очередь сторон не
+        # копилась, и в строках лежат числа той поры. Без волны они дождались бы
+        # движения книги, а у застывшего неликвида повода может не быть весь
+        # день — колонка стояла бы прочерками.
+        queue_sides_wave()
+
+
+def sides_needed() -> bool:
+    """Нужно ли считать спреды сторон в этом такте.
+
+    Два независимых основания, и второе важнее первого: фильтры СТАКАНА
+    (kind='book') сравнивают спред по биду и офферу, и работают они как раз
+    тогда, когда ни одной вкладки не открыто — сигналы уходят в телеграм. Гасить
+    сторону по «никто не смотрит» значило бы тихо выключить чужие оповещения.
+
+    Пока заказа не было ВООБЩЕ (свежий старт, никто ещё не подключался) —
+    считаем: молчание клиента не означает, что стороны не нужны.
+    """
+    if not _scope:
+        return True
+    if _scope.keys() & _SIDE_COLS:
+        return True
+    now = time.monotonic()
+    if now - _sides_filter["at"] > _SIDES_FILTER_TTL:
+        try:
+            from services.signals import list_enabled
+            _sides_filter["need"] = bool(list_enabled())
+        except Exception as e:
+            logger.debug("sides_needed: %s", e)
+            _sides_filter["need"] = True      # не смогли спросить — считаем
+        _sides_filter["at"] = now
+    return bool(_sides_filter["need"])
+
+
+def queue_sides_wave() -> int:
+    """Поставить в очередь сторон весь живой набор — разово, после возврата
+    заказа. Приоритет волны, чтобы живое движение книги шло вперёд неё."""
+    n = 0
+    for isin in list(_streamed):
+        if isin not in _fixed_isins:
+            _sides_dirty.setdefault(isin, _SIDES_PRIO_WAVE)
+            n += 1
+    return n
 
 
 def register_vol_sizes(sizes) -> None:

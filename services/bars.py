@@ -31,6 +31,9 @@ from typing import Optional
 
 import httpx
 
+# Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
+from services.market_data import moex_client
+
 from services.portfolio_db import _connect, _lock
 
 logger = logging.getLogger(__name__)
@@ -199,7 +202,7 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
     till = till or date.today().isoformat()
     frm = (date.today() - timedelta(days=days)).isoformat()
 
-    async with httpx.AsyncClient() as client:
+    async with moex_client() as client:
         candles, faces = await asyncio.gather(
             fetch_hour_candles(client, secid, brd, frm, till),
             fetch_daily_face(client, secid, brd, frm, till))
@@ -461,6 +464,28 @@ def reset_metrics(isin: str, kind: str = "floater") -> dict:
     # память процесса о посчитанной глубине окна: без сброса ensure_bars сочтёт,
     # что окно уже покрыто сегодня, и фоновый пересчёт не запустится до полуночи
     _past_depth.pop(isin, None)
+    return {"hours": hours, "days": days}
+
+
+def reset_metrics_window(frm: str, till: str) -> dict:
+    """Помечает бары ОКНА как посчитанные прошлой версией — под пересчёт.
+
+    В отличие от reset_metrics (вся история одной бумаги) бьёт по времени: так
+    чинится день, посчитанный на суррогатных данных, без того чтобы гонять
+    заново годы истории по всему рынку (recalc всего универса — это OOM и часы).
+
+    Цена, объём и число сделок не трогаются: они от НКД и кривой не зависят, а
+    заново из сети их не поднять — Alor отдаёт лишь 30 дней.
+    bar_daily за эти дни сносится: свёртка пропустит день, если оборот совпал,
+    и агрегат со старыми спредами остался бы лежать нетронутым."""
+    with _lock, _connect() as c:
+        hours = c.execute(
+            "UPDATE bar_hourly SET metrics_ver=0 WHERE ts>=? AND ts<=? "
+            "AND (y_idx_bps IS NOT NULL OR g_spread_bps IS NOT NULL)",
+            (frm, till)).rowcount or 0
+        days = c.execute("DELETE FROM bar_daily WHERE date>=? AND date<=?",
+                         (frm[:10], till[:10])).rowcount or 0
+    _past_depth.clear()   # иначе ensure_bars сочтёт окно уже покрытым
     return {"hours": hours, "days": days}
 
 

@@ -1,7 +1,7 @@
 // Смоук аналитики: сборка НЕ ловит ошибки рантайма (обращение к удалённой
 // функции падает белым экраном уже в браузере — так ушёл padFull 06.09.2026).
 // Панели монтируются на живых данных в обоих режимах свитчера.
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import AnalyticsPanel from "./AnalyticsPanel.jsx";
 import FixedAnalytics from "./FixedAnalytics.jsx";
@@ -21,6 +21,12 @@ describe("smoke аналитики: панели монтируются в об�
     render(<AnalyticsPanel rows={rows} onFocus={() => {}} />);
     fireEvent.click(screen.getAllByText("Эмитент")[0]);
     expect(screen.getAllByText(/Альфа/).length).toBeGreaterThan(0);
+  });
+  it("разброс переключается на распределение", () => {
+    const view = render(<AnalyticsPanel rows={rows} onFocus={() => {}} />);
+    const button = within(view.container).getByText("Распределение");
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
   });
   it("панель фиксов рисуется и переживает свитчер ЭМИТЕНТ", () => {
     render(<FixedAnalytics rows={rows} />);

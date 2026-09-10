@@ -193,7 +193,9 @@ async def get_bonds(
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
     fields: Optional[str] = Query(None),
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
-    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽")
+    vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽"),
+    cols: Optional[str] = Query(None, description="Видимые колонки через запятую — "
+                                                  "движок не считает то, чего никто не видит")
 ):
     base_dir = get_base_dir()
     isins_path = os.path.join(base_dir, "isins.txt")
@@ -215,6 +217,12 @@ async def get_bonds(
         if vol_bid or vol_ask:
             from services.universe_stream import register_vol_sizes
             register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
+        # ВИДИМЫЕ КОЛОНКИ — туда же и по той же причине: спреды сторон считает
+        # отдельная очередь, и при выключенных колонках она забирала такт у
+        # того, что на экране действительно есть.
+        if cols:
+            from services.universe_stream import register_metric_scope
+            register_metric_scope([c.strip() for c in cols.split(",") if c.strip()])
         return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask)
 
     # добавленные пользователем бумаги (watchlist) — в начало, чтобы были видны

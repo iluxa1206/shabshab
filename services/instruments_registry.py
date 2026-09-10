@@ -507,6 +507,14 @@ def ratings_map(isins) -> Dict[str, str]:
     return out
 
 
+def pricing_revisions() -> Dict[str, str]:
+    """Версии строк, включая погашенные бумаги, для исторической аналитики."""
+    _ensure()
+    with _conn() as c:
+        return {r["isin"]: r["updated_at"] for r in
+                c.execute("SELECT isin, updated_at FROM instruments")}
+
+
 def labels_map(isins=None) -> Dict[str, dict]:
     """{isin: {name, emitter, base, rating, maturity, margin_bps, coupons_per_year}}
     — подписи для списков, которые сами считаются вне реестра (лента сделок).

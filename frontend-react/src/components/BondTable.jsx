@@ -38,7 +38,10 @@ export function wapSpread(b) {
 // base7 — база недели: у СРЕДНЕВЗВЕСА рядом со спредом мелким серым идёт
 // отклонение от неё («120 +20»). У котировок стакана база не рисуется: там и так
 // две цифры, а сравнивать с историей осмысленно цену сделок, а не заявку.
-export function Quote({ px, spread, stale, title, vwap, side, base7 }) {
+// subKind — что писать ПОД ценой: "bps" (спред, по умолчанию) или "pct"
+// (доходность). У фиксов вторая строка ячейки — YTM по этой же цене: знака у
+// неё нет, поэтому ни цвета, ни отклонения от семидневки там не рисуем.
+export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "bps" }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
   const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
@@ -56,14 +59,16 @@ export function Quote({ px, spread, stale, title, vwap, side, base7 }) {
   const shown = spread ?? (old ? stale : null);
   // заявки нет вовсе — один прочерк, а не два друг под другом
   if (px == null && shown == null) return <td className={"num" + cls} title={title}><D /></td>;
-  const dev = spread == null || base7 == null ? null : spread - base7;
+  const pctSub = subKind === "pct";
+  const dev = pctSub || spread == null || base7 == null ? null : spread - base7;
   return (
     <td className={"num q-cell" + cls} title={title}>
       <div className={"q-px" + (vwap ? " q-vwap" : "")}>{fmt.pct(px) ?? <D />}</div>
       <div className={"q-sp" + (old ? " q-sp-old" : "")}
-           style={shown == null ? undefined : dmColor(shown)}
-           title={old ? "спред к прежней цене — пересчитывается" : undefined}>
-        {shown == null ? <D /> : fmt.bps(shown)}
+           style={shown == null || pctSub ? undefined : dmColor(shown)}
+           title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
+                                : "спред к прежней цене — пересчитывается") : undefined}>
+        {shown == null ? <D /> : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
         {dev != null && (
           <span className="q-sp-dev"
             title={`отклонение от средневзвешенного спреда за 7 дней (${fmt.bps(base7)} бп)`}>

@@ -22,11 +22,15 @@ export function termTicks(min, max, maxN) {
 // Подписи точек: «имя 470» справа от кружка. Пропускаем те, что налезли бы на
 // уже поставленную: при сотнях выпусков подписать все нельзя, а каша из
 // наложенного текста хуже, чем её отсутствие.
-export function placeLabels(pts, sx, sy, W, right, fs = 11) {
+// text (опц.) — своя подпись точки: у scatter'а «YTM vs дюрация» интересна не
+// сама Y-координата (доходности ОФЗ отличаются в третьем знаке), а отклонение
+// от КБД. Без параметра — прежнее «имя + округлённый Y».
+export function placeLabels(pts, sx, sy, W, right, fs = 11, text = null) {
   const put = [], box = [], h = fs + 3;
   for (const p of pts.slice().sort((a, b) => b.y - a.y)) {
     const nm = String(p.name || p.isin || "");
-    const txt = `${nm.length > 18 ? nm.slice(0, 17) + "…" : nm} ${Math.round(p.y)}`;
+    const short = nm.length > 18 ? nm.slice(0, 17) + "…" : nm;
+    const txt = text ? text(p, short) : `${short} ${Math.round(p.y)}`;
     const w = txt.length * fs * 0.56;
     const x = sx(p.x) + 8, y = sy(p.y) + fs * 0.35;
     if (x + w > W - right) continue;                 // за правым полем не рисуем

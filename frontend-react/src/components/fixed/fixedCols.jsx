@@ -8,6 +8,11 @@ import { D, IsinCopy, Quote } from "../BondTable.jsx";
 // Первичных метрик здесь ДВЕ равноправные: g-спред (к КБД ОФЗ) и доходность к
 // погашению. Цветом красим спред — у него есть осмысленный знак; YTM всегда
 // положительна, окраска по знаку ничего не сообщала бы.
+//
+// ПОД ЦЕНОЙ в ячейках котировок (BID/ASK/СР.ВЗВЕС) стоит YTM по этой же цене, а
+// не g-спред: у суверенной кривой спред сидит около нуля и читается как шум,
+// тогда как доходность стороны — то, по чему торгуют. Сами g-спреды остались
+// своими колонками (G-SPRD/Z-SPRD).
 // WS тикнул цену, а производные (YTM/спреды/dirty) ещё от прошлого расчёта
 // движка → dim-класс, чтобы трейдер не читал их как актуальные. То же правило
 // и тот же класс, что у монитора флоатеров (BondTable).
@@ -17,14 +22,14 @@ const ms = (b) => (b._mstale ? " mstale" : "");
 // набора тикета по лестнице Alor (объём стороны в ₽ — b._vwap_bid/_vwap_ask).
 function qTitle(b, side) {
   const base = side === "bid"
-    ? "лучшая заявка на покупку (MOEX BID): чистая цена и g-спред по ней (продажа в бид)"
-    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и g-спред по ней (покупка с оффера)";
+    ? "лучшая заявка на покупку (MOEX BID): чистая цена и доходность по ней (продажа в бид)"
+    : "лучшая заявка на продажу (MOEX OFFER): чистая цена и доходность по ней (покупка с оффера)";
   const vol = side === "bid" ? b._vwap_bid : b._vwap_ask;
   if (!vol) return base;
   const lv = side === "bid" ? b._vwap_bid_levels : b._vwap_ask_levels;
   return `средневзвешенная цена набора ${fmt.num(vol / 1e6, 1)} млн ₽ (грязными) по стакану`
     + (lv ? `: ${lv} ур.` : "")
-    + "; g-спред посчитан к ней по методике (движок метрик, такт ≤5 с)";
+    + "; доходность посчитана к ней по методике (движок метрик, такт ≤5 с)";
 }
 
 export const FIXED_COLS = [
@@ -77,19 +82,19 @@ export const FIXED_COLS = [
       </td>
     ) },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
-  { key: "g_spread_bid_bps", label: "BID", align: "num", sep: true, w: 9,
-    cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.g_spread_bid_bps}
+  { key: "ytm_bid", label: "BID", sub: "% / YTM", align: "num", sep: true, w: 9,
+    cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.ytm_bid} subKind="pct"
       vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
-  { key: "g_spread_ask_bps", label: "ASK", align: "num", w: 9,
-    cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.g_spread_ask_bps}
+  { key: "ytm_ask", label: "ASK", sub: "% / YTM", align: "num", w: 9,
+    cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.ytm_ask} subKind="pct"
       vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — сделок сегодня не было" : undefined}>
       {fmt.pct(b.last_price_pct) ?? <D />}</td> },
-  { key: "g_spread_wap_bps", label: "СР.ВЗВЕС", sub: "% / G-спред", align: "num", w: 11,
-    cell: (b) => <Quote key="wap" side="wap" px={b.wap_pct} spread={b.g_spread_wap_bps}
-      title="средневзвешенная цена дня и g-спред по ней — база аналитики (last price в неликвиде это один случайный принт)" /> },
+  { key: "ytm_wap", label: "СР.ВЗВЕС", sub: "% / YTM", align: "num", w: 11,
+    cell: (b) => <Quote key="wap" side="wap" px={b.wap_pct} spread={b.ytm_wap} subKind="pct"
+      title="средневзвешенная цена дня и доходность по ней — база аналитики (last price в неликвиде это один случайный принт)" /> },
   { key: "delta_to_prev_close", label: "CHG", sub: "PREV", align: "num", w: 8,
     cell: (b) => {
       const d = b.delta_to_prev_close;

@@ -22,7 +22,7 @@ from typing import List, Optional, Tuple, Dict
 import httpx
 
 from core.valuation import xirr, xnpv, settle_date
-from services.market_data import MarketDataService, _moex_get
+from services.market_data import moex_client, MarketDataService, _moex_get
 from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
@@ -327,7 +327,7 @@ async def fetch_fixed_universe() -> List[dict]:
     today = date.today()
     rows: List[dict] = []
     try:
-        async with httpx.AsyncClient() as client:
+        async with moex_client() as client:
             for board in _BOARDS:
                 for r in await _fetch_fixed_board(client, board):
                     if not _is_fixed(r, board, floaters):

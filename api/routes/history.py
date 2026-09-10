@@ -535,6 +535,66 @@ async def yidx_aggregate(body: YidxAggBody):
             "exact_from": dates[0] if dates else None}
 
 
+class YidxDispersionBody(BaseModel):
+    days: int = Field(91, ge=7, le=400)
+    isins: Optional[list[str]] = None
+
+
+@router.post("/dispersion/yidx", tags=["History"])
+async def yidx_dispersion(body: YidxDispersionBody):
+    """Дневной разброс Y-IDX по ISIN из текущего отфильтрованного среза."""
+    from datetime import date as _date, timedelta
+    from statistics import median as _median
+    from services.portfolio_db import _connect
+    from services.bars import BARS_METRICS_VERSION as _BV
+
+    cutoff = (_date.today() - timedelta(days=body.days)).isoformat()
+
+    def _read_daily():
+        with _connect() as c:
+            return c.execute(
+                "SELECT isin, date, y_idx_wap_bps AS y_idx, "
+                "y_idx_alt_wap_bps AS y_idx_alt, horizon, alt_horizon FROM bar_daily "
+                "WHERE kind='floater' AND y_idx_wap_bps IS NOT NULL AND date >= ? "
+                "AND metrics_ver = ? ORDER BY date", (cutoff, _BV)).fetchall()
+
+    rows = await asyncio.to_thread(_read_daily)
+    want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
+        if body.isins else None
+    rows = [r for r in rows if want is None or r["isin"] in want]
+    rows = [r for r in rows if _date.fromisoformat(r["date"]).weekday() < 5]
+    rows = _one_horizon(rows, *_YIDX_BAND)
+
+    by_date: dict[str, list[float]] = {}
+    for r in rows:
+        if r["y_idx"] is None:
+            continue
+        by_date.setdefault(r["date"], []).append(r["y_idx"])
+
+    def _quantile(values: list[float], q: float) -> float:
+        a = sorted(values)
+        pos = (len(a) - 1) * q
+        base = int(pos)
+        return a[base] + (a[base + 1] - a[base] if base + 1 < len(a) else 0) * (pos - base)
+
+    points = []
+    for day, values in sorted(by_date.items()):
+        if len(values) < 3:
+            continue
+        q1, q3 = _quantile(values, .25), _quantile(values, .75)
+        # Выброс — не любая точка за квартилем (их по определению половина), а
+        # наблюдение за усами Тьюки. Крайние восемь дают форму хвостов, не
+        # раздувая ответ массивом из сотен точек на каждый день.
+        iqr = q3 - q1
+        outs = [v for v in sorted(values) if v < q1 - 1.5 * iqr or v > q3 + 1.5 * iqr]
+        if len(outs) > 8:
+            outs = outs[:4] + outs[-4:]
+        points.append({"date": day, "p25": round(q1, 1), "med": round(_median(values), 1),
+                       "p75": round(q3, 1), "n": len(values),
+                       "outliers": [round(v, 1) for v in outs]})
+    return {"days": body.days, "points": points}
+
+
 # Потолок линий вкладки СРАВНЕНИЕ. Цветом различаются первые десять, остальные
 # идут серым фоном — предел здесь про размер ответа и читаемость графика, не про
 # палитру (фронт держит тот же CMP_MAX).
@@ -685,7 +745,7 @@ async def reprice_past(
         "close": ctx["close"], "legalclose": ctx["legalclose"],
         "stale_days": ctx["stale_days"], "secid": ctx["secid"], "board": ctx["board"],
         "accint": ctx["accrued"], "face_value": ctx["ref_obj"].face_value,
-        "base": ctx["ref_obj"].base, "curve_mode": ctx["curve_mode"],
+        "base": ctx["ref_obj"].base, "curve_mode": m["curve_mode"],
         "metrics": m,
     }
 
