@@ -54,8 +54,15 @@ SANITY_MIN_BONDS = 30
 # Темп движка в торговые часы. Ниже — конвейер голодает (10.09: 8 строк/мин
 # против обычных 450).
 ENGINE_MIN_ROWS_PER_MIN = 20
-# Очередь пересчёта. 10.09 доросла до 784 и не таяла.
-ENGINE_MAX_DIRTY = 600
+# Очередь пересчёта. Сама по себе длина ни о чём не говорит: после рестарта
+# движок пересобирает контексты и сетки, и очередь законно доходит до тысячи,
+# а потом тает (11.09: 992 → 814 → 640 → 608 за четыре такта). Тревожно не
+# «длинно», а «длинно И НЕ УМЕНЬШАЕТСЯ» — поэтому порог высокий, а решение
+# принимается по ТРЕНДУ (см. engine_problems).
+ENGINE_MAX_DIRTY = 900
+# Сколько проверок подряд очередь должна не уменьшаться, чтобы это считалось
+# завалом. Две — это ~20 минут при такте сторожа в 10 минут.
+ENGINE_DIRTY_STUCK_CHECKS = 2
 # Доля бумаг без биржевого НКД, выше которой считаем это аварией источника,
 # а не законными единичными пробелами.
 ACCRUED_MISSING_SHARE = 0.5
@@ -194,6 +201,10 @@ def sanity_problems() -> Dict[str, str]:
 
 # --- 4. движок ------------------------------------------------------------
 
+# Предыдущая длина очереди и сколько проверок подряд она не таяла.
+_dirty_seen: dict = {"value": None, "stuck": 0}
+
+
 def engine_problems() -> Dict[str, str]:
     """Справляется ли конвейер. Вне торговых часов тишина законна."""
     out: Dict[str, str] = {}
@@ -220,8 +231,18 @@ def engine_problems() -> Dict[str, str]:
                               f"({rate.get('row_ms')} мс/шт) — конвейер голодает")
 
     dirty = st.get("dirty") or 0
-    if dirty > ENGINE_MAX_DIRTY:
-        out["engine_queue"] = (f"очередь пересчёта {dirty} бумаг — "
+    prev = _dirty_seen["value"]
+    # тает — сбрасываем счётчик, сколько бы ни было: движок справляется
+    if prev is not None and dirty < prev:
+        _dirty_seen["stuck"] = 0
+    elif dirty > ENGINE_MAX_DIRTY:
+        _dirty_seen["stuck"] += 1
+    else:
+        _dirty_seen["stuck"] = 0
+    _dirty_seen["value"] = dirty
+
+    if dirty > ENGINE_MAX_DIRTY and _dirty_seen["stuck"] >= ENGINE_DIRTY_STUCK_CHECKS:
+        out["engine_queue"] = (f"очередь пересчёта {dirty} бумаг не уменьшается — "
                                "витрина отстаёт от рынка")
     return out
 

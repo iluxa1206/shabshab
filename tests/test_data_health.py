@@ -122,18 +122,47 @@ def test_missing_accrued_everywhere_is_reported(monkeypatch):
 
 def test_starving_engine_reported_in_trading_hours(monkeypatch):
     monkeypatch.setattr("services.universe_stream.stats",
-                        lambda: _stats(rate={"rows_per_min": 8, "row_ms": 66},
-                                       dirty=784))
+                        lambda: _stats(rate={"rows_per_min": 8, "row_ms": 66}))
     monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
-    p = dh.engine_problems()
-    assert "engine_rate" in p and "engine_queue" in p
+    assert "engine_rate" in dh.engine_problems()
+
+
+def test_draining_queue_is_not_an_alarm(monkeypatch):
+    """Догрев после рестарта: очередь длинная, но ТАЕТ — тревожить незачем.
+    11.09.2026 сторож разбудил на 992 → 814 → 640 → 608, хотя движок справлялся."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh, "_dirty_seen", {"value": None, "stuck": 0}, raising=False)
+    for q in (992, 814, 640, 608):
+        monkeypatch.setattr("services.universe_stream.stats", lambda q=q: _stats(dirty=q))
+        assert "engine_queue" not in dh.engine_problems(), f"ложная тревога на {q}"
+
+
+def test_stuck_queue_is_reported(monkeypatch):
+    """А вот очередь, которая НЕ уменьшается — настоящий завал."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh, "_dirty_seen", {"value": None, "stuck": 0}, raising=False)
+    monkeypatch.setattr("services.universe_stream.stats", lambda: _stats(dirty=1500))
+    seen = [("engine_queue" in dh.engine_problems()) for _ in range(3)]
+    assert seen[0] is False, "первая проверка — ещё не тренд"
+    assert seen[-1] is True, "очередь стоит несколько проверок — это завал"
+
+
+def test_growing_queue_is_reported(monkeypatch):
+    """Растущая очередь — тем более."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh, "_dirty_seen", {"value": None, "stuck": 0}, raising=False)
+    res = []
+    for q in (1000, 1200, 1400):
+        monkeypatch.setattr("services.universe_stream.stats", lambda q=q: _stats(dirty=q))
+        res.append("engine_queue" in dh.engine_problems())
+    assert res[-1] is True
 
 
 def test_quiet_engine_outside_session_is_normal(monkeypatch):
     """Ночью движок молчит законно — будить админов незачем."""
     monkeypatch.setattr("services.universe_stream.stats",
                         lambda: _stats(rate={"rows_per_min": 0, "row_ms": 0},
-                                       dirty=900))
+                                       dirty=5000))
     monkeypatch.setattr(dh, "trading_hours", lambda now=None: False)
     assert dh.engine_problems() == {}
 
