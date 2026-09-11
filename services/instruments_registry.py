@@ -1583,6 +1583,12 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
     manual = {k: v for k, v in manual.items()
               if not k.startswith("_") and isinstance(v, dict) and v}
     # объединённое множество ISIN из всех источников
+    # Бумаги, у которых имя уже известно: их short_name из cbonds не трогаем
+    # (см. ниже). Один запрос, а не get() на бумагу — список бывает в тысячи строк.
+    with _conn() as _c:
+        _named = {r[0] for r in _c.execute(
+            "SELECT isin FROM instruments WHERE short_name IS NOT NULL AND short_name != ''")}
+
     isins: set[str] = set()
     nrd_by = {}
     for it in nrd_items or []:
@@ -1605,7 +1611,14 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
         freq = cb.get("freq")
         row = {
             "isin": isin,
-            "short_name": cb.get("name") or n.get("name"),
+            # ИМЯ ИЗ CBONDS — ТОЛЬКО ДЛЯ НОВОЙ БУМАГИ. У Cbonds оно полное
+            # («Газпром Капитал, БО-002P-04»), у биржи короткое («ГазпКап2P4»),
+            # и в телеграм-сообщениях, таблице и ленте нужно второе. Обычно
+            # биржевой синк перекрывает cbonds-имя следом, но 10.09.2026 ISS
+            # лежал весь день, синк не отработал — и 557 бумаг уехали в
+            # уведомления с полными названиями. None не затирает известное
+            # (COALESCE-семантика upsert), поэтому существующее имя переживёт.
+            "short_name": (cb.get("name") or n.get("name")) if isin not in _named else None,
             "base": base,
             "margin_bps": int(margin) if margin is not None else None,
             # maturity/issue/face — bondsearch (Cbonds) теперь их тоже несёт, фолбэк NRD/MOEX
