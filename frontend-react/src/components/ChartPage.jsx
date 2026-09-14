@@ -188,9 +188,10 @@ function readTheme(el) {
     up: v("--up", "#22a06b"),
     down: v("--down", "#e5484d"),
     accent: v("--accent", "#3b82f6"),
-    // средневзвес — неон, а не тусклый акцент: линия идёт поверх свечей и на
-    // тёмной теме тонула в них
-    vwapC: v("--vwap", "#00d5ff"),
+    // «Арктический рельс»: широкая холодно-синяя основа и тонкое ледяное
+    // ядро. Так VWAP отчётливее отделён от зелёных/красных свечей, чем cyan.
+    vwapC: v("--vwap", "#60a5fa"),
+    vwapCore: v("--vwap-core", "#e0f2fe"),
     // спред — своя серия со своим цветом: раньше линия шла цветом текста и
     // сливалась с ценой закрытия/HLC, а в легенде цифры спреда невозможно было
     // отличить глазом от цифр цены
@@ -512,8 +513,8 @@ function ZoneTips({ legend, theme, sLabel, vwapOn }) {
             <> · <span style={cHi}>H {fmt.pct(legend.h)}</span> <span style={cLo}>L {fmt.pct(legend.l)}</span> C {fmt.pct(legend.c)}</>}
           {legend.o == null && legend.h == null && legend.c != null &&
             <> · цена {fmt.pct(legend.c)}</>}
-          {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
           {legend.w != null && <span style={cAcc}> · ср.взвес {fmt.pct(legend.w)}</span>}
+          {legend.v ? <> · объём {fmt.num(legend.v, 0)}</> : null}
           {legend.b != null && <span style={cHi}> · покупки {fmt.pct(legend.b)}</span>}
           {legend.sl != null && <span style={cLo}> · продажи {fmt.pct(legend.sl)}</span>}
         </div>
@@ -1104,13 +1105,23 @@ export default function ChartPage() {
     if (on("vwap")) {
       const pts = layerPts.filter((p) => p.vwap_pct != null);
       if (pts.length > 1) {
+        // Сначала широкая синяя основа, затем тонкое ледяное ядро. Две серии
+        // вместо одного сверхтолстого штриха сохраняют рельс читаемым и при
+        // плотных свечах, и на широком масштабе.
         const vwap = chart.addSeries(LineSeries, {
-          color: theme.vwapC, lineWidth: 2, lineStyle: 0,
+          color: theme.vwapC, lineWidth: 4, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false,
           priceFormat: { type: "price", precision: 2, minMove: 0.01 },
         }, 0);
         vwap.setData(pts.map((p) => ({ time: p.time, value: p.vwap_pct })));
         seriesRef.current.vwap = vwap;
+        const vwapCore = chart.addSeries(LineSeries, {
+          color: theme.vwapCore, lineWidth: 1, lineStyle: 0,
+          priceLineVisible: false, lastValueVisible: false,
+          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+        }, 0);
+        vwapCore.setData(pts.map((p) => ({ time: p.time, value: p.vwap_pct })));
+        seriesRef.current.vwapCore = vwapCore;
       }
     }
 

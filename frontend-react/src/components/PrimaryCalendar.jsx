@@ -54,11 +54,18 @@ function ModelSpread({ m }) {
   );
 }
 
+// книга прошла → зелёная дата, книга сегодня — броская плашка
+function bookCls(bookDate, t) {
+  if (!bookDate) return "";
+  if (bookDate === t) return " pri-book-today";
+  if (bookDate < t) return " pri-book-past";
+  return "";
+}
+
 export default function PrimaryCalendar() {
   const [view, setView] = useState("plan");
   const [tab, setTab] = useState("all");
   const [q, setQ] = useState("");
-  const [past, setPast] = useState(false);
 
   // раз в час: источник обновляется раз в сутки, бэк сам держит TTL и ходит
   // условным GET — частый refetch тут ничего не стоит и ничего не даёт
@@ -68,16 +75,16 @@ export default function PrimaryCalendar() {
     staleTime: 3600e3,
   });
 
+  const t = today();
   const rows = useMemo(() => {
-    const t = today(), needle = q.trim().toLowerCase();
+    const needle = q.trim().toLowerCase();
     return (data?.rows || []).filter((r) => {
       if (tab === "float" && !r.is_floater) return false;
       if (tab === "fix" && r.is_floater) return false;
-      if (!past && (r.book_date || r.issue_date || "9999") < t) return false;
       if (needle && !(r.issuer || "").toLowerCase().includes(needle)) return false;
       return true;
     });
-  }, [data, tab, q, past]);
+  }, [data, tab, q]);
 
   const counts = useMemo(() => {
     const all = data?.rows || [];
@@ -128,9 +135,6 @@ export default function PrimaryCalendar() {
                       onClick={() => setTab(id)}>{label}</button>
             ))}
           </span>
-          <button className={"chip-btn" + (past ? " on" : "")} onClick={() => setPast((v) => !v)}>
-            Прошедшие
-          </button>
           <span className="search-wrap">
             <input className="search" placeholder="Эмитент" value={q}
                    onChange={(e) => setQ(e.target.value)} />
@@ -159,7 +163,10 @@ export default function PrimaryCalendar() {
           {rows.map((r, i) => (
             <tr key={(r.issuer || "") + (r.comment || "") + i}
                 className={r.is_new ? "pri-new" : undefined}>
-              <td className="left">{fmt.date(r.book_date) || "—"}</td>
+              <td className={"left" + bookCls(r.book_date, t)}
+                  title={r.book_date === t ? "книга сегодня" : r.book_date < t ? "книга прошла" : undefined}>
+                {fmt.date(r.book_date) || "—"}
+              </td>
               <td className="left">{fmt.date(r.issue_date) || "—"}</td>
               <td className="left">
                 {r.url

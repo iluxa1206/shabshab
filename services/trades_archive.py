@@ -339,6 +339,24 @@ async def face_units() -> dict:
     return _units["map"]
 
 
+async def archived_face_units() -> set[str]:
+    """Валюты номинала, которые реально встретились в архиве тиков.
+
+    Исторический FX-backfill не должен обходить весь справочник MOEX: у него
+    десятки кодов, не связанные с нашими сделками. Новая валюта будущего тика
+    всё равно записывается живым FX-слоем; здесь нужны только уже имеющиеся
+    строки, которым может потребоваться ремонт объёма по курсу их даты.
+    """
+    units = await face_units()
+
+    def _isins() -> set[str]:
+        with _connect() as c:
+            return {r[0] for r in c.execute("SELECT DISTINCT isin FROM trade_tick") if r[0]}
+
+    isins = await asyncio.to_thread(_isins)
+    return {(units.get(isin) or "").upper() for isin in isins}
+
+
 async def face_fx(isin: str) -> float:
     """Множитель номинала к рублю НА СЕЙЧАС. 1.0 — рублёвая бумага или
     неизвестный курс: промах даёт ЗАНИЖЕННЫЙ объём, а не потерянную сделку (в
@@ -634,6 +652,13 @@ def read_trades(isin: str, frm: Optional[str] = None, till: Optional[str] = None
     out = [dict(r) for r in rows]
     out.sort(key=lambda r: r.get("ts") or "")
     return out
+
+
+def last_trade_day(isin: str) -> Optional[str]:
+    """Последний день с тиками по бумаге — для /deals, когда сегодня пусто."""
+    with _connect() as c:
+        r = c.execute("SELECT MAX(ts) FROM trade_tick WHERE isin=?", (isin,)).fetchone()
+    return r[0][:10] if r and r[0] else None
 
 
 def count_trades(isin: str, frm: Optional[str] = None, min_value: float = 0,

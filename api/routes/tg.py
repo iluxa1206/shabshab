@@ -15,6 +15,7 @@ import hmac
 import html
 import logging
 import os
+import time
 
 from typing import Optional
 
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 
 from api.routes.auth import require_admin
 from services import auth_users, signals, telegram, tg_links, tg_targets, tg_users
+from services.tg_notify import _fmt_money, _num
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +40,8 @@ _HELP = (
     "/signals — последние сигналы\n"
     "/stop ISIN — не писать про эту бумагу до конца дня (в этом чате)\n"
     "/daystat — сколько раз какая бумага звонила сегодня\n"
+    "/deals ISIN — сделки по бумаге за сегодня; порог объёма: "
+    "<code>/deals ISIN 1m</code>, <code>/deals ISIN 10m</code>\n"
     "/digest — разбор дня: движения, обороты, крупные сделки, кривая, выплаты\n"
     "    отдельным классом: <code>/digest флоатеры</code>, <code>/digest фиксы</code>\n"
     "/week — то же самое в недельном окне\n"
@@ -222,6 +226,77 @@ def _daystat_text(email: str, days: int) -> str:
     return out + ("\n\n<i>" + " · ".join(tail) + "</i>" if tail else "")
 
 
+_DEALS_LIMIT = 40
+
+
+def _parse_threshold(arg: str) -> Optional[float]:
+    """«1m»/«10m»/«1.5м»/«500k» → рубли; голое число — миллионы."""
+    a = (arg or "").strip().lower().replace(",", ".")
+    if not a:
+        return None
+    mult = 1e6
+    if a[-1] in ("m", "м"):
+        a = a[:-1]
+    elif a[-1] in ("k", "к"):
+        a, mult = a[:-1], 1e3
+    try:
+        return float(a) * mult
+    except ValueError:
+        return None
+
+
+def _deals_text(arg: str, thr_arg: str = "") -> str:
+    """/deals ISIN [порог] — лента сделок бумаги за сегодня из тикового
+    архива (services/trades_archive). Сегодня пусто — берём последний день,
+    где сделки были, и говорим об этом. Порог в млн ₽ отсекает мелочь."""
+    from services import trades_archive
+    if not arg:
+        return ("Нужен ISIN или название выпуска: <code>/deals RU000A10AU99</code>, "
+                "с порогом объёма: <code>/deals RU000A10AU99 1m</code>")
+    found = _resolve_isin(arg)
+    if not found:
+        return f"Бумагу «{html.escape(arg)}» не нашёл. Пришлите ISIN."
+    if found.get("ambiguous"):
+        opts = "\n".join(f"<code>{html.escape(h['isin'])}</code>  "
+                          f"{html.escape(str(h.get('name') or ''))}"
+                          for h in found["ambiguous"])
+        return "Под это подходит несколько бумаг — уточните ISIN:\n" + opts
+    isin, name = found["isin"], html.escape(str(found.get("name") or found["isin"]))
+    thr = _parse_threshold(thr_arg) if thr_arg else None
+    if thr_arg and thr is None:
+        return f"Порог не понял: «{html.escape(thr_arg)}». Примеры: 1m, 10m, 500k."
+    day = time.strftime("%Y-%m-%d")
+    rows = trades_archive.read_trades(isin, frm=day, limit=100000)
+    if not rows:
+        last = trades_archive.last_trade_day(isin)
+        if not last:
+            return f"<b>{name}</b> — сделок в архиве нет."
+        day, rows = last, trades_archive.read_trades(isin, frm=last, till=last, limit=100000)
+    total_n, total_v = len(rows), sum(r.get("value") or 0 for r in rows)
+    vwap = (sum((r.get("price") or 0) * (r.get("value") or 0) for r in rows) / total_v
+            if total_v else None)
+    if thr:
+        rows = [r for r in rows if (r.get("value") or 0) >= thr]
+    shown = rows[-_DEALS_LIMIT:]
+    head = (f'<b><a href="{tg_links.bond(isin)}">{name}</a></b> · '
+            f"{'сегодня' if day == time.strftime('%Y-%m-%d') else day}: "
+            f"{total_n} сделок, {_fmt_money(total_v) or '0'}"
+            + (f", ср.взвес {_num(vwap)}" if vwap is not None else ""))
+    if thr:
+        head += f"\nот {_fmt_money(thr)}: {len(rows)} шт"
+    if not rows:
+        return head + "\n\nПод порог ничего не попало."
+    lines = []
+    for r in shown:
+        side = {"buy": "🟢", "sell": "🔴"}.get(r.get("side") or "", "⚪")
+        board = f" <i>{html.escape(str(r['board']))}</i>" if r.get("board") not in (None, "", "TQCB", "TQOB", "TQRD", "TQIR") else ""
+        lines.append(f"{side} {str(r.get('ts') or '')[11:16]}  <code>{_num(r.get('price'))}</code>  "
+                     f"{_fmt_money(r.get('value')) or '0'}{board}")
+    tail = (f"\n<i>показаны последние {len(shown)} из {len(rows)}</i>"
+            if len(rows) > len(shown) else "")
+    return head + "\n\n" + "\n".join(lines) + tail
+
+
 async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> str:
     email = tg_users.email_for(uid)
     text = text.strip()
@@ -275,6 +350,10 @@ async def _handle_command(text: str, uid: int, chat_id: int, username: str) -> s
         # история бумаги начинается заново
         return (f"🔕 {name} — молчу до конца дня в этом чате.\n"
                 f"Вернуть раньше: <code>/stop del {isin}</code>")
+
+    if text.startswith("/deals") or text.startswith("/сделки"):
+        parts = text.split()[1:]
+        return _deals_text(parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
 
     if text.startswith("/daystat"):
         parts = text.split()[1:]

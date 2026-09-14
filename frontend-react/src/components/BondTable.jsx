@@ -1,9 +1,10 @@
 import { cloneElement, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useReducedMotion } from "framer-motion";
-import { baseLabel, fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../format.js";
+import { baseLabel, fmt, dmColor, ratingColor, yearsTo, yearsToNum, stripOfz } from "../format.js";
 import IsinCopyBase from "./IsinCopy.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import { HeaderCell } from "./TableHeader.jsx";
+import { horizonDate } from "../horizon.js";
 
 export const D = () => <span className="dash">—</span>;
 
@@ -124,15 +125,32 @@ export function OfferMarks({ b }) {
 // (самое длинное возможное значение либо подпись шапки), а не по текущим данным,
 // поэтому тик цены, смена фильтра или сортировки не двигают колонки. См.
 // table-layout: fixed для .grid.cols-fixed в styles.css.
+// Свежий выпуск: размещён не старше 30 календарных дней — имя зелёное, как
+// «новое» в первичке. Порог тот же, что у очереди свежих выпусков в Справочнике.
+const NEW_ISSUE_DAYS = 30;
+export const isFreshIssue = (iso) => {
+  if (!iso) return false;
+  const t = Date.parse(String(iso).slice(0, 10) + "T00:00:00Z");
+  return Number.isFinite(t) && Date.now() - t <= NEW_ISSUE_DAYS * 864e5;
+};
+// «Прям сильно короткая»: до горизонта прайсинга ≤ полугода — годы красные
+const SHORT_YRS = 0.5;
+export const isShortBond = (b) => {
+  const y = yearsToNum(horizonDate(b));
+  return y != null && y >= 0 && y <= SHORT_YRS;
+};
+
 export const COLS = [
   // ── статика бумаги ──
   { key: "short_name", label: "INSTRUMENT", align: "left", w: 24,
     cell: (b) => {
       // ОФЗ-ПК (суверенные флоатеры) — имя MOEX «ОФЗ 29xxx»; остальное — корпораты
       const isOfz = /^\s*ОФЗ/i.test(b.short_name || "");
+      const fresh = isFreshIssue(b.issue_date);
       return (
         <td className="left name-cell" key="short_name">
-          <div className="bond-name">
+          <div className={"bond-name" + (fresh ? " name-fresh" : "")}
+               title={fresh ? "размещён " + fmt.date(b.issue_date) : undefined}>
             {/* бейдж только у ОФЗ: «КОРП» стоял в 9 строках из 10 и ничего не
                 различал. Из имени слово ОФЗ срезано — его несёт бейдж */}
             {isOfz && <span className="fx-cls fx-ofz">ОФЗ</span>}
@@ -201,7 +219,9 @@ export const COLS = [
             {!b.offer_date && <OfferMarks b={b} />}
             {fmt.date(b.maturity_date) ?? <D />}
             {yearsTo(b.maturity_date) != null && (
-              <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")}>
+              <span className={"mat-yrs" + (hasChoice && hz === "maturity" ? " mat-hz" : "")
+                               + (isShortBond(b) && (!hasChoice || hz === "maturity") ? " mat-short" : "")}
+                    title={isShortBond(b) && (!hasChoice || hz === "maturity") ? "короткая: до горизонта ≤ 6 мес" : undefined}>
                 {" (" + yearsTo(b.maturity_date) + ")"}</span>
             )}
           </div>
@@ -210,7 +230,9 @@ export const COLS = [
               title={(b.offer_kind === "call" ? "call-оферта " : "пут-оферта ") + fmt.date(b.offer_date)}>
               <OfferMarks b={b} />{fmt.date(b.offer_date)}
               {yearsTo(b.offer_date) != null && (
-                <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")}>
+                <span className={"mat-yrs" + (hz === "put" || hz === "call" ? " mat-hz" : "")
+                                 + (isShortBond(b) && (hz === "put" || hz === "call") ? " mat-short" : "")}
+                      title={isShortBond(b) && (hz === "put" || hz === "call") ? "короткая: до горизонта ≤ 6 мес" : undefined}>
                   {" (" + yearsTo(b.offer_date) + ")"}</span>
               )}
             </div>
@@ -218,6 +240,13 @@ export const COLS = [
         </td>
       );
     } },
+  { key: "issue_date", label: "РАЗМЕЩ", w: 10,
+    title: "Дата размещения по реестру; свежие (≤30 дн) — зелёное имя",
+    cell: (b) => (
+      <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")} key="issue_date">
+        {fmt.date(b.issue_date) ?? <D />}
+      </td>
+    ) },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.

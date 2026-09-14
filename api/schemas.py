@@ -308,6 +308,7 @@ class BondListItem(BaseModel):
     spread_issue_bps: int
     coupons_per_year: Optional[int] = None  # частота купона для подписи формулы (N/год)
     maturity_date: Optional[date]
+    issue_date: Optional[date] = None      # дата размещения (реестр): свежие ≤30 дн подсвечены в мониторе
     next_coupon_date: Optional[date]
     last_price_pct: Optional[float]
     # верх стакана MOEX (чистые цены, % номинала) + Y-IDX по ним. ask — это MOEX
