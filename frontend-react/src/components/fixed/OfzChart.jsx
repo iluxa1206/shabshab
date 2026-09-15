@@ -19,9 +19,11 @@ const BASE_LABEL = {
 
 // Поля одинаковые у scatter'а и полосы объёма — иначе столбик встал бы не под
 // своей точкой.
-const SC_PAD = { l: 46, r: 14, t: 14, b: 32 };
-const VOL_PAD = { l: 46, r: 14, t: 6, b: 4 };
-const VOL_H = 72;
+const SC_PAD = { l: 46, r: 48, t: 14, b: 32 };
+// Объём — на том же полотне, что и точки: столбик от нижней оси под своей
+// бумагой, не выше VOL_SHARE высоты поля, шкала справа. Отдельная полоса под
+// графиком читалась хуже: столбики были в 3 px и не соотносились с точками.
+const VOL_SHARE = 0.42;
 
 // Теноры, по которым читается сдвиг кривой: стандартные точки zcyc, без
 // интерполяции — берём ТОЛЬКО совпадающие теноры двух наборов points.
@@ -97,7 +99,7 @@ function pointTip(p, cmpDate) {
 }
 
 // ── Scatter: YTM × дюрация поверх КБД (+ вторая кривая и тени точек) ──
-function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, onOpen }) {
+function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, onOpen }) {
   const cIn = curve.filter((c) => c.years <= xmax);
   const cCmpIn = (curveCmp || []).filter((c) => c.years <= xmax);
   // Домен Y — по бумагам, теням И обеим кривым в этом же окне сроков: кривая,
@@ -111,7 +113,7 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, onOpen }) {
   const lo = Math.min(...ys), hi = Math.max(...ys);
   const pad = (hi - lo) * 0.08 || 0.2;
   return (
-    <MeasuredSvg height={330} label="доходность ОФЗ и КБД по дюрации" cursor={onOpen ? "pointer" : "default"}>
+    <MeasuredSvg height={360} label="доходность ОФЗ, КБД и оборот по дюрации" cursor={onOpen ? "pointer" : "default"}>
       {({ W, H, bind }) => {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([lo - pad, hi + pad], [H - SC_PAD.b, SC_PAD.t]);
@@ -123,6 +125,7 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, onOpen }) {
               lineClass="an-grid" textClass="an-axis" label={(v) => v.toFixed(1).replace(".", ",")} />
             <GridX ticks={xt} y1={SC_PAD.t} y2={H - SC_PAD.b} lineClass="an-grid an-grid-v" />
             <XTicks ticks={xt} y={H - SC_PAD.b + 14} textClass="an-axis" />
+            <VolumeBars pts={pts} volumes={volumes} sx={sx} W={W} H={H} bind={bind} />
             {/* прошлая кривая — ПОД сегодняшней, чтобы актуальная читалась первой */}
             {cCmpIn.length > 1 && (
               <path d={linePath(cCmpIn, (c) => sx(c.years), (c) => sy(c.yield_pct))}
@@ -179,60 +182,54 @@ function volTip(p, v, labels) {
   return s;
 }
 
-// ── Полоса объёма под scatter'ом: столбик на бумагу, стек стакан/РПС/прочее ──
-function VolumePanel({ pts, volumes, xmax }) {
+// Столбики объёма ВНУТРИ scatter'а: стек стакан/РПС/прочее от нижней оси,
+// шкала справа. Рисуются ПОД точками и кривой (первыми в SVG).
+function VolumeBars({ pts, volumes, sx, W, H, bind }) {
   const items = volumes?.items || {};
   const bars = pts
     .map((p) => ({ p, v: items[p.isin] }))
     .filter((b) => b.v && b.v.total > 0);
+  const base = H - SC_PAD.b;
+  const top = SC_PAD.t + (base - SC_PAD.t) * (1 - VOL_SHARE);
   const vmax = Math.max(...bars.map((b) => b.v.total), 1);
+  const sh = (v) => ((v || 0) / vmax) * (base - top);
   const labels = volumes?.board_labels;
+  // ширина — от плотности точек, но 6…14 px: у соседних выпусков дюрации
+  // отличаются на десятые, столбики шире слились бы в полосу
+  const bw = Math.max(6, Math.min(14, (W - SC_PAD.l - SC_PAD.r) / Math.max(pts.length, 1) * 0.6));
+  const ticks = linTicks(0, vmax, 3).filter((t) => t > 0 && t <= vmax);
   return (
-    <MeasuredSvg height={VOL_H} label="оборот ОФЗ за день по дюрации">
-      {({ W, H, bind }) => {
-        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
-        const base = H - VOL_PAD.b;
-        const sh = (v) => ((v || 0) / vmax) * (base - VOL_PAD.t);
-        // ширина столбика — от плотности точек по X, но в разумных рамках:
-        // у соседних выпусков дюрации отличаются на десятые, столбики шире 7px
-        // слились бы в одну полосу
-        const bw = Math.max(3, Math.min(7, (W - SC_PAD.l - SC_PAD.r) / Math.max(pts.length, 1) * 0.5));
+    <>
+      {bars.map(({ p, v }) => {
+        const segs = stackedBars([
+          { value: v.book, cls: "ofz-vol-book" },
+          { value: v.rps, cls: "ofz-vol-rps" },
+          { value: v.other, cls: "ofz-vol-other" },
+        ], base, sh);
+        const x = sx(p.x) - bw / 2;
+        const yTop = Math.min(...segs.map((sg) => sg.y), base);
         return (
-          <>
-            <line x1={SC_PAD.l} x2={W - SC_PAD.r} y1={base + 0.5} y2={base + 0.5} className="an-grid" />
-            <text x={SC_PAD.l - 4} y={VOL_PAD.t + 8} className="an-axis" textAnchor="end">
-              {fmt.mln1(vmax)}
-            </text>
-            <text x={SC_PAD.l - 4} y={base} className="an-axis" textAnchor="end">0</text>
-            {bars.map(({ p, v }) => {
-              const segs = stackedBars([
-                { value: v.book, cls: "ofz-vol-book" },
-                { value: v.rps, cls: "ofz-vol-rps" },
-                { value: v.other, cls: "ofz-vol-other" },
-              ], base, sh);
-              const x = sx(p.x) - bw / 2;
-              const top = Math.min(...segs.map((s) => s.y), base);
-              return (
-                <g key={p.isin} className="ofz-vol" {...bind(sx(p.x), top, volTip(p, v, labels))}>
-                  {/* невидимая зона захвата шире столбика — тонкую полоску
-                      мышью не поймать */}
-                  <rect x={x - 3} y={VOL_PAD.t} width={bw + 6} height={base - VOL_PAD.t} fill="transparent" />
-                  {segs.map((s) => (
-                    <rect key={s.cls} x={x} y={s.y} width={bw} height={s.h} className={s.cls} />
-                  ))}
-                </g>
-              );
-            })}
-            {bars.length === 0 && (
-              <text x={(SC_PAD.l + W - SC_PAD.r) / 2} y={(VOL_PAD.t + base) / 2 + 4}
-                className="an-axis" textAnchor="middle">оборота за день нет</text>
-            )}
-            <text x={SC_PAD.l - 40} y={VOL_PAD.t + 2} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 40} ${VOL_PAD.t + 2})`}>млн ₽</text>
-          </>
+          <g key={"v" + p.isin} className="ofz-vol" {...bind(sx(p.x), yTop, volTip(p, v, labels))}>
+            {segs.map((sg) => (
+              <rect key={sg.cls} x={x} y={sg.y} width={bw} height={sg.h} className={sg.cls} />
+            ))}
+          </g>
         );
-      }}
-    </MeasuredSvg>
+      })}
+      {/* правая шкала объёма: тики только в занятой столбиками части поля */}
+      {bars.length > 0 && ticks.map((t) => (
+        <g key={"vt" + t}>
+          <line x1={W - SC_PAD.r} x2={W - SC_PAD.r + 4} y1={base - sh(t)} y2={base - sh(t)} className="an-grid" />
+          <text x={W - SC_PAD.r + 6} y={base - sh(t) + 3.5} className="an-axis ofz-vol-axis" textAnchor="start">
+            {fmt.mln1(t)}
+          </text>
+        </g>
+      ))}
+      {bars.length > 0 && (
+        <text x={W - 4} y={SC_PAD.t + 4} className="an-axis-lbl ofz-vol-axis" textAnchor="end"
+          transform={`rotate(90 ${W - 4} ${SC_PAD.t + 4})`}>оборот, млн ₽</text>
+      )}
+    </>
   );
 }
 
@@ -260,8 +257,7 @@ export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, onOp
           date={cmp.curveDate} requested={cmp.curveRequested} />
       )}
       <CurveScatter pts={pts} curve={cNow} curveCmp={cCmp} cmpDate={cmp?.date}
-        xmax={xmax} labels={labels} onOpen={onOpen} />
-      <VolumePanel pts={pts} volumes={volumes} xmax={xmax} />
+        xmax={xmax} labels={labels} volumes={volumes} onOpen={onOpen} />
     </div>
   );
 }

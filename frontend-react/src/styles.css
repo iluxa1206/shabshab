@@ -237,10 +237,13 @@ td.mut { color: var(--mut); }
 /* Полоса объёма: столбик — --mut с прозрачностью, стек стакан/РПС/прочее
    тремя ступенями плотности одного тона (цветом здесь ничего не говорим —
    цвет на этой странице занят знаком отклонения точек). */
-.ofz-vol-book { fill: var(--mut); fill-opacity: .55; }
-.ofz-vol-rps { fill: var(--mut); fill-opacity: .3; }
-.ofz-vol-other { fill: var(--mut); fill-opacity: .15; }
-.ofz-vol:hover rect:not([fill="transparent"]) { fill-opacity: .9; }
+/* столбики объёма лежат под точками на том же полотне — полупрозрачные,
+   чтобы кривая и точки поверх читались; hover — темнее */
+.ofz-vol-book { fill: var(--mut); fill-opacity: .38; }
+.ofz-vol-rps { fill: var(--mut); fill-opacity: .22; }
+.ofz-vol-other { fill: var(--mut); fill-opacity: .12; }
+.ofz-vol:hover rect { fill-opacity: .7; }
+.ofz-vol-axis { fill: var(--mut-2); }
 
 /* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
 .pchart { margin-bottom: 20px; }

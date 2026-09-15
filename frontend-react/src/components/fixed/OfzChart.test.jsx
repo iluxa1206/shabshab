@@ -81,9 +81,11 @@ describe("OfzChart", () => {
     expect(strip.textContent).not.toMatch(/15Y/);
   });
 
-  it("оборота нет — полоса сообщает об этом, а не падает", () => {
+  it("оборота нет — столбиков и шкалы объёма нет, график не падает", () => {
     const { container } = render(
       <OfzChart pts={PTS} curve={CURVE_NOW} cmp={null} volumes={{ items: {} }} labels={false} />);
-    expect(container.textContent).toMatch(/оборота за день нет/);
+    expect(container.querySelectorAll(".ofz-vol").length).toBe(0);
+    expect(container.textContent).not.toMatch(/оборот, млн/);
+    expect(container.querySelectorAll(".ofz-pt").length).toBe(PTS.length);
   });
 });
