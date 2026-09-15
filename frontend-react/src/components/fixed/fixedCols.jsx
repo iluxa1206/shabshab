@@ -1,5 +1,5 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
-import { D, IsinCopy, Quote } from "../BondTable.jsx";
+import { D, IsinCopy, Quote, isFreshIssue, isShortBond } from "../BondTable.jsx";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
 // key — ключ сортировки и видимости, w — ширина в ch по МАКСИМУМУ формата,
@@ -37,9 +37,11 @@ export const FIXED_COLS = [
   { key: "name", label: "INSTRUMENT", align: "left", w: 24,
     cell: (b) => (
       <td className="left name-cell" key="name">
-        <div className="bond-name">
+        <div className={"bond-name" + (isFreshIssue(b.issue_date) ? " name-fresh" : "")}
+             title={isFreshIssue(b.issue_date) ? "размещён " + fmt.date(b.issue_date) : undefined}>
           {/* бейдж только у ОФЗ (см. BondTable): «КОРП» — шум на каждой строке */}
           {b.cls === "ofz" && <span className="fx-cls fx-ofz">ОФЗ</span>}
+          {b.face_unit && b.face_unit !== "RUB" && <span className="fx-cls" title="Валюта номинала выпуска">{b.face_unit}</span>}
           {(b.cls === "ofz" ? stripOfz(b.name) : b.name) || b.isin}
           {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
           {b.price_thin && <span className="badge-thin"
@@ -69,16 +71,29 @@ export const FIXED_COLS = [
         <div className="mat-main">
           {fmt.date(b.maturity_date) ?? <D />}
           {yearsTo(b.maturity_date) != null && (
-            <span className={"mat-yrs" + (b.put_date ? "" : " mat-hz")}>
+            <span className={"mat-yrs" + (b.put_date ? "" : " mat-hz")
+                             + (!b.put_date && isShortBond(b) ? " mat-short" : "")}
+                  title={!b.put_date && isShortBond(b) ? "короткая: до горизонта ≤ 6 мес" : undefined}>
               {" (" + yearsTo(b.maturity_date) + ")"}</span>
           )}
         </div>
         {b.put_date && (
           <div className="mat-offer" title={"оферта " + fmt.date(b.put_date) + " — метрики строки посчитаны к ней"}>
             <span className="offer-mark offer-put offer-mark-on">p</span>{fmt.date(b.put_date)}
-            {yearsTo(b.put_date) != null && <span className="mat-yrs mat-hz">{" (" + yearsTo(b.put_date) + ")"}</span>}
+            {yearsTo(b.put_date) != null && (
+              <span className={"mat-yrs mat-hz" + (isShortBond(b) ? " mat-short" : "")}
+                    title={isShortBond(b) ? "короткая: до горизонта ≤ 6 мес" : undefined}>
+                {" (" + yearsTo(b.put_date) + ")"}</span>
+            )}
           </div>
         )}
+      </td>
+    ) },
+  { key: "issue_date", label: "РАЗМЕЩ", w: 10,
+    title: "Дата размещения (начало первого купона по графику MOEX); свежие (≤30 дн) — зелёное имя",
+    cell: (b) => (
+      <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")} key="issue_date">
+        {fmt.date(b.issue_date) ?? <D />}
       </td>
     ) },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
@@ -101,8 +116,10 @@ export const FIXED_COLS = [
       return <td className={"num " + (d == null ? "" : d >= 0 ? "pos" : "neg")} key="delta_to_prev_close">
         {d == null ? <D /> : <>{fmt.signed(d)} {d >= 0 ? "▲" : "▼"}</>}</td>;
     } },
-  { key: "dirty", label: "DIRTY", sub: "RUB", align: "num", w: 9,
-    cell: (b) => <td className={"num" + ms(b)} key="dirty">{fmt.num(b.dirty) ?? <D />}</td> },
+  { key: "dirty", label: "DIRTY", sub: "НОМИНАЛ", align: "num", w: 9,
+    cell: (b) => <td className={"num" + ms(b)} key="dirty"
+      title={`грязная цена одной бумаги в валюте номинала (${b.face_unit || "RUB"})`}>
+      {fmt.num(b.dirty) ?? <D />} {b.dirty != null ? (b.face_unit || "RUB") : ""}</td> },
   // ── ликвидность ──
   { key: "val_today", label: "VOL", sub: "СЕГОДНЯ, М₽", align: "num", grp: true, w: 9,
     cell: (b) => <td className="num" key="val_today" title="оборот сегодня, ₽ (VALTODAY MOEX / тики Alor)">
@@ -133,8 +150,10 @@ export const FIXED_COLS = [
     cell: (b) => <td className={"num" + ms(b)} key="mod_dur">{b.mod_dur == null ? <D /> : fmt.num(b.mod_dur, 2)}</td> },
   { key: "convexity", label: "CONV", sub: "ВЫПУКЛ.", align: "num", w: 8,
     cell: (b) => <td className={"num" + ms(b)} key="convexity">{b.convexity == null ? <D /> : fmt.num(b.convexity, 1)}</td> },
-  { key: "dv01", label: "DV01", sub: "₽/БП", align: "num", w: 7,
-    cell: (b) => <td className={"num" + ms(b)} key="dv01">{b.dv01 == null ? <D /> : fmt.num(b.dv01, 2)}</td> },
+  { key: "dv01", label: "DV01", sub: "НОМ/БП", align: "num", w: 7,
+    cell: (b) => <td className={"num" + ms(b)} key="dv01"
+      title={`изменение цены одной бумаги на 1 б.п. в валюте номинала (${b.face_unit || "RUB"})`}>
+      {b.dv01 == null ? <D /> : fmt.num(b.dv01, 2)}</td> },
 ];
 
 export const FIXED_COL_META = FIXED_COLS.map(({ key, label, sub }) => ({ key, label, sub }));

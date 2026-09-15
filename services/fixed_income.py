@@ -16,6 +16,7 @@ import re
 import json
 import time
 import logging
+from collections import OrderedDict
 from datetime import date
 from typing import List, Optional, Tuple, Dict
 
@@ -26,6 +27,145 @@ from services.market_data import moex_client, MarketDataService, _moex_get
 from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
+
+
+# YTM — самый дорогой кусок витрины: один уровень цены запускает xirr и три
+# xnpv. Котировка приходит раз в несколько секунд, но у большинства выпусков
+# цена между тиками не меняется. Кэшируем только точную пару «поток + цена»,
+# без округления/интерполяции и без кривой: кривая может обновиться независимо
+# от стакана, поэтому G-spread ниже всегда собирается из актуальной кривой.
+_PRICE_METRICS_CACHE_MAX = 20_000
+_price_metrics_cache: OrderedDict[tuple, dict] = OrderedDict()
+_z_spread_cache: OrderedDict[tuple, Optional[int]] = OrderedDict()
+_CASHFLOW_TEMPLATE_CACHE_MAX = 3_000
+_cashflow_template_cache: OrderedDict[tuple, tuple] = OrderedDict()
+
+
+def clear_price_metrics_cache() -> None:
+    """Сброс для тестов и явной инвалидации при необходимости."""
+    _price_metrics_cache.clear()
+    _z_spread_cache.clear()
+    _cashflow_template_cache.clear()
+
+
+def _schedule_cache_key(schedule: dict) -> tuple:
+    """Содержательный ключ потока, а не id объекта: расписание может обновиться
+    в течение одного процесса после корректировки MOEX."""
+    coupons = tuple((c.get("end"), c.get("value"), c.get("face"))
+                    for c in (schedule.get("coupons") or []))
+    amorts = tuple((a.get("date"), a.get("value"))
+                   for a in (schedule.get("amorts") or []))
+    return coupons, amorts
+
+
+def _price_metrics_key(row: dict, schedule: dict, price_pct: float,
+                       accrued: float, calc_date: date, exchange_face) -> tuple:
+    return (
+        row.get("isin"),
+        float(price_pct),
+        float(accrued or 0.0),
+        calc_date.isoformat(),
+        float(exchange_face) if exchange_face is not None else None,
+        _schedule_cache_key(schedule),
+    )
+
+
+def _cashflow_template_key(schedule: dict, calc_date: date, exchange_face) -> tuple:
+    return (
+        calc_date.isoformat(),
+        float(exchange_face) if exchange_face is not None else None,
+        _schedule_cache_key(schedule),
+    )
+
+
+def _cashflows_at_date(schedule: dict, calc_date: date, exchange_face):
+    """Неизменяемый шаблон потока на выпуск/дату расчёта.
+
+    На новом уровне BID/ASK меняется только dirty price. Разбор купонов,
+    амортизаций и оферты повторно не делаем; сами доходности ниже по-прежнему
+    решаются точно для каждой новой цены.
+    """
+    key = _cashflow_template_key(schedule, calc_date, exchange_face)
+    cached = _cashflow_template_cache.get(key)
+    if cached is None:
+        cfs, face, put_date = build_fixed_cashflows(schedule, calc_date, exchange_face)
+        cached = (tuple(cfs), face, put_date)
+        _cashflow_template_cache[key] = cached
+        if len(_cashflow_template_cache) > _CASHFLOW_TEMPLATE_CACHE_MAX:
+            _cashflow_template_cache.popitem(last=False)
+    else:
+        _cashflow_template_cache.move_to_end(key)
+    return cached
+
+
+def _metrics_at_price(row: dict, schedule: dict, price_pct: float, accrued: float,
+                      calc_date: date, g_curve, exchange_face) -> dict:
+    """Точные метрики уровня цены с LRU базовой математики.
+
+    В кэше лежит результат без КБД и с внутренними неокруглёнными y/duration.
+    Это позволяет не гонять xirr/xnpv повторно, но пересчитывать G-spread
+    буквально по той же формуле при каждой новой версии кривой.
+    """
+    key = _price_metrics_key(row, schedule, price_pct, accrued, calc_date, exchange_face)
+    base = _price_metrics_cache.get(key)
+    if base is None:
+        base = fixed_metrics_from_schedule(
+            schedule, price_pct, accrued, calc_date, exchange_face=exchange_face,
+            _include_raw=True,
+        )
+        _price_metrics_cache[key] = base
+        if len(_price_metrics_cache) > _PRICE_METRICS_CACHE_MAX:
+            _price_metrics_cache.popitem(last=False)
+    else:
+        _price_metrics_cache.move_to_end(key)
+
+    # Не отдаём служебные неокруглённые значения в API/внутренние строки.
+    out = {k: v for k, v in base.items() if not k.startswith("_")}
+    y = base.get("_ytm_raw")
+    mod_dur = base.get("_mod_dur_raw")
+    if (y is not None and mod_dur is not None and g_curve is not None
+            and getattr(g_curve, "ok", lambda: False)()):
+        tau = max(mod_dur * (1.0 + y), 0.01)
+        out["g_spread_bps"] = round((y - g_curve.r(tau)) * 10000.0)
+    return out
+
+
+def _g_curve_cache_key(g_curve) -> Optional[tuple]:
+    """Точный отпечаток КБД для кэша Z-спреда.
+
+    Рабочая GCurve хранит именно эти точки. Если передали совместимый, но другой
+    объект кривой, не рискуем старым Z — просто не кэшируем его.
+    """
+    try:
+        return tuple(g_curve.xs), tuple(g_curve.ys)
+    except (AttributeError, TypeError):
+        return None
+
+
+def _z_spread_at_price(row: dict, schedule: dict, price_pct: float, accrued: float,
+                       calc_date: date, g_curve, exchange_face, dirty: float) -> Optional[int]:
+    """Точный Z-спред с кэшем по цене, потоку и всем узлам КБД."""
+    curve_key = _g_curve_cache_key(g_curve)
+    if curve_key is None:
+        return _solve_z_spread(schedule, calc_date, g_curve, exchange_face, dirty)
+    key = (_price_metrics_key(row, schedule, price_pct, accrued, calc_date, exchange_face),
+           curve_key)
+    if key in _z_spread_cache:
+        _z_spread_cache.move_to_end(key)
+        return _z_spread_cache[key]
+    value = _solve_z_spread(schedule, calc_date, g_curve, exchange_face, dirty)
+    _z_spread_cache[key] = value
+    if len(_z_spread_cache) > _PRICE_METRICS_CACHE_MAX:
+        _z_spread_cache.popitem(last=False)
+    return value
+
+
+def _solve_z_spread(schedule: dict, calc_date: date, g_curve, exchange_face,
+                    dirty: float) -> Optional[int]:
+    """Один фактический прогон Z-солвера, вынесен для точного LRU выше."""
+    from services.zspread import solve_z_discrete
+    cfs, _face, _put = _cashflows_at_date(schedule, calc_date, exchange_face)
+    return solve_z_discrete(g_curve, cfs, calc_date, dirty) if cfs else None
 
 
 def _issuer_of(name: str) -> str:
@@ -126,6 +266,7 @@ def fixed_metrics_from_schedule(
     calc_date: date,
     g_curve=None,
     exchange_face=None,
+    _include_raw: bool = False,
 ) -> dict:
     """{'ytm_pct','mod_dur','dv01','g_spread_bps','dirty','face_current','complete'}.
 
@@ -135,7 +276,7 @@ def fixed_metrics_from_schedule(
     out = {"ytm_pct": None, "mod_dur": None, "mac_dur": None, "convexity": None,
            "dv01": None, "g_spread_bps": None, "dirty": None, "face_current": None,
            "put_date": None}
-    cfs, face, put_date = build_fixed_cashflows(schedule, calc_date, exchange_face)
+    cfs, face, put_date = _cashflows_at_date(schedule, calc_date, exchange_face)
     if face is None:
         # график амортизаций пришёл обрезанным — метрики считать не на чем
         out["incomplete_schedule"] = True
@@ -153,7 +294,7 @@ def fixed_metrics_from_schedule(
     # якорь = ДАТА ПОСТАВКИ (T+1 раб; пятница → понедельник): dirty платится
     # на settle, YTM/дюрация считаются от неё — та же конвенция, что у флоатеров
     settle = settle_date(calc_date)
-    flows = [(settle, -dirty)] + cfs
+    flows = [(settle, -dirty), *cfs]
     y = xirr(flows)
     if y is None:
         return out
@@ -163,7 +304,7 @@ def fixed_metrics_from_schedule(
     # (xnpv дисконтирует к дате ПЕРВОГО элемента) — иначе PV считается на дату
     # первого купона и pv0≠dirty, что искажает знаменатель выпуклости.
     dy = 0.001
-    anchored = [(settle, 0.0)] + cfs
+    anchored = [(settle, 0.0), *cfs]
     try:
         pv_dn = xnpv(y - dy, anchored)
         pv_up = xnpv(y + dy, anchored)
@@ -177,6 +318,12 @@ def fixed_metrics_from_schedule(
     out["mac_dur"] = round(mod_dur * (1.0 + y), 2)  # Маколей при эффективной годовой
     out["dv01"] = round(mod_dur * dirty * 1e-4, 4)  # ₽(валюта)/бумагу на 1бп
     out["convexity"] = round((pv_dn + pv_up - 2.0 * pv0) / (pv0 * dy * dy), 2)
+
+    if _include_raw:
+        # Внутреннее значение для точного G-spread из LRU-кэша: публичная YTM
+        # остаётся округлённой, как и раньше.
+        out["_ytm_raw"] = y
+        out["_mod_dur_raw"] = mod_dur
 
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)():
         # тенор КБД матчим по Маколею (как НРД), не по модифицированной
@@ -198,10 +345,6 @@ _BOARDS = {"TQOB": "ofz", "TQCB": "corp"}
 _UNI_TTL = 3600.0
 _CORP_CAP = 700          # максимум корпоратов (топ по обороту) — bounds прогрев
 _uni_mem: dict = {"ts": 0.0, "rows": None}
-# отсекаем по имени: валютные/замещающие (не прямой рублёвый фикс)
-_SKIP_NAME = ("CNY", "USD", "EUR", "GLD", "ЗАМ", "ЗО2", "ЗО3")
-
-
 def _numf(v) -> Optional[float]:
     try:
         return float(v) if v is not None else None
@@ -277,19 +420,16 @@ async def _fetch_fixed_board(client, board: str) -> List[dict]:
 
 
 def _is_fixed(row: dict, board: str, floaters: set) -> bool:
-    """Рублёвый фикс? ОФЗ-ПД — серии SU25/SU26 (SU29=ПК, SU52=ИН отсекаются).
-    Корпорат — купон>0 и НЕ известный флоатер (реестр)."""
+    """Фиксированный купон любого номинала.
+
+    Рубль остаётся стартовым отбором витрины, но валюта выбирается на фронте.
+    Поэтому не вырезаем замещающие/валютные выпуски здесь: иначе фильтр валюты
+    был бы декоративным. G/Z-спред к рублёвой КБД для них намеренно не считаем.
+    """
     if row["isin"] in floaters:
         return False
     if (row.get("secid") or "").startswith("BYM"):
         return False  # РесБел (Белоруссия) — квазисуверен под санкциями, вне скоупа
-    # только рублёвые: FACEUNIT=SUR/RUB (валютные/замещающие исключаем)
-    fu = row.get("faceunit") or ""
-    if fu and fu not in ("SUR", "RUB", "RUR"):
-        return False
-    name = (row.get("name") or "").upper()
-    if any(s in name for s in _SKIP_NAME):
-        return False
     cp = row.get("coupon_pct")
     if cp is None or cp <= 0 or not row.get("maturity_date"):
         return False
@@ -392,8 +532,7 @@ def fixed_side_metrics(row: dict, full: dict, g_curve, calc_date: date,
         key = round(float(px), 4)
         if key in out:
             continue
-        m = fixed_metrics_from_schedule(full, px, accrued, calc_date, g_curve,
-                                        exchange_face=face)
+        m = _metrics_at_price(row, full, px, accrued, calc_date, g_curve, face)
         out[key] = {"ytm": m.get("ytm_pct"), "g_spread_bps": m.get("g_spread_bps")}
     return out
 
@@ -427,6 +566,12 @@ def _static_flags(out: dict, row: dict, full: dict, calc_date: date) -> None:
     # (единственная запись — обычное погашение в конце).
     out["has_amort"] = sum(1 for a in (full.get("amorts") or [])
                            if a.get("value") is not None) > 1
+    # Дата размещения — начало ПЕРВОГО купона в графике MOEX: у фиксов в реестре
+    # инструментов лежит лишь часть универса (реестр — про флоатеры), а
+    # bondization уже в руках у всех. Начало первого купона = дата размещения
+    # (стаб первого периода начинается в день размещения, не в день выпуска).
+    starts = sorted(c.get("start") for c in (full.get("coupons") or []) if c.get("start"))
+    out["issue_date"] = row.get("issue_date") or (starts[0] if starts else None)
     # Тонкая цена: последняя цена MOEX старше 4 дней — бумага не торговалась,
     # метрики сняты с несвежего принта. Правило то же, что у флоатеров
     # (services/universe): возраст PREVDATE, а не NUMTRADES.
@@ -456,12 +601,18 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     _static_flags(out, row, full, calc_date)
     if px is None or not full.get("coupons"):
         return out
-    m = fixed_metrics_from_schedule(full, px, row.get("accrued") or 0.0, calc_date,
-                                    g_curve,
-                                    # номинал НА ДАТУ ПОСТАВКИ: face — на сегодня,
-                                    # а Σ будущих траншей считается от settle, и
-                                    # транш в окне (calc, settle] давал ложный отказ
-                                    exchange_face=row.get("settle_face") or row.get("face"))
+    # КБД ОФЗ — рублёвая кривая. Доходность/дюрация валютной бумаги валидны в
+    # её номинале, но вычитать из них RUB-кривую и называть результат спредом
+    # нельзя. Передаём None, чтобы G/Z остались честным прочерком.
+    face_unit = (row.get("faceunit") or "RUB").upper()
+    ruble_face = face_unit in ("", "RUB", "SUR", "RUR")
+    curve = g_curve if ruble_face else None
+    m = _metrics_at_price(
+        row, full, px, row.get("accrued") or 0.0, calc_date, curve,
+        # номинал НА ДАТУ ПОСТАВКИ: face — на сегодня, а Σ будущих траншей
+        # считается от settle; транш в окне (calc, settle] давал ложный отказ.
+        row.get("settle_face") or row.get("face"),
+    )
     out.update({
         "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
@@ -470,14 +621,18 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
         # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
         # флоатеров, чтобы арифметика книги на фронте была одна на две витрины
-        "face_value_rub": m.get("face_current"),
-        "accrued_rub": row.get("accrued"),
+        # Фильтр объёма задан в рублях. Для валютного номинала не подменяем
+        # номинальные деньги рублями без FX-конверсии: такой фильтр выключит
+        # строку, а не нарисует ложный объём.
+        "face_value_rub": m.get("face_current") if ruble_face else None,
+        "accrued_rub": row.get("accrued") if ruble_face else None,
     })
     # МЕТРИКИ ПО ДРУГИМ ЦЕНАМ той же бумаги: средневзвес дня и стороны стакана.
     # Средневзвес — база аналитики: last price это ОДНА сделка, в неликвиде
     # случайный тонкий принт, часто на закрытии. Свой тиковый средневзвес
     # впереди биржевого: WAPRICE из ISS отстаёт. Стороны стакана — то, по чему
-    # реально торгуют. Всё считается ПРЯМЫМ пересчётом (см. fixed_side_metrics).
+    # реально торгуют. Каждый новый уровень считается прямым пересчётом; уже
+    # встречавшийся точный уровень берётся из LRU (см. fixed_side_metrics).
     if price_override is None:
         wap = pick_wap(row)
         bid, ask = row.get("bid"), row.get("ask")
@@ -485,7 +640,7 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         out["bid"] = bid
         out["ask"] = ask
         sides = fixed_side_metrics(
-            row, full, g_curve, calc_date, (wap, bid, ask),
+            row, full, curve, calc_date, (wap, bid, ask),
             known={round(float(px), 4): {"ytm": m.get("ytm_pct"),
                                          "g_spread_bps": m.get("g_spread_bps")}})
         for price, g_key, y_key in ((wap, "g_spread_wap_bps", "ytm_wap"),
@@ -496,13 +651,12 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
             out[y_key] = (m_side or {}).get("ytm")
 
     # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
-    if g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
+    if ruble_face and g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
         try:
-            from services.zspread import solve_z_discrete
-            cfs, _face, _put = build_fixed_cashflows(
-                full, calc_date, row.get("settle_face") or row.get("face"))
-            if cfs:
-                out["z_spread_bps"] = solve_z_discrete(g_curve, cfs, calc_date, m["dirty"])
+            out["z_spread_bps"] = _z_spread_at_price(
+                row, full, px, row.get("accrued") or 0.0, calc_date, g_curve,
+                row.get("settle_face") or row.get("face"), m["dirty"],
+            )
         except Exception as e:
             logger.warning(f"fixed z-spread error {row.get('isin')}: {e}")
     # текущая доходность = годовой купон / чистая цена

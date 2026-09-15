@@ -19,7 +19,7 @@ _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 # поля метрик, доливаемые в строку из market_cache['fixed_metrics']
 _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
-                "dv01", "put_date",
+                "dv01", "put_date", "issue_date",
                 # средневзвес дня и g-спред по нему — база графиков аналитики
                 # (last price в неликвиде это один случайный принт)
                 "wap_pct", "g_spread_wap_bps", "ytm_wap",
@@ -103,6 +103,10 @@ async def get_fixed(
             "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
             "ratings_ea": ea.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
+            # Валюта номинала — отдельна от валюты расчётов и нужна фильтру
+            # витрины. Старые коды рубля приводим к одному значению на UI.
+            "face_unit": "RUB" if (u.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
+                         else (u.get("faceunit") or "RUB").upper(),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             "adv_1m_rub": adv.get(u["isin"]),
             # цена: из метрик (last→prev с флагом) иначе сырой board
@@ -226,6 +230,8 @@ async def get_fixed_details(isin: str = Path(...)):
         "reference": {
             "isin": isin, "secid": secid, "name": row.get("name"), "cls": row.get("cls"),
             "board": board, "maturity_date": row.get("maturity_date"),
+            "face_unit": "RUB" if (row.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
+                         else (row.get("faceunit") or "RUB").upper(),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
             "issuer": row.get("issuer"), "rating": ratings.bucket_of_fixed(isin, row.get("cls")),
             "ratings_ea": ratings_br.ea_map([isin]).get(isin),
