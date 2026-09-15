@@ -244,6 +244,11 @@ td.mut { color: var(--mut); }
 .ofz-vol-other { fill: var(--mut); fill-opacity: .12; }
 .ofz-vol:hover rect { fill-opacity: .7; }
 .ofz-vol-axis { fill: var(--mut-2); }
+/* бид/оффер у точки: тонкая вертикаль YTM(бид)…YTM(оффер), засечки цветом стороны */
+.ofz-ba-line { stroke: var(--mut); stroke-width: 1; opacity: .7; }
+.ofz-ba-cap { stroke-width: 1.5; }
+.ofz-ba-bid { stroke: var(--up); }
+.ofz-ba-ask { stroke: var(--down); }
 
 /* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
 .pchart { margin-bottom: 20px; }

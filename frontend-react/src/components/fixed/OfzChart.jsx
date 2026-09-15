@@ -86,10 +86,16 @@ export function CurveDeltaStrip({ now, prev, date, requested }) {
 }
 
 // Тултип точки: то же, что раньше, плюс строка ΔYTM, когда включён сдвиг.
-function pointTip(p, cmpDate) {
+function pointTip(p, cmpDate, bidAsk) {
   let s = `${p.name}\nYTM ${fmt.pct(p.y)} · КБД ${fmt.pct(p.curve)}\n`
     + `отклонение ${fmt.devBps(p.g)} б.п. · дюрация ${fmt.yrs(p.x)}\n`
     + `цена ${fmt.pct(p.px) ?? "—"} (${BASE_LABEL[p.base] ?? p.base})`;
+  if (bidAsk && (p.yb != null || p.ya != null)) {
+    // ширина по доходности: бид (продать) даёт YTM выше, оффер (купить) — ниже
+    const w = p.yb != null && p.ya != null ? ` · ширина ${fmt.devBps((p.yb - p.ya) * 100)} бп` : "";
+    s += `\nбид ${fmt.pct(p.pb) ?? "—"} → YTM ${fmt.pct(p.yb) ?? "—"}`
+      + ` · оффер ${fmt.pct(p.pa) ?? "—"} → YTM ${fmt.pct(p.ya) ?? "—"}${w}`;
+  }
   if (p.y0 != null) {
     const d = (p.y - p.y0) * 100;
     s += `\nΔYTM ${fmt.devBps(d)} бп${cmpDate ? ` с ${fmt.date(cmpDate)}` : ""}`
@@ -99,7 +105,7 @@ function pointTip(p, cmpDate) {
 }
 
 // ── Scatter: YTM × дюрация поверх КБД (+ вторая кривая и тени точек) ──
-function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, onOpen }) {
+function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, bidAsk, onOpen }) {
   const cIn = curve.filter((c) => c.years <= xmax);
   const cCmpIn = (curveCmp || []).filter((c) => c.years <= xmax);
   // Домен Y — по бумагам, теням И обеим кривым в этом же окне сроков: кривая,
@@ -107,6 +113,7 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, on
   const ys = [
     ...pts.map((p) => p.y),
     ...pts.filter((p) => p.y0 != null).map((p) => p.y0),
+    ...(bidAsk ? pts.flatMap((p) => [p.yb, p.ya]).filter((v) => v != null) : []),
     ...cIn.map((c) => c.yield_pct),
     ...cCmpIn.map((c) => c.yield_pct),
   ];
@@ -147,11 +154,23 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, on
                 </g>
               );
             })}
+            {/* полоска бид/оффер: от YTM по биду (выше) до YTM по офферу
+                (ниже) с засечками на концах; точка средневзвеса — поверх */}
+            {bidAsk && pts.filter((p) => p.yb != null || p.ya != null).map((p) => {
+              const x = sx(p.x), y1 = sy(p.yb ?? p.y), y2 = sy(p.ya ?? p.y);
+              return (
+                <g key={"ba" + p.isin} className="ofz-ba" data-testid="ofz-ba">
+                  <line x1={x} x2={x} y1={y1} y2={y2} className="ofz-ba-line" />
+                  {p.yb != null && <line x1={x - 3} x2={x + 3} y1={y1} y2={y1} className="ofz-ba-cap ofz-ba-bid" />}
+                  {p.ya != null && <line x1={x - 3} x2={x + 3} y1={y2} y2={y2} className="ofz-ba-cap ofz-ba-ask" />}
+                </g>
+              );
+            })}
             {pts.map((p) => (
               <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.6}
                 className={"ofz-pt" + (p.g == null ? "" : p.g >= 0 ? " cheap" : " rich")}
                 onClick={onOpen ? (e) => onOpen(p.isin, e.currentTarget, "fixed") : undefined}
-                {...bind(sx(p.x), sy(p.y), pointTip(p, cmpDate))} />
+                {...bind(sx(p.x), sy(p.y), pointTip(p, cmpDate, bidAsk))} />
             ))}
             {labels && placeLabels(pts, sx, sy, W, SC_PAD.r, 9,
               (p, short) => `${short} ${p.g == null ? "" : fmt.devBps(p.g)}`).map((l) => (
@@ -241,7 +260,7 @@ function VolumeBars({ pts, volumes, sx, W, H, bind }) {
  *           date — фактическая дата as-of, curveDate — фактическая дата КБД
  * volumes — ответ /ofz/volumes или null
  */
-export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, onOpen }) {
+export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, bidAsk, onOpen }) {
   if (ptsIn.length < 2) return <div className="an-empty">мало данных: метрики ОФЗ ещё прогреваются</div>;
   // тени живут ТОЛЬКО в режиме сравнения: выключенный режим при ещё не
   // обновлённых строках не должен оставлять на графике прошлые точки
@@ -257,7 +276,7 @@ export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, onOp
           date={cmp.curveDate} requested={cmp.curveRequested} />
       )}
       <CurveScatter pts={pts} curve={cNow} curveCmp={cCmp} cmpDate={cmp?.date}
-        xmax={xmax} labels={labels} volumes={volumes} onOpen={onOpen} />
+        xmax={xmax} labels={labels} volumes={volumes} bidAsk={bidAsk} onOpen={onOpen} />
     </div>
   );
 }

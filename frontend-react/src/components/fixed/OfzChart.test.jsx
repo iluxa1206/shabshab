@@ -11,7 +11,7 @@ import OfzChart, { curveDelta, normCurve } from "./OfzChart.jsx";
 
 const PTS = [
   { isin: "RU000A26238", name: "26238", x: 6.2, y: 15.1, g: 12, curve: 14.98, px: 55.2, base: "wap",
-    x0: 6.25, y0: 15.0 },
+    x0: 6.25, y0: 15.0, yb: 15.18, ya: 15.02, pb: 55.0, pa: 55.4 },
   { isin: "RU000A26240", name: "26240", x: 4.1, y: 15.4, g: -8, curve: 15.48, px: 61.0, base: "wap",
     x0: null, y0: null },
   { isin: "RU000A26247", name: "26247", x: 7.9, y: 14.9, g: 3, curve: 14.87, px: 82.3, base: "wap",
@@ -79,6 +79,18 @@ describe("OfzChart", () => {
     expect(strip.textContent).toMatch(/1Y \+8/);
     expect(strip.textContent).toMatch(/10Y -2/);
     expect(strip.textContent).not.toMatch(/15Y/);
+  });
+
+  it("бид/оффер: полоска только по чипу и только у бумаг со стаканом", () => {
+    const off = render(
+      <OfzChart pts={PTS} curve={CURVE_NOW} cmp={null} volumes={null} labels={false} bidAsk={false} />);
+    expect(off.container.querySelectorAll("g.ofz-ba").length).toBe(0);
+    cleanup();
+    const on = render(
+      <OfzChart pts={PTS} curve={CURVE_NOW} cmp={null} volumes={null} labels={false} bidAsk={true} />);
+    expect(on.container.querySelectorAll("g.ofz-ba").length).toBe(1);   // стакан есть только у 26238
+    expect(on.container.querySelectorAll("line.ofz-ba-bid").length).toBe(1);
+    expect(on.container.querySelectorAll("line.ofz-ba-ask").length).toBe(1);
   });
 
   it("оборота нет — столбиков и шкалы объёма нет, график не падает", () => {

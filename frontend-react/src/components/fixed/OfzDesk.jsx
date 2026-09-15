@@ -81,6 +81,9 @@ const cmpRequestDate = (cmp) => {
 export default function OfzDesk({ onOpen }) {
   const [base, setBase] = useState(() => localStorage.getItem("ofzBase") || "wap");
   const [labels, setLabels] = useState(() => localStorage.getItem("ofzLabels") !== "0");
+  // полоски бид/оффер у точек: YTM по стакану — читается ширина рынка по
+  // доходности прямо на кривой (по умолчанию выключено — шумно на 60 точках)
+  const [bidAsk, setBidAsk] = useState(() => localStorage.getItem("ofzBidAsk") === "1");
   // таблица — та же, что в мониторе ФИКСОВ; сортировка по умолчанию по сроку,
   // как и там (срок = горизонт прайсинга, см. horizon.js)
   const [sort, setSort] = useState({ key: "maturity_date", dir: "asc" });
@@ -172,10 +175,15 @@ export default function OfzDesk({ onOpen }) {
   const pts = useMemo(() => rows
     .filter((b) => b.tau != null && b.tau > 0 && b.pt_ytm != null)
     .map((b) => ({ x: b.tau, y: b.pt_ytm, g: b.pt_g, curve: b.curve, px: b.pt_px,
+                   yb: b.ytm_bid ?? null, ya: b.ytm_ask ?? null, pb: b.bid ?? null, pa: b.ask ?? null,
                    isin: b.isin, name: b.pt_name, base: b.base,
                    x0: b.tau_cmp, y0: b.ytm_cmp })), [rows]);
 
   const setBaseSaved = (id) => { setBase(id); localStorage.setItem("ofzBase", id); };
+  const toggleBidAsk = () => setBidAsk((v) => {
+    localStorage.setItem("ofzBidAsk", v ? "0" : "1");
+    return !v;
+  });
   const toggleLabels = () => setLabels((v) => {
     localStorage.setItem("ofzLabels", v ? "0" : "1");
     return !v;
@@ -220,6 +228,8 @@ export default function OfzDesk({ onOpen }) {
                 onClick={() => setBaseSaved(id)} title={title}>{label}</button>
             ))}
           </span>
+          <button className={"chip-btn" + (bidAsk ? " on" : "")} onClick={toggleBidAsk}
+            title="полоска от YTM по биду до YTM по офферу у каждой точки (стакан MOEX)">Бид/Оффер</button>
           <button className={"chip-btn" + (labels ? " on" : "")} onClick={toggleLabels}
             title="подписи выпусков на графике (имя и отклонение от КБД)">Подписи</button>
           <button className={"chip-btn" + (chartOpen ? " on" : "")} onClick={toggleChart}
@@ -275,7 +285,7 @@ export default function OfzDesk({ onOpen }) {
         <>
           {chartOpen && (
             <OfzChart pts={pts} curve={curveQ.data?.points || []} cmp={cmpInfo}
-              volumes={volQ.data || null} labels={labels} onOpen={onOpen} />
+              volumes={volQ.data || null} labels={labels} bidAsk={bidAsk} onOpen={onOpen} />
           )}
 
           <FixedTable rows={rows} sort={sort} onSort={onSort} onOpen={onOpen}
