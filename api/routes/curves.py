@@ -2,7 +2,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, Query, HTTPException
 from typing import Literal
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 from api.schemas import (CurveResponse, ForwardRateResponse, CurveNode, CurveSegment,
@@ -162,25 +162,63 @@ async def get_curve_plot(
         rates_date=rates_date, quotes=q_out, samples=samples, warnings=warnings,
     )
 
+# глубина zcyc на ISS: раньше кривой нет, запрос старше — ошибка ввода, а не
+# «выходной», по которому шагаем назад
+_GCURVE_MIN_DATE = date(2014, 1, 1)
+_GCURVE_STEP_BACK = 7
+
+
 @router.get("/gcurve", tags=["Curves"])
-async def get_gcurve():
+async def get_gcurve(
+    date_: str = Query(None, alias="date", description="Дата КБД YYYY-MM-DD; без неё — сегодняшняя"),
+):
     """КБД ОФЗ МосБиржи (zcyc yearyields) точками: срок в годах → zero-yield, %.
 
     Отдаём ТОТ ЖЕ объект, по которому движок считает g/z-спреды фиксов
     (MarketDataService.get_gcurve) — витрина ОФЗ обязана рисовать бумаги и
     кривую в одних координатах, иначе «отклонение от КБД» на графике разойдётся
     с колонкой G-SPRD. curve_date — дата загруженной кривой: при сбое фетча
-    сервис отдаёт вчерашнюю, и это должно быть видно на странице."""
-    g = await MarketDataService.get_gcurve()
-    if g is None or not g.ok():
-        raise HTTPException(status_code=404, detail="G-curve unavailable")
-    cd = MarketDataService.gcurve_date()
-    return {
-        "curve_date": cd,
-        "stale": cd != date.today().isoformat(),
-        "points": [{"years": x, "yield_pct": round(y * 100.0, 4)}
-                   for x, y in zip(g.xs, g.ys)],
-    }
+    сервис отдаёт вчерашнюю, и это должно быть видно на странице.
+
+    С date= — кривая НА ДАТУ (архив gcurve_daily, при промахе ISS с date=).
+    Выходной/праздник у ISS — пустой data: шагаем назад до 7 дней и отдаём
+    ближайший торговый день; requested — что просили, curve_date — что нашли,
+    stale — что это не одна и та же дата."""
+    if date_ is None:
+        g = await MarketDataService.get_gcurve()
+        if g is None or not g.ok():
+            raise HTTPException(status_code=404, detail="G-curve unavailable")
+        cd = MarketDataService.gcurve_date()
+        return {
+            "curve_date": cd,
+            "stale": cd != date.today().isoformat(),
+            "points": [{"years": x, "yield_pct": round(y * 100.0, 4)}
+                       for x, y in zip(g.xs, g.ys)],
+        }
+
+    try:
+        req = date.fromisoformat(date_)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date: YYYY-MM-DD")
+    # «сегодня» — по Москве: ISS живёт в МСК, а контейнер в UTC — вечером
+    # московская дата уже следующая, и честный запрос падал бы как «будущее»
+    if req > datetime.now(timezone(timedelta(hours=3))).date():
+        raise HTTPException(status_code=400, detail="date в будущем")
+    if req < _GCURVE_MIN_DATE:
+        raise HTTPException(status_code=400,
+                            detail=f"КБД на ISS есть с {_GCURVE_MIN_DATE.isoformat()}")
+    for k in range(_GCURVE_STEP_BACK + 1):
+        d = req - timedelta(days=k)
+        pts = await MarketDataService.get_gcurve_points_on(d.isoformat())
+        if pts:
+            return {
+                "curve_date": d.isoformat(),
+                "requested": req.isoformat(),
+                "stale": d != req,
+                "points": [{"years": x, "yield_pct": round(y, 4)} for x, y in pts],
+            }
+    raise HTTPException(status_code=404,
+                        detail=f"КБД не найдена за {_GCURVE_STEP_BACK} дн до {req.isoformat()}")
 
 
 @router.get("", response_model=CurveResponse, tags=["Curves"])

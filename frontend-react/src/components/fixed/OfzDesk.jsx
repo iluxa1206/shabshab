@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchFixed, fetchGCurve } from "../../api.js";
-import { fmt, dmColor, stripOfz } from "../../format.js";
-import {
-  linearScale, linTicks, linePath, GridY, GridX, XTicks, MeasuredSvg,
-  termTicks, placeLabels,
-} from "../../charts/index.js";
+import { fetchFixed, fetchGCurve, fetchOfzAsof, fetchOfzVolumes } from "../../api.js";
+import { fmt, stripOfz } from "../../format.js";
+import { horizonDate } from "../../horizon.js";
+import OfzChart from "./OfzChart.jsx";
+import FixedTable, { useFixedCols } from "./FixedTable.jsx";
+import { OFZ_EXTRA_COLS } from "./fixedCols.jsx";
+import ColumnsMenu from "../ColumnsMenu.jsx";
 
 // ВИТРИНА ОФЗ — суверенная кривая крупным планом: те же строки, что в мониторе
 // фиксов (cls=ofz), но в координатах «доходность × дюрация» поверх КБД МосБиржи.
@@ -47,75 +48,46 @@ const tau = (b) => b.mac_dur ?? b.mod_dur ?? null;
 // g = (ytm − КБД(τ))·10000. Так число на странице не может разойтись со спредом.
 const curveAt = (ytm, g) => (ytm == null || g == null ? null : ytm - g / 100.0);
 
-const COLS = [
-  { key: "name", label: "Выпуск", cls: "left" },
-  { key: "maturity_date", label: "Погашение", cls: "left" },
-  { key: "tau", label: "Дюрация", sub: "Маколея, лет", cls: "num" },
-  { key: "coupon_pct", label: "Купон", sub: "%", cls: "num" },
-  { key: "px", label: "Цена", sub: "% номинала", cls: "num" },
-  { key: "ytm", label: "YTM", sub: "% годовых", cls: "num" },
-  { key: "curve", label: "КБД", sub: "% на τ", cls: "num" },
-  { key: "g", label: "Отклонение", sub: "б.п. к КБД", cls: "num" },
-  { key: "val_today", label: "Оборот", sub: "сегодня, млн ₽", cls: "num" },
-  { key: "adv_1m_rub", label: "ADV", sub: "1М, млн ₽", cls: "num" },
+// Режим сдвига (чипы «Δ: ВЫКЛ | ВЧЕРА | ДАТА»). В localStorage `ofzCmp` лежит
+// JSON {mode, date}: дата нужна только режиму date, но храним её и в off —
+// чтобы вернувшись к ДАТА, юзер увидел прежнюю, а не пустое поле.
+const CMP_MODES = [
+  ["off", "ВЫКЛ", "без сравнения"],
+  ["prev", "ВЧЕРА", "предыдущий торговый день: вторая КБД и тени точек с прошлой доходностью"],
+  ["date", "ДАТА", "произвольная дата сравнения"],
 ];
-
-const SC_PAD = { l: 46, r: 14, t: 14, b: 32 };
-
-// ── Scatter: YTM × дюрация поверх КБД ──
-function CurveScatter({ pts, curve, labels, onOpen }) {
-  if (pts.length < 2) return <div className="an-empty">мало данных: метрики ОФЗ ещё прогреваются</div>;
-  const xmax = Math.max(...pts.map((p) => p.x), 1) * 1.04;
-  // Домен Y — по бумагам И по кривой в этом же окне сроков: кривая, ушедшая за
-  // край, читалась бы как «все бумаги дорогие».
-  const cIn = curve.filter((c) => c.years <= xmax);
-  const ys = [...pts.map((p) => p.y), ...cIn.map((c) => c.yield_pct)];
-  const lo = Math.min(...ys), hi = Math.max(...ys);
-  const pad = (hi - lo) * 0.08 || 0.2;
-  return (
-    <MeasuredSvg height={330} label="доходность ОФЗ и КБД по дюрации" cursor={onOpen ? "pointer" : "default"}>
-      {({ W, H, bind }) => {
-        const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
-        const sy = linearScale([lo - pad, hi + pad], [H - SC_PAD.b, SC_PAD.t]);
-        const nx = Math.max(3, Math.round((W - SC_PAD.l - SC_PAD.r) / 70));
-        const xt = termTicks(0, xmax, nx).map((xv) => ({ x: sx(xv), label: fmt.yrs(xv) }));
-        return (
-          <>
-            <GridY ticks={linTicks(lo - pad, hi + pad, 4)} y={sy} x1={SC_PAD.l} x2={W - SC_PAD.r}
-              lineClass="an-grid" textClass="an-axis" label={(v) => v.toFixed(1).replace(".", ",")} />
-            <GridX ticks={xt} y1={SC_PAD.t} y2={H - SC_PAD.b} lineClass="an-grid an-grid-v" />
-            <XTicks ticks={xt} y={H - SC_PAD.b + 14} textClass="an-axis" />
-            {cIn.length > 1 && (
-              <path d={linePath(cIn, (c) => sx(c.years), (c) => sy(c.yield_pct))}
-                className="ofz-kbd" fill="none" />
-            )}
-            {pts.map((p) => (
-              <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.6}
-                className={"ofz-pt" + (p.g == null ? "" : p.g >= 0 ? " cheap" : " rich")}
-                onClick={onOpen ? (e) => onOpen(p.isin, e.currentTarget, "fixed") : undefined}
-                {...bind(sx(p.x), sy(p.y),
-                  `${p.name}\nYTM ${fmt.pct(p.y)} · КБД ${fmt.pct(p.curve)}\n`
-                  + `отклонение ${fmt.devBps(p.g)} б.п. · дюрация ${fmt.yrs(p.x)}\n`
-                  + `цена ${fmt.pct(p.px) ?? "—"} (${BASE_LABEL[p.base]})`)} />
-            ))}
-            {labels && placeLabels(pts, sx, sy, W, SC_PAD.r, 9,
-              (p, short) => `${short} ${p.g == null ? "" : fmt.devBps(p.g)}`).map((l) => (
-              <text key={l.key} x={l.x} y={l.y} className="an-pt-lbl">{l.txt}</text>
-            ))}
-            <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">дюрация, лет →</text>
-            <text x={SC_PAD.l - 40} y={SC_PAD.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${SC_PAD.l - 40} ${SC_PAD.t + 4})`}>доходность, %</text>
-          </>
-        );
-      }}
-    </MeasuredSvg>
-  );
-}
+// ЛОКАЛЬНАЯ дата, не toISOString: та отдаёт UTC, и вечером по Москве «вчера»
+// уезжало бы ещё на день назад.
+const isoDate = (d) => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"),
+  String(d.getDate()).padStart(2, "0")].join("-");
+const readCmp = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem("ofzCmp") || "null");
+    if (v && CMP_MODES.some(([id]) => id === v.mode)) return { mode: v.mode, date: v.date || "" };
+  } catch { /* битое значение — как будто его нет */ }
+  return { mode: "off", date: "" };
+};
+// Дата запроса по режиму: «вчера» — календарный вчера, до торгового дня бэк
+// шагает сам и возвращает фактическую дату (её и показываем). Для ДАТА без
+// введённой даты сравнения нет.
+const cmpRequestDate = (cmp) => {
+  if (cmp.mode === "prev") {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    return isoDate(d);
+  }
+  return cmp.mode === "date" && /^\d{4}-\d{2}-\d{2}$/.test(cmp.date) ? cmp.date : null;
+};
 
 export default function OfzDesk({ onOpen }) {
   const [base, setBase] = useState(() => localStorage.getItem("ofzBase") || "wap");
   const [labels, setLabels] = useState(() => localStorage.getItem("ofzLabels") !== "0");
-  const [sort, setSort] = useState({ key: "tau", dir: "asc" });
+  // таблица — та же, что в мониторе ФИКСОВ; сортировка по умолчанию по сроку,
+  // как и там (срок = горизонт прайсинга, см. horizon.js)
+  const [sort, setSort] = useState({ key: "maturity_date", dir: "asc" });
+  const cols = useFixedCols({ storageKey: "ofz", extraCols: OFZ_EXTRA_COLS });
+  const [chartOpen, setChartOpen] = useState(() => localStorage.getItem("ofzChart") !== "0");
+  const [cmp, setCmp] = useState(readCmp);
+  const cmpDate = cmpRequestDate(cmp);
 
   // Список фиксов — тот же кэш, что у монитора (ключ совпадает с react-query
   // ключом FixedMonitor нарочно: переход между вкладками не перезапрашивает).
@@ -129,53 +101,113 @@ export default function OfzDesk({ onOpen }) {
   // перепрашиваем раз в 10 минут, чтобы страница подхватила свежую сама.
   const curveQ = useQuery({
     queryKey: ["gcurve"],
-    queryFn: fetchGCurve,
+    queryFn: () => fetchGCurve(),
     refetchInterval: 600000,
     staleTime: 300000,
   });
+  // Сдвиг: КБД и as-of доходности на дату сравнения. Прошлое не меняется —
+  // держим в кэше долго; включены только когда дата определена.
+  const curveCmpQ = useQuery({
+    queryKey: ["gcurve", cmpDate],
+    queryFn: () => fetchGCurve(cmpDate),
+    enabled: !!cmpDate,
+    staleTime: 3600000,
+  });
+  const asofQ = useQuery({
+    queryKey: ["ofzAsof", cmpDate],
+    queryFn: () => fetchOfzAsof(cmpDate),
+    enabled: !!cmpDate,
+    staleTime: 3600000,
+  });
+  // Объём за сегодня — живой (val_today + адресные сделки), обновляем раз в
+  // минуту; при свёрнутом графике не дёргаем бэк вовсе.
+  const volQ = useQuery({
+    queryKey: ["ofzVolumes"],
+    queryFn: () => fetchOfzVolumes(),
+    enabled: chartOpen,
+    refetchInterval: 60000,
+    staleTime: 30000,
+  });
 
   const rows = useMemo(() => {
+    // as-of на дату сравнения мёржим В СТРОКУ: ΔYTM в бп нужен и точкам
+    // графика (тени), и таблице (колонка ΔYTM) — считаем один раз здесь.
+    // Поля таблицы (ytm/last_price_pct/…) не трогаем — таблица дублирует
+    // монитор ФИКСОВ и обязана показывать те же числа; тройка по выбранной
+    // базе цены живёт под своими ключами только для графика.
+    const asof = cmpDate ? (asofQ.data?.items || {}) : {};
     const out = (listQ.data?.items || [])
       .filter((b) => b.cls === "ofz")
       .map((b) => {
         const v = byBase(b, base);
+        const a = asof[b.isin];
+        const ytmCmp = a?.ytm ?? null;
         return {
-          ...b, ...v, base,
-          name: stripOfz(b.name) || b.isin,
+          ...b, base,
+          // строка в формате монитора (FixedMonitor делает так же)
+          short_name: b.name, emitter_name: b.issuer, is_ofz: true,
+          pt_name: stripOfz(b.name) || b.isin,
+          pt_px: v.px, pt_ytm: v.ytm, pt_g: v.g,
           tau: tau(b),
           curve: curveAt(v.ytm, v.g),
+          ytm_cmp: ytmCmp,
+          tau_cmp: a?.tau ?? null,
+          d_ytm_cmp: v.ytm != null && ytmCmp != null ? (v.ytm - ytmCmp) * 100 : null,
         };
       });
     const { key, dir } = sort;
     const k = dir === "asc" ? 1 : -1;
     return out.sort((a, b) => {
-      const x = a[key], y = b[key];
+      // срок — по горизонту прайсинга, как в мониторе
+      const x = key === "maturity_date" ? horizonDate(a) : a[key];
+      const y = key === "maturity_date" ? horizonDate(b) : b[key];
       if (x == null && y == null) return 0;
       if (x == null) return 1;          // прочерки всегда внизу
       if (y == null) return -1;
       if (typeof x === "string") return k * x.localeCompare(y);
       return k * (x - y);
     });
-  }, [listQ.data, base, sort]);
+  }, [listQ.data, base, sort, cmpDate, asofQ.data]);
 
   const pts = useMemo(() => rows
-    .filter((b) => b.tau != null && b.tau > 0 && b.ytm != null)
-    .map((b) => ({ x: b.tau, y: b.ytm, g: b.g, curve: b.curve, px: b.px,
-                   isin: b.isin, name: b.name, base: b.base })), [rows]);
+    .filter((b) => b.tau != null && b.tau > 0 && b.pt_ytm != null)
+    .map((b) => ({ x: b.tau, y: b.pt_ytm, g: b.pt_g, curve: b.curve, px: b.pt_px,
+                   isin: b.isin, name: b.pt_name, base: b.base,
+                   x0: b.tau_cmp, y0: b.ytm_cmp })), [rows]);
 
   const setBaseSaved = (id) => { setBase(id); localStorage.setItem("ofzBase", id); };
   const toggleLabels = () => setLabels((v) => {
     localStorage.setItem("ofzLabels", v ? "0" : "1");
     return !v;
   });
-  const onSort = (key) => setSort((s) => (
-    s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
-      : { key, dir: key === "name" || key === "maturity_date" ? "asc" : "desc" }
-  ));
+  const toggleChart = () => setChartOpen((v) => {
+    localStorage.setItem("ofzChart", v ? "0" : "1");
+    return !v;
+  });
+  const setCmpSaved = (next) => {
+    setCmp(next);
+    localStorage.setItem("ofzCmp", JSON.stringify(next));
+  };
+  const onSort = useCallback((key) => setSort((s) => (
+    s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }
+  )), []);
 
   const cheapest = pts.reduce((a, p) => (p.g != null && (a == null || p.g > a.g) ? p : a), null);
   const richest = pts.reduce((a, p) => (p.g != null && (a == null || p.g < a.g) ? p : a), null);
   const curveDate = curveQ.data?.curve_date;
+  // Сводка сравнения для графика: фактические даты as-of и КБД (могут
+  // отличаться от запрошенной — выходной), сами точки прошлой кривой.
+  const cmpInfo = useMemo(() => {
+    if (!cmpDate || (!asofQ.data && !curveCmpQ.data)) return null;
+    return {
+      date: asofQ.data?.date || curveCmpQ.data?.curve_date || cmpDate,
+      requested: cmpDate,
+      curve: curveCmpQ.data?.points || [],
+      curveDate: curveCmpQ.data?.curve_date || null,
+      curveRequested: curveCmpQ.data?.requested || cmpDate,
+    };
+  }, [cmpDate, asofQ.data, curveCmpQ.data]);
+  const asofN = cmpDate ? Object.keys(asofQ.data?.items || {}).length : 0;
 
   return (
     <div className="issuer-agg ofz-desk">
@@ -190,6 +222,23 @@ export default function OfzDesk({ onOpen }) {
           </span>
           <button className={"chip-btn" + (labels ? " on" : "")} onClick={toggleLabels}
             title="подписи выпусков на графике (имя и отклонение от КБД)">Подписи</button>
+          <button className={"chip-btn" + (chartOpen ? " on" : "")} onClick={toggleChart}
+            title="показать/свернуть график (доходности поверх КБД и оборот)">График</button>
+          <span className="ia-flabel" title="сдвиг: вторая КБД и тени точек на дату сравнения">Δ</span>
+          <span className="seg" role="tablist" aria-label="Дата сравнения">
+            {CMP_MODES.map(([id, label, title]) => (
+              <button key={id} className={"seg-btn" + (cmp.mode === id ? " active" : "")}
+                onClick={() => setCmpSaved({ ...cmp, mode: id })} title={title}>{label}</button>
+            ))}
+          </span>
+          {cmp.mode === "date" && (
+            <input type="date" className="date-input" value={cmp.date}
+              max={isoDate(new Date())} min="2014-01-01"
+              aria-label="дата сравнения"
+              onChange={(e) => setCmpSaved({ ...cmp, date: e.target.value })} />
+          )}
+          <ColumnsMenu visibleCols={cols.visibleCols} meta={cols.colsMeta}
+            onToggle={cols.onToggleCol} onReset={cols.onResetCols} onMove={cols.onMoveCol} />
         </div>
       </div>
 
@@ -201,6 +250,16 @@ export default function OfzDesk({ onOpen }) {
           {" · "}{pts.length} из {rows.length} выпусков с метриками
           {curveDate && <> · КБД от {fmt.date(curveDate)}</>}
           {curveQ.data?.stale && <span className="ofz-stale"> кривая не сегодняшняя</span>}
+          {cmpInfo && (
+            <> · сравнение с {fmt.date(cmpInfo.date)}
+              {cmpInfo.date !== cmpDate && <> (ближайший торговый к {fmt.date(cmpDate)})</>}
+              {asofN > 0 && <>, as-of по {asofN} выпускам</>}
+            </>
+          )}
+          {cmpDate && asofQ.isPending && <> · сравнение загружается…</>}
+          {cmpDate && (asofQ.error || curveCmpQ.error) && (
+            <span className="ofz-stale"> · данные на дату сравнения недоступны</span>
+          )}
           {cheapest && richest && (
             <> · дешевле всех {cheapest.name} ({fmt.devBps(cheapest.g)} б.п.),
               дороже всех {richest.name} ({fmt.devBps(richest.g)} б.п.)</>
@@ -214,41 +273,13 @@ export default function OfzDesk({ onOpen }) {
 
       {!listQ.isPending && !listQ.error && (
         <>
-          <CurveScatter pts={pts} curve={curveQ.data?.points || []} labels={labels} onOpen={onOpen} />
+          {chartOpen && (
+            <OfzChart pts={pts} curve={curveQ.data?.points || []} cmp={cmpInfo}
+              volumes={volQ.data || null} labels={labels} onOpen={onOpen} />
+          )}
 
-          <table className="grid packed ofz-tbl">
-            <thead>
-              <tr>
-                {/* стрелку сортировки рисует CSS (.grid thead th.sorted/.asc) —
-                    как в остальных таблицах витрины */}
-                {COLS.map((c) => (
-                  <th key={c.key} onClick={() => onSort(c.key)} title={c.sub || undefined}
-                    className={c.cls + (sort.key === c.key ? " sorted" + (sort.dir === "asc" ? " asc" : "") : "")}>
-                    {c.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((b) => (
-                <tr key={b.isin} onClick={onOpen ? (e) => onOpen(b.isin, e.currentTarget, "fixed") : undefined}>
-                  <td className="left">{b.name}</td>
-                  <td className="left">{fmt.date(b.maturity_date) || "—"}</td>
-                  <td className="num">{b.tau == null ? "—" : fmt.num(b.tau, 2)}</td>
-                  <td className="num">{fmt.pct(b.coupon_pct) ?? "—"}</td>
-                  <td className="num">{fmt.pct(b.px) ?? "—"}</td>
-                  <td className="num">{fmt.pct(b.ytm) ?? "—"}</td>
-                  <td className="num mut">{fmt.pct(b.curve) ?? "—"}</td>
-                  <td className="num" style={dmColor(b.g)}>{fmt.devBps(b.g) ?? "—"}</td>
-                  <td className="num">{fmt.mln(b.val_today) ?? "—"}</td>
-                  <td className="num">{fmt.mln1(b.adv_1m_rub) ?? "—"}</td>
-                </tr>
-              ))}
-              {rows.length === 0 && (
-                <tr><td colSpan={COLS.length} className="left mut">ОФЗ в витрине фиксов не найдены</td></tr>
-              )}
-            </tbody>
-          </table>
+          <FixedTable rows={rows} sort={sort} onSort={onSort} onOpen={onOpen}
+            extraCols={OFZ_EXTRA_COLS} {...cols} />
         </>
       )}
     </div>

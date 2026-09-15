@@ -158,3 +158,21 @@ export const FIXED_COLS = [
 
 export const FIXED_COL_META = FIXED_COLS.map(({ key, label, sub }) => ({ key, label, sub }));
 export const FIXED_DEFAULT_COLS = FIXED_COLS.map((c) => c.key);
+
+// Колонки, которых нет в мониторе ФИКСОВ, но которые дописывает витрина ОФЗ
+// (/fixed/ofz) — та же таблица, тот же формат. Держим ОТДЕЛЬНО от FIXED_COLS:
+// ΔYTM к дате сравнения считается только там, где есть сама дата (сдвиг
+// кривой «вчера/дата» у ОФЗ), в мониторе фиксов это была бы колонка прочерков.
+//
+// Значение — b.d_ytm_cmp в б.п. ((ytm_now − ytm_asof) × 100), его кладёт в
+// строку OfzDesk из ответа /api/fixed/ofz/asof. Знак нужен: колонка про
+// «выше/ниже, чем было», без сравнения — прочерк.
+export const OFZ_EXTRA_COLS = [
+  { key: "d_ytm_cmp", label: "ΔYTM", sub: "К ДАТЕ, БП", align: "num", grp: true, w: 9,
+    title: "сдвиг доходности к дате сравнения, б.п.: плюс — доходность выросла (бумага подешевела)",
+    cell: (b) => {
+      const d = b.d_ytm_cmp;
+      return <td className={"num" + (d == null || d === 0 ? "" : d > 0 ? " pos" : " neg")} key="d_ytm_cmp">
+        {d == null ? <D /> : fmt.signed(d, 0)}</td>;
+    } },
+];

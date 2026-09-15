@@ -497,6 +497,18 @@ CREATE TABLE IF NOT EXISTS signal_events(
   seen INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_signal_events_user ON signal_events(user_email, fired_at);
+
+-- КБД ОФЗ (zcyc yearyields) ПО ДНЯМ: одна строка на тенор. Архив копится сам:
+-- сегодняшнюю кривую сюда кладёт MarketDataService.get_gcurve при каждом
+-- фетче, прошлые даты — ленивый фетч ISS с date= при промахе (витрина ОФЗ
+-- рисует «вчерашнюю» кривую и сдвиг по тенорам). На ISS zcyc есть с 2014-го,
+-- но ходить туда на каждый запрос нельзя — отсюда таблица.
+CREATE TABLE IF NOT EXISTS gcurve_daily(
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD' — tradedate ISS
+  tau REAL NOT NULL,              -- срок, лет (0.25 … 30)
+  value REAL NOT NULL,            -- zero-yield, % годовых
+  PRIMARY KEY(date, tau)
+);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;
@@ -640,3 +652,24 @@ def init_db() -> None:
 
 def _rows(cur) -> list[dict]:
     return [dict(r) for r in cur.fetchall()]
+
+
+# ───────────────────────────── КБД по дням ─────────────────────────────
+
+def gcurve_read(d: str) -> list[tuple]:
+    """[(tau, value_pct), ...] на дату (tradedate ISS) или [] при промахе."""
+    with _connect() as c:
+        return [(float(r[0]), float(r[1])) for r in c.execute(
+            "SELECT tau, value FROM gcurve_daily WHERE date=? ORDER BY tau", (d,))]
+
+
+def gcurve_save(d: str, pts) -> int:
+    """Кладёт кривую дня: INSERT OR REPLACE — внутри дня ISS отдаёт
+    интрадей-срез, повторный фетч перезаписывает его более поздним."""
+    rows = [(d, float(t), float(v)) for t, v in (pts or [])]
+    if not rows:
+        return 0
+    with _lock, _connect() as c:
+        c.executemany("INSERT OR REPLACE INTO gcurve_daily(date,tau,value) "
+                      "VALUES(?,?,?)", rows)
+    return len(rows)

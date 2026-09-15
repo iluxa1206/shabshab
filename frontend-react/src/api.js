@@ -176,7 +176,21 @@ export const fetchCurvePlot = (type) => request(`/api/curves/plot?type=${type}`)
 
 // КБД ОФЗ (zcyc МосБиржи) точками «срок в годах → zero-yield, %» — та же
 // кривая, по которой движок считает g/z-спреды фиксов. Публикуется раз в день.
-export const fetchGCurve = () => request("/api/curves/gcurve");
+// date (опц.) — КБД на прошлую дату (режим Δ витрины ОФЗ): бэк отдаёт ближайший
+// торговый день назад и фактическую дату в curve_date, requested — что просили.
+export const fetchGCurve = (date) =>
+  request(`/api/curves/gcurve${date ? `?date=${encodeURIComponent(date)}` : ""}`);
+
+// Витрина ОФЗ: объём торгов за день по бумагам и режимам (стакан/РПС/прочее,
+// по бордам). Без date — сегодня, живые данные (val_today + адресные сделки).
+export const fetchOfzVolumes = (date) =>
+  request(`/api/fixed/ofz/volumes${date ? `?date=${encodeURIComponent(date)}` : ""}`);
+
+// Витрина ОФЗ: доходность/дюрация ОФЗ на прошлую дату для «теней» точек и
+// колонки ΔYTM. Дата обязательна; бэк шагает назад до торгового дня и
+// возвращает фактическую в date.
+export const fetchOfzAsof = (date) =>
+  request(`/api/fixed/ofz/asof?date=${encodeURIComponent(date)}`);
 
 export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);
 

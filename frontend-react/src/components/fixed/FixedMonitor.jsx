@@ -10,9 +10,9 @@ import { applyVolume, FIXED_VOL_FIELDS } from "../../vwap.js";
 import { sideProgress } from "../../spreadProgress.js";
 import { usePageStatus } from "../../pageStatus.jsx";
 import Toolbar from "../Toolbar.jsx";
-import BondTable from "../BondTable.jsx";
+import FixedTable, { useFixedCols } from "./FixedTable.jsx";
 import FixedAnalytics from "../FixedAnalytics.jsx";
-import { FIXED_COLS, FIXED_COL_META, FIXED_DEFAULT_COLS } from "./fixedCols.jsx";
+import { DEFAULT_FIXED_CURRENCIES, fixedCurrency, isDefaultFixedCurrencySelection } from "./currency.js";
 
 // МОНИТОР ФИКСОВ — та же витрина, что у флоатеров (App.Dashboard), но по
 // облигациям с фиксированным купоном: вместо spread/DM первичны ДВЕ метрики —
@@ -23,7 +23,7 @@ import { FIXED_COLS, FIXED_COL_META, FIXED_DEFAULT_COLS } from "./fixedCols.jsx"
 // собой чужой отбор (у фиксов нет ни базы купона, ни бумаг того же эмитента).
 const FILTER_KEYS = ["fxq", "fxw", "fxrt", "fxem", "fxcls", "fxnosub", "fxnoam",
                      "fxmyf", "fxmyt", "fxgf", "fxgt", "fxyf", "fxyt", "fxtwo",
-                     "fxvb", "fxva", "fxvm", "fxadv", "fxadvm"];
+                     "fxvb", "fxva", "fxvm", "fxadv", "fxadvm", "fxccy"];
 // Суборды/перпы — по имени выпуска, тот же паттерн, что у флоатеров (App.jsx)
 // и у скринера (services/screener_core.py::_SUBORD_RE).
 const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
@@ -35,14 +35,6 @@ const WS_FLUSH_MS = 400;
 // упёрлись в лимит подписок, торгов нет) — строка снова живёт снапшотом
 // котировок, иначе в ней навсегда застыли бы последние цифры стрима.
 const LIVE_FRESH_MS = 15000;
-
-// Переименования ключей колонок (для сохранённого набора и его ширин):
-// под ценой стороны теперь доходность, а не g-спред.
-const COL_RENAMED = {
-  g_spread_bid_bps: "ytm_bid",
-  g_spread_ask_bps: "ytm_ask",
-  g_spread_wap_bps: "ytm_wap",
-};
 
 const initialParams = () => new URLSearchParams(window.location.search);
 const ls = (k, d = "") => localStorage.getItem(k) ?? d;
@@ -140,6 +132,16 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("fxrt"));
   const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("fxem"));
   const [clsSel, setClsSel] = useState(() => initialParams().getAll("fxcls"));
+  // Витрина стартует с рублёвых выпусков. Явный URL имеет приоритет над
+  // сохранённым выбором, чтобы ссылкой можно было открыть конкретную валюту.
+  const [currenciesSel, setCurrenciesSel] = useState(() => {
+    const p = initialParams();
+    if (p.has("fxccy")) return p.getAll("fxccy");
+    try {
+      const saved = JSON.parse(localStorage.getItem("currencies_fx") || "null");
+      return Array.isArray(saved) && saved.length ? saved : DEFAULT_FIXED_CURRENCIES;
+    } catch { return DEFAULT_FIXED_CURRENCIES; }
+  });
   // односторонний рынок торговать нечем — тот же чип BID×OFFER, что у флоатеров
   const [twoSided, setTwoSided] = useState(() => initialParams().get("fxtwo") === "1");
   // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка
@@ -178,26 +180,10 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   const [watch, setWatch] = useState(() => {
     try { return JSON.parse(localStorage.getItem("watch_fx") || "[]"); } catch { return []; }
   });
-  const [visibleCols, setVisibleCols] = useState(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem("cols_fx") || "null");
-      // Ячейки котировок стали «цена / YTM», и ключи колонок уехали вместе со
-      // смыслом. Сохранённый набор переименовываем на месте: иначе у всех, кто
-      // хоть раз трогал меню столбцов, три колонки просто исчезли бы.
-      const s = Array.isArray(raw) ? raw.map((k) => COL_RENAMED[k] || k) : raw;
-      if (!Array.isArray(s) || !s.length) return FIXED_DEFAULT_COLS;
-      // колонки, добавленные после последнего сохранения набора, показываем
-      const known = new Set(JSON.parse(localStorage.getItem("cols_known_fx") || "[]"));
-      const fresh = FIXED_DEFAULT_COLS.filter((k) => !known.has(k) && !s.includes(k));
-      return fresh.length ? [...s, ...fresh] : s;
-    } catch { return FIXED_DEFAULT_COLS; }
-  });
-  const [colWidths, setColWidths] = useState(() => {
-    try {
-      const w = JSON.parse(localStorage.getItem("colw_fx") || "{}") || {};
-      return Object.fromEntries(Object.entries(w).map(([k, v]) => [COL_RENAMED[k] || k, v]));
-    } catch { return {}; }
-  });
+  // Колонки (видимость/порядок/ширины) живут в общей таблице фиксов: ключи
+  // localStorage те же, что были здесь до её выделения (cols_fx/colw_fx/
+  // cols_known_fx), витрина ОФЗ держит свои под другим префиксом.
+  const cols = useFixedCols({ storageKey: "fx" });
   const searchRef = useRef(null);
 
   // «/» — фокус в поиск (терминальная привычка, как на мониторе флоатеров).
@@ -227,6 +213,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       ratingsSel.forEach((v) => next.append("fxrt", v));
       emittersSel.forEach((v) => next.append("fxem", v));
       clsSel.forEach((v) => next.append("fxcls", v));
+      currenciesSel.forEach((v) => next.append("fxccy", v));
       if (hideSub) next.set("fxnosub", "1");
       if (hideAmort) next.set("fxnoam", "1");
       if (twoSided) next.set("fxtwo", "1");
@@ -243,7 +230,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       if (advMin && advMode === "lte") next.set("fxadvm", "lte");
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, ratingsSel, emittersSel, clsSel, hideSub, hideAmort, twoSided,
+  }, [query, onlyWatch, ratingsSel, emittersSel, clsSel, currenciesSel, hideSub, hideAmort, twoSided,
       volBid, volAsk, volMode,
       matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, advMin, advMode, setSearchParams]);
 
@@ -260,10 +247,8 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   useEffect(() => { localStorage.setItem("volBidRub_fx", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub_fx", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode_fx", volMode); }, [volMode]);
+  useEffect(() => { localStorage.setItem("currencies_fx", JSON.stringify(currenciesSel)); }, [currenciesSel]);
   useEffect(() => { localStorage.setItem("watch_fx", JSON.stringify(watch)); }, [watch]);
-  useEffect(() => { localStorage.setItem("cols_fx", JSON.stringify(visibleCols)); }, [visibleCols]);
-  useEffect(() => { localStorage.setItem("colw_fx", JSON.stringify(colWidths)); }, [colWidths]);
-  useEffect(() => { localStorage.setItem("cols_known_fx", JSON.stringify(FIXED_DEFAULT_COLS)); }, []);
 
   // ── данные ──
   // метрики (YTM/спреды/дюрация) — свой цикл прогрева на бэке, тянем реже;
@@ -411,11 +396,19 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }, [bonds]);
 
+  const currencies = useMemo(() => {
+    const all = new Set(["RUB", ...currenciesSel]);
+    bonds.forEach((b) => all.add(fixedCurrency(b)));
+    return [...all].sort((a, b) => (a === "RUB" ? -1 : b === "RUB" ? 1 : a.localeCompare(b)));
+  }, [bonds, currenciesSel]);
+
   const rows = useMemo(() => {
     let r = bonds.slice();
     if (onlyWatch) r = r.filter((b) => watch.includes(b.isin));
     if (ratingsSel.length) r = r.filter((b) => ratingMatches(b.rating, ratingsSel));
     if (emittersSel.length) r = r.filter((b) => emittersSel.includes(b.emitter_name));
+    // Пустой набор — явный «все валюты». Первый вход и сброс — только RUB.
+    if (currenciesSel.length) r = r.filter((b) => currenciesSel.includes(fixedCurrency(b)));
     if (hideSub) r = r.filter((b) => !SUBORD_RE.test(b.short_name || ""));
     if (hideAmort) r = r.filter((b) => !b.has_amort);
     if (clsSel.length) r = r.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
@@ -469,7 +462,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       return (x - y) * m;
     });
     return r;
-  }, [bonds, onlyWatch, watch, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
+  }, [bonds, onlyWatch, watch, ratingsSel, emittersSel, currenciesSel, hideSub, hideAmort, clsSel, twoSided,
       volOn, volBid, volAsk, volMode, depth,
       matFrom, matTo, spreadFrom, spreadTo, ytmFrom, ytmTo, advMin, advMode, query, sort]);
 
@@ -504,27 +497,10 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   }, []);
   const toggleStar = useCallback((isin) =>
     setWatch((w) => (w.includes(isin) ? w.filter((x) => x !== isin) : [...w, isin])), []);
-  const toggleCol = useCallback((key) => setVisibleCols((cs) =>
-    cs.includes(key) ? cs.filter((k) => k !== key) : [...cs, key]), []);
-  const moveCol = useCallback((from, to) => setVisibleCols((cs) => {
-    const i = cs.indexOf(from);
-    if (i < 0) return cs;
-    const next = cs.slice();
-    next.splice(i, 1);
-    const j = to === "+1" ? Math.min(next.length, i + 1)
-      : to === "-1" ? Math.max(0, i - 1) : next.indexOf(to);
-    if (j < 0) return cs;
-    next.splice(j, 0, from);
-    return next;
-  }), []);
-  const resetCols = useCallback(() => { setVisibleCols(FIXED_DEFAULT_COLS); setColWidths({}); }, []);
-  const resizeCol = useCallback((key, px) => setColWidths((w) => ({ ...w, [key]: px })), []);
-  const resetColWidth = useCallback((key) => setColWidths((w) => {
-    const next = { ...w }; delete next[key]; return next;
-  }), []);
 
   const activeFilters = (onlyWatch ? 1 : 0) + (ratingsSel.length ? 1 : 0)
     + (emittersSel.length ? 1 : 0) + (clsSel.length ? 1 : 0) + (hideSub ? 0 : 1)
+    + (isDefaultFixedCurrencySelection(currenciesSel) ? 0 : 1)
     + (hideAmort ? 1 : 0) + (query !== "" ? 1 : 0) + (twoSided ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0)
     + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
@@ -532,6 +508,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
     + (ytmFrom !== "" ? 1 : 0) + (ytmTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setRatingsSel([]); setEmittersSel([]); setClsSel([]);
+    setCurrenciesSel(DEFAULT_FIXED_CURRENCIES);
     setHideSub(true); setHideAmort(false); setQuery(""); setTwoSided(false);
     setVolBid(0); setVolAsk(0);
     setMatFrom(""); setMatTo(""); setSpreadFrom(""); setSpreadTo("");
@@ -554,6 +531,9 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         hideSub={hideSub} setHideSub={setHideSub}
         hideAmort={hideAmort} setHideAmort={setHideAmort}
         clsSel={clsSel} toggleCls={toggleIn(setClsSel)}
+        currencies={currencies} currenciesSel={currenciesSel}
+        toggleCurrency={toggleIn(setCurrenciesSel)}
+        resetCurrencies={() => setCurrenciesSel(DEFAULT_FIXED_CURRENCIES)}
         twoSided={twoSided} setTwoSided={setTwoSided}
         volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
         volMode={volMode} setVolMode={setVolMode}
@@ -567,33 +547,26 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={rows.length} total={bonds.length}
-        visibleCols={visibleCols} colsMeta={FIXED_COL_META}
-        onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
+        visibleCols={cols.visibleCols} colsMeta={cols.colsMeta}
+        onToggleCol={cols.onToggleCol} onResetCols={cols.onResetCols} onMoveCol={cols.onMoveCol}
       />
 
       {showAnalytics && rows.length > 0 && <FixedAnalytics rows={rows} />}
 
-      <BondTable
+      <FixedTable
         rows={rows}
         status={status}
         errMsg={listQ.error ? String(listQ.error.message || listQ.error) : ""}
         sort={sort}
         onSort={onSort}
         onOpen={onOpen}
-        rowKind="fixed"
         watch={watch}
         onToggleStar={toggleStar}
         filtered={activeFilters > 0}
         onClearFilters={resetFilters}
         onRetry={listQ.refetch}
-        visibleCols={visibleCols}
-        onMoveCol={moveCol}
-        colWidths={colWidths}
-        onResizeCol={resizeCol}
-        onResetColWidth={resetColWidth}
         colProgress={colProgress}
-        colsDef={FIXED_COLS}
-        defaultCols={FIXED_DEFAULT_COLS}
+        {...cols}
       />
     </>
   );

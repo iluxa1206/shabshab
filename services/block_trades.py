@@ -940,6 +940,96 @@ def bond_days_present() -> set[str]:
         return {r[0] for r in c.execute("SELECT DISTINCT date FROM bond_day")}
 
 
+# ────────────────────────── режимы торгов (борды) ──────────────────────────
+#
+# Человеческие названия режимов: BOARDID сам по себе трейдеру ничего не
+# говорит. Один словарь на ленту сделок (api/routes/blocks) и тултип объёмов
+# витрины ОФЗ — иначе подписи одного борда разъедутся между страницами.
+BOARD_LABELS = {
+    "TQCB": "Безадресный: корп.", "TQOB": "Безадресный: ОФЗ",
+    "TQRD": "Безадресный: Д-облигации", "TQOD": "Безадресный: USD",
+    "TQOY": "Безадресный: CNY", "TQOE": "Безадресный: EUR",
+    "TQIR": "Безадресный: ПИР", "TQUD": "Безадресный: Д USD",
+    "PSOB": "РПС", "PTOB": "РПС с ЦК", "PSAU": "Размещение",
+    "PSBB": "Выкуп", "PACT": "Аукцион (адресный)", "AUCT": "Аукцион размещения",
+    "AUBB": "Аукцион выкупа", "PSDB": "РПС: Д-облигации",
+    "PTDB": "РПС с ЦК: Д-облигации", "PSYO": "РПС: CNY", "PTOY": "РПС с ЦК: CNY",
+    "PACY": "Размещение (CNY)", "PSEU": "РПС: USD", "PSUD": "РПС: Д USD",
+    "PTUD": "РПС с ЦК: Д USD", "PTOD": "РПС с ЦК: USD", "PSEO": "РПС: EUR",
+    "PTOE": "РПС с ЦК: EUR", "PSBU": "Выкуп (USD)", "PSBY": "Выкуп (CNY)",
+    "PAUS": "Размещение (USD)",
+}
+
+# Стакан (безадресные борды market=bonds), по которым идёт val_today витрины.
+BOOK_BOARDS = frozenset({"TQOB", "TQOY", "TQOD", "TQOE"})
+# Адресные режимы ISS market=ndm: РПС, РПС с ЦК, размещения, выкупы. Список
+# не исчерпывающий — у строк block_trade есть market, и 'ndm' сильнее списка;
+# у дневных итогов bond_day/block_day рынка нет, там решает код борда.
+RPS_BOARDS = frozenset({
+    "PSOB", "PTOB", "PSEU", "PSDB", "PTDB", "PSYO", "PTOY", "PSUD", "PTUD",
+    "PTOD", "PSEO", "PTOE", "PSAU", "PACY", "PAUS", "PSBB", "PSBU", "PSBY",
+    "PACT",
+})
+
+
+def classify_board(board: Optional[str], market: Optional[str] = None) -> str:
+    """'book' (стакан) | 'rps' (адресные) | 'other'. market='ndm' — адресный
+    режим по определению, даже если код борда новый и в списке его нет."""
+    b = (board or "").upper()
+    if b in BOOK_BOARDS:
+        return "book"
+    if market == "ndm" or b in RPS_BOARDS:
+        return "rps"
+    return "other"
+
+
+def read_bond_days(d: str, isins: Optional[list[str]] = None) -> list[dict]:
+    """Дневные итоги безадресных торгов bond_day за дату (все борды), по
+    списку бумаг или по всему рынку. Объём уже в рублях (см. upsert_bond_days)."""
+    with _connect() as c:
+        q, args = "SELECT * FROM bond_day WHERE date = ?", [d]
+        if isins:
+            if _bind_isins(c, isins):
+                q += f" AND isin IN (SELECT isin FROM {_TMP})"
+            else:
+                q += f" AND isin IN ({','.join('?' * len(isins))})"
+                args.extend(isins)
+        return [dict(r) for r in c.execute(q + " ORDER BY isin, value DESC", args)]
+
+
+def read_block_days(d: str, isins: Optional[list[str]] = None) -> list[dict]:
+    """Дневные РПС-агрегаты block_day за дату (адресные борды ndm) — прошлые
+    дни, где поштучной ленты ещё не было или её уже подчистили."""
+    with _connect() as c:
+        q, args = "SELECT * FROM block_day WHERE date = ?", [d]
+        if isins:
+            if _bind_isins(c, isins):
+                q += f" AND isin IN (SELECT isin FROM {_TMP})"
+            else:
+                q += f" AND isin IN ({','.join('?' * len(isins))})"
+                args.extend(isins)
+        return [dict(r) for r in c.execute(q + " ORDER BY isin, value DESC", args)]
+
+
+def read_ndm_day_values(d: str, isins: Optional[list[str]] = None) -> list[dict]:
+    """Σ value адресных сделок (block_trade, market=ndm) за день по (isin, board)
+    — «сегодня» дневных итогов у биржи ещё нет, складываем ленту сами.
+    Только рублёвые (cur SUR/NULL): VALUE валютного борда лежит в валюте."""
+    with _connect() as c:
+        q = ("SELECT isin, board, SUM(value) AS value, COUNT(*) AS n FROM block_trade "
+             "WHERE market='ndm' AND ts >= ? AND ts < ? "
+             "AND (cur IS NULL OR cur = 'SUR')")
+        nxt = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
+        args: list = [d, nxt]
+        if isins:
+            if _bind_isins(c, isins):
+                q += f" AND isin IN (SELECT isin FROM {_TMP})"
+            else:
+                q += f" AND isin IN ({','.join('?' * len(isins))})"
+                args.extend(isins)
+        return [dict(r) for r in c.execute(q + " GROUP BY isin, board", args)]
+
+
 async def backfill_bond_days(days: int = 30, force: bool = False) -> dict:
     """Догружает дневные итоги за окно назад. Уже собранные даты пропускает —
     итог дня в ISS не меняется задним числом (force перечитывает всё)."""
@@ -1220,7 +1310,11 @@ def pending_alerts(limit: int = 50, min_value: Optional[float] = None) -> list[d
             "SELECT trade_id,isin,secid,ts,market,board,price,qty,value,yld,side,cur,"
             "y_idx_bps "
             "FROM block_trade WHERE alerted = 0 AND ins_at >= ? AND value >= ? "
-            "AND (cur IS NULL OR cur='SUR') ORDER BY trade_id LIMIT ?",
+            # value уже приведён к рублям при записи (в том числе для CNY/USD
+            # бордов). cur — валюта расчётов ISS, а не признак рублёвой суммы:
+            # фильтр по нему отбрасывал ISS-копию валютной сделки, но пропускал
+            # ту же сделку из Alor, где cur принудительно SUR.
+            "ORDER BY trade_id LIMIT ?",
             (floor_ts, thr, limit)).fetchall()
     return [dict(r) for r in rows]
 

@@ -345,6 +345,22 @@ market_cache = {
 # отдать читателю кривую с чужой датой.
 _curves_lock = threading.Lock()
 
+def _zcyc_points(yy: dict) -> Tuple[list, Optional[str]]:
+    """Блок yearyields ISS → ([(tau_years, yield_pct)], tradedate). Пустой
+    data (выходной) → ([], None)."""
+    cols, data = yy.get("columns", []), yy.get("data", [])
+    if not data or "period" not in cols or "value" not in cols:
+        return [], None
+    pi, vi = cols.index("period"), cols.index("value")
+    pts = [(float(r[pi]), float(r[vi])) for r in data
+           if r[pi] is not None and r[vi] is not None]
+    td = None
+    if "tradedate" in cols:
+        ti = cols.index("tradedate")
+        td = next((str(r[ti])[:10] for r in data if r[ti]), None)
+    return pts, td
+
+
 class MarketDataService:
     @classmethod
     async def get_curves(cls) -> Tuple[Optional[DiscountCurve], Optional[DiscountCurve], Optional[date], Optional[date]]:
@@ -426,15 +442,73 @@ class MarketDataService:
             if resp is None or resp.status_code != 200:
                 return cls._stale_gcurve("MOEX zcyc HTTP fail")
             yy = (await asyncio.to_thread(resp.json)).get("yearyields", {})
-            cols, data = yy.get("columns", []), yy.get("data", [])
-            pi, vi = cols.index("period"), cols.index("value")
-            pts = [(float(r[pi]), float(r[vi])) for r in data if r[pi] is not None and r[vi] is not None]
+            pts, tradedate = _zcyc_points(yy)
             if len(pts) >= 2:
                 cls._gcurve = GCurve(pts)
                 cls._gcurve_date = today
+                # архив КБД по дням копится сам: витрина ОФЗ сравнивает с
+                # прошлой кривой из gcurve_daily, а не ходит за ней в ISS.
+                # Ключ — tradedate ISS, а не «сегодня»: до открытия zcyc
+                # отдаёт вчерашнюю кривую, и класть её под сегодняшней датой
+                # значило бы записать вчера как сегодня.
+                await cls._persist_gcurve(tradedate or today, pts)
         except Exception as e:
             return cls._stale_gcurve(f"G-curve fetch error: {e}")
         return cls._gcurve
+
+    # Дни, на которые ISS отдал пустую КБД (выходные/праздники): прошлое не
+    # меняется, второй раз спрашивать нечего. Только для дат < сегодня.
+    _gcurve_empty_days: set = set()
+
+    @classmethod
+    async def _persist_gcurve(cls, d: str, pts) -> None:
+        """Пишет кривую дня в gcurve_daily; сбой архива не должен ронять фетч."""
+        try:
+            from services import portfolio_db as pdb
+            await asyncio.to_thread(pdb.gcurve_save, d, pts)
+        except Exception as e:
+            logger.warning(f"gcurve_daily save {d}: {e}")
+
+    @classmethod
+    async def get_gcurve_points_on(cls, d: str) -> Optional[list]:
+        """Точки КБД [(tau, yield_pct)] на ДАТУ d (ISO) или None, если у ISS на
+        этот день кривой нет (выходной/праздник) либо ISS недоступен.
+
+        Порядок: таблица gcurve_daily → ISS zcyc с date= (и запись в таблицу).
+        Шаг назад на ближайший торговый день делает вызывающий — ему же
+        решать, сколько дней допустимо."""
+        from services import portfolio_db as pdb
+        try:
+            pts = await asyncio.to_thread(pdb.gcurve_read, d)
+        except Exception as e:
+            logger.warning(f"gcurve_daily read {d}: {e}")
+            pts = []
+        if len(pts) >= 2:
+            return pts
+        if d in cls._gcurve_empty_days:
+            return None
+        try:
+            async with moex_client() as client:
+                resp = await _moex_get(
+                    client, "https://iss.moex.com/iss/engines/stock/zcyc.json",
+                    params={"iss.meta": "off", "iss.only": "yearyields", "date": d},
+                    timeout=10)
+            if resp is None or resp.status_code != 200:
+                logger.warning(f"MOEX zcyc {d}: HTTP fail")
+                return None
+            yy = (await asyncio.to_thread(resp.json)).get("yearyields", {})
+            pts, tradedate = _zcyc_points(yy)
+        except Exception as e:
+            logger.warning(f"G-curve {d} fetch error: {e}")
+            return None
+        if len(pts) < 2:
+            if d < date.today().isoformat():
+                cls._gcurve_empty_days.add(d)
+            return None
+        # ISS на date= отдаёт кривую ровно этого дня (tradedate == d); если
+        # вдруг вернул другую дату — пишем под НЕЙ, чтобы не подменять дни
+        await cls._persist_gcurve(tradedate or d, pts)
+        return pts if not tradedate or tradedate == d else None
 
     @classmethod
     def gcurve_date(cls) -> Optional[str]:

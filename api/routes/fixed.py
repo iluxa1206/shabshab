@@ -3,9 +3,12 @@
 поллером (market_cache), эндпоинт отдаёт кэш; при холодном кэше — быстрый фетч
 универса (2 запроса), метрики появляются по мере прогрева."""
 import re
+import time
 import asyncio
 import logging
-from datetime import date
+from collections import OrderedDict
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 from fastapi import APIRouter, Path, Query, HTTPException
 
 from services.market_data import market_cache, MarketDataService
@@ -204,6 +207,224 @@ def _display_cashflow(full: dict, calc_date: date) -> list:
                     "amount": round(float(v), 2), "rate_pct": None})
     out.sort(key=lambda x: (x["date"], x["type"] == "COUPON"))
     return out
+
+
+# ───────────────────────── витрина ОФЗ: объёмы и as-of ─────────────────────────
+#
+# Ручки страницы /fixed/ofz (docs/ofz_desk_tz.md). Своих расчётов у страницы
+# нет — YTM/дюрация только из движка фиксов (compute_fixed_row), объёмы —
+# из тех же таблиц, что лента сделок. Стоят ВЫШЕ /{isin}: путь /ofz/... с
+# двумя сегментами в /{isin} не попадает, но пусть порядок это гарантирует.
+
+_MSK = timezone(timedelta(hours=3))
+_STEP_BACK_DAYS = 7          # «вчера» = предыдущий торговый день: выходные + праздники
+_ASOF_MEMO_MAX = 30          # дат в памяти — витрина листает вчера/дату, не год
+_ASOF_MEMO_TTL = 3600.0      # с: вечерний снапшот и бэкфилл bond_day приходят позже
+_asof_memo: "OrderedDict[str, tuple]" = OrderedDict()   # date → (ts, payload)
+
+
+def _msk_today() -> date:
+    return datetime.now(_MSK).date()
+
+
+def _parse_day(s: Optional[str], *, required: bool) -> Optional[date]:
+    """Дата запроса: ISO, не в будущем. None — «сегодня» (там, где допустимо)."""
+    if s is None:
+        if required:
+            raise HTTPException(status_code=400, detail="date обязателен: YYYY-MM-DD")
+        return None
+    try:
+        d = date.fromisoformat(s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date: YYYY-MM-DD")
+    if d > _msk_today():
+        raise HTTPException(status_code=400, detail="date в будущем")
+    return d
+
+
+async def _ofz_rows() -> list:
+    """Строки ОФЗ-ПД из универса фиксов (кэш поллера, при холодном — фетч)."""
+    from services import fixed_income as fi
+    uni = market_cache.get("fixed_universe") or await fi.fetch_fixed_universe()
+    return [u for u in uni if u.get("cls") == "ofz" and u.get("isin")]
+
+
+@router.get("/ofz/volumes", tags=["Fixed"])
+async def get_ofz_volumes(
+    date_: str = Query(None, alias="date", description="День YYYY-MM-DD; без него — сегодня (живые данные)"),
+):
+    """Объём торгов ОФЗ за день по бумагам и режимам (стакан / адресные / прочее)
+    плюс раскладка по бордам — столбики под точками графика ОФЗ.
+
+    Сегодня — живые данные: val_today универса (TQOB, это уже весь стакан дня)
+    + адресные сделки из ленты block_trade (market=ndm) суммой по борду.
+    Прошлая дата — дневные итоги биржи: bond_day (безадресные борды) и
+    block_day (адресные). Классификация борда — block_trades.classify_board."""
+    from services import block_trades as bt
+    from services.pools import run_bg
+    d = _parse_day(date_, required=False)
+    today = _msk_today()
+    live = d is None or d == today
+    d = d or today
+    rows = await _ofz_rows()
+    isins = [u["isin"] for u in rows]
+    # {isin: {board: (руб, market|None)}}
+    acc: dict = {}
+
+    def _add(isin: str, board: Optional[str], value, market: Optional[str] = None):
+        if not isin or value is None:
+            return
+        b = (board or "?").upper()
+        by = acc.setdefault(isin, {})
+        cur = by.get(b)
+        by[b] = (float(value) + (cur[0] if cur else 0.0), market or (cur[1] if cur else None))
+
+    if live:
+        for u in rows:
+            _add(u["isin"], u.get("board") or "TQOB", u.get("val_today") or 0.0, "bonds")
+        for r in await run_bg(bt.read_ndm_day_values, d.isoformat(), isins):
+            _add(r["isin"], r["board"], r["value"], "ndm")
+    else:
+        ds = d.isoformat()
+        for r in await run_bg(bt.read_bond_days, ds, isins):
+            _add(r["isin"], r["board"], r["value"], "bonds")
+        for r in await run_bg(bt.read_block_days, ds, isins):
+            _add(r["isin"], r["board"], r["value"], "ndm")
+
+    items = {}
+    for isin, by in acc.items():
+        it = {"total": 0.0, "book": 0.0, "rps": 0.0, "other": 0.0, "boards": {}}
+        for b, (v, market) in by.items():
+            v = round(v, 2)
+            it["boards"][b] = v
+            it[bt.classify_board(b, market)] += v
+            it["total"] += v
+        for k in ("total", "book", "rps", "other"):
+            it[k] = round(it[k], 2)
+        items[isin] = it
+    return {"date": d.isoformat(), "live": live, "items": items,
+            "board_labels": {b: bt.BOARD_LABELS.get(b, b)
+                             for it in items.values() for b in it["boards"]}}
+
+
+def _accrued_on(full: dict, d: date, fallback: float) -> float:
+    """НКД на дату поставки d из расписания купонов (купон ОФЗ-ПД всегда
+    опубликован). Биржевой ACCRUEDINT в строке универса — на СЕГОДНЯ, для
+    прошлой даты он врал бы на всё начисление между датами."""
+    from core.valuation import accrued_at, accrued_estimate
+    coupons = full.get("coupons") or []
+    a = accrued_at(coupons, d)
+    if a is None:
+        a = accrued_estimate(coupons, d)
+    return float(a) if a is not None else float(fallback or 0.0)
+
+
+def _asof_rows_for(d: str, isins: list) -> tuple:
+    """(snap: {isin: {ytm, price_pct, horizon}}, px: {isin: цена}) на дату —
+    в одном потоке, чтобы не дёргать пул дважды."""
+    from services import block_trades as bt
+    from services.portfolio_db import _connect
+    snap: dict = {}
+    with _connect() as c:
+        q = ("SELECT isin, ytm, price_pct, horizon FROM spread_daily "
+             "WHERE date = ? AND kind = 'fixed' AND price_pct IS NOT NULL")
+        args: list = [d]
+        if isins:
+            q += f" AND isin IN ({','.join('?' * len(isins))})"
+            args.extend(isins)
+        for r in c.execute(q, args):
+            snap[r["isin"]] = {"ytm": r["ytm"], "price_pct": r["price_pct"],
+                               "horizon": r["horizon"]}
+    px: dict = {}
+    # bond_day: стакан впереди прочих бордов, средневзвес впереди закрытия
+    # (last в неликвиде — один случайный принт; у ОФЗ TQOB это редкость, но
+    # правило общее с витриной)
+    for r in bt.read_bond_days(d, isins):
+        p = r.get("waprice") or r.get("close")
+        if p is None:
+            continue
+        rank = (0 if bt.classify_board(r.get("board")) == "book" else 1, -(r.get("value") or 0.0))
+        cur = px.get(r["isin"])
+        if cur is None or rank < cur[0]:
+            px[r["isin"]] = (rank, float(p))
+    return snap, {k: v[1] for k, v in px.items()}
+
+
+@router.get("/ofz/asof", tags=["Fixed"])
+async def get_ofz_asof(
+    date_: str = Query(..., alias="date", description="Дата сравнения YYYY-MM-DD"),
+):
+    """Доходность и дюрация ОФЗ НА ПРОШЛУЮ ДАТУ — «тени» точек и колонка ΔYTM.
+
+    Источник по приоритету: 1) вечерний снапшот spread_daily (kind=fixed) —
+    YTM/цена, как их видел движок в тот день; 2) иначе цена дня биржи
+    (bond_day.waprice → close) и пересчёт compute_fixed_row тем же движком
+    без КБД (calc_date=дата, price_override=цена); 3) без цены бумаги в
+    ответе нет. Дюрация (tau, Маколей — та же ось X, что сегодня) в снапшоте
+    не хранится, поэтому считается пересчётом по цене снапшота в обоих случаях.
+    На дату без единой строки шагаем назад до 7 дней (выходные/праздники) и
+    возвращаем фактическую дату. Кэш в памяти по дате: пересчёт ~60 бумаг
+    дорогой только первый раз."""
+    from services import fixed_income as fi
+    req = _parse_day(date_, required=True)
+    now = time.time()
+    hit = _asof_memo.get(req.isoformat())
+    if hit and now - hit[0] < _ASOF_MEMO_TTL:
+        _asof_memo.move_to_end(req.isoformat())
+        return hit[1]
+
+    rows = await _ofz_rows()
+    isins = [u["isin"] for u in rows]
+    found = None
+    for k in range(_STEP_BACK_DAYS + 1):
+        d = req - timedelta(days=k)
+        snap, px = await asyncio.to_thread(_asof_rows_for, d.isoformat(), isins)
+        if snap or px:
+            found = (d, snap, px)
+            break
+    if found is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Нет ни снапшота, ни дневных цен ОФЗ за {_STEP_BACK_DAYS} дн до {req.isoformat()}")
+    d, snap, px = found
+
+    # расписание MOEX тянем по SECID — у ОФЗ ISIN в bondization не резолвится
+    # (то же правило, что в compute_fixed_metrics_all)
+    fulls = await asyncio.gather(
+        *(MarketDataService.fetch_bond_schedule_full(u.get("secid") or u["isin"]) for u in rows),
+        return_exceptions=True)
+
+    def _crunch() -> dict:
+        from core.valuation import settle_date
+        out: dict = {}
+        settle = settle_date(d)
+        for u, full in zip(rows, fulls):
+            full = {} if isinstance(full, Exception) else (full or {})
+            isin = u["isin"]
+            sn = snap.get(isin)
+            price = sn["price_pct"] if sn else px.get(isin)
+            if price is None or not full.get("coupons"):
+                continue
+            row = dict(u)
+            row["accrued"] = _accrued_on(full, settle, u.get("accrued"))
+            try:
+                m = fi.compute_fixed_row(row, full, None, d, price_override=float(price))
+            except Exception as e:
+                logger.warning(f"ofz asof {isin} {d}: {e}")
+                continue
+            ytm = sn["ytm"] if sn and sn.get("ytm") is not None else m.get("ytm")
+            if ytm is None:
+                continue
+            out[isin] = {"ytm": ytm, "tau": m.get("mac_dur"), "px": float(price),
+                         "src": "snap" if sn else "reprice"}
+        return out
+
+    items = await asyncio.to_thread(_crunch)
+    payload = {"date": d.isoformat(), "requested": req.isoformat(), "items": items}
+    _asof_memo[req.isoformat()] = (now, payload)
+    while len(_asof_memo) > _ASOF_MEMO_MAX:
+        _asof_memo.popitem(last=False)
+    return payload
 
 
 @router.get("/{isin}", tags=["Fixed"])

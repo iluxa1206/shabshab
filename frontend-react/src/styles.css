@@ -222,7 +222,25 @@ td.mut { color: var(--mut); }
 .ofz-pt.rich { fill: var(--down); fill-opacity: .85; }
 .ofz-pt:hover { fill-opacity: 1; stroke: var(--fg); stroke-width: 1; }
 .ofz-stale { color: var(--down); }
-.ofz-tbl { margin-top: 8px; }
+/* Сдвиг к дате сравнения: прошлая кривая — тише сегодняшней (--mut-2 вместо
+   акцента), тень точки — полый кружок, коннектор — тонкая нить: направление
+   сдвига должно читаться, но не спорить с актуальными точками. */
+.ofz-kbd-cmp { stroke: var(--mut-2); stroke-width: 1.2; stroke-dasharray: 2 3; opacity: .8; }
+.ofz-pt-ghost { fill: var(--bg); stroke: var(--mut); stroke-width: 1; opacity: .8; }
+.ofz-pt-ghost:hover { stroke: var(--fg); opacity: 1; }
+.ofz-conn { stroke: var(--mut-2); stroke-width: .8; opacity: .6; pointer-events: none; }
+.ofz-dstrip { font: 11px var(--mono); color: var(--mut); margin: 2px 0 4px; letter-spacing: .02em; }
+.ofz-dstrip-k { text-transform: uppercase; letter-spacing: .1em; }
+.ofz-dstrip-note { color: var(--mut-2); }
+.ofz-dstrip .pos { color: var(--pos); }
+.ofz-dstrip .neg { color: var(--neg); }
+/* Полоса объёма: столбик — --mut с прозрачностью, стек стакан/РПС/прочее
+   тремя ступенями плотности одного тона (цветом здесь ничего не говорим —
+   цвет на этой странице занят знаком отклонения точек). */
+.ofz-vol-book { fill: var(--mut); fill-opacity: .55; }
+.ofz-vol-rps { fill: var(--mut); fill-opacity: .3; }
+.ofz-vol-other { fill: var(--mut); fill-opacity: .15; }
+.ofz-vol:hover rect:not([fill="transparent"]) { fill-opacity: .9; }
 
 /* --- График цены выпуска (карточка): свечи/линия + таймфреймы --- */
 .pchart { margin-bottom: 20px; }
