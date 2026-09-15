@@ -133,6 +133,18 @@ export const isFreshIssue = (iso) => {
   const t = Date.parse(String(iso).slice(0, 10) + "T00:00:00Z");
   return Number.isFinite(t) && Date.now() - t <= NEW_ISSUE_DAYS * 864e5;
 };
+// Имя свежего выпуска побуквенно: каждая буква — span с индексом --i, по нему
+// CSS сдвигает фазу «зелёного пламени» (.flame-ch в styles.css). Пробелы не
+// оборачиваем — им нечего анимировать, а перенос по ним должен остаться.
+export const FlameName = ({ text }) => {
+  const s = String(text ?? "");
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    out.push(c === " " ? " " : <span className="flame-ch" style={{ "--i": i }} key={i}>{c}</span>);
+  }
+  return <>{out}</>;
+};
 // «Прям сильно короткая»: до горизонта прайсинга ≤ полугода — годы красные
 const SHORT_YRS = 0.5;
 export const isShortBond = (b) => {
@@ -154,7 +166,9 @@ export const COLS = [
             {/* бейдж только у ОФЗ: «КОРП» стоял в 9 строках из 10 и ничего не
                 различал. Из имени слово ОФЗ срезано — его несёт бейдж */}
             {isOfz && <span className="fx-cls fx-ofz">ОФЗ</span>}
-            {(isOfz ? stripOfz(b.short_name) : b.short_name) || b.isin}
+            {fresh
+              ? <FlameName text={(isOfz ? stripOfz(b.short_name) : b.short_name) || b.isin} />
+              : (isOfz ? stripOfz(b.short_name) : b.short_name) || b.isin}
             {/* рейтинг здесь же, цветом бакета (как в фильтрах) — отдельной колонки не держим */}
             {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
             {b.price_implausible && <span className="badge-stale" title="Цена подразумевает номинальный убыток (dirty > Σ будущих потоков) — вероятно стейл/тонкая цена неликвида. Спреды скрыты.">стейл</span>}

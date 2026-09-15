@@ -1,5 +1,5 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
-import { D, IsinCopy, Quote, isFreshIssue, isShortBond } from "../BondTable.jsx";
+import { D, FlameName, IsinCopy, Quote, isFreshIssue, isShortBond } from "../BondTable.jsx";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
 // key — ключ сортировки и видимости, w — ширина в ch по МАКСИМУМУ формата,
@@ -42,7 +42,9 @@ export const FIXED_COLS = [
           {/* бейдж только у ОФЗ (см. BondTable): «КОРП» — шум на каждой строке */}
           {b.cls === "ofz" && <span className="fx-cls fx-ofz">ОФЗ</span>}
           {b.face_unit && b.face_unit !== "RUB" && <span className="fx-cls" title="Валюта номинала выпуска">{b.face_unit}</span>}
-          {(b.cls === "ofz" ? stripOfz(b.name) : b.name) || b.isin}
+          {isFreshIssue(b.issue_date)
+            ? <FlameName text={(b.cls === "ofz" ? stripOfz(b.name) : b.name) || b.isin} />
+            : (b.cls === "ofz" ? stripOfz(b.name) : b.name) || b.isin}
           {b.rating && <span className="bond-rt" style={{ color: ratingColor(b.rating) }}>({b.rating})</span>}
           {b.price_thin && <span className="badge-thin"
             title="Последняя цена MOEX старше 4 дней — бумага не торговалась, YTM и спред сняты с несвежего принта.">тонк</span>}
