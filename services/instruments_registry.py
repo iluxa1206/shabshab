@@ -754,6 +754,7 @@ def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> li
             "base_rate_type": base or "UNKNOWN",
             "spread_issue_bps": r["margin_bps"],
             "maturity_date": r["maturity_date"],
+            "issue_date": r["issue_date"],
             "rating": r["rating"],
             "emitter_id": r["emitter_id"],
             "emitter_name": canon.get(r["emitter_id"]) or r["emitter_name"],
