@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from datetime import date
 from typing import Dict, Optional
 
@@ -693,6 +694,12 @@ def _shard_view(src: Dict[int, dict]) -> dict:
 # темп последней минутной сводки движка (см. metrics_worker) — его читает
 # /api/status, чтобы прогрев был виден числами, а не только в логах
 _last_rate: dict = {}
+# ХВОСТ ТЕМПА — последние минутные сводки. Сторож здоровья данных судит о
+# конвейере по нему, а не по одной минуте: 15.09.2026 лента сделок (Alor,
+# все борды) молчала 18:55–18:57, полных пересчётов законно не было, и сторож,
+# снявший ровно эту минуту, поднял «конвейер голодает» на здоровом движке.
+_RATE_HIST_LEN = 5
+_rate_hist: deque = deque(maxlen=_RATE_HIST_LEN)
 
 
 def stats() -> dict:
@@ -719,7 +726,8 @@ def stats() -> dict:
             # купонов, к погашению и на неамортизированном номинале. Стоят в
             # очереди на пересборку — число должно таять, а не держаться
             "ctx_no_sched": len(_ctx_no_sched),
-            "rate": dict(_last_rate) or None}
+            "rate": dict(_last_rate) or None,
+            "rate_hist": [dict(r) for r in _rate_hist]}
 
 
 def _seed_price(isin: str, px) -> None:
@@ -2946,6 +2954,7 @@ async def metrics_worker() -> None:
                     "side_ms": round(sides_ms / max(1, sides_since_log)),
                     "at": time.time(),
                 }
+                _rate_hist.append(_last_rate)
                 done_since_log = 0
                 sides_since_log = 0
                 globals()["_grid_builds"] = 0

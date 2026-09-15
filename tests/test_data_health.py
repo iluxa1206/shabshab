@@ -120,11 +120,54 @@ def test_missing_accrued_everywhere_is_reported(monkeypatch):
     assert "accrued" in dh.engine_problems()
 
 
+def _hist(*rows, now=1_000_000.0, step=60):
+    """Хвост минутных сводок: последняя — «сейчас», предыдущие на минуту старше."""
+    return [{"rows_per_min": r, "row_ms": 66 if r else 1,
+             "at": now - step * (len(rows) - 1 - i)} for i, r in enumerate(rows)]
+
+
 def test_starving_engine_reported_in_trading_hours(monkeypatch):
+    """10.09.2026: 8 строк/мин против обычных 450 — и так несколько минут подряд."""
     monkeypatch.setattr("services.universe_stream.stats",
-                        lambda: _stats(rate={"rows_per_min": 8, "row_ms": 66}))
+                        lambda: _stats(rate_hist=_hist(8, 6, 9, 8, 7)))
     monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
-    assert "engine_rate" in dh.engine_problems()
+    monkeypatch.setattr(dh.time, "time", lambda: 1_000_000.0)
+    msg = dh.engine_problems().get("engine_rate")
+    assert msg and "5 мин подряд" in msg and "66 мс/шт" in msg
+
+
+def test_trade_feed_pause_is_not_starvation(monkeypatch):
+    """15.09.2026: лента сделок Alor молчала 18:55–18:57, полных пересчётов ноль
+    две минуты, стороны считались. Сторож снял ровно эту минуту и разбудил
+    админов на здоровом движке. Одна живая минута в окне = движок жив."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh.time, "time", lambda: 1_000_000.0)
+    monkeypatch.setattr("services.universe_stream.stats",
+                        lambda: _stats(rate_hist=_hist(122, 64, 0, 0, 0)))
+    assert "engine_rate" not in dh.engine_problems()
+    # без хвоста — одна нулевая минута ещё не тренд, молчим
+    monkeypatch.setattr("services.universe_stream.stats",
+                        lambda: _stats(rate={"rows_per_min": 0, "row_ms": 1}))
+    assert "engine_rate" not in dh.engine_problems()
+
+
+def test_zero_rows_alarm_has_no_ms_noise(monkeypatch):
+    """При нуле строк «мс/шт» — шум от пропущенных бумаг, в тревоге его нет."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh.time, "time", lambda: 1_000_000.0)
+    monkeypatch.setattr("services.universe_stream.stats",
+                        lambda: _stats(rate_hist=_hist(0, 0, 0)))
+    msg = dh.engine_problems()["engine_rate"]
+    assert "0 строк/мин" in msg and "мс/шт" not in msg
+
+
+def test_stale_rate_summaries_are_ignored(monkeypatch):
+    """Сводки получасовой давности — не о текущем состоянии: по ним не судим."""
+    monkeypatch.setattr(dh, "trading_hours", lambda now=None: True)
+    monkeypatch.setattr(dh.time, "time", lambda: 1_000_000.0)
+    monkeypatch.setattr("services.universe_stream.stats",
+                        lambda: _stats(rate_hist=_hist(0, 0, 0, 0, 0, now=1_000_000.0 - 1800)))
+    assert "engine_rate" not in dh.engine_problems()
 
 
 def test_draining_queue_is_not_an_alarm(monkeypatch):

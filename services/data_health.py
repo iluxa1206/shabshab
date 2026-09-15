@@ -54,6 +54,13 @@ SANITY_MIN_BONDS = 30
 # Темп движка в торговые часы. Ниже — конвейер голодает (10.09: 8 строк/мин
 # против обычных 450).
 ENGINE_MIN_ROWS_PER_MIN = 20
+# ...но судим НЕ ПО ОДНОЙ МИНУТЕ. Полный пересчёт заказывает смена цены сделки,
+# и когда лента сделок замирает (15.09: Alor молчал 18:55–18:57 по всем бордам,
+# потом навал догона), движок законно даёт ноль — стороны при этом считаются
+# тысячами. Тревога — только если ВСЕ свежие сводки ниже порога: одной живой
+# минуты достаточно, чтобы признать конвейер здоровым.
+ENGINE_RATE_MIN_SAMPLES = 3       # меньше сводок — рано судить, молчим
+ENGINE_RATE_WINDOW_SEC = 8 * 60   # сводки старше — не о текущем состоянии
 # Очередь пересчёта. Сама по себе длина ни о чём не говорит: после рестарта
 # движок пересобирает контексты и сетки, и очередь законно доходит до тысячи,
 # а потом тает (11.09: 992 → 814 → 640 → 608 за четыре такта). Тревожно не
@@ -205,6 +212,35 @@ def sanity_problems() -> Dict[str, str]:
 _dirty_seen: dict = {"value": None, "stuck": 0}
 
 
+def _engine_rate_problem(st: dict, now: Optional[float] = None) -> Optional[str]:
+    """Голодает ли конвейер — по хвосту минутных сводок, а не по последней.
+
+    Свежие сводки (в окне ENGINE_RATE_WINDOW_SEC) должны быть все ниже порога и
+    их должно быть не меньше ENGINE_RATE_MIN_SAMPLES. Сводка без метки времени
+    считается свежей (старый движок / тесты)."""
+    hist = st.get("rate_hist")
+    if not hist:
+        hist = [st["rate"]] if st.get("rate") else []
+    now = time.time() if now is None else now
+    fresh = [r for r in hist
+             if r.get("rows_per_min") is not None
+             and (r.get("at") is None or now - r["at"] <= ENGINE_RATE_WINDOW_SEC)]
+    if len(fresh) < ENGINE_RATE_MIN_SAMPLES:
+        return None
+    rows = [r["rows_per_min"] for r in fresh]
+    if max(rows) >= ENGINE_MIN_ROWS_PER_MIN:
+        return None
+    total = sum(rows)
+    # мс/шт — только когда было что мерить: при нуле строк число это шум
+    # от пропущенных бумаг, и «1 мс/шт» в тревоге лишь путал
+    ms = ""
+    if total:
+        spent = sum((r.get("row_ms") or 0) * r["rows_per_min"] for r in fresh)
+        ms = f", {round(spent / total)} мс/шт"
+    return (f"движок считает {total / len(rows):.0f} строк/мин "
+            f"({len(rows)} мин подряд{ms}) — конвейер голодает")
+
+
 def engine_problems() -> Dict[str, str]:
     """Справляется ли конвейер. Вне торговых часов тишина законна."""
     out: Dict[str, str] = {}
@@ -224,11 +260,9 @@ def engine_problems() -> Dict[str, str]:
     if not trading_hours():
         return out
 
-    rate = st.get("rate") or {}
-    rows = rate.get("rows_per_min")
-    if rows is not None and rows < ENGINE_MIN_ROWS_PER_MIN:
-        out["engine_rate"] = (f"движок считает {rows} строк/мин "
-                              f"({rate.get('row_ms')} мс/шт) — конвейер голодает")
+    starving = _engine_rate_problem(st)
+    if starving:
+        out["engine_rate"] = starving
 
     dirty = st.get("dirty") or 0
     prev = _dirty_seen["value"]
