@@ -10,6 +10,7 @@ export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
   hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
+  currencies, currenciesSel, toggleCurrency, resetCurrencies,
   activeCount, extra,
 }) {
   const [open, setOpen] = useState(false);
@@ -83,6 +84,22 @@ export default function FiltersMenu({
                 aria-pressed={!!clsSel?.includes("CORP")}
                 title="Только корпоративные выпуски (сюда же субфедеральные и муниципальные)."
                 onClick={() => toggleCls("CORP")}>КОРП</button>
+            </div>
+          </div>}
+
+          {toggleCurrency && <div className="fp-sec">
+            <div className="fp-head">
+              <span className="fg-lbl">ВАЛЮТА НОМИНАЛА</span>
+              {resetCurrencies && <button className="issuer-clear" onClick={resetCurrencies}
+                disabled={currenciesSel?.length === 1 && currenciesSel[0] === "RUB"}>
+                RUB по умолчанию
+              </button>}
+            </div>
+            <div className="fp-chips" title="Валюта номинала выпуска, не валюта расчётов торгов.">
+              {(currencies || []).map((ccy) => <button key={ccy}
+                className={"chip-btn" + (currenciesSel?.includes(ccy) ? " on" : "")}
+                aria-pressed={!!currenciesSel?.includes(ccy)}
+                onClick={() => toggleCurrency(ccy)}>{ccy}</button>)}
             </div>
           </div>}
 

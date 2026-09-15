@@ -18,6 +18,7 @@ function Cell({ k, children }) {
 // Карточка фикс-бумаги: метрики к погашению + график цены + поток платежей.
 export default function FixedCard({ d }) {
   const r = d.reference || {}, mBase = d.metrics || {}, mk = d.market || {};
+  const faceUnit = r.face_unit || "RUB";
   const cf = d.cashflow || [];
 
   // Калькулятор цены: чистая цена → пересчёт YTM/g/z/дюрации/dirty под неё
@@ -112,7 +113,7 @@ export default function FixedCard({ d }) {
         <div className="vc">
           <div className="vc-label">Мод. дюрация</div>
           <div className="vc-val">{m.mod_dur != null ? fmt.num(m.mod_dur, 2) : D}<span className="vc-u"> лет</span></div>
-          <div className="vc-sub">DV01 {m.dv01 != null ? fmt.num(m.dv01, 2) + " ₽" : D}</div>
+          <div className="vc-sub">DV01 {m.dv01 != null ? fmt.num(m.dv01, 2) + " " + faceUnit : D}</div>
         </div>
       </div>
 
@@ -120,13 +121,13 @@ export default function FixedCard({ d }) {
         <Cell k="Эмитент">{r.issuer}</Cell>
         <Cell k="Рейтинг">{r.rating && r.rating !== "NR" ? r.rating : null}</Cell>
         <Cell k="Цена">{priceVal != null ? fmt.pct(priceVal) + " %" : null}{!isRepriced && mk.price_stale ? " (пред.)" : ""}</Cell>
-        <Cell k="Dirty">{dirtyVal != null ? fmt.num(dirtyVal) + " ₽" : null}</Cell>
-        <Cell k="НКД">{mk.accrued_rub != null ? fmt.num(mk.accrued_rub) + " ₽" : null}</Cell>
+        <Cell k="Dirty">{dirtyVal != null ? fmt.num(dirtyVal) + " " + faceUnit : null}</Cell>
+        <Cell k="НКД">{mk.accrued_rub != null ? fmt.num(mk.accrued_rub) + " " + faceUnit : null}</Cell>
         <Cell k="Купон">{r.coupon_pct != null ? fmt.pct(r.coupon_pct) + " %" : null}</Cell>
         <Cell k="Погашение">{r.maturity_date ? fmt.date(r.maturity_date) : null}</Cell>
         <Cell k="Convexity">{m.convexity != null ? fmt.num(m.convexity, 1) : null}</Cell>
         <Cell k="Дюрация Маколея">{m.mac_dur != null ? fmt.num(m.mac_dur, 2) + " лет" : null}</Cell>
-        <Cell k="Номинал">{r.face != null ? fmt.num(r.face, 0) + " ₽" : null}</Cell>
+        <Cell k="Номинал">{r.face != null ? fmt.num(r.face, 0) + " " + faceUnit : null}</Cell>
         <Cell k="Оборот, млн ₽">{fmt.mln(mk.val_today)}</Cell>
         <Cell k="SECID">{r.secid}</Cell>
       </div>
@@ -134,13 +135,15 @@ export default function FixedCard({ d }) {
       <div className="section-title">Цена · MOEX</div>
       <PriceChart isin={r.isin} secid={r.secid} board={r.board} />
 
-      <div className="section-title">Динамика G-спреда</div>
-      <SpreadHistory isin={r.isin} kind="fixed" secid={r.secid} board={r.board || "TQOB"} />
+      {faceUnit === "RUB" && <>
+        <div className="section-title">Динамика G-спреда</div>
+        <SpreadHistory isin={r.isin} kind="fixed" secid={r.secid} board={r.board || "TQOB"} />
+      </>}
 
       <div className="section-title">Поток платежей ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>
         <table className="cf-table">
-          <thead><tr><th className="left">Дата</th><th>Тип</th><th className="num">Ставка</th><th className="num">Сумма, ₽</th></tr></thead>
+          <thead><tr><th className="left">Дата</th><th>Тип</th><th className="num">Ставка</th><th className="num">Сумма, {faceUnit}</th></tr></thead>
           <tbody>
             {cf.map((c, i) => (
               <tr key={i}>

@@ -4,9 +4,10 @@
 EUR_RUB__TOM): LAST → WAPRICE → PREVPRICE. Кэш память TTL 60с — кнопка «пересчёт»
 на фронте получает свежий курс без бомбёжки ISS.
 
-Фолбэк — официальный ЦБ (XML_daily, фиксируется на день): недостающие валюты
-(неликвидный EUR TOM, выходные) добираются оттуда. Совсем всё упало → stale-кэш
-с диска (fx_cache.json): старый курс лучше пустого NAV.
+Фолбэк — официальный ЦБ (XML_daily, фиксируется на день): добирает все валюты
+номинала, которые публикует ЦБ (в том числе CHF), когда для них нет TOM-пары.
+Совсем всё упало → stale-кэш с диска (fx_cache.json): старый курс лучше пустого
+NAV.
 """
 from __future__ import annotations
 
@@ -31,12 +32,12 @@ from services.paths import cache_path as _cache_path
 FX_CACHE_FILE = _cache_path("fx_cache.json")
 
 _TOM_SECIDS = {"USD000UTSTOM": "USD", "CNYRUB_TOM": "CNY", "EUR_RUB__TOM": "EUR"}
-_CCYS = {"USD", "EUR", "CNY"}
+_CCY_ALIAS = {"CNH": "CNY"}
 _TOM_TTL = 60.0  # сек
 
 # {"ts": monotonic, "rates": {...}, "source": {ccy: "tom"|"cbr"}, "label": str}
 _mem: dict = {"ts": 0.0, "data": None}
-_cbr_mem: dict = {"date": None, "rates": None}
+_cbr_mem: dict = {"date": None, "rates": None, "ids": None}
 # последний УСПЕШНЫЙ TOM: эпизодический таймаут ISS не должен ронять курс в
 # дневной ЦБ — 15-минутный стейл TOM ближе к рынку
 _tom_last: dict = {"ts": 0.0, "rates": None, "upd": None}
@@ -60,13 +61,17 @@ def _save_disk(data: dict) -> None:
 
 
 def _parse_cbr_xml(raw: bytes) -> Dict[str, float]:
-    """{'USD': 78.5, ...} — Value/Nominal (у CNY номинал может быть 10).
+    """Курсы всех валют ЦБ: {'USD': 78.5, 'CHF': 100.2, ...}.
+
+    Value/Nominal важен для CNY и других валют, которые ЦБ публикует не за одну
+    единицу. Не ограничиваемся тремя TOM-парами: у облигации может быть любой
+    FACEUNIT, а отсутствие CHF-курса тихо отключало сигнал по сделке.
     Вход bytes: XML ЦБ несёт encoding="windows-1251" в декларации — str ET не ест."""
     out: Dict[str, float] = {}
     root = ET.fromstring(raw)
     for v in root.iter("Valute"):
         code = (v.findtext("CharCode") or "").upper()
-        if code not in _CCYS:
+        if not code or code in {"RUB", "SUR", "RUR"}:
             continue
         try:
             nominal = float((v.findtext("Nominal") or "1").replace(",", "."))
@@ -76,6 +81,30 @@ def _parse_cbr_xml(raw: bytes) -> Dict[str, float]:
         except ValueError:
             continue
     return out
+
+
+def _parse_cbr_ids(raw: bytes) -> Dict[str, str]:
+    """{'CHF': 'R01775', ...} — идентификаторы валют для XML_dynamic ЦБ.
+
+    CharCode — код, который приходит в FACEUNIT; ID нужен исключительно для
+    истории ЦБ. Берём каталог из того же XML_daily, а не поддерживаем вручную
+    список новых валют при каждом появлении такого выпуска.
+    """
+    out: Dict[str, str] = {}
+    root = ET.fromstring(raw)
+    for v in root.iter("Valute"):
+        code = (v.findtext("CharCode") or "").upper()
+        ident = (v.get("ID") or "").strip()
+        if code and ident:
+            out[code] = ident
+    return out
+
+
+def _history_ccys(units: set[str]) -> set[str]:
+    """Валюты, для которых архив FX должен поддерживать дневной ряд."""
+    return set(_TOM_SECIDS.values()) | {
+        _CCY_ALIAS.get(unit, unit) for unit in units if unit not in {"", "RUB", "SUR", "RUR"}
+    }
 
 
 async def _fetch_tom(client: httpx.AsyncClient) -> tuple[Dict[str, float], Optional[str]]:
@@ -121,7 +150,8 @@ async def _fetch_cbr(client: httpx.AsyncClient) -> Dict[str, float]:
     resp.raise_for_status()
     rates = _parse_cbr_xml(resp.content)
     if rates:
-        _cbr_mem.update({"date": today, "rates": rates})
+        _cbr_mem.update({"date": today, "rates": rates,
+                         "ids": _parse_cbr_ids(resp.content)})
     return rates
 
 
@@ -153,18 +183,19 @@ async def get_fx() -> dict:
             source[ccy] = "tom"
         if tom:
             label = "TOM" + (f" {upd[:5]}" if upd else "")
-        missing = _CCYS - set(rates)
-        if missing:
-            try:
-                cbr = await _fetch_cbr(client)
-                for ccy in missing:
-                    if ccy in cbr:
-                        rates[ccy] = cbr[ccy]
-                        source[ccy] = "cbr"
-                if not label and any(s == "cbr" for s in source.values()):
-                    label = "ЦБ " + date.today().strftime("%d.%m")
-            except Exception as e:
-                logger.warning(f"CBR FX fetch error: {e}")
+        # XML_daily даёт все валюты, а не только USD/EUR/CNY. TOM остаётся
+        # приоритетным для своих трёх пар; остальные (например, CHF) берём у
+        # ЦБ, чтобы не терять алерты на валютных номиналах.
+        try:
+            cbr = await _fetch_cbr(client)
+            for ccy, value in cbr.items():
+                if ccy not in rates:
+                    rates[ccy] = value
+                    source[ccy] = "cbr"
+            if not label and any(s == "cbr" for s in source.values()):
+                label = "ЦБ " + date.today().strftime("%d.%m")
+        except Exception as e:
+            logger.warning(f"CBR FX fetch error: {e}")
 
     if rates:
         rates["RUB"] = 1.0
@@ -197,6 +228,8 @@ async def get_fx_rates() -> Dict[str, float]:
 _ARCHIVE_MIN_SEC = 600          # чаще раза в 10 минут день переписывать незачем
 _arch: dict = {"at": 0.0, "day": None}
 # id валют в динамике ЦБ (XML_dynamic.asp): свои, не совпадают с кодом
+# Fallback на случай, когда текущий XML ЦБ недоступен. Обычно каталог ниже
+# берётся динамически из XML_daily, что покрывает CHF и новые валюты FACEUNIT.
 _CBR_IDS = {"USD": "R01235", "EUR": "R01239", "CNY": "R01375"}
 CBR_DYNAMIC_URL = "https://www.cbr.ru/scripts/XML_dynamic.asp"
 MOEX_HISTORY_URL = ("https://iss.moex.com/iss/history/engines/currency/markets/selt/boards/CETS/securities")
@@ -351,6 +384,19 @@ async def backfill_history(days: int = 400) -> dict:
     frm = till - timedelta(days=max(days, 1))
     saved = 0
     got: Dict[str, Dict[str, float]] = {}
+    # В истории нужен курс только тех валют, которые действительно являются
+    # номиналом хотя бы одной бумаги. Так архив не разрастается всеми валютами
+    # ЦБ, но CHF/новый FACEUNIT перестаёт быть отдельным кодовым исключением.
+    from services import trades_archive
+    try:
+        # Нужны только валюты уже записанных тиков: полный bond_listing — это
+        # справочник всего рынка и создаёт пустые ряды десятков валют, а новый
+        # будущий тик сохраняет курс живым слоем сам.
+        units = await trades_archive.archived_face_units()
+    except Exception as e:
+        logger.warning("fx history archived units: %s", e)
+        units = set()
+    ccys = _history_ccys(units)
     async with moex_client() as client:
         for secid, ccy in _TOM_SECIDS.items():
             try:
@@ -368,7 +414,17 @@ async def backfill_history(days: int = 400) -> dict:
         # и по одному признаку «MOEX что-то отдал» вся прошлая история USD
         # осталась бы пустой. Уже записанные дни не трогаем — ступеньку между
         # биржевым и официальным курсом внутри одного ряда плодить незачем.
-        for ccy, vid in _CBR_IDS.items():
+        try:
+            await _fetch_cbr(client)
+            cbr_ids = _cbr_mem.get("ids") or {}
+        except Exception as e:
+            logger.warning("fx history CBR catalogue: %s", e)
+            cbr_ids = {}
+        for ccy in sorted(ccys):
+            vid = cbr_ids.get(ccy) or _CBR_IDS.get(ccy)
+            if not vid:
+                logger.warning("fx history %s: нет ID в каталоге ЦБ", ccy)
+                continue
             have_days = set((got.get(ccy) or {}))
             try:
                 r = await client.get(CBR_DYNAMIC_URL, timeout=20, follow_redirects=True,

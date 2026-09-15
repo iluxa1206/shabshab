@@ -291,6 +291,17 @@ def test_dead_shard_alerts_even_when_neighbours_live():
     assert set(problems) == {"books_shards"}
 
 
+def test_connected_quote_shard_without_snapshot_is_abnormal(monkeypatch):
+    monkeypatch.setattr(m, "SHARD_MUTE_GRACE_MIN", 2.0)
+    shards = {"list": [
+        {"id": 0, "up": True, "msgs": 20, "up_min": 8.0},
+        {"id": 1, "up": True, "msgs": 0, "up_min": 2.1},
+        {"id": 2, "up": True, "msgs": 0, "up_min": 0.5},
+        {"id": 3, "up": False, "msgs": 0, "up_min": None},
+    ]}
+    assert m._mute_shards(shards) == [1]
+
+
 def test_daemon_restarts_after_crash():
     """Воркер, упавший вне своего внутреннего try, обязан вернуться сам: голый
     create_task убивал его насмерть и молча."""

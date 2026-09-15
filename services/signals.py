@@ -642,7 +642,9 @@ def preview_block(params: dict, limit: int = 20) -> dict:
     with _connect() as c:
         rows = [dict(r) for r in c.execute(
             "SELECT trade_id,isin,secid,ts,market,side,value,y_idx_bps FROM block_trade "
-            "WHERE ts >= ? AND value >= ? AND (cur IS NULL OR cur='SUR') "
+            # value в block_trade всегда рублёвый; cur описывает расчёты ISS и
+            # не должен расходить preview с реальной очередью уведомлений.
+            "WHERE ts >= ? AND value >= ? "
             "ORDER BY value DESC LIMIT 500",
             # выборка по порогу С ЛЮФТОМ (money_floor): сделка на 48 млн под
             # «от 50» проходит block_matches, и предвыборка не должна отрезать

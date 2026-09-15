@@ -187,7 +187,8 @@ def _blocks(days: List[str], kinds: Optional[dict] = None) -> List[dict]:
         rows = [dict(r) for r in c.execute(
             "SELECT isin, secid, ts, market, price, value, y_idx_bps "
             "FROM block_trade WHERE ts >= ? AND ts <= ? "
-            "AND (cur IS NULL OR cur='SUR') "
+            # value уже нормализован в рубли; CNY/USD здесь — валюта расчётов,
+            # не другой масштаб суммы.
             "ORDER BY value DESC LIMIT ?",
             # с запасом: дальше выбрасываем дубли и лишние строки одной бумаги
             (f"{lo} 00:00:00", f"{hi} 23:59:59", max(1, BLOCKS_TOP) * 6))]

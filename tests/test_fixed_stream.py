@@ -7,8 +7,8 @@ YTM и g-спред. Отличий два, и оба здесь проверя�
 1. У фикса СВОЯ математика (compute_fixed_row), а не enrich_bond — и своя
    витрина: строки уезжают в market_cache['fixed_metrics'], а не в
    'universe_metrics' (схемы строк разные, один словарь на двоих их бы смешал).
-2. У фикса НЕТ дешёвой очереди сторон: один проход считает и цену сделки, и
-   bid/ask/средневзвес, поэтому движение стакана заказывает полный пересчёт.
+2. У фикса есть отдельный точный патч сторон: движение стакана не трогает last,
+   WAP и Z-спред, но YTM/G-спред нового BID/ASK считает без наклона.
 """
 from datetime import date
 
@@ -34,10 +34,12 @@ def fixed_row():
 
 @pytest.fixture(autouse=True)
 def clean_state():
-    us._dirty.clear(); us._sides_dirty.clear(); us._last_quote.clear()
+    us._dirty.clear(); us._sides_dirty.clear(); us._fixed_sides_dirty.clear(); us._last_quote.clear()
+    us._fixed_sides_wake.clear()
     us._fixed_isins.clear()
     yield
-    us._dirty.clear(); us._sides_dirty.clear(); us._last_quote.clear()
+    us._dirty.clear(); us._sides_dirty.clear(); us._fixed_sides_dirty.clear(); us._last_quote.clear()
+    us._fixed_sides_wake.clear()
     us._fixed_isins.clear()
 
 
@@ -79,9 +81,9 @@ def test_daily_delta_survives_tick():
     assert cache["fixed_metrics"]["RU000A1FIX01"]["delta_ytm"] == -0.2
 
 
-def test_side_move_asks_full_recount_for_fixed(monkeypatch):
-    """Движение стакана у фикса — в полную очередь: дешёвой ветки сторон у него
-    нет (у флоатера она есть и остаётся)."""
+def test_side_move_queues_cheap_recount_for_fixed(monkeypatch):
+    """Движение стакана у фикса идёт в ту же дешёвую очередь, что и флоатер;
+    полная очередь нужна только при новой цене сделки."""
     monkeypatch.setattr(us, "_broadcast_quote", lambda isin, data: asyncio.sleep(0))
     us._fixed_isins.add("RU000A1FIX01")
     both = ("RU000A1FIX01", "RU000A1FLT01")
@@ -90,8 +92,45 @@ def test_side_move_asks_full_recount_for_fixed(monkeypatch):
     us._dirty.clear()
     for isin in both:      # вторая: цена сделки та же, сдвинулся только бид
         asyncio.run(us._on_quote(isin, {"last_price": 100.0, "bid": 99.2, "ask": 100.5}))
-    assert us._dirty == {"RU000A1FIX01"}
+    assert not us._dirty
     assert set(us._sides_dirty) == {"RU000A1FLT01"}
+    assert set(us._fixed_sides_dirty) == {"RU000A1FIX01"}
+    assert us._fixed_sides_wake.is_set()
+
+
+def test_fixed_side_queue_ignores_floater_column_scope(monkeypatch):
+    """YTM BID/ASK фикса не должны исчезнуть из очереди из-за scope флоатеров."""
+    us._fixed_sides_dirty["RU000A1FIX01"] = us._SIDES_PRIO_LIVE
+    monkeypatch.setattr(us, "sides_needed", lambda: False)
+    take, _prio = us._take_fixed_sides_batch()
+    assert take == ["RU000A1FIX01"]
+
+
+def test_fixed_cheap_side_patch_keeps_last_metrics(fixed_row, monkeypatch):
+    """Новый bid пересчитывает только свои точные поля, не зовя полный расчёт."""
+    from services.market_data import market_cache
+    from services import fixed_income
+
+    row, sched = fixed_row
+    ctx = _ctx({row["isin"]: row}, {row["isin"]: sched})
+    ctx["board"] = {row["isin"]: {"accrued": row["accrued"], "bid": 99.2, "ask": 99.7}}
+    baseline = us._crunch([(row["isin"], {"last_price": 99.5, "bid": 99.3, "ask": 99.6})], ctx)
+    previous = market_cache.get("fixed_metrics")
+    try:
+        market_cache["fixed_metrics"] = baseline
+        us._last_quote[row["isin"]] = {"bid": 99.2, "ask": 99.7}
+        monkeypatch.setattr(fixed_income, "compute_fixed_row",
+                            lambda *a, **k: pytest.fail("полный пересчёт вызван"))
+        patch = us.recrunch_sides([row["isin"]], ctx["board"], fixed_ctx=ctx)[row["isin"]]
+        assert patch["_kind"] == "fixed"
+        assert patch["bid"] == 99.2 and patch["ytm_bid"] is not None
+        assert "ytm" not in patch and "z_spread_bps" not in patch
+    finally:
+        us._last_quote.pop(row["isin"], None)
+        if previous is None:
+            market_cache.pop("fixed_metrics", None)
+        else:
+            market_cache["fixed_metrics"] = previous
 
 
 def test_pool_groups_are_independent(monkeypatch):

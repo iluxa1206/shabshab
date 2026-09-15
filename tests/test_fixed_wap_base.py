@@ -32,6 +32,7 @@ def no_live_ticks(monkeypatch):
     """По умолчанию своего тикового средневзвеса нет — берётся биржевой."""
     from services import live_quotes
     monkeypatch.setattr(live_quotes, "get", lambda isin: None)
+    fi.clear_price_metrics_cache()
 
 
 def _row(sched, **kw):
@@ -107,6 +108,93 @@ def test_side_metrics_dedup_price_of_trade(sched):
     row = _row(sched, last=100.0, bid=100.0)
     out = fi.compute_fixed_row(row, sched, None, CD)
     assert out["ytm_bid"] == out["ytm"]
+
+
+def test_price_metrics_cache_reuses_exact_unchanged_level(sched, monkeypatch):
+    """Повтор того же уровня не должен снова запускать xirr/xnpv."""
+    original = fi.fixed_metrics_from_schedule
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fi, "fixed_metrics_from_schedule", counted)
+    row = _row(sched, last=100.0)
+    fi.compute_fixed_row(row, sched, None, CD)
+    fi.compute_fixed_row(row, sched, None, CD)
+    assert calls == 1
+
+
+def test_new_price_reuses_cashflow_template(sched, monkeypatch):
+    """Новый уровень решает новую YTM, но не разбирает расписание заново."""
+    original = fi.build_fixed_cashflows
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fi, "build_fixed_cashflows", counted)
+    a = _accrued(sched, settle_date(CD), CD)
+    first = fi.fixed_metrics_from_schedule(sched, 100.0, a, CD)
+    second = fi.fixed_metrics_from_schedule(sched, 99.5, a, CD)
+    assert first["ytm_pct"] is not None and second["ytm_pct"] > first["ytm_pct"]
+    assert calls == 1
+
+
+def test_price_metrics_cache_does_not_stale_g_spread(sched, monkeypatch):
+    """YTM из кэша, но КБД изменилась: G-spread должен измениться сразу."""
+    class Curve:
+        def __init__(self, rate):
+            self.rate = rate
+
+        def ok(self):
+            return True
+
+        def r(self, _tau):
+            return self.rate
+
+    original = fi.fixed_metrics_from_schedule
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fi, "fixed_metrics_from_schedule", counted)
+    row = _row(sched)
+    face = row.get("settle_face") or row.get("face")
+    first = fi._metrics_at_price(row, sched, 100.0, row["accrued"], CD, Curve(0.10), face)
+    second = fi._metrics_at_price(row, sched, 100.0, row["accrued"], CD, Curve(0.11), face)
+    assert calls == 1
+    assert second["ytm_pct"] == first["ytm_pct"]
+    assert second["g_spread_bps"] == first["g_spread_bps"] - 100
+
+
+def test_z_spread_cache_tracks_full_curve(sched, monkeypatch):
+    """Повтор цены не решает Z заново, но новая КБД обязательно решает."""
+    from services import zspread
+    from services.zspread import GCurve
+
+    calls = 0
+
+    def counted(g_curve, cfs, calc_date, dirty):
+        nonlocal calls
+        calls += 1
+        return round(g_curve.r(1.0) * 10_000)
+
+    monkeypatch.setattr(zspread, "solve_z_discrete", counted)
+    row = _row(sched, last=100.0)
+    curve_10 = GCurve([(0.25, 10.0), (10.0, 10.0)])
+    curve_11 = GCurve([(0.25, 11.0), (10.0, 11.0)])
+    assert fi.compute_fixed_row(row, sched, curve_10, CD)["z_spread_bps"] == 1000
+    assert fi.compute_fixed_row(row, sched, curve_10, CD)["z_spread_bps"] == 1000
+    assert fi.compute_fixed_row(row, sched, curve_11, CD)["z_spread_bps"] == 1100
+    assert calls == 2
 
 
 def test_static_flags_without_price(sched):

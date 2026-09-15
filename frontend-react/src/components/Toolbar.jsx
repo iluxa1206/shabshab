@@ -12,6 +12,7 @@ export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating, ratingOpts,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
+  currencies, currenciesSel, toggleCurrency, resetCurrencies,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   spreadFrom, setSpreadFrom, spreadTo, setSpreadTo,
@@ -82,6 +83,8 @@ export default function Toolbar({
           hideSub={hideSub} setHideSub={setHideSub}
           hideAmort={hideAmort} setHideAmort={setHideAmort}
           clsSel={clsSel} toggleCls={toggleCls}
+          currencies={currencies} currenciesSel={currenciesSel}
+          toggleCurrency={toggleCurrency} resetCurrencies={resetCurrencies}
           activeCount={activeFilters}
         />
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}

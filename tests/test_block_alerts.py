@@ -24,7 +24,7 @@ def bt(tmp_path, monkeypatch):
     return pdb, mod
 
 
-def _seed(pdb, rows, ins_at=None):
+def _seed(pdb, rows, ins_at=None, cur="SUR"):
     d = date.today().isoformat()
     now = int(time.time()) if ins_at is None else ins_at
     with pdb._connect() as c:
@@ -32,7 +32,7 @@ def _seed(pdb, rows, ins_at=None):
             "INSERT INTO block_trade(trade_id,isin,secid,ts,market,board,price,qty,"
             "value,yld,side,face,cur,ins_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(tid, isin, isin, f"{d} 10:0{i}:00", "bonds", "TQCB", 100.0, 1000,
-              val, None, "buy", 1000, "SUR", now)
+              val, None, "buy", 1000, cur, now)
              for i, (tid, isin, val) in enumerate(rows)])
 
 
@@ -93,6 +93,19 @@ def test_below_threshold_never_rings(bt, monkeypatch):
     _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB - 1)])
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 0
+
+
+def test_currency_settlement_rings_when_value_is_already_roubles(bt, monkeypatch):
+    """ISS помечает валюту расчётов CNY, но value уже приведён к рублям.
+
+    Очередь не должна отличаться от Alor-копии той же сделки, у которой cur
+    исторически принудительно записывался как SUR.
+    """
+    pdb, mod = bt
+    _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB + 1)], cur="CNY")
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [m["isin"] for p in sent for m in p["matches"]] == ["RU000FLOAT01"]
 
 
 # ── фильтры пользователя (kind=block) вместо умолчания ──────────────────────

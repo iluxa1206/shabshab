@@ -318,6 +318,10 @@ _PROC_STARTED = time.time()
 # часто, но одна поломка не должна звонить каждый такт: чинить её начинают с
 # первого сообщения, а дальше поток превращает тревогу в фон.
 STREAM_ALERT_REPEAT_MIN = float(os.getenv("STREAM_ALERT_REPEAT_MIN", "60"))
+# Подписка считается состоявшейся, только если прислала хотя бы один снимок.
+# Две минуты оставляют запас на пачку подписок и холодный старт, но не дают
+# шардy с неверным guid/лимитом брокера висеть «up» целый день без данных.
+SHARD_MUTE_GRACE_MIN = float(os.getenv("SHARD_MUTE_GRACE_MIN", "2"))
 
 # что сейчас сломано → когда об этом сообщили в последний раз, по сторожам
 _stream_alerted: dict = {}
@@ -354,6 +358,19 @@ def _pool_hint(st: dict) -> str:
         return "пул ещё ни разу не собрал шарды"
     return (f"шарды собраны ({p.get('shards')} шт), но сокеты пусты — "
             f"токен/сеть/брокер")
+
+
+def _mute_shards(shards: dict) -> list[int]:
+    """Подключённые шард-сокеты, которые не отдали даже стартовый снимок.
+
+    Проверяем только quotes/depth: отдельный trade-шард может законно не
+    получить сделку по своей части неликвидного рынка, тогда как подписка цен
+    и стакана обязана подтвердиться сообщением. Это ловит частичный отказ,
+    который `up` считает живым соединением.
+    """
+    return [r["id"] for r in (shards.get("list") or [])
+            if r.get("up") and not r.get("msgs")
+            and (r.get("up_min") or 0) >= SHARD_MUTE_GRACE_MIN]
 
 
 async def _watch_alert(state: dict, problems: dict, title: str, tail: str,
@@ -467,6 +484,18 @@ async def stream_watchdog(period_sec: int = 300):
                     if tot and up < SHARD_UP_MIN * tot:
                         problems[k] = (f"сокетов {what}: живо {up} из {tot} — "
                                        f"бумаги мёртвых шардов без потока")
+                # `up` означает лишь TCP/WebSocket: неверная подписка может
+                # оставаться открытой без единого снимка. Отдельный trade-шард
+                # здесь намеренно не проверяется — у него тишина бывает рынком.
+                for k, sh, what in (
+                        ("books_mute", us.get("shards") or {}, "котировок"),
+                        ("depth_mute", us.get("depth_shards") or {}, "стаканов")):
+                    mute = _mute_shards(sh)
+                    if mute:
+                        shown = ", ".join(map(str, mute[:8]))
+                        suffix = "…" if len(mute) > 8 else ""
+                        problems[k] = (f"шарды {what} подключены, но >{SHARD_MUTE_GRACE_MIN:g} мин "
+                                       f"без стартового снимка: {shown}{suffix}")
                 if not ts.get("streamed"):
                     problems["trades"] = (f"сделки — 0 бумаг на сокетах; "
                                           f"{_pool_hint(ts)}")

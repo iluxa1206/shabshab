@@ -269,6 +269,14 @@ _SIDES_PRIO_WAVE = 1.0        # волна нового размера тике�
 _DEPTH_REQUEUE_SEC = float(os.getenv("UNIVERSE_DEPTH_REQUEUE_SEC", "20"))
 _depth_queued: Dict[str, float] = {}   # isin → monotonic последнего заказа
 _sides_dirty: Dict[str, float] = {}
+# Фиксы не зависят от scope флоатерных колонок: их собственный монитор всегда
+# ждёт YTM/G-спред BID/ASK. Отдельная очередь не только не даёт scope случайно
+# выкинуть работу, но и будит движок раньше общего 5-секундного такта.
+_fixed_sides_dirty: Dict[str, float] = {}
+_fixed_sides_wake = asyncio.Event()
+_FIXED_SIDES_COALESCE_SEC = float(os.getenv("FIXED_SIDES_COALESCE_SEC", "0.25"))
+_FIXED_SIDES_BATCH_MAX = int(os.getenv("FIXED_SIDES_BATCH", "80"))
+_FIXED_SIDES_BUDGET_SEC = float(os.getenv("FIXED_SIDES_BUDGET_SEC", "0.6"))
 
 
 # БУМАГИ, КОТОРЫЕ СМОТРЯТ ПРЯМО СЕЙЧАС: их контекст греется первым, вне общей
@@ -327,9 +335,12 @@ def request_bond(isin: str) -> None:
 def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
     """В очередь сторон. Живое событие ПОВЫШАЕТ приоритет бумаги, уже стоящей в
     волне: она нужна раньше, а не вторым заходом."""
-    cur = _sides_dirty.get(isin)
+    queue = _fixed_sides_dirty if isin in _fixed_isins else _sides_dirty
+    cur = queue.get(isin)
     if cur is None or prio < cur:
-        _sides_dirty[isin] = prio
+        queue[isin] = prio
+    if isin in _fixed_isins:
+        _fixed_sides_wake.set()
 
 
 def _take_dirty_batch() -> list:
@@ -372,6 +383,16 @@ def _take_sides_batch() -> tuple:
     return take, prio
 
 
+def _take_fixed_sides_batch() -> tuple:
+    """Фиксы берём независимо от scope флоатерных колонок; видимые первыми."""
+    take = sorted(_fixed_sides_dirty,
+                  key=lambda i: (_fixed_sides_dirty[i], not is_visible(i), i))[:_FIXED_SIDES_BATCH_MAX]
+    prio = {i: _fixed_sides_dirty.get(i, _SIDES_PRIO_WAVE) for i in take}
+    for i in take:
+        _fixed_sides_dirty.pop(i, None)
+    return take, prio
+
+
 def _on_depth(isin: str) -> None:
     """Лестница обновилась — заказать пересчёт цены набора на тикет.
 
@@ -384,11 +405,7 @@ def _on_depth(isin: str) -> None:
     if now - _depth_queued.get(isin, 0.0) < _DEPTH_REQUEUE_SEC:
         return
     _depth_queued[isin] = now
-    # у ФИКСА дешёвой ветки сторон нет — там всё считает полный проход
-    if isin in _fixed_isins:
-        _dirty.add(isin)
-    else:
-        _queue_sides(isin, _SIDES_PRIO_WAVE)
+    _queue_sides(isin, _SIDES_PRIO_WAVE)
 
 # ОБЪЁМ ТИКЕТА: размеры, которые сейчас смотрят в браузере. Y-IDX по VWAP-цене
 # набора считается ЗДЕСЬ, по методике, а не линеаризацией в браузере (он
@@ -654,7 +671,8 @@ def pool_state() -> dict:
 # Состояние КАЖДОГО сокета пула. Общий счётчик streamed падение одного шарда не
 # показывает: 150 бумаг из 600 просто перестают шевелиться, сторож видит живых
 # соседей и молчит, а поллер-фолбэк тихо тянет их снапшотом раз в 5 секунд.
-_SHARD0 = {"isins": 0, "up": False, "msgs": 0, "conns": 0, "errors": 0, "last": 0.0}
+_SHARD0 = {"isins": 0, "up": False, "up_at": 0.0, "msgs": 0, "conns": 0,
+           "errors": 0, "last": 0.0}
 _shards: Dict[int, dict] = {}         # котировки
 _depth_shards: Dict[int, dict] = {}   # стаканы
 # Сеанс дольше этого считаем состоявшимся — только он сбрасывает бэкофф сокета.
@@ -664,6 +682,7 @@ _UP_OK_SEC = float(os.getenv("ALOR_WS_UP_OK_SEC", "60"))
 def _shard_view(src: Dict[int, dict]) -> dict:
     now = time.time()
     rows = [{"id": sid, **s,
+             "up_min": round((now - s["up_at"]) / 60, 1) if s.get("up") and s.get("up_at") else None,
              "quiet_min": round((now - s["last"]) / 60, 1) if s["last"] else None}
             for sid, s in sorted(src.items())]
     return {"total": len(rows), "up": sum(1 for s in rows if s["up"]),
@@ -685,7 +704,9 @@ def stats() -> dict:
             # Без этих чисел «иногда долго грузится» не отличить от «размер не
             # попал в активные» и от «сетки снесла пересборка кривых».
             "ctx": len(_eval_ctx), "grids": len(_yoi_grid),
-            "grids_cold": len(_grid_cold), "sides_queue": len(_sides_dirty),
+            "grids_cold": len(_grid_cold),
+            "sides_queue": len(_sides_dirty) + len(_fixed_sides_dirty),
+            "fixed_sides_queue": len(_fixed_sides_dirty),
             "vol_sizes": active_vol_sizes(),
             # ПРОГРЕВ: чем полон движок и сколько сторон ещё ждёт счёта. По этим
             # числам видно, идёт ли догрев после рестарта/переката или всё
@@ -854,12 +875,7 @@ async def _on_quote(isin: str, data: dict) -> None:
     # сторон (поток и база не пересобираются, ~13 мс на бумагу). Наклон отсюда
     # убран 27.08.2026 — линия через якорь уводила число вслед за якорем.
     elif prev is not None and any(prev.get(k) != data.get(k) for k in ("bid", "ask")):
-        # У ФИКСА отдельной дешёвой ветки нет: compute_fixed_row считает цену
-        # сделки и обе стороны одним проходом по расписанию, дробить нечего.
-        if isin in _fixed_isins:
-            _dirty.add(isin)
-        else:
-            _queue_sides(isin)
+        _queue_sides(isin)
     await _broadcast_quote(isin, data)
 
 
@@ -885,6 +901,7 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                 async with sess.ws_connect(_WS_URL, heartbeat=20, timeout=15) as ws:
                     up_at = time.monotonic()
                     st["up"] = True
+                    st["up_at"] = time.time()
                     st["conns"] += 1
                     guid_isin = {}
                     for n, isin in enumerate(isins):
@@ -924,6 +941,7 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
             logger.warning("universe pool shard %d: %s", shard_id, e)
         finally:
             st["up"] = False
+            st["up_at"] = 0.0
             _streamed.difference_update(isins)
         # Бэкофф сбрасывает только СОСТОЯВШИЙСЯ сеанс: коннект, который брокер
         # рвёт сразу (лимит подписок, чужой токен), иначе давал реконнект раз в
@@ -958,6 +976,7 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event,
                                            compress=WS_COMPRESS) as ws:
                     up_at = time.monotonic()
                     st["up"] = True
+                    st["up_at"] = time.time()
                     st["conns"] += 1
                     guid_isin = {}
                     for n, isin in enumerate(isins):
@@ -1016,6 +1035,7 @@ async def _depth_socket(shard_id: int, isins: list, stop: asyncio.Event,
             logger.warning("depth stream shard %d: %s", shard_id, e)
         finally:
             st["up"] = False
+            st["up_at"] = 0.0
             _depth_streamed.difference_update(isins)
             # метку снимаем: пока сокет мёртв, его бумаги обязаны считаться
             # протухшими, а не жить на метке соседних шардов
@@ -1776,10 +1796,15 @@ def _sides_from(q: Optional[dict], snap: dict) -> dict:
 # строки принадлежит полному пересчёту и записью затёрло бы его работу.
 _SIDE_ROW_FIELDS = ("bid", "ask", "yoi_bid", "yoi_ask",
                     "wap", "yoi_wap", "vol_px", "yoi_vol")
+_FIXED_SIDE_ROW_FIELDS = (
+    "bid", "ask", "ytm_bid", "ytm_ask",
+    "g_spread_bid_bps", "g_spread_ask_bps",
+    "vol_px", "ytm_vol", "g_spread_vol",
+)
 
 
 def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
-                   pending: Optional[list] = None) -> Dict[str, dict]:
+                   pending: Optional[list] = None, fixed_ctx: Optional[dict] = None) -> Dict[str, dict]:
     """Дешёвый пересчёт ТОЛЬКО сторон стакана для бумаг из очереди _sides_dirty.
 
     Уровень цены сделки не менялся — строка метрик остаётся прежней, меняются
@@ -1801,6 +1826,11 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
             if pending is not None:
                 pending.extend(isins[idx:])
             break
+        if fixed_ctx is not None and isin in (fixed_ctx.get("fixed_by") or {}):
+            patch = _recrunch_fixed_sides(isin, fixed_ctx, book)
+            if patch:
+                out[isin] = patch
+            continue
         row = um.get(isin)
         if not row or isin not in _eval_ctx:
             continue
@@ -1816,6 +1846,55 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
         # средневзвес и цены наборов — остальное в копии осталось от момента
         # чтения витрины, до await'а, и записью затирало бы работу движка.
         out[isin] = {k: row[k] for k in _SIDE_ROW_FIELDS if k in row}
+    return out
+
+
+def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
+    """Точный патч только BID/ASK и цен набора для фикса.
+
+    Last, WAP, дюрация и Z не менялись — их не трогаем. Новые уровни сторон
+    проходят через `fixed_side_metrics`, где YTM берётся из точного LRU или
+    решается только для действительно новой цены.
+    """
+    from services.market_data import market_cache
+    from services.fixed_income import fixed_side_metrics
+
+    previous = (market_cache.get("fixed_metrics") or {}).get(isin)
+    u = (ctx.get("fixed_by") or {}).get(isin)
+    full = (ctx.get("full_by") or {}).get(isin) or {}
+    if not previous or not u or not full.get("coupons"):
+        return None
+    snap = (ctx.get("board") or {}).get(isin, {}) or {}
+    row = dict(u)
+    for src, dst in (("accrued", "accrued"), ("prev", "prev"),
+                     ("prev_date", "prev_date"), ("waprice", "wap"),
+                     ("vol", "val_today")):
+        if snap.get(src) is not None:
+            row[dst] = snap[src]
+    sides = _sides_from(_last_quote.get(isin), snap)
+    row["bid"], row["ask"] = sides["bid"], sides["ask"]
+    face_unit = (row.get("faceunit") or "RUB").upper()
+    curve = ctx.get("g_curve") if face_unit in ("", "RUB", "SUR", "RUR") else None
+    vol_px = _vol_prices(isin, face=previous.get("face_value_rub"),
+                         accrued=previous.get("accrued_rub"),
+                         ladders=(book or {}).get(isin) or {})
+    prices = [p for p in list(sides.values()) + list(vol_px.values()) if p is not None]
+    got = fixed_side_metrics(row, full, curve, ctx["calc_date"], prices)
+    out = {"_kind": "fixed", "bid": sides["bid"], "ask": sides["ask"],
+           "ytm_bid": None, "ytm_ask": None,
+           "g_spread_bid_bps": None, "g_spread_ask_bps": None,
+           "vol_px": vol_px or None, "ytm_vol": None, "g_spread_vol": None}
+    for side, price in sides.items():
+        m = got.get(round(float(price), 4)) if price is not None else None
+        out[f"ytm_{side}"] = (m or {}).get("ytm")
+        out[f"g_spread_{side}_bps"] = (m or {}).get("g_spread_bps")
+    if vol_px:
+        out["ytm_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("ytm")
+                          for k, p in vol_px.items() if p is not None}
+        out["g_spread_vol"] = {
+            k: (got.get(round(float(p), 4)) or {}).get("g_spread_bps")
+            for k, p in vol_px.items() if p is not None
+        }
     return out
 
 
@@ -1876,9 +1955,10 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict,
     """Строка ФИКСА по живой цене: YTM/g-спред/z-спред и те же числа по сторонам
     стакана и средневзвесу.
 
-    Кэш уровней здесь не нужен: у фикса нет дешёвой ветки сторон — один вызов
-    compute_fixed_row считает цену сделки, bid, ask и средневзвес по уже
-    собранному потоку (несколько прогонов солвера, единицы мс)."""
+    У фикса нет отдельной ветки патча сторон, однако `fixed_income` хранит
+    точные результаты по каждому уровню цены и Z по кривой. Поэтому повторный
+    last не запускает солверы, а при новом bid/ask считается только новый
+    уровень, без приближения наклоном."""
     from services.fixed_income import compute_fixed_row
     from services import live_quotes
     isin = u["isin"]
@@ -2822,7 +2902,15 @@ async def metrics_worker() -> None:
     last_log = time.time()
     global _grid_budget
     while True:
-        await asyncio.sleep(_BATCH_SEC)
+        # Цена сделки может ждать общий такт: она конкурирует с тяжёлой полной
+        # очередью. Фиксированный BID/ASK идёт отдельной лёгкой очередью —
+        # будим воркер сразу, но склеиваем плотные тики четверть секунды.
+        try:
+            await asyncio.wait_for(_fixed_sides_wake.wait(), timeout=_BATCH_SEC)
+            _fixed_sides_wake.clear()
+            await asyncio.sleep(_FIXED_SIDES_COALESCE_SEC)
+        except asyncio.TimeoutError:
+            pass
         try:
             # минутная сводка — живой ли конвейер и каков хит-рейт кэша уровней
             # печатаем, если была ЛЮБАЯ работа: в тихом рынке полных пересчётов
@@ -2921,6 +3009,28 @@ async def metrics_worker() -> None:
                         break
                     quotes = dict(rest)
                     rest = [(i, quotes.get(i) or {}) for i in pend]
+            # ФИКСЫ: отдельная очередь без зависимости от scope флоатерных
+            # колонок. Точные расчёты цен используют LRU fixed_income; бюджет
+            # короткий, чтобы шквал стакана не задерживал полный пересчёт.
+            if _fixed_sides_dirty:
+                take_fx, prio_fx = _take_fixed_sides_batch()
+                _t0 = time.perf_counter()
+                _pend_fx: list = []
+                fxrows = await run_heavy(recrunch_sides, take_fx, ctx["board"],
+                                         time.monotonic() + _FIXED_SIDES_BUDGET_SEC,
+                                         _pend_fx, ctx)
+                _took_fx = (time.perf_counter() - _t0) * 1000.0
+                sides_ms += _took_fx
+                for _i in _pend_fx:
+                    _queue_sides(_i, prio_fx.get(_i, _SIDES_PRIO_WAVE))
+                if fxrows:
+                    _n_fx = len(fxrows)
+                    sides_since_log += _n_fx
+                    globals()["_sides_ms_avg"] = (
+                        _took_fx / _n_fx if _sides_ms_avg <= 0
+                        else 0.7 * _sides_ms_avg + 0.3 * (_took_fx / _n_fx))
+                    _store_rows(market_cache, fxrows)
+                    await _push_metrics(wsmod, fxrows)
             # ДЕШЁВАЯ ОЧЕРЕДЬ: у этих бумаг сдвинулись только стороны стакана —
             # уровень цены сделки прежний, пересчитываем ТОЛЬКО Y-IDX сторон и
             # средневзвеса (~13 мс на бумагу). Без этого точное число стороны
@@ -2932,7 +3042,7 @@ async def metrics_worker() -> None:
                 _pend_s: list = []
                 srows = await run_heavy(recrunch_sides, take_s, ctx["board"],
                                         time.monotonic() + _SIDES_BUDGET_SEC,
-                                        _pend_s)
+                                        _pend_s, ctx)
                 _took = (time.perf_counter() - _t0) * 1000.0
                 sides_ms += _took
                 # НЕДОСЧИТАННОЕ — ОБРАТНО В ОЧЕРЕДЬ, с прежним приоритетом:
