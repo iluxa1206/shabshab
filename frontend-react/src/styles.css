@@ -14,9 +14,6 @@
   --inv-bg: #0a0a0a;
   --inv-fg: #ffffff;
   --up: #157a37;              /* cheap / gain */
-  --up-hi: #2bb85a;           /* «зелёное пламя» свежего выпуска: яркий язык */
-  --up-core: #4fd87c;         /*   ядро вспышки (на белом — светлее, но не белёсое: буквы не должны пропадать) */
-  --ember: #8aa800;           /*   уголёк на спаде */
   --down: #c0271f;            /* rich / loss */
   --accent: #3b5bd4;          /* доп. серия на графиках (напр. НРД Прил.3) */
   --spread: #5c53c0;          /* панель спреда: лаванда (на белом — тёмный тон той же гаммы) */
@@ -48,9 +45,6 @@
   --inv-bg: #f2f2f2;
   --inv-fg: #000000;
   --up: #4ecb76;
-  --up-hi: #a8ffbf;
-  --up-core: #eafff0;
-  --ember: #d9ff5c;
   --down: #ff6b6b;
   --accent: #6b9bff;          /* доп. серия на графиках (напр. НРД Прил.3) */
   --spread: #c9c9ff;          /* панель спреда: лаванда — не спорит ни со свечами, ни с цианом средневзвеса */
@@ -87,9 +81,6 @@
   --inv-bg: #000080;           /* выделение = классический navy */
   --inv-fg: #ffffff;
   --up: #007a1f;               /* VGA green, дотянут до контраста на белом */
-  --up-hi: #00a01a;            /* пламя в 16-цветной логике: зелёный → ярко-зелёный → оливковый */
-  --up-core: #00c020;
-  --ember: #a0a000;
   --down: #cc0000;
   --accent: #000080;           /* navy: тайтлбары, активные кнопки, доп. серия */
   --spread: #800080;           /* панель спреда: VGA-пурпур (ближайшая лаванда в 16 цветах) */
@@ -447,17 +438,6 @@ td.mut { color: var(--mut); }
 .mat-yrs.mat-short { color: var(--down); font-weight: 700; }
 /* свежий выпуск (≤ 30 дн от размещения) — зелёное имя и зелёная дата размещения */
 .bond-name.name-fresh, td.issue-fresh { color: var(--up); }
-/* «Зелёное пламя»: по имени свежего выпуска слева направо прокатывается
-   вспышка (зелёный → белёсое ядро → уголёк → зелёный), буквы чуть подпрыгивают.
-   Каждая буква — свой span с индексом --i, фаза = индекс × 70 мс. Цвета держатся
-   в семье --up, чтобы огонь не читался как «дёшево» из колонки spread. */
-.flame-ch { display: inline-block; animation: flame-wave 2.2s ease-in-out infinite; animation-delay: calc(var(--i) * 70ms); }
-@keyframes flame-wave {
-  0%, 60%, 100% { color: var(--up); transform: translateY(0); text-shadow: none; }
-  15% { color: var(--up-core); transform: translateY(-1px); text-shadow: 0 0 7px color-mix(in srgb, var(--up-hi) 70%, transparent); }
-  30% { color: var(--ember); transform: translateY(0); text-shadow: 0 0 3px color-mix(in srgb, var(--ember) 50%, transparent); }
-}
-@media (prefers-reduced-motion: reduce) { .flame-ch { animation: none; } }
 .bond-formula { color: var(--mut); font-size: 12px; }
 /* Формула купона колонками: база / знак / маржа / купонов в год — фиксированная
    ширина каждой части, поэтому во всей таблице они стоят строго друг под другом. */
