@@ -15,17 +15,25 @@ logger = logging.getLogger(__name__)
 _SNAP_CHUNK = int(os.getenv("SPREAD_SNAP_CHUNK", "400"))
 
 
-def has_snapshot(d=None) -> bool:
+def has_snapshot(d=None, kind: Optional[str] = None) -> bool:
     """Есть ли уже снимок за эту дату. Нужен старту: снапшоттер пишет снимок
     через минуту после подъёма, а деплоев за день бывает несколько — и каждый
     заново перемалывал две тысячи строк ровно тогда, когда движок и так занят
-    прогревом. Дневной снимок всё равно перезапишется в 19:00."""
+    прогревом. Дневной снимок всё равно перезапишется в 19:00.
+
+    kind — проверка ПО КЛАССУ: флоатеры прогреваются за минуту, фиксы — за
+    несколько, и стартовый снимок из одних флоатеров засчитывался как «за
+    сегодня уже есть» — фиксы до 19:00 в архив не попадали (дыра 29.08–08.09
+    на проде, когда вечерний такт до фиксов тоже не доходил)."""
     d = d or date.today().isoformat()
     try:
         with _connect() as c:
-            return bool(c.execute(
-                "SELECT 1 FROM spread_daily WHERE date=? AND src='snap' LIMIT 1",
-                (d,)).fetchone())
+            q = "SELECT 1 FROM spread_daily WHERE date=? AND src='snap'"
+            args: list = [d]
+            if kind:
+                q += " AND kind=?"
+                args.append(kind)
+            return bool(c.execute(q + " LIMIT 1", args).fetchone())
     except Exception as e:
         logger.warning("has_snapshot: %s", e)
         return False
@@ -62,9 +70,11 @@ def _degraded_now() -> bool:
         return False
 
 
-def write_snapshot() -> int:
+def write_snapshot(kinds: tuple = ("floater", "fixed")) -> int:
     """Снимок спред-метрик всего юниверса на сегодня (МСК) из market_cache.
     Возвращает число записанных строк. Идемпотентно (INSERT OR REPLACE).
+    kinds — какие классы писать: старт дописывает фиксы отдельно, когда они
+    прогрелись (см. has_snapshot).
 
     src='snap' — обычный снимок, src='snap_degraded' — тот же снимок, снятый
     когда биржевого НКД не было (см. _degraded_now): числа пригодны для
@@ -74,7 +84,7 @@ def write_snapshot() -> int:
     src = "snap_degraded" if _degraded_now() else "snap"
     rows = []
 
-    um = MarketDataService.universe_metrics() or {}
+    um = (MarketDataService.universe_metrics() or {}) if "floater" in kinds else {}
     for isin, m in um.items():
         if not isin or not isinstance(m, dict):
             continue
@@ -88,7 +98,7 @@ def write_snapshot() -> int:
                      None, m.get("z_model"), m.get("ytm"), m.get("yoi"), src,
                      m.get("horizon"), m.get("y_idx_alt"), m.get("alt_horizon")))
 
-    fxm = market_cache.get("fixed_metrics") or {}
+    fxm = (market_cache.get("fixed_metrics") or {}) if "fixed" in kinds else {}
     for isin, m in fxm.items():
         if not isin or not isinstance(m, dict):
             continue
@@ -96,9 +106,12 @@ def write_snapshot() -> int:
                      m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, src,
                      m.get("horizon"), None, None))
 
-    # пишем только строки с хоть каким-то спредом (иначе шум пустых)
+    # пишем только строки с хоть каким-то числом (иначе шум пустых). YTM
+    # считается наравне со спредами: у фикса без КБД (ISS лёг, кривой на
+    # вечер нет) g/z пустые, а доходность есть — и именно она нужна as-of
+    # витрине ОФЗ и премии аукционов; день без строк — потеря, а не «шум».
     rows = [r for r in rows if r[4] is not None or r[5] is not None
-            or r[6] is not None or r[8] is not None]
+            or r[6] is not None or r[7] is not None or r[8] is not None]
     if not rows:
         return 0
     # ПАЧКАМИ: снимок это две тысячи строк с INSERT OR REPLACE по индексу, и

@@ -999,16 +999,27 @@ async def spread_snapshotter():
     # бывает несколько, и каждый перемалывал две тысячи строк ровно тогда, когда
     # движок занят прогревом всего рынка (сторож ловил на этом лаг 4,8 с).
     # Дневной снимок всё равно перезапишется штатно в 19:00.
-    for _ in range(10):
+    # ПО КЛАССАМ: флоатеры прогреты через минуту, фиксы — через несколько
+    # (bondization ~700 бумаг на холодном кэше). Один общий снимок «когда есть
+    # хоть что-то» писал флоатеры и считал день закрытым — фиксы до 19:00 в
+    # архив не попадали, а если вечерний такт не доживал до 19:00 (рестарт,
+    # деплой), день фиксов пропадал совсем. Ждём каждый класс отдельно.
+    _kinds = {"floater": "universe_metrics", "fixed": "fixed_metrics"}
+    _pending = set(_kinds)
+    for _ in range(60):
         await asyncio.sleep(30)
-        if market_cache.get("universe_metrics") or market_cache.get("fixed_metrics"):
+        for _kind in sorted(_pending):
+            if not market_cache.get(_kinds[_kind]):
+                continue
             try:
-                if await run_bg(has_snapshot):
-                    logger.info("spread snapshot: за сегодня уже есть — старт пропускает")
+                if await run_bg(has_snapshot, None, _kind):
+                    logger.info("spread snapshot (%s): за сегодня уже есть — старт пропускает", _kind)
                 else:
-                    await run_bg(write_snapshot)
+                    await run_bg(write_snapshot, (_kind,))
             except Exception as e:
-                logger.warning(f"spread snapshot (startup) error: {e}")
+                logger.warning(f"spread snapshot (startup, {_kind}) error: {e}")
+            _pending.discard(_kind)
+        if not _pending:
             break
     while True:
         now = datetime.now(_MSK)
