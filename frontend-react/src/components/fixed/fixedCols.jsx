@@ -168,6 +168,16 @@ export const FIXED_DEFAULT_COLS = FIXED_COLS.map((c) => c.key);
 // строку OfzDesk из ответа /api/fixed/ofz/asof. Знак нужен: колонка про
 // «выше/ниже, чем было», без сравнения — прочерк.
 export const OFZ_EXTRA_COLS = [
+  // отклонение от СВОЕЙ кривой ОФЗ (NSS по точкам выпусков, /ofz/curve) —
+  // главное число витрины; G-SPRD в общих колонках остаётся к КБД (движок)
+  { key: "resid_bps", label: "Δ КРИВАЯ", sub: "К СВОЕЙ, БП", align: "num", grp: true, w: 9,
+    title: "отклонение YTM от своей кривой ОФЗ (NSS по точкам выпусков, по выбранной базе цены), б.п.: плюс — выше кривой, выпуск дешевле соседей",
+    cell: (b) => {
+      const d = b.resid_bps;
+      return <td className={"num" + (d == null || d === 0 ? "" : d > 0 ? " pos" : " neg")} key="resid_bps"
+        title={b.curve_used === false ? "вне подгонки кривой (короче 0,25 г или YTM вне диапазона)" : undefined}>
+        {d == null ? <D /> : fmt.signed(d, 0)}</td>;
+    } },
   { key: "d_ytm_cmp", label: "ΔYTM", sub: "К ДАТЕ, БП", align: "num", grp: true, w: 9,
     title: "сдвиг доходности к дате сравнения, б.п.: плюс — доходность выросла (бумага подешевела)",
     cell: (b) => {

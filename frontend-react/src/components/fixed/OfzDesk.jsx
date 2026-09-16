@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchFixed, fetchGCurve, fetchOfzAsof, fetchOfzVolumes } from "../../api.js";
+import { fetchFixed, fetchOfzAsof, fetchOfzCurve, fetchOfzVolumes } from "../../api.js";
 import { fmt, stripOfz } from "../../format.js";
 import { horizonDate } from "../../horizon.js";
 import OfzChart from "./OfzChart.jsx";
@@ -9,15 +9,21 @@ import { OFZ_EXTRA_COLS } from "./fixedCols.jsx";
 import ColumnsMenu from "../ColumnsMenu.jsx";
 
 // ВИТРИНА ОФЗ — суверенная кривая крупным планом: те же строки, что в мониторе
-// фиксов (cls=ofz), но в координатах «доходность × дюрация» поверх КБД МосБиржи.
-// Смысл страницы — не список, а ОТКЛОНЕНИЕ бумаги от кривой: у ОФЗ нет ни
-// кредитного, ни рейтингового разреза, весь сигнал в том, где выпуск сидит
-// относительно КБД (выше кривой — дешевле рынка, ниже — дороже).
+// фиксов (cls=ofz), в координатах «доходность × дюрация Маколея» поверх
+// СВОЕЙ кривой ОФЗ — Нельсона–Сигела–Свенссона, подогнанной на бэке по этим
+// же точкам (/api/fixed/ofz/curve). Смысл страницы — не список, а
+// ОТКЛОНЕНИЕ выпуска от кривой своих соседей: у ОФЗ нет ни кредитного, ни
+// рейтингового разреза, весь сигнал в том, где бумага сидит относительно
+// остальных (выше кривой — дешевле, ниже — дороже).
 //
-// Ни одного числа здесь не считается: YTM, дюрация и g-спред приезжают из
-// движка метрик (services/fixed_income), КБД — тем же объектом, по которому
-// движок и считает спред (/api/curves/gcurve). Своя интерполяция кривой в
-// браузере разъехалась бы с колонкой G-SPRD в мониторе.
+// КБД МосБиржи со страницы ушла: она считается по своей методике (zero, свой
+// набор бумаг), и отклонение от неё мешало «дёшево/дорого» с разницей
+// методик. G-SPRD в таблице по-прежнему к КБД — это метрика движка фиксов.
+//
+// Ни одного числа здесь не считается: YTM и дюрация приезжают из движка
+// метрик (services/fixed_income), кривая — samples ручки, отклонение точки —
+// готовый остаток по ISIN из того же ответа. Своя подгонка/интерполяция в
+// браузере разъехалась бы с колонкой Δ КРИВАЯ и с архивом кривой на бэке.
 
 // База цены расчёта. Держим ЯВНО рядом с числами: YTM по последней сделке в
 // неликвиде — случайный принт, по средневзвесу — взвешенная оборотом цена дня,
@@ -30,30 +36,27 @@ const BASES = [
 ];
 const BASE_LABEL = Object.fromEntries(BASES.map(([id, label]) => [id, label]));
 
-// Тройка «цена → доходность → спред» ВСЕГДА из одного расчёта движка: смешивать
-// YTM по средневзвесу со спредом по последней нельзя — это разные цены.
+// Пара «цена → доходность» ВСЕГДА от одной цены; кривая на бэке подгоняется
+// по YTM той же базы (карта base→поле там та же), иначе остаток к кривой был
+// бы от одной цены, а точка на графике — от другой.
 const byBase = (b, base) => (
-  base === "bid" ? { px: b.bid, ytm: b.ytm_bid, g: b.g_spread_bid_bps }
-    : base === "ask" ? { px: b.ask, ytm: b.ytm_ask, g: b.g_spread_ask_bps }
-      : base === "last" ? { px: b.last_price_pct, ytm: b.ytm, g: b.g_spread_bps }
-        : { px: b.wap_pct, ytm: b.ytm_wap, g: b.g_spread_wap_bps }
+  base === "bid" ? { px: b.bid, ytm: b.ytm_bid }
+    : base === "ask" ? { px: b.ask, ytm: b.ytm_ask }
+      : base === "last" ? { px: b.last_price_pct, ytm: b.ytm }
+        : { px: b.wap_pct, ytm: b.ytm_wap }
 );
 
-// Дюрация Маколея — тот тенор, по которому движок снимает КБД (см.
-// fixed_income.fixed_metrics: «тенор КБД матчим по Маколею, как НРД»). По ней
-// же кладём точку на график, иначе бумага стояла бы не над своей точкой кривой.
+// Дюрация Маколея — ось τ подгонки на бэке (та же, по которой движок снимает
+// КБД для g-спреда). По ней же кладём точку на график, иначе бумага стояла
+// бы не над своей точкой кривой.
 const tau = (b) => b.mac_dur ?? b.mod_dur ?? null;
-
-// КБД под бумагой — не второй интерполяцией, а из тождества движка:
-// g = (ytm − КБД(τ))·10000. Так число на странице не может разойтись со спредом.
-const curveAt = (ytm, g) => (ytm == null || g == null ? null : ytm - g / 100.0);
 
 // Режим сдвига (чипы «Δ: ВЫКЛ | ВЧЕРА | ДАТА»). В localStorage `ofzCmp` лежит
 // JSON {mode, date}: дата нужна только режиму date, но храним её и в off —
 // чтобы вернувшись к ДАТА, юзер увидел прежнюю, а не пустое поле.
 const CMP_MODES = [
   ["off", "ВЫКЛ", "без сравнения"],
-  ["prev", "ВЧЕРА", "предыдущий торговый день: вторая КБД и тени точек с прошлой доходностью"],
+  ["prev", "ВЧЕРА", "предыдущий торговый день: кривая ОФЗ as-of и тени точек с прошлой доходностью"],
   ["date", "ДАТА", "произвольная дата сравнения"],
 ];
 // ЛОКАЛЬНАЯ дата, не toISOString: та отдаёт UTC, и вечером по Москве «вчера»
@@ -100,19 +103,19 @@ export default function OfzDesk({ onOpen }) {
     refetchInterval: 30000,
     staleTime: 15000,
   });
-  // КБД публикуется раз в день, но при сбое фетча сервис отдаёт вчерашнюю —
-  // перепрашиваем раз в 10 минут, чтобы страница подхватила свежую сама.
+  // Своя кривая по выбранной базе цены: сегодняшняя ходит вместе с ценами —
+  // перепрашиваем раз в минуту (бэк держит мемо 60 с по отпечатку входа).
   const curveQ = useQuery({
-    queryKey: ["gcurve"],
-    queryFn: () => fetchGCurve(),
-    refetchInterval: 600000,
-    staleTime: 300000,
+    queryKey: ["ofzCurve", base],
+    queryFn: () => fetchOfzCurve(base),
+    refetchInterval: 60000,
+    staleTime: 30000,
   });
-  // Сдвиг: КБД и as-of доходности на дату сравнения. Прошлое не меняется —
+  // Сдвиг: кривая и as-of доходности на дату сравнения. Прошлое не меняется —
   // держим в кэше долго; включены только когда дата определена.
   const curveCmpQ = useQuery({
-    queryKey: ["gcurve", cmpDate],
-    queryFn: () => fetchGCurve(cmpDate),
+    queryKey: ["ofzCurve", "asof", cmpDate],
+    queryFn: () => fetchOfzCurve(null, cmpDate),
     enabled: !!cmpDate,
     staleTime: 3600000,
   });
@@ -133,26 +136,33 @@ export default function OfzDesk({ onOpen }) {
   });
 
   const rows = useMemo(() => {
-    // as-of на дату сравнения мёржим В СТРОКУ: ΔYTM в бп нужен и точкам
-    // графика (тени), и таблице (колонка ΔYTM) — считаем один раз здесь.
+    // as-of на дату сравнения и остатки к кривой мёржим В СТРОКУ: ΔYTM и
+    // Δ КРИВАЯ нужны и точкам графика, и таблице — считаем один раз здесь.
     // Поля таблицы (ytm/last_price_pct/…) не трогаем — таблица дублирует
-    // монитор ФИКСОВ и обязана показывать те же числа; тройка по выбранной
+    // монитор ФИКСОВ и обязана показывать те же числа; пара по выбранной
     // базе цены живёт под своими ключами только для графика.
     const asof = cmpDate ? (asofQ.data?.items || {}) : {};
+    const resid = curveQ.data?.residuals || {};
     const out = (listQ.data?.items || [])
       .filter((b) => b.cls === "ofz")
       .map((b) => {
         const v = byBase(b, base);
         const a = asof[b.isin];
+        const r = resid[b.isin];
         const ytmCmp = a?.ytm ?? null;
+        const residBps = r?.bps ?? null;
         return {
           ...b, base,
           // строка в формате монитора (FixedMonitor делает так же)
           short_name: b.name, emitter_name: b.issuer, is_ofz: true,
           pt_name: stripOfz(b.name) || b.isin,
-          pt_px: v.px, pt_ytm: v.ytm, pt_g: v.g,
+          pt_px: v.px, pt_ytm: v.ytm,
           tau: tau(b),
-          curve: curveAt(v.ytm, v.g),
+          // кривая под бумагой — из тождества ручки: bps = (ytm − y(τ))·100;
+          // так число на странице не может разойтись с остатком в таблице
+          curve: v.ytm != null && residBps != null ? v.ytm - residBps / 100 : null,
+          resid_bps: residBps,
+          curve_used: r ? r.used : null,
           ytm_cmp: ytmCmp,
           tau_cmp: a?.tau ?? null,
           d_ytm_cmp: v.ytm != null && ytmCmp != null ? (v.ytm - ytmCmp) * 100 : null,
@@ -170,11 +180,12 @@ export default function OfzDesk({ onOpen }) {
       if (typeof x === "string") return k * x.localeCompare(y);
       return k * (x - y);
     });
-  }, [listQ.data, base, sort, cmpDate, asofQ.data]);
+  }, [listQ.data, base, sort, cmpDate, asofQ.data, curveQ.data]);
 
   const pts = useMemo(() => rows
     .filter((b) => b.tau != null && b.tau > 0 && b.pt_ytm != null)
-    .map((b) => ({ x: b.tau, y: b.pt_ytm, g: b.pt_g, curve: b.curve, px: b.pt_px,
+    .map((b) => ({ x: b.tau, y: b.pt_ytm, resid: b.resid_bps, used: b.curve_used,
+                   curve: b.curve, px: b.pt_px,
                    yb: b.ytm_bid ?? null, ya: b.ytm_ask ?? null, pb: b.bid ?? null, pa: b.ask ?? null,
                    isin: b.isin, name: b.pt_name, base: b.base,
                    x0: b.tau_cmp, y0: b.ytm_cmp })), [rows]);
@@ -200,22 +211,27 @@ export default function OfzDesk({ onOpen }) {
     s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }
   )), []);
 
-  const cheapest = pts.reduce((a, p) => (p.g != null && (a == null || p.g > a.g) ? p : a), null);
-  const richest = pts.reduce((a, p) => (p.g != null && (a == null || p.g < a.g) ? p : a), null);
-  const curveDate = curveQ.data?.curve_date;
-  // Сводка сравнения для графика: фактические даты as-of и КБД (могут
-  // отличаться от запрошенной — выходной), сами точки прошлой кривой.
+  // крайние — среди вошедших в подгонку: точка вне подгонки (короткая) даёт
+  // остаток к экстраполяции, а не к рынку
+  const fitted = pts.filter((p) => p.resid != null && p.used !== false);
+  const cheapest = fitted.reduce((a, p) => (a == null || p.resid > a.resid ? p : a), null);
+  const richest = fitted.reduce((a, p) => (a == null || p.resid < a.resid ? p : a), null);
+  const curve = curveQ.data;
+  // Сводка сравнения для графика: фактические даты as-of точек и кривой
+  // (могут отличаться от запрошенной — выходной), сама кривая as-of.
   const cmpInfo = useMemo(() => {
     if (!cmpDate || (!asofQ.data && !curveCmpQ.data)) return null;
     return {
-      date: asofQ.data?.date || curveCmpQ.data?.curve_date || cmpDate,
+      date: asofQ.data?.date || curveCmpQ.data?.date || cmpDate,
       requested: cmpDate,
-      curve: curveCmpQ.data?.points || [],
-      curveDate: curveCmpQ.data?.curve_date || null,
+      curve: curveCmpQ.data?.samples || [],
+      keyTenors: curveCmpQ.data?.key_tenors || [],
+      curveDate: curveCmpQ.data?.date || null,
       curveRequested: curveCmpQ.data?.requested || cmpDate,
     };
   }, [cmpDate, asofQ.data, curveCmpQ.data]);
   const asofN = cmpDate ? Object.keys(asofQ.data?.items || {}).length : 0;
+  const curveErrText = (e) => e?.detail || e?.message || "кривая не построена";
 
   return (
     <div className="issuer-agg ofz-desk">
@@ -231,10 +247,10 @@ export default function OfzDesk({ onOpen }) {
           <button className={"chip-btn" + (bidAsk ? " on" : "")} onClick={toggleBidAsk}
             title="полоска от YTM по биду до YTM по офферу у каждой точки (стакан MOEX)">Бид/Оффер</button>
           <button className={"chip-btn" + (labels ? " on" : "")} onClick={toggleLabels}
-            title="подписи выпусков на графике (имя и отклонение от КБД)">Подписи</button>
+            title="подписи выпусков на графике (имя и отклонение от своей кривой ОФЗ)">Подписи</button>
           <button className={"chip-btn" + (chartOpen ? " on" : "")} onClick={toggleChart}
-            title="показать/свернуть график (доходности поверх КБД и оборот)">График</button>
-          <span className="ia-flabel" title="сдвиг: вторая КБД и тени точек на дату сравнения">Δ</span>
+            title="показать/свернуть график (доходности поверх своей кривой ОФЗ и оборот)">График</button>
+          <span className="ia-flabel" title="сдвиг: кривая ОФЗ as-of и тени точек на дату сравнения">Δ</span>
           <span className="seg" role="tablist" aria-label="Дата сравнения">
             {CMP_MODES.map(([id, label, title]) => (
               <button key={id} className={"seg-btn" + (cmp.mode === id ? " active" : "")}
@@ -254,16 +270,22 @@ export default function OfzDesk({ onOpen }) {
 
       <div className="ia-head">
         <span className="ia-hint">
-          доходность к погашению против КБД МосБиржи; точка выше кривой — выпуск ДЕШЕВЛЕ
-          суверенной кривой, ниже — дороже. Отклонение — g-спред движка (тенор КБД по
-          дюрации Маколея, как у НРД), цена расчёта — {BASE_LABEL[base].toLowerCase()}
+          доходность к погашению против своей кривой ОФЗ (Нельсон–Сигел–Свенссон по
+          точкам выпусков); точка выше кривой — выпуск ДЕШЕВЛЕ соседей по кривой, ниже —
+          дороже. Отклонение — к своей кривой по дюрации Маколея, цена расчёта —
+          {" "}{BASE_LABEL[base].toLowerCase()}
           {" · "}{pts.length} из {rows.length} выпусков с метриками
-          {curveDate && <> · КБД от {fmt.date(curveDate)}</>}
-          {curveQ.data?.stale && <span className="ofz-stale"> кривая не сегодняшняя</span>}
+          {curve && (
+            <> · кривая ОФЗ: {curve.method} по {curve.n_used} из {curve.n_total} выпусков,
+              RMSE {fmt.pct(curve.rmse_bps, 1)} бп</>
+          )}
           {cmpInfo && (
             <> · сравнение с {fmt.date(cmpInfo.date)}
               {cmpInfo.date !== cmpDate && <> (ближайший торговый к {fmt.date(cmpDate)})</>}
               {asofN > 0 && <>, as-of по {asofN} выпускам</>}
+              {curveCmpQ.data?.stale && cmpInfo.curveDate !== cmpInfo.date && (
+                <>, кривая as-of от {fmt.date(cmpInfo.curveDate)}</>
+              )}
             </>
           )}
           {cmpDate && asofQ.isPending && <> · сравнение загружается…</>}
@@ -271,21 +293,23 @@ export default function OfzDesk({ onOpen }) {
             <span className="ofz-stale"> · данные на дату сравнения недоступны</span>
           )}
           {cheapest && richest && (
-            <> · дешевле всех {cheapest.name} ({fmt.devBps(cheapest.g)} б.п.),
-              дороже всех {richest.name} ({fmt.devBps(richest.g)} б.п.)</>
+            <> · дешевле всех {cheapest.name} ({fmt.devBps(cheapest.resid)} б.п.),
+              дороже всех {richest.name} ({fmt.devBps(richest.resid)} б.п.)</>
           )}
         </span>
       </div>
 
       {listQ.isPending && <div className="ia-hint">Загрузка…</div>}
       {listQ.error && <div className="ia-hint">Не удалось загрузить список фиксов</div>}
-      {curveQ.error && <div className="ia-hint">КБД недоступна — кривая на графике не построена</div>}
+      {curveQ.error && (
+        <div className="ia-hint">кривая ОФЗ не построена: {curveErrText(curveQ.error)}</div>
+      )}
 
       {!listQ.isPending && !listQ.error && (
         <>
           {chartOpen && (
-            <OfzChart pts={pts} curve={curveQ.data?.points || []} cmp={cmpInfo}
-              volumes={volQ.data || null} labels={labels} bidAsk={bidAsk} onOpen={onOpen} />
+            <OfzChart pts={pts} curve={curve?.samples || []} keyTenors={curve?.key_tenors || []}
+              cmp={cmpInfo} volumes={volQ.data || null} labels={labels} bidAsk={bidAsk} onOpen={onOpen} />
           )}
 
           <FixedTable rows={rows} sort={sort} onSort={onSort} onOpen={onOpen}

@@ -4,12 +4,15 @@ import {
   termTicks, placeLabels, stackedBars,
 } from "../../charts/index.js";
 
-// ГРАФИК витрины ОФЗ: scatter «доходность × дюрация» поверх КБД, под ним полоса
-// объёма торгов, поверх — сдвиг к прошлой дате (вторая кривая + «тени» точек).
+// ГРАФИК витрины ОФЗ: scatter «доходность × дюрация» поверх СВОЕЙ кривой ОФЗ
+// (Нельсон–Сигел–Свенссон, подогнана на бэке по этим же точкам —
+// /api/fixed/ofz/curve), под точками столбики объёма, поверх — сдвиг к
+// прошлой дате (кривая as-of + «тени» точек).
 //
-// Компонент ЧИСТО рисующий: данные (список фиксов, КБД, объёмы, as-of) тянет и
-// мёржит OfzDesk, здесь ни одного расчёта доходности/дюрации нет — только
-// разность уже посчитанных чисел (ΔYTM в бп, Δ КБД по совпадающим тенорам).
+// Компонент ЧИСТО рисующий: линия — samples ручки, отклонение точки —
+// готовый остаток по ISIN (resid, бп), объёмы и as-of тянет и мёржит OfzDesk.
+// Здесь ни одной подгонки/интерполяции нет — только разность уже посчитанных
+// чисел (ΔYTM в бп, Δ кривой по совпадающим ключевым тенорам).
 // Оба SVG меряют один и тот же контейнер (MeasuredSvg), поэтому X-шкалы
 // scatter'а и полосы объёма совпадают без общего состояния.
 
@@ -25,10 +28,6 @@ const SC_PAD = { l: 46, r: 48, t: 14, b: 32 };
 // графиком читалась хуже: столбики были в 3 px и не соотносились с точками.
 const VOL_SHARE = 0.42;
 
-// Теноры, по которым читается сдвиг кривой: стандартные точки zcyc, без
-// интерполяции — берём ТОЛЬКО совпадающие теноры двух наборов points.
-const DELTA_TENORS = [1, 2, 3, 5, 7, 10, 15];
-
 // Подписи бордов для тултипа объёма. Бэк может прислать свой словарь
 // (board_labels в ответе) — он приоритетнее; этот — запас на случай, когда его
 // нет, чтобы в плашке не висел голый код.
@@ -37,9 +36,8 @@ const BOARD_FALLBACK = {
   PSOB: "РПС", PTOB: "РПС T+", PSEU: "РПС, евро", PSOY: "РПС, юани",
 };
 
-// Ручка /gcurve исторически отдаёт points объектами {years, yield_pct}, ТЗ на
-// date-вариант описывает пары [tau, yield]. Принимаем оба — фронт не должен
-// падать от того, какой из двух форматов выбрал бэк.
+// Линия кривой: samples ручки — объекты {years, yield_pct}; пары [tau, yield]
+// тоже принимаем — фронт не должен падать от формата, который выбрал бэк.
 export function normCurve(points) {
   return (points || []).map((p) => (
     Array.isArray(p) ? { years: +p[0], yield_pct: +p[1] }
@@ -47,26 +45,28 @@ export function normCurve(points) {
   )).filter((p) => Number.isFinite(p.years) && Number.isFinite(p.yield_pct));
 }
 
-// Δ КБД по тенорам: разность двух наборов точек по СОВПАДАЮЩИМ тенорам. Это
-// не интерполяция (правило страницы: кривая на фронте не считается) — тенор,
-// которого нет в одном из наборов, просто не показываем.
-export function curveDelta(now, prev, tenors = DELTA_TENORS) {
-  const a = normCurve(now), b = normCurve(prev);
-  const at = (arr, t) => arr.find((p) => Math.abs(p.years - t) < 1e-6);
-  return tenors.map((t) => {
-    const x = at(a, t), y = at(b, t);
-    return x && y ? { tenor: t, bps: (x.yield_pct - y.yield_pct) * 100 } : null;
+// Δ кривой по ключевым тенорам: разность key_tenors двух ответов /ofz/curve
+// по СОВПАДАЮЩИМ тенорам. Тенор с extrap (вне domain хотя бы одной из кривых)
+// не показываем: хвост NSS за последней бумагой — экстраполяция, не рынок.
+// Интерполяции нет (правило страницы: кривая на фронте не считается).
+export function curveDelta(now, prev) {
+  const ok = (arr) => (arr || []).filter((k) => !k.extrap
+    && Number.isFinite(+k.years) && Number.isFinite(+k.yield_pct));
+  const a = ok(now), b = ok(prev);
+  return a.map((x) => {
+    const y = b.find((p) => Math.abs(+p.years - +x.years) < 1e-6);
+    return y ? { tenor: +x.years, bps: (+x.yield_pct - +y.yield_pct) * 100 } : null;
   }).filter(Boolean);
 }
 
-const tenorLbl = (t) => `${t}Y`;
+const tenorLbl = (t) => (t < 1 ? `${Math.round(t * 12)}M` : `${t}Y`);
 
-// Строка «Δ КБД: 1Y +8 · 3Y +5 · 10Y −2 бп» над графиком.
+// Строка «Δ кривая ОФЗ к 11.09.2026: 1Y +8 · 3Y +5 · 10Y −2 бп» над графиком.
 export function CurveDeltaStrip({ now, prev, date, requested }) {
   const d = curveDelta(now, prev);
   return (
     <div className="ofz-dstrip" data-testid="ofz-dstrip">
-      <span className="ofz-dstrip-k">Δ КБД{date ? ` к ${fmt.date(date)}` : ""}</span>
+      <span className="ofz-dstrip-k">Δ кривая ОФЗ{date ? ` к ${fmt.date(date)}` : ""}</span>
       {requested && date && requested !== date && (
         <span className="ofz-dstrip-note"> (ближайший торговый к {fmt.date(requested)})</span>
       )}
@@ -85,11 +85,13 @@ export function CurveDeltaStrip({ now, prev, date, requested }) {
   );
 }
 
-// Тултип точки: то же, что раньше, плюс строка ΔYTM, когда включён сдвиг.
+// Тултип точки: YTM · кривая · откл. к своей кривой, плюс стакан и ΔYTM,
+// когда включены чипы.
 function pointTip(p, cmpDate, bidAsk) {
-  let s = `${p.name}\nYTM ${fmt.pct(p.y)} · КБД ${fmt.pct(p.curve)}\n`
-    + `отклонение ${fmt.devBps(p.g)} б.п. · дюрация ${fmt.yrs(p.x)}\n`
-    + `цена ${fmt.pct(p.px) ?? "—"} (${BASE_LABEL[p.base] ?? p.base})`;
+  const dev = p.resid == null ? "—" : `${fmt.devBps(p.resid)} бп`;
+  let s = `${p.name}\nYTM ${fmt.pct(p.y)} · кривая ${fmt.pct(p.curve) ?? "—"} · откл. ${dev}`
+    + (p.used === false ? " · вне подгонки" : "")
+    + `\nдюрация ${fmt.yrs(p.x)} · цена ${fmt.pct(p.px) ?? "—"} (${BASE_LABEL[p.base] ?? p.base})`;
   if (bidAsk && (p.yb != null || p.ya != null)) {
     // ширина по доходности: бид (продать) даёт YTM выше, оффер (купить) — ниже
     const w = p.yb != null && p.ya != null ? ` · ширина ${fmt.devBps((p.yb - p.ya) * 100)} бп` : "";
@@ -104,7 +106,18 @@ function pointTip(p, cmpDate, bidAsk) {
   return s;
 }
 
-// ── Scatter: YTM × дюрация поверх КБД (+ вторая кривая и тени точек) ──
+// Цвет точки — по знаку отклонения к своей кривой: выше кривой — дешевле
+// соседей, ниже — дороже. Точка вне подгонки — полый кружок того же цвета.
+const ptClass = (p) => "ofz-pt" + (p.used === false ? " ofz-pt-out" : "")
+  + (p.resid == null ? "" : p.resid >= 0 ? " cheap" : " rich");
+// inline, а не класс: .ofz-pt красит fill через CSS, и презентационный
+// атрибут fill="none" проиграл бы ему — полый кружок только стилем
+const ptStyle = (p) => (p.used === false
+  ? { fill: "none", strokeWidth: 1.2,
+      stroke: p.resid == null ? "var(--mut)" : p.resid >= 0 ? "var(--up)" : "var(--down)" }
+  : undefined);
+
+// ── Scatter: YTM × дюрация поверх своей кривой (+ кривая as-of и тени точек) ──
 function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, bidAsk, onOpen }) {
   const cIn = curve.filter((c) => c.years <= xmax);
   const cCmpIn = (curveCmp || []).filter((c) => c.years <= xmax);
@@ -120,7 +133,7 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, bi
   const lo = Math.min(...ys), hi = Math.max(...ys);
   const pad = (hi - lo) * 0.08 || 0.2;
   return (
-    <MeasuredSvg height={360} label="доходность ОФЗ, КБД и оборот по дюрации" cursor={onOpen ? "pointer" : "default"}>
+    <MeasuredSvg height={360} label="доходность ОФЗ, своя кривая и оборот по дюрации" cursor={onOpen ? "pointer" : "default"}>
       {({ W, H, bind }) => {
         const sx = linearScale([0, xmax], [SC_PAD.l, W - SC_PAD.r]);
         const sy = linearScale([lo - pad, hi + pad], [H - SC_PAD.b, SC_PAD.t]);
@@ -140,7 +153,7 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, bi
             )}
             {cIn.length > 1 && (
               <path d={linePath(cIn, (c) => sx(c.years), (c) => sy(c.yield_pct))}
-                className="ofz-kbd" fill="none" />
+                className="ofz-kbd" fill="none" data-testid="ofz-curve" />
             )}
             {/* тени: где бумага стояла на дату сравнения, и коннектор к текущей
                 точке — направление сдвига видно без чтения тултипа */}
@@ -168,12 +181,12 @@ function CurveScatter({ pts, curve, curveCmp, cmpDate, xmax, labels, volumes, bi
             })}
             {pts.map((p) => (
               <circle key={p.isin} cx={sx(p.x)} cy={sy(p.y)} r={3.6}
-                className={"ofz-pt" + (p.g == null ? "" : p.g >= 0 ? " cheap" : " rich")}
+                className={ptClass(p)} style={ptStyle(p)}
                 onClick={onOpen ? (e) => onOpen(p.isin, e.currentTarget, "fixed") : undefined}
                 {...bind(sx(p.x), sy(p.y), pointTip(p, cmpDate, bidAsk))} />
             ))}
             {labels && placeLabels(pts, sx, sy, W, SC_PAD.r, 9,
-              (p, short) => `${short} ${p.g == null ? "" : fmt.devBps(p.g)}`).map((l) => (
+              (p, short) => `${short} ${p.resid == null ? "" : fmt.devBps(p.resid)}`).map((l) => (
               <text key={l.key} x={l.x} y={l.y} className="an-pt-lbl">{l.txt}</text>
             ))}
             <text x={SC_PAD.l} y={H - 4} className="an-axis-lbl" textAnchor="start">дюрация, лет →</text>
@@ -253,14 +266,17 @@ function VolumeBars({ pts, volumes, sx, W, H, bind }) {
 }
 
 /**
- * pts     — точки из OfzDesk: {isin, name, x (tau), y (ytm), g, curve, px, base,
- *           x0/y0 (опц.) — дюрация/YTM на дату сравнения}
- * curve   — points КБД сегодня (любой из двух форматов)
- * cmp     — null | {date, requested, curve: points, curveDate, curveRequested}
- *           date — фактическая дата as-of, curveDate — фактическая дата КБД
- * volumes — ответ /ofz/volumes или null
+ * pts       — точки из OfzDesk: {isin, name, x (tau), y (ytm), curve (y кривой
+ *             под точкой), resid (откл. к своей кривой, бп), used (вошла ли
+ *             в подгонку), px, base, x0/y0 (опц.) — дюрация/YTM на дату сравнения}
+ * curve     — samples своей кривой сегодня ({years, yield_pct})
+ * keyTenors — key_tenors сегодняшнего ответа (для стрипа Δ)
+ * cmp       — null | {date, requested, curve: samples as-of, keyTenors,
+ *             curveDate, curveRequested}; date — фактическая дата as-of точек,
+ *             curveDate — фактическая дата кривой as-of
+ * volumes   — ответ /ofz/volumes или null
  */
-export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, bidAsk, onOpen }) {
+export default function OfzChart({ pts: ptsIn, curve, keyTenors, cmp, volumes, labels, bidAsk, onOpen }) {
   if (ptsIn.length < 2) return <div className="an-empty">мало данных: метрики ОФЗ ещё прогреваются</div>;
   // тени живут ТОЛЬКО в режиме сравнения: выключенный режим при ещё не
   // обновлённых строках не должен оставлять на графике прошлые точки
@@ -272,7 +288,7 @@ export default function OfzChart({ pts: ptsIn, curve, cmp, volumes, labels, bidA
   return (
     <div className="ofz-chart">
       {cmp && (
-        <CurveDeltaStrip now={curve} prev={cmp.curve}
+        <CurveDeltaStrip now={keyTenors} prev={cmp.keyTenors}
           date={cmp.curveDate} requested={cmp.curveRequested} />
       )}
       <CurveScatter pts={pts} curve={cNow} curveCmp={cCmp} cmpDate={cmp?.date}

@@ -509,6 +509,21 @@ CREATE TABLE IF NOT EXISTS gcurve_daily(
   value REAL NOT NULL,            -- zero-yield, % годовых
   PRIMARY KEY(date, tau)
 );
+
+-- СВОЯ кривая ОФЗ (NSS/NS по точкам выпусков, services/ofz_curve) ПО ДНЯМ:
+-- параметры, а не точки — по β/λ кривая восстанавливается целиком (evaluate).
+-- Пишет ручка /api/fixed/ofz/curve при каждом расчёте «сегодня» (upsert,
+-- последний побеждает) — копится история для аукционов и динамики теноров.
+CREATE TABLE IF NOT EXISTS ofz_curve_daily(
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD' — дата расчёта метрик
+  base TEXT NOT NULL,             -- wap | last | bid | ask
+  method TEXT NOT NULL,           -- NSS | NS
+  params TEXT NOT NULL,           -- json {beta0..beta3, lambda1, lambda2}
+  rmse_bps REAL,
+  n_used INTEGER,
+  at TEXT NOT NULL,               -- момент записи, ISO
+  PRIMARY KEY(date, base)
+);
 """
 
 # аддитивные миграции для прод-базы, где таблица уже создана без новых колонок;

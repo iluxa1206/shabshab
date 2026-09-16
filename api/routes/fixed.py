@@ -336,10 +336,13 @@ def _asof_rows_for(d: str, isins: list) -> tuple:
             snap[r["isin"]] = {"ytm": r["ytm"], "price_pct": r["price_pct"],
                                "horizon": r["horizon"]}
     px: dict = {}
+    val: dict = {}
     # bond_day: стакан впереди прочих бордов, средневзвес впереди закрытия
     # (last в неликвиде — один случайный принт; у ОФЗ TQOB это редкость, но
     # правило общее с витриной)
     for r in bt.read_bond_days(d, isins):
+        # оборот дня по всем бордам — вес точки в подгонке своей кривой
+        val[r["isin"]] = val.get(r["isin"], 0.0) + float(r.get("value") or 0.0)
         p = r.get("waprice") or r.get("close")
         if p is None:
             continue
@@ -347,7 +350,7 @@ def _asof_rows_for(d: str, isins: list) -> tuple:
         cur = px.get(r["isin"])
         if cur is None or rank < cur[0]:
             px[r["isin"]] = (rank, float(p))
-    return snap, {k: v[1] for k, v in px.items()}
+    return snap, {k: v[1] for k, v in px.items()}, val
 
 
 @router.get("/ofz/asof", tags=["Fixed"])
@@ -365,8 +368,16 @@ async def get_ofz_asof(
     На дату без единой строки шагаем назад до 7 дней (выходные/праздники) и
     возвращаем фактическую дату. Кэш в памяти по дате: пересчёт ~60 бумаг
     дорогой только первый раз."""
-    from services import fixed_income as fi
     req = _parse_day(date_, required=True)
+    return await _ofz_asof_payload(req)
+
+
+async def _ofz_asof_payload(req: date) -> dict:
+    """Тело /ofz/asof: as-of точки {isin: {ytm, tau, px, val, src}} на дату с
+    шагом назад и кэшем. Общее с /ofz/curve?date= — своя кривая на прошлую
+    дату подгоняется по ТЕМ ЖЕ точкам, что рисуются тенями, а не по копии
+    логики."""
+    from services import fixed_income as fi
     now = time.time()
     hit = _asof_memo.get(req.isoformat())
     if hit and now - hit[0] < _ASOF_MEMO_TTL:
@@ -378,15 +389,15 @@ async def get_ofz_asof(
     found = None
     for k in range(_STEP_BACK_DAYS + 1):
         d = req - timedelta(days=k)
-        snap, px = await asyncio.to_thread(_asof_rows_for, d.isoformat(), isins)
+        snap, px, val = await asyncio.to_thread(_asof_rows_for, d.isoformat(), isins)
         if snap or px:
-            found = (d, snap, px)
+            found = (d, snap, px, val)
             break
     if found is None:
         raise HTTPException(
             status_code=404,
             detail=f"Нет ни снапшота, ни дневных цен ОФЗ за {_STEP_BACK_DAYS} дн до {req.isoformat()}")
-    d, snap, px = found
+    d, snap, px, val = found
 
     # расписание MOEX тянем по SECID — у ОФЗ ISIN в bondization не резолвится
     # (то же правило, что в compute_fixed_metrics_all)
@@ -416,6 +427,7 @@ async def get_ofz_asof(
             if ytm is None:
                 continue
             out[isin] = {"ytm": ytm, "tau": m.get("mac_dur"), "px": float(price),
+                         "val": val.get(isin, 0.0),
                          "src": "snap" if sn else "reprice"}
         return out
 
@@ -424,6 +436,94 @@ async def get_ofz_asof(
     _asof_memo[req.isoformat()] = (now, payload)
     while len(_asof_memo) > _ASOF_MEMO_MAX:
         _asof_memo.popitem(last=False)
+    return payload
+
+
+# ── СВОЯ кривая ОФЗ (services/ofz_curve): NSS/NS по точкам выпусков ──
+# YTM по базе — та же карта, что byBase во фронте витрины: точка на графике и
+# остаток к кривой обязаны быть от одной цены.
+_CURVE_BASES = {"wap": "ytm_wap", "last": "ytm", "bid": "ytm_bid", "ask": "ytm_ask"}
+_CURVE_MEMO_TTL_TODAY = 60.0     # с: сегодняшняя кривая ходит с ценами
+_CURVE_MEMO_MAX = 30
+# ключ — (база, дата, отпечаток ВСЕГО входа): при тех же точках подгонка та же,
+# при новой цене хоть одной бумаги ключ другой — кэш от прошлых цен не отдаём
+_curve_memo: "OrderedDict[str, tuple]" = OrderedDict()   # key → (ts, payload)
+
+
+def _curve_archive_save(d: str, base: str, res) -> None:
+    """ofz_curve_daily: одна строка на (дата, база), последний расчёт дня
+    побеждает — история своей кривой для аукционов и динамики теноров."""
+    import json
+    from services import portfolio_db as pdb
+    with pdb._lock, pdb._connect() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO ofz_curve_daily(date,base,method,params,rmse_bps,n_used,at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (d, base, res.method, json.dumps(res.params), res.rmse_bps, res.n_used,
+             datetime.now(_MSK).isoformat(timespec="seconds")))
+
+
+@router.get("/ofz/curve", tags=["Fixed"])
+async def get_ofz_curve(
+    base: str = Query("wap", description="База цены YTM: wap|last|bid|ask (без date)"),
+    date_: str = Query(None, alias="date",
+                       description="As-of дата YYYY-MM-DD: точки как у /ofz/asof, база одна"),
+):
+    """Своя кривая ОФЗ — Нельсон–Сигел–Свенссон по точкам выпусков
+    (YTM × дюрация Маколея), подгонка на бэке (services/ofz_curve).
+
+    Без date — точки те же, что у /api/fixed cls=ofz: YTM по базе цены, τ —
+    Маколей (фолбэк модифицированная), вес — оборот дня val_today. С date —
+    as-of точки той же логики, что /ofz/asof (одна цена дня → base="asof",
+    date/requested/stale как там). В ответе линия (samples), ключевые теноры
+    для стрипа Δ и остатки по ISIN — фронт ничего не считает. < 4 пригодных
+    точек — 422. Сегодняшний расчёт ложится в архив ofz_curve_daily."""
+    from services import ofz_curve as oc
+    if base not in _CURVE_BASES:
+        raise HTTPException(status_code=400, detail="base: wap|last|bid|ask")
+    req = _parse_day(date_, required=False)
+    if req is None:
+        rows = await _ofz_rows()
+        metrics = market_cache.get("fixed_metrics") or {}
+        ykey = _CURVE_BASES[base]
+        pts = []
+        for u in rows:
+            m = metrics.get(u["isin"]) or {}
+            tau = m.get("mac_dur") if m.get("mac_dur") is not None else m.get("mod_dur")
+            pts.append(oc.FitPoint(u["isin"], m.get(ykey), tau, u.get("val_today") or 0.0))
+        d_iso = str(market_cache.get("fixed_calc_date") or _msk_today().isoformat())
+        head = {"date": d_iso, "requested": d_iso, "stale": False, "base": base}
+        ttl = _CURVE_MEMO_TTL_TODAY
+    else:
+        asof = await _ofz_asof_payload(req)
+        pts = [oc.FitPoint(isin, it.get("ytm"), it.get("tau"), it.get("val") or 0.0)
+               for isin, it in asof["items"].items()]
+        head = {"date": asof["date"], "requested": asof["requested"],
+                "stale": asof["date"] != asof["requested"], "base": "asof"}
+        ttl = _ASOF_MEMO_TTL
+
+    # requested — тоже в ключе: суббота и пятница дают одну фактическую дату и
+    # одни точки, но ответ обязан честно сказать, что просили субботу (stale)
+    key = f"{head['base']}|{head['date']}|{head['requested']}|{oc.input_fingerprint(pts)}"
+    now = time.time()
+    hit = _curve_memo.get(key)
+    if hit and now - hit[0] < ttl:
+        _curve_memo.move_to_end(key)
+        return hit[1]
+    try:
+        # ~0.1 с numpy на 60 точках — не в event loop
+        res = await asyncio.to_thread(oc.fit, pts)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"кривая ОФЗ: {e}")
+    payload = {**head, **res.to_dict()}
+    if req is None:
+        try:
+            await asyncio.to_thread(_curve_archive_save, head["date"], base, res)
+        except Exception as e:
+            logger.warning(f"ofz_curve_daily save {head['date']}/{base}: {e}")
+    _curve_memo[key] = (now, payload)
+    while len(_curve_memo) > _CURVE_MEMO_MAX:
+        _curve_memo.popitem(last=False)
     return payload
 
 

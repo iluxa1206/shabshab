@@ -192,6 +192,18 @@ export const fetchOfzVolumes = (date) =>
 export const fetchOfzAsof = (date) =>
   request(`/api/fixed/ofz/asof?date=${encodeURIComponent(date)}`);
 
+// Витрина ОФЗ: СВОЯ кривая (NSS по точкам выпусков, подгонка на бэке) —
+// samples для линии, key_tenors для стрипа Δ, residuals по ISIN для точек и
+// колонки. Без date — сегодня по базе цены (wap|last|bid|ask); с date — as-of
+// на дату (база одна, бэк шагает назад до торгового дня и отдаёт фактическую).
+export const fetchOfzCurve = (base, date) => {
+  const q = new URLSearchParams();
+  if (base) q.set("base", base);
+  if (date) q.set("date", date);
+  const qs = q.toString();
+  return request(`/api/fixed/ofz/curve${qs ? `?${qs}` : ""}`);
+};
+
 export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?series=${series}`);
 
 // Индекс RUONIA по дням: ставка ЦБ, официальный индекс (публикуется с 2010-01-11)
