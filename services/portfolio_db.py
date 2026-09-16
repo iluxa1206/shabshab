@@ -336,6 +336,68 @@ CREATE TABLE IF NOT EXISTS primary_announce(
 );
 CREATE INDEX IF NOT EXISTS ix_announce_secid ON primary_announce(matched_secid);
 
+-- АУКЦИОНЫ ОФЗ МИНФИНА (services/ofz_auctions): итоги из годовых xlsx Минфина
+-- + квартальные планы из HTML-графиков. Отдельно от placement_day: там дневные
+-- итоги бордов биржи по каждой бумаге, здесь — событие «аукцион» с ценой
+-- отсечения, спросом и коэффициентом удовлетворения, которых ISS не знает.
+-- Ключ (date, code, fmt): в один день по одному выпуску бывает и аукцион, и
+-- ДРПА (доразмещение после аукциона) — это две разные строки у Минфина.
+-- code — код выпуска БЕЗ контрольной цифры (26253RMFS), secid/isin резолвятся
+-- через sec_ref по LIKE (см. ofz_auctions.resolve_secids).
+CREATE TABLE IF NOT EXISTS ofz_auction(
+  date TEXT NOT NULL,             -- 'YYYY-MM-DD'
+  code TEXT NOT NULL,             -- 26253RMFS
+  fmt TEXT NOT NULL,              -- auction | drpa
+  secid TEXT,                     -- SU26253RMFS3
+  isin TEXT,
+  sec_type TEXT,                  -- ОФЗ-ПД | ОФЗ-ПК | ОФЗ-ИН | ОФЗ-АД | ОФЗ-н
+  maturity TEXT,
+  days_to_mat INTEGER,
+  offered_mln REAL,               -- объём предложения (у «в объёме остатков» — сотни млрд)
+  cut_price REAL,                 -- цена отсечения, % номинала (NULL — несостоявшийся)
+  wap_price REAL,                 -- средневзвешенная цена
+  cut_yield REAL,                 -- % годовых; у ПК нет, у ИН — реальная
+  wap_yield REAL,
+  demand_mln REAL,                -- спрос по номиналу (у ДРПА нет)
+  placed_mln REAL,                -- размещено по номиналу (0 у несостоявшегося)
+  revenue_mln REAL,               -- выручка
+  fill_ratio REAL,                -- коэффициент удовлетворения (13/12)
+  status TEXT,                    -- ok | failed | drpa
+  src_file TEXT,                  -- имя xlsx, из которого пришла строка
+  at TEXT,
+  PRIMARY KEY(date, code, fmt)
+);
+CREATE INDEX IF NOT EXISTS ix_ofz_auction_secid ON ofz_auction(secid);
+
+-- План квартала по корзинам срока: «до 10 лет включительно | 900»,
+-- «от 10 лет | 600». Это объём ПРИВЛЕЧЕНИЯ по ст. 113 БК (без НКД и премии
+-- сверх номинала), а не размещение по номиналу — факт для сравнения считается
+-- как размещено × min(ср.взв. цена, 100)/100. Включительность границы — в hi.
+CREATE TABLE IF NOT EXISTS ofz_auction_plan(
+  quarter TEXT NOT NULL,          -- '2026Q3'
+  bucket TEXT NOT NULL,           -- текст корзины как у Минфина
+  lo_y REAL,                      -- нижняя граница срока, лет (NULL — от нуля)
+  hi_y REAL,                      -- верхняя (NULL — «от N лет»)
+  amount_bln REAL,                -- млрд ₽
+  src_url TEXT,
+  src_id INTEGER,                 -- id_65 страницы: «уточнённый» вариант побеждает по большему id
+  at TEXT,
+  PRIMARY KEY(quarter, bucket)
+);
+-- Даты аукционов квартала из того же графика.
+CREATE TABLE IF NOT EXISTS ofz_auction_dates(
+  quarter TEXT NOT NULL,
+  date TEXT NOT NULL,
+  PRIMARY KEY(quarter, date)
+);
+-- Что уже скачано: 'results:2026' → имя файла (за текущий год Минфин
+-- перевыпускает файл после каждого аукциона, дата в имени = «по состоянию на»).
+CREATE TABLE IF NOT EXISTS ofz_auction_sync(
+  key TEXT PRIMARY KEY,
+  at TEXT,
+  note TEXT
+);
+
 -- Дневной итог БЕЗАДРЕСНЫХ торгов по бумаге и борду (ISS history, весь рынок).
 -- Зачем отдельно от поштучных сделок: живой поток пишет тик по каждой бумаге
 -- юниверса, а по остальному рынку — только от порога TRADES_STREAM_MIN_RUB, и

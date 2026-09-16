@@ -27,6 +27,7 @@ import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
 import FixedMonitor from "./components/fixed/FixedMonitor.jsx";
 import OfzDesk from "./components/fixed/OfzDesk.jsx";
+import AuctionDesk from "./components/fixed/AuctionDesk.jsx";
 import CalcModule from "./components/CalcModule.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import SignalsWatcher from "./components/SignalsWatcher.jsx";
@@ -1011,6 +1012,10 @@ function Dashboard() {
         {/* витрина ОФЗ — тот же слой фиксов, поэтому под тем же флагом */}
         <Route path="/fixed/ofz" element={fixedOn
           ? <OfzDesk onOpen={openDrawer} />
+          : <Navigate to="/floaters" replace />} />
+        {/* аукционы ОФЗ Минфина — тот же слой фиксов, тот же флаг */}
+        <Route path="/fixed/auction" element={fixedOn
+          ? <AuctionDesk onOpen={openDrawer} user={user} />
           : <Navigate to="/floaters" replace />} />
         <Route path="/calc" element={<CalcModule />} />
         <Route path="/calc/float" element={<CalcModule initialKind="float" />} />

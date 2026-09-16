@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, history, trades, blocks, calc, tg, portfolio, primary, signals as signals_route
+from api.routes import health, meta, bonds, curves, orderbook, ws, auth, instruments, fixed, status, history, trades, blocks, calc, tg, portfolio, primary, auctions, signals as signals_route
 from api.routes.auth import require_user
 from fastapi import Depends
 from services.exceptions import APIException
@@ -1186,6 +1186,16 @@ async def block_trades_worker():
                                     await run_bg(pa.match_announces))
                     except Exception as e:
                         logger.warning("placements: %s", e)
+                    # Аукционы ОФЗ Минфина: итоги за текущий и прошлый год
+                    # (файл текущего года перевыпускается после каждого
+                    # аукциона) и планы кварталов. Дневной довесок здесь;
+                    # среда-вечер — в ofz_auctions_worker.
+                    try:
+                        from services import ofz_auctions as oa
+                        logger.info("аукционы ОФЗ: %s", await oa.sync_results())
+                        logger.info("планы аукционов ОФЗ: %s", await oa.sync_plans())
+                    except Exception as e:
+                        logger.warning("аукционы ОФЗ: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1194,6 +1204,47 @@ async def block_trades_worker():
         # рабочий темп, иначе вечерний наплыв досчитывался бы часами
         idle = 60 if await run_bg(bt.unpriced_count) else 600
         await asyncio.sleep(BLOCK_POLL_INTERVAL if _in_moex_trading_hours() else idle)
+
+
+# Аукционы ОФЗ проходят по средам, итоги Минфин выкладывает в тот же день
+# после обеда — файл года перевыпускается. Окно опроса по МСК.
+AUCTION_DAY = int(os.getenv("OFZ_AUCTION_WEEKDAY", "2"))          # 0 = понедельник
+AUCTION_POLL_FROM_H = int(os.getenv("OFZ_AUCTION_POLL_FROM_H", "15"))
+AUCTION_POLL_TO_H = int(os.getenv("OFZ_AUCTION_POLL_TO_H", "20"))
+AUCTION_POLL_SEC = int(os.getenv("OFZ_AUCTION_POLL_SEC", "1800"))
+
+
+async def ofz_auctions_worker():
+    """Итоги аукционов ОФЗ в день аукциона + посев пустой базы на старте.
+
+    Ночной синк (в block_trades_worker рядом с размещениями) даёт вчерашний
+    аукцион только утром; трейдеру он нужен в среду вечером — поэтому в окне
+    15:00–20:00 МСК среды перечитываем индекс раз в полчаса (сам файл
+    качается только если его имя в индексе сменилось — дешёвый такт).
+    На старте с пустой ofz_auction — фоновая заливка текущего и прошлого
+    года, чтобы вкладка не была пустой до первой ночи; старт не блокируем."""
+    from services import ofz_auctions as oa
+    await asyncio.sleep(90)              # пропускаем стартовый прогрев
+    try:
+        if await run_bg(oa.is_empty):
+            logger.info("аукционы ОФЗ: база пуста, посев: %s", await oa.sync_results())
+            logger.info("планы аукционов ОФЗ: %s", await oa.sync_plans())
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("аукционы ОФЗ (посев): %s", e)
+    while True:
+        try:
+            now = datetime.now(_MSK)
+            if now.weekday() == AUCTION_DAY and AUCTION_POLL_FROM_H <= now.hour < AUCTION_POLL_TO_H:
+                res = await oa.sync_results()
+                if res.get("downloaded"):
+                    logger.info("аукционы ОФЗ (день аукциона): %s", res)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("аукционы ОФЗ: %s", e)
+        await asyncio.sleep(AUCTION_POLL_SEC)
 
 
 # Порог тревоги по свободному месту. Считается не «сколько осталось вообще», а
@@ -1455,6 +1506,8 @@ async def lifespan(app: FastAPI):
     _daemon("depth-poller", depth_poller)
     _daemon("archive-maintenance", archive_maintenance)
     _daemon("block-trades", block_trades_worker)
+    # итоги аукционов ОФЗ в день аукциона (среда) + посев пустой базы
+    _daemon("ofz-auctions", ofz_auctions_worker)
     # вечерний «разбор дня» альбомом картинок (services/tg_digest)
     from services.tg_digest import digest_worker
     _daemon("tg-digest", digest_worker)
@@ -1584,6 +1637,7 @@ app.include_router(blocks.router, prefix="/api/blocks", dependencies=_gate)
 app.include_router(calc.router, prefix="/api/calc", dependencies=_gate)
 app.include_router(portfolio.router, prefix="/api/portfolio", dependencies=_gate)
 app.include_router(primary.router, prefix="/api/primary", dependencies=_gate)
+app.include_router(auctions.router, prefix="/api/auctions", dependencies=_gate)
 app.include_router(ws.router, prefix="/api/ws")  # WS проверяет cookie внутри хендлера
 app.include_router(tg.router, prefix="/api/tg")  # webhook защищён secret-заголовком
 

@@ -782,3 +782,26 @@ export function connectSignalsWs(onSignal, onStatus) {
     },
   };
 }
+
+// --- Аукционы ОФЗ Минфина (/api/auctions, services/ofz_auctions) ---
+// Источник — сам Минфин (годовые xlsx итогов + HTML графиков кварталов), ISS
+// здесь не при чём. План — привлечение по ст. 113 БК, факт для сравнения —
+// «113-я» (номинал × min(цена, 100)); бэк отдаёт и её, и номинал.
+const auctionQs = (params) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params || {})) if (v != null && v !== "") p.set(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+};
+export const fetchAuctionQuarters = () => request("/api/auctions/quarters");
+export const fetchAuctionPlan = (quarter) => request(`/api/auctions/plan${auctionQs({ quarter })}`);
+export const fetchAuctionResults = ({ from, to, type, fmt, secid, status } = {}) =>
+  request(`/api/auctions/results${auctionQs({ from, to, type, fmt, secid, status })}`);
+export const fetchAuctionSeries = ({ from, to } = {}) =>
+  request(`/api/auctions/series${auctionQs({ from, to })}`);
+export const fetchAuctionStats = ({ from, to } = {}) =>
+  request(`/api/auctions/stats${auctionQs({ from, to })}`);
+export const fetchAuctionIssues = () => request("/api/auctions/issues");
+// ручной синк с Минфина (админ): {results, plans, years[], force}
+export const syncAuctions = (body = {}) =>
+  request("/api/auctions/sync", { method: "POST", json: { results: true, plans: true, ...body } });
