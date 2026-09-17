@@ -66,7 +66,7 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
 
 
 def _uni_item(u, name, mx, adv=None, avg7=None,
-              vol_bid=None, vol_ask=None):
+              vol_bid=None, vol_ask=None, issue_volume=None):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond).
 
     Спред-дюрация приходит ТОЛЬКО из движка (mx["spread_dur"] — Macaulay потока
@@ -91,6 +91,7 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
         coupons_per_year=_coupons_per_year(u.get("coupon_period_days"),
                                            u.get("coupons_per_year")),
         maturity_date=u.get("maturity_date"), issue_date=u.get("issue_date"),
+        issue_volume=issue_volume,
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         bid_price_pct=mx.get("bid"), ask_price_pct=mx.get("ask"),
         y_idx_bid_bps=mx.get("yoi_bid"), y_idx_ask_bps=mx.get("yoi_ask"),
@@ -128,6 +129,8 @@ async def _universe_bonds(extra_list, cache, limit, offset,
     cached_prices = MarketDataService.session_prices()   # цены текущего торгового дня
     uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
     shortnames = await MarketDataService.fetch_moex_shortnames()
+    # объём выпуска деньгами — дневной кэш того же батча, что штуки для календаря
+    issue_vol = await MarketDataService.fetch_issue_volumes()
     watch = set(extra_list)
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
@@ -165,7 +168,7 @@ async def _universe_bonds(extra_list, cache, limit, offset,
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
         items.append(_uni_item(u, name, mx, adv.get(isin),
-                               avg7.get(isin), vol_bid, vol_ask))
+                               avg7.get(isin), vol_bid, vol_ask, issue_vol.get(isin)))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 
 

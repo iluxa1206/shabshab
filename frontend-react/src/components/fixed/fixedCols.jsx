@@ -1,13 +1,15 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
-import { D, IsinCopy, Quote, isFreshIssue, isShortBond } from "../BondTable.jsx";
+import { D, IsinCopy, Quote, IssueCell, isFreshIssue, isShortBond } from "../BondTable.jsx";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
 // key — ключ сортировки и видимости, w — ширина в ch по МАКСИМУМУ формата,
 // sep/grp — вертикальные разделители блоков, cell(b) — полный <td>.
 //
 // Первичных метрик здесь ДВЕ равноправные: g-спред (к КБД ОФЗ) и доходность к
-// погашению. Цветом красим спред — у него есть осмысленный знак; YTM всегда
-// положительна, окраска по знаку ничего не сообщала бы.
+// погашению. Цветом по знаку красим спред; YTM всегда положительна, поэтому в
+// своей колонке она без окраски, а под ценой котировки (BID/ASK/СР.ВЗВЕС) —
+// зелёным акцентом, как спред у флоатеров: главная цифра ячейки одна на обе
+// витрины и читается одинаково.
 //
 // ПОД ЦЕНОЙ в ячейках котировок (BID/ASK/СР.ВЗВЕС) стоит YTM по этой же цене, а
 // не g-спред: у суверенной кривой спред сидит около нуля и читается как шум,
@@ -89,13 +91,14 @@ export const FIXED_COLS = [
         )}
       </td>
     ) },
-  { key: "issue_date", label: "РАЗМЕЩ", w: 10,
-    title: "Дата размещения (начало первого купона по графику MOEX); свежие (≤30 дн) — зелёное имя",
-    cell: (b) => (
-      <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")} key="issue_date">
-        {fmt.date(b.issue_date) ?? <D />}
-      </td>
-    ) },
+  { key: "issue_date", label: "РАЗМЕЩ", sub: "ДАТА (МЛРД)", w: 15,
+    title: "Дата размещения (начало первого купона по графику MOEX), в скобках — объём выпуска "
+           + "в млрд (размещено штук × номинал); свежие (≤30 дн) — зелёное имя",
+    cell: (b) => <IssueCell b={b} key="issue_date" /> },
+  { key: "issue_volume", label: "ОБЪЁМ", sub: "ВЫП., МЛРД", align: "num", w: 8,
+    title: "Объём выпуска в валюте номинала, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; "
+           + "у амортизируемых — по текущему номиналу, то есть объём в обращении",
+    cell: (b) => <td className="num" key="issue_volume">{fmt.bln(b.issue_volume) ?? <D />}</td> },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
   { key: "ytm_bid", label: "BID", sub: "% / YTM", align: "num", sep: true, w: 9,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.ytm_bid} subKind="pct"

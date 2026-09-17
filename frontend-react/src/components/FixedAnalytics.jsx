@@ -190,9 +190,9 @@ function IssuerDist({ rows }) {
 }
 
 const MAT_BINS = [
-  { lbl: "<1г", lo: 0, hi: 1 }, { lbl: "1–3", lo: 1, hi: 3 },
-  { lbl: "3–5", lo: 3, hi: 5 }, { lbl: "5–10", lo: 5, hi: 10 },
-  { lbl: ">10", lo: 10, hi: 1e9 },
+  { lbl: "0–0.5", lo: 0, hi: 0.5 }, { lbl: "0.5–1", lo: 0.5, hi: 1 },
+  { lbl: "1–2", lo: 1, hi: 2 }, { lbl: "2–3", lo: 2, hi: 3 },
+  { lbl: "3–5", lo: 3, hi: 5 }, { lbl: "5+", lo: 5, hi: 1e9 },
 ];
 
 /**

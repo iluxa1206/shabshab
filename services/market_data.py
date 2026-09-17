@@ -633,6 +633,10 @@ class MarketDataService:
 
     _issue_sizes: Dict[str, float] = {}
     _issue_sizes_date: Optional[str] = None
+    # объём выпуска ДЕНЬГАМИ в валюте номинала: размещено штук × номинал —
+    # колонка «объём размещения» в мониторах. Собирается тем же запросом, что
+    # и штуки, и живёт в том же дневном кэше (ключ "vol")
+    _issue_volumes: Dict[str, float] = {}
 
     @classmethod
     async def fetch_issue_sizes(cls) -> Dict[str, float]:
@@ -644,38 +648,63 @@ class MarketDataService:
         try:
             with open(cache_path("issue_sizes_cache.json"), "r", encoding="utf-8") as f:
                 d = json.load(f)
-            if d.get("date") == today:
+            # "vol" появился позже штук: старый кэш без него дочитываем заново,
+            # иначе до полуночи колонка объёма стояла бы в прочерках
+            if d.get("date") == today and "vol" in d:
                 cls._issue_sizes = d.get("map", {})
+                cls._issue_volumes = d.get("vol", {})
                 cls._issue_sizes_date = today
                 return cls._issue_sizes
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
         out: Dict[str, float] = {}
+        vol: Dict[str, float] = {}
         try:
             async with moex_client() as client:
                 resp = await client.get(
                     "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json",
                     params={"iss.only": "securities", "iss.meta": "off",
-                            "securities.columns": "SECID,ISIN,ISSUESIZE", "limit": 10000},
+                            "securities.columns": "SECID,ISIN,ISSUESIZE,ISSUESIZEPLACED,FACEVALUE",
+                            "limit": 10000},
                     timeout=20)
             sec = (await asyncio.to_thread(resp.json)).get("securities", {})
             cols, rows = sec.get("columns", []), sec.get("data", [])
             ii = cols.index("ISIN") if "ISIN" in cols else -1
             zi = cols.index("ISSUESIZE") if "ISSUESIZE" in cols else -1
+            pi = cols.index("ISSUESIZEPLACED") if "ISSUESIZEPLACED" in cols else -1
+            fi = cols.index("FACEVALUE") if "FACEVALUE" in cols else -1
             for row in rows:
                 isin = row[ii] if ii >= 0 else None
-                if isin and zi >= 0 and row[zi]:
-                    out[isin] = float(row[zi])
+                if not (isin and zi >= 0 and row[zi]):
+                    continue
+                out[isin] = float(row[zi])
+                # РАЗМЕЩЕНО, а не зарегистрировано: у ОФЗ ISSUESIZE — потолок
+                # выпуска (1 млрд штук), в рынке же столько, сколько продал
+                # Минфин. Без ISSUESIZEPLACED (нет у погашаемых/старых) —
+                # штуки в обращении
+                placed = row[pi] if pi >= 0 and row[pi] else row[zi]
+                face = row[fi] if fi >= 0 else None
+                if face:
+                    vol[isin] = float(placed) * float(face)
         except Exception as e:
             logger.warning(f"MOEX issue sizes error: {e}")
             return cls._issue_sizes
         if out:
-            cls._issue_sizes, cls._issue_sizes_date = out, today
+            cls._issue_sizes, cls._issue_volumes, cls._issue_sizes_date = out, vol, today
             try:
-                atomic_write_json(cache_path("issue_sizes_cache.json"), {"date": today, "map": out})
+                atomic_write_json(cache_path("issue_sizes_cache.json"),
+                                  {"date": today, "map": out, "vol": vol})
             except OSError:
                 pass
         return cls._issue_sizes
+
+    @classmethod
+    async def fetch_issue_volumes(cls) -> Dict[str, float]:
+        """{isin: размещено штук × номинал} в валюте номинала (FACEUNIT бумаги).
+        Номинал текущий: у амортизируемых это объём В ОБРАЩЕНИИ, не первичного
+        размещения — витрина так и подписывает."""
+        await cls.fetch_issue_sizes()
+        return cls._issue_volumes
 
     _full_mem: Dict[str, dict] = {}
     _full_mem_date: Optional[str] = None

@@ -47,6 +47,15 @@ export const fmt = {
     if (Math.abs(m) < 0.05) return m > 0 ? "<0,1" : ">−0,1";
     return m.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   },
+  // Млрд для объёма выпуска: от десяти — целое («20»), ниже — один знак
+  // («3,5»); меньше 50 млн — «<0,1», ноль означал бы «выпуска нет».
+  bln: (v) => {
+    if (v == null) return null;
+    const m = v / 1e9;
+    if (Math.abs(m) < 0.05) return m > 0 ? "<0,1" : ">−0,1";
+    const d = Math.abs(m) >= 10 ? 0 : 1;
+    return m.toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+  },
 };
 
 // Имя выпуска без префикса «ОФЗ»: класс бумаги уже несёт синий бейдж ОФЗ, и

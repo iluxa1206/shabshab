@@ -983,6 +983,26 @@ def classify_board(board: Optional[str], market: Optional[str] = None) -> str:
     return "other"
 
 
+def market_adv_map(days: int = 30) -> dict[str, float]:
+    """ISIN → средний дневной оборот по ВСЕМУ рынку за окно, ₽ (дневные итоги
+    биржи bond_day, все борды). Знаменатель — торговые дни рынка в окне.
+
+    Отличие от bars.adv_map: тот считает по архиву часовых баров, а бары есть
+    только у бумаг, которые уже в пуле Alor. Ранжировать кандидатов В УНИВЕРС по
+    нему нельзя — у бумаги вне пула оборот ноль по построению. Дневные итоги
+    ISS снимаются по всему рынку (snapshot_bond_day_today), поэтому здесь
+    видно и то, чего в пуле ещё нет."""
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with _connect() as c:
+        n = c.execute("SELECT COUNT(DISTINCT date) FROM bond_day WHERE date >= ?",
+                      (cutoff,)).fetchone()[0] or 0
+        if not n:
+            return {}
+        rows = c.execute("SELECT isin, SUM(value) FROM bond_day WHERE date >= ? "
+                         "GROUP BY isin", (cutoff,)).fetchall()
+    return {r[0]: (r[1] or 0.0) / n for r in rows}
+
+
 def read_bond_days(d: str, isins: Optional[list[str]] = None) -> list[dict]:
     """Дневные итоги безадресных торгов bond_day за дату (все борды), по
     списку бумаг или по всему рынку. Объём уже в рублях (см. upsert_bond_days)."""

@@ -481,10 +481,23 @@ async def fetch_fixed_universe() -> List[dict]:
         return _uni_mem["rows"] or []
     # ОФЗ держим все; линкеры (индекс. номинал) тоже держим все — их мало и они
     # редкие; корпораты — топ по обороту (кап bounds прогрев поллера).
+    #
+    # Оборот для ранжирования — СРЕДНЕДНЕВНОЙ за месяц по дневным итогам биржи
+    # (весь рынок), а не VALTODAY в момент пересборки: тот зависит от часа и
+    # дня — РЖД 1Р-05R (выпуск 20 млрд, ~50 млн ₽/день) в 13:00 имел 56 тыс ₽
+    # оборота и стоял 900-м, за капом, а витрина его «не видела». Сегодняшний
+    # оборот остаётся вторым ключом: свежий выпуск без истории заходит по нему.
+    try:
+        from services.block_trades import market_adv_map
+        adv = await asyncio.to_thread(market_adv_map, 30)
+    except Exception as e:
+        logger.warning("fixed universe: market_adv_map failed: %s", e)
+        adv = {}
     ofz = [r for r in rows if r["cls"] == "ofz"]
     linked = [r for r in rows if r["cls"] == "corp" and r.get("linked")]
     corp = sorted((r for r in rows if r["cls"] == "corp" and not r.get("linked")),
-                  key=lambda r: r.get("val_today") or 0.0, reverse=True)[:_CORP_CAP]
+                  key=lambda r: max(adv.get(r["isin"], 0.0), r.get("val_today") or 0.0),
+                  reverse=True)[:_CORP_CAP]
     rows = ofz + linked + corp
     _uni_mem["rows"] = rows
     _uni_mem["ts"] = now

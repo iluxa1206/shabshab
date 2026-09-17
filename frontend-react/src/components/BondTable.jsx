@@ -65,8 +65,10 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
   return (
     <td className={"num q-cell" + cls} title={title}>
       <div className={"q-px" + (vwap ? " q-vwap" : "")}>{fmt.pct(px) ?? <D />}</div>
+      {/* под ценой: спред (знак → цвет) у флоатеров, YTM у фиксов — тем же
+          акцентом, чтобы главная цифра ячейки читалась одинаково в обеих витринах */}
       <div className={"q-sp" + (old ? " q-sp-old" : "")}
-           style={shown == null || pctSub ? undefined : dmColor(shown)}
+           style={shown == null ? undefined : dmColor(shown)}
            title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
                                 : "спред к прежней цене — пересчитывается") : undefined}>
         {shown == null ? <D /> : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
@@ -76,6 +78,18 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
             {fmt.devBps(dev)}</span>
         )}
       </div>
+    </td>
+  );
+}
+
+// Ячейка РАЗМЕЩ: дата и в скобках объём выпуска в млрд — одна на мониторы
+// флоатеров и фиксов (fixedCols её импортирует).
+export function IssueCell({ b }) {
+  const vol = fmt.bln(b.issue_volume);
+  return (
+    <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")}>
+      {fmt.date(b.issue_date) ?? <D />}
+      {vol != null && <span className="issue-vol" title={"объём выпуска, млрд " + (b.face_unit || "₽")}>{" (" + vol + ")"}</span>}
     </td>
   );
 }
@@ -240,13 +254,14 @@ export const COLS = [
         </td>
       );
     } },
-  { key: "issue_date", label: "РАЗМЕЩ", w: 10,
-    title: "Дата размещения по реестру; свежие (≤30 дн) — зелёное имя",
-    cell: (b) => (
-      <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")} key="issue_date">
-        {fmt.date(b.issue_date) ?? <D />}
-      </td>
-    ) },
+  { key: "issue_date", label: "РАЗМЕЩ", sub: "ДАТА (МЛРД)", w: 15,
+    title: "Дата размещения по реестру, в скобках — объём выпуска в млрд (размещено штук × номинал, "
+           + "MOEX); свежие (≤30 дн) — зелёное имя",
+    cell: (b) => <IssueCell b={b} key="issue_date" /> },
+  { key: "issue_volume", label: "ОБЪЁМ", sub: "ВЫП., МЛРД", align: "num", w: 8,
+    title: "Объём выпуска в валюте номинала, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; "
+           + "у амортизируемых — по текущему номиналу, то есть объём в обращении",
+    cell: (b) => <td className="num" key="issue_volume">{fmt.bln(b.issue_volume) ?? <D />}</td> },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.

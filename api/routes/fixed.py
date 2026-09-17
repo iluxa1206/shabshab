@@ -98,6 +98,7 @@ async def get_fixed(
     except Exception as e:
         logger.warning("fixed adv_map failed: %s", e)
         adv = {}
+    issue_vol = await MarketDataService.fetch_issue_volumes()
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
@@ -112,6 +113,9 @@ async def get_fixed(
                          else (u.get("faceunit") or "RUB").upper(),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             "adv_1m_rub": adv.get(u["isin"]),
+            # размещено штук × номинал, в валюте номинала (тот же дневной батч,
+            # что штуки для календаря выплат)
+            "issue_volume": issue_vol.get(u["isin"]),
             # цена: из метрик (last→prev с флагом) иначе сырой board
             "last_price_pct": m.get("last", u.get("last") if u.get("last") is not None else u.get("prev")),
         }
