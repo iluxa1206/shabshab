@@ -218,6 +218,27 @@ def test_discovery_null_rechecked_after_ttl(reg, monkeypatch):
     assert pending == ["RU_NULL"]              # NULL вернулся, decided(False) — нет
 
 
+def test_discovery_null_fresh_listing_rechecked_in_hours(reg):
+    """NULL у НЕДАВНО впервые увиденной бумаги перечекивается часами (график
+    свежего выпуска публикуется в день листинга), у старой — сутками. first_seen
+    не затирается повторными отметками."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    reg.mark_discovery_seen("RU_NEW", None)
+    reg.mark_discovery_seen("RU_OLD", None)
+    stale = (now - timedelta(hours=reg._DISCOVERY_NULL_FRESH_TTL_HOURS + 1)).isoformat()
+    long_ago = (now - timedelta(days=reg._DISCOVERY_NULL_FRESH_DAYS + 1)).isoformat()
+    with reg._conn() as c:
+        c.execute("UPDATE discovery_seen SET checked_at=? WHERE isin IN ('RU_NEW','RU_OLD')", (stale,))
+        c.execute("UPDATE discovery_seen SET first_seen=? WHERE isin='RU_OLD'", (long_ago,))
+    # свежий листинг — уже кандидат; старая нота ждёт суточный TTL
+    assert reg.discovery_pending(["RU_NEW", "RU_OLD"], 10) == ["RU_NEW"]
+    # повторная отметка не сбрасывает first_seen
+    reg.mark_discovery_seen("RU_OLD", None)
+    with reg._conn() as c:
+        assert c.execute("SELECT first_seen FROM discovery_seen WHERE isin='RU_OLD'").fetchone()[0] == long_ago
+
+
 def test_list_catalog_incomplete_first_and_flags(reg):
     reg.upsert({"isin": "RU000A10FM37", "short_name": "Каширская", "base": "KEYRATE",
                 "margin_bps": 135, "maturity_date": "2029-07-05"}, "moex")

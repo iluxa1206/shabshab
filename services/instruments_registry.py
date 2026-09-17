@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS meta(
 
 # ALTER для существующих БД (SQLite не поддерживает IF NOT EXISTS в ADD COLUMN)
 _MIGRATIONS = [
+    # первая проверка дискавери: отличает «свежий листинг, график ещё не
+    # опубликован» (перечек часами) от «структурная нота без bondization»
+    # (перечек сутками). checked_at для этого не годится — он перезаписывается
+    "ALTER TABLE discovery_seen ADD COLUMN first_seen TEXT",
     "ALTER TABLE instruments ADD COLUMN margin_check_pp REAL",
     "ALTER TABLE instruments ADD COLUMN offer_reset_bps REAL",
     "ALTER TABLE instruments ADD COLUMN offer_reset_date TEXT",
@@ -1659,6 +1663,13 @@ def sync_from_sources(nrd_items: list[dict] | None = None,
 # Пере-проверка ISIN без bondization-данных (is_floater IS NULL): свежий выпуск
 # мог не иметь опубликованного графика в момент первой проверки — даём шанс позже.
 _DISCOVERY_NULL_TTL_DAYS = 1
+# …а пока бумага в листинге НЕДАВНО — часами, не сутками. ВЭБ2Р-61: листинг
+# 15.09 с утра, первая проверка 06:47 МСК до публикации графика → NULL, и
+# сутки TTL держали её вне реестра до 06:47 16.09 при торгах с 10:00 15.09.
+# Ограничение по возрасту первой проверки держит нагрузку: 347 структурных нот
+# без bondization на проде перечекиваются по-прежнему раз в сутки
+_DISCOVERY_NULL_FRESH_DAYS = 3
+_DISCOVERY_NULL_FRESH_TTL_HOURS = 2
 # Вердикт «фикс» (is_floater=0) тоже перечекиваем, но редко: у свежего выпуска
 # на момент 1-й проверки MOEX мог ещё не опубликовать будущие незафиксированные
 # периоды → флоатер навсегда застревал как «фикс» (тихий отказ: бумаги просто
@@ -1679,14 +1690,18 @@ def discovery_pending(candidates: list[str], limit: int) -> list[str]:
         return []
     now = datetime.now(timezone.utc)
     cutoff_null = (now - timedelta(days=_DISCOVERY_NULL_TTL_DAYS)).isoformat()
+    cutoff_null_fresh = (now - timedelta(hours=_DISCOVERY_NULL_FRESH_TTL_HOURS)).isoformat()
+    fresh_since = (now - timedelta(days=_DISCOVERY_NULL_FRESH_DAYS)).isoformat()
     cutoff_fixed = (now - timedelta(days=_DISCOVERY_FIXED_TTL_DAYS)).isoformat()
     with _conn() as c:
         known = {r[0] for r in c.execute("SELECT isin FROM instruments")}
+        # NULL без first_seen — строки до миграции: считаем старыми (суточный TTL)
         skip = {r[0] for r in c.execute(
             "SELECT isin FROM discovery_seen WHERE is_floater=1 "
             "OR (is_floater=0 AND checked_at >= ?) "
-            "OR (is_floater IS NULL AND checked_at >= ?)",
-            (cutoff_fixed, cutoff_null))}
+            "OR (is_floater IS NULL AND first_seen >= ? AND checked_at >= ?) "
+            "OR (is_floater IS NULL AND (first_seen IS NULL OR first_seen < ?) AND checked_at >= ?)",
+            (cutoff_fixed, fresh_since, cutoff_null_fresh, fresh_since, cutoff_null))}
     out: list[str] = []
     for i in candidates:
         if i in known or i in skip:
@@ -1707,8 +1722,12 @@ def mark_discovery_seen(isin: str, is_floater: Optional[bool]) -> None:
         return
     val = None if is_floater is None else (1 if is_floater else 0)
     with _lock, _conn() as c:
-        c.execute("INSERT OR REPLACE INTO discovery_seen(isin, is_floater, checked_at) "
-                  "VALUES(?,?,?)", (isin, val, _now()))
+        # first_seen — момент ПЕРВОЙ проверки, переживает перезаписи
+        c.execute("INSERT INTO discovery_seen(isin, is_floater, checked_at, first_seen) "
+                  "VALUES(?,?,?,?) ON CONFLICT(isin) DO UPDATE SET "
+                  "is_floater=excluded.is_floater, checked_at=excluded.checked_at, "
+                  "first_seen=COALESCE(discovery_seen.first_seen, excluded.first_seen)",
+                  (isin, val, _now(), _now()))
 
 
 # TTL перепопытки corpbonds-обогащения по исходу прошлой попытки (дни).

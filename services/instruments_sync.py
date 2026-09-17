@@ -602,6 +602,7 @@ async def discover_floaters(listing: dict | None = None,
                   key=lambda i: 0 if listing[i].get("coupon_percent") in (None, 0.0) else 1)
     pending = reg.discovery_pending(cand, cap)
     discovered = 0
+    new_incomplete: list[str] = []
     for isin in pending:
         try:
             full = await MarketDataService.fetch_bond_schedule_full(isin)
@@ -664,6 +665,11 @@ async def discover_floaters(listing: dict | None = None,
                 row["coupon_period_days"] = cpd
                 row["coupons_per_year"] = max(1, round(365 / cpd))
             reg.upsert(row, source="moex", mark_new=True)
+            if not linked:
+                # без базы/маржи бумага непрайсуема и в витрину не попадёт —
+                # обогащаем СРАЗУ, а не ждём ночного sync_instruments (00:00
+                # МСК): ВЭБ2Р-61 так висел невидимым 17 часов после дискавери
+                new_incomplete.append(isin)
             if linked:
                 # бумага могла годами жить фиксом (ВЭБ2Р-58 — до 31.08.2026) и
                 # накопить историю спреда, посчитанную ПОД ФИКС. Штатные
@@ -677,6 +683,13 @@ async def discover_floaters(listing: dict | None = None,
         if delay:
             await asyncio.sleep(delay)
     await asyncio.to_thread(MarketDataService.flush_schedule_cache)   # дозапись хвоста дебаунс-кэша
+    if new_incomplete:
+        try:
+            from services.enrich_corpbonds import enrich_registry
+            st = await enrich_registry(new_incomplete)
+            logger.info("discovery: обогащение новых %s → %s", new_incomplete, st)
+        except Exception as e:
+            logger.warning("discovery: обогащение новых не удалось (%s), дождутся ночного sync", e)
     return discovered
 
 
