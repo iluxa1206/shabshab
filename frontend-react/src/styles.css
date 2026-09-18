@@ -16,6 +16,7 @@
   --up: #157a37;              /* cheap / gain */
   --down: #c0271f;            /* rich / loss */
   --accent: #3b5bd4;          /* доп. серия на графиках (напр. НРД Прил.3) */
+  --plc: #d9480f;             /* размещение (борды PSAU/PAUS/PACY): рыжий тег в лентах */
   --spread: #5c53c0;          /* панель спреда: лаванда (на белом — тёмный тон той же гаммы) */
   --vwap: #60a5fa;            /* «арктический рельс»: холодная внешняя линия VWAP */
   --vwap-core: #eff6ff;       /* тонкое ледяное ядро рельса */
@@ -47,6 +48,7 @@
   --up: #4ecb76;
   --down: #ff6b6b;
   --accent: #6b9bff;          /* доп. серия на графиках (напр. НРД Прил.3) */
+  --plc: #ffa94d;             /* размещение: рыжий тег в лентах */
   --spread: #c9c9ff;          /* панель спреда: лаванда — не спорит ни со свечами, ни с цианом средневзвеса */
   --vwap: #60a5fa;            /* «арктический рельс»: холодная внешняя линия VWAP */
   --vwap-core: #e0f2fe;       /* тонкое ледяное ядро рельса */
@@ -83,6 +85,7 @@
   --up: #007a1f;               /* VGA green, дотянут до контраста на белом */
   --down: #cc0000;
   --accent: #000080;           /* navy: тайтлбары, активные кнопки, доп. серия */
+  --plc: #c05a00;             /* размещение: рыжий тег в лентах */
   --spread: #800080;           /* панель спреда: VGA-пурпур (ближайшая лаванда в 16 цветах) */
   --vwap: #1084d0;             /* Win: синяя внешняя линия VWAP */
   --vwap-core: #ffffff;        /* Win: светлое ядро рельса */
@@ -704,6 +707,9 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    и есть весь дневной объём, но цена там договорная и рынку не равна. */
 .bt-row.bt-ndm { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .bt-row.bt-ndm .bt-side { color: var(--accent); font-weight: 700; }
+/* размещение — рыжим, выкуп — приглушённым: оба адресные, но не РПС */
+.bt-row.bt-ndm .bt-side.bt-plc { color: var(--plc); }
+.bt-row.bt-ndm .bt-side.bt-bb { color: var(--mut); }
 .bt-side { font-size: 10px; letter-spacing: 0.04em; }
 /* колонки не жмутся: дата/время узкие, цена и объём — по содержимому */
 .bt-table thead th, .bt-table td { padding-left: 6px; padding-right: 6px; white-space: nowrap; }
@@ -1928,6 +1934,8 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .blk-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px;
   border: 1px solid var(--line-2); color: var(--mut); }
 .blk-tag-ndm { border-color: var(--accent); color: var(--accent); }
+/* размещение — рыжим, как «Р» в панели карточки: адресный борд, но не РПС */
+.blk-tag-plc { border-color: var(--plc); color: var(--plc); }
 .tape-table tbody tr.blk-ndm td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .blk-boards { margin-top: 6px; }
 

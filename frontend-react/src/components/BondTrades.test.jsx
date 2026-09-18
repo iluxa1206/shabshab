@@ -21,8 +21,12 @@ const RESPONSE = {
       value: 2_000_000, side: "buy", board: "TQCB", negotiated: false,
       y_idx_bps: 150 },
     { trade_id: 2, ts: "2026-08-31 11:00:00", price: 99.0, qty: 90,
-      value: 9_000_000, side: null, board: "PSOB", negotiated: true,
+      value: 9_000_000, side: null, board: "PSOB", board_short: "РПС", negotiated: true,
       y_idx_bps: 210 },
+    // размещение — тоже адресный борд, но в панели это «Р», а не РПС
+    { trade_id: 3, ts: "2026-08-31 12:00:00", price: 100.0, qty: 50,
+      value: 5_000_000, side: null, board: "PSAU", board_short: "Размещ.", negotiated: true,
+      y_idx_bps: 200 },
   ],
 };
 
@@ -67,5 +71,15 @@ describe("Лента сделок выпуска", () => {
     expect(await screen.findByText("buy")).toBeTruthy();
     // в шапке видно, сколько из оборота прошло адресно
     expect(await screen.findByText(/РПС 1 на 9/)).toBeTruthy();
+  });
+
+  it("размещение помечено «Р» рыжим, а не общим РПС", async () => {
+    stubNetwork();
+    renderPanel();
+    const plc = await screen.findByText("Р");
+    expect(plc.className).toContain("bt-plc");
+    expect(plc.getAttribute("title")).toContain("размещение (PSAU)");
+    // обычная адресная осталась РПС
+    expect(screen.getByText("РПС").className).not.toContain("bt-plc");
   });
 });

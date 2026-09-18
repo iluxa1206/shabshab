@@ -1047,7 +1047,8 @@ export default function TradesTape() {
                     isin: <IsinCell isin={r.isin} />,
                     mat: r.maturity ? <MaturityCell r={r} /> : <span className="dash">—</span>,
                     board: (
-                      <span className={r.negotiated ? "blk-tag blk-tag-ndm" : "blk-tag"}
+                      <span className={"blk-tag" + (r.negotiated ? " blk-tag-ndm" : "")
+                          + (r.board_short === "Размещ." ? " blk-tag-plc" : "")}
                         title={r.board_title || r.board}>
                         {r.board_short || r.board}
                       </span>

@@ -28,6 +28,17 @@ const dpart = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}` : "—");
 const todayMsk = () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
 const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 
+// Подпись адресной сделки по режиму. Размещение и выкуп — тоже борды NDM, но
+// это не РПС между двумя контрагентами: цена размещения — 100 по книге, выкуп —
+// по оферте. Раньше все три шли одним «РПС», и день размещения читался как
+// поток договорных сделок. Режим приходит короткой подписью с бэка
+// (board_short — та же таблица, что в общей ленте).
+const ndmTag = (r) => (r.board_short === "Размещ."
+  ? { t: "Р", cls: "bt-plc", title: `размещение${r.board ? ` (${r.board})` : ""}` }
+  : r.board_short === "Выкуп"
+    ? { t: "В", cls: "bt-bb", title: `выкуп${r.board ? ` (${r.board})` : ""}` }
+    : { t: "РПС", cls: "", title: `адресная сделка${r.board ? ` (${r.board})` : ""}` });
+
 export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
   // Порог объёма — поле ввода в МИЛЛИОНАХ ₽ (единая денежная единица интерфейса,
@@ -132,14 +143,16 @@ export default function BondTrades({ isin, kind, onClose }) {
                       : r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
                     title={`${r.ts} · ${fmt.num(r.qty, 0)} шт`
                       + (r.side ? ` · агрессор ${r.side}` : "")
-                      + (r.negotiated ? ` · адресная сделка${r.board ? ` (${r.board})` : ""}` : "")}>
+                      + (r.negotiated ? ` · ${ndmTag(r).title}` : "")}>
                     <td className={"left bt-d" + (String(r.ts || "").slice(0, 10) === today ? " bt-today" : "")}>
                       {dpart(r.ts)}</td>
                     <td className="left bt-d">{tpart(r.ts)}</td>
                     <td>{fmt.pct(r.price) ?? "—"}</td>
                     {/* у адресной сделки агрессора нет по определению — она
                         договорная; вместо стороны показываем сам режим */}
-                    <td className="bt-side">{r.negotiated ? "РПС"
+                    <td className={"bt-side" + (r.negotiated ? " " + ndmTag(r).cls : "")}
+                        title={r.negotiated ? ndmTag(r).title : undefined}>
+                      {r.negotiated ? ndmTag(r).t
                       : r.side === "buy" ? "buy"
                       : r.side === "sell" ? "sell" : "—"}</td>
                     <td>{fmt.mln1(r.value) ?? "—"}</td>
