@@ -124,3 +124,27 @@ def test_side_vwap_from_tick_price(mods):
     assert r["buy_vwap"] == pytest.approx((100.0 + 3 * 102.0) / 4, abs=1e-4)
     assert r["sell_vwap"] == pytest.approx(99.0, abs=1e-4)
     assert r["trades"] == 3
+
+
+def test_price_avg_map_weights_by_turnover_and_skips_today(mods):
+    """База ОТКЛ Ц 7Д: средневзвешенная по обороту цена ПРОШЛЫХ дней, без сегодня;
+    свой кэш, не делит слот со спредом."""
+    from datetime import timedelta
+    bars, _ = mods
+    import services.portfolio_db as pdb
+    d1 = (date.today() - timedelta(days=2)).isoformat()
+    d2 = (date.today() - timedelta(days=1)).isoformat()
+    today = date.today().isoformat()
+    rows = [                      # ts, vwap_pct, value
+        (f"{d1} 10:00", 100.0, 1e6),
+        (f"{d2} 10:00", 102.0, 3e6),      # веса 1:3 → база 101.5
+        (f"{today} 10:00", 90.0, 9e6),    # сегодня в базу не входит
+    ]
+    with pdb._lock, pdb._connect() as c:
+        c.executemany("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,value) "
+                      "VALUES('X',?,'floater',?,?)", rows)
+    bars._price_avg_cache.update(key=None, at=0.0, map={})
+    bars._spread_avg_cache.update(key=None, at=0.0, map={})
+    assert bars.price_avg_map(7)["X"] == pytest.approx(101.5)
+    assert bars.spread_avg_map(7) == {}           # спреда в барах нет — база спреда пуста
+    assert bars.price_avg_map(7)["X"] == pytest.approx(101.5)  # кэш цены не вытеснен

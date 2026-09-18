@@ -157,10 +157,12 @@ def _search_isins(labels: dict, moex: dict, isins: Optional[list[str]],
     return out
 
 
-def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict) -> None:
-    """Разметка строк ленты справочниками (имя/эмитент/формула/оферта/база
-    спреда). Общая для ленты архива и для списка отмеченных сделок — иначе у
-    флажков был бы свой, отстающий набор полей."""
+def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict,
+              pavg7: Optional[dict] = None) -> None:
+    """Разметка строк ленты справочниками (имя/эмитент/формула/оферта/базы
+    спреда и цены). Общая для ленты архива и для списка отмеченных сделок —
+    иначе у флажков был бы свой, отстающий набор полей."""
+    pavg7 = pavg7 or {}
     for r in rows:
         lb = labels.get(r["isin"]) or {}
         r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
@@ -180,6 +182,20 @@ def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict) -> Non
         r["preferred_horizon"] = mx.get("horizon")
         r["has_call"] = lb.get("has_call")
         r["y_idx_avg7_bps"] = avg7.get(r["isin"])
+        r["price_avg7_pct"] = pavg7.get(r["isin"])
+
+
+async def _bases7(bars_svc) -> tuple[dict, dict]:
+    """Базы недели (спред и цена) для колонок ОТКЛ. Отказ одной не валит ленту —
+    колонка просто остаётся с прочерками."""
+    out = []
+    for fn in (bars_svc.spread_avg_map, bars_svc.price_avg_map):
+        try:
+            out.append(await asyncio.to_thread(fn, 7))
+        except Exception as e:
+            logger.warning("%s failed: %s", fn.__name__, e)
+            out.append({})
+    return out[0], out[1]
 
 
 class TradeFlagBody(BaseModel):
@@ -294,11 +310,8 @@ async def tape(
         from services.market_data import MarketDataService as _MD
         from services import bars as _bars
         um = _MD.universe_metrics() or {}
-        try:
-            avg7 = await asyncio.to_thread(_bars.spread_avg_map, 7)
-        except Exception:
-            avg7 = {}
-        _decorate(rows, labels, moex, um, avg7)
+        avg7, pavg7 = await _bases7(_bars)
+        _decorate(rows, labels, moex, um, avg7, pavg7)
         val = sum(r.get("value") or 0 for r in rows if (r.get("cur") or "SUR") == "SUR")
         return {"from": rows[-1]["ts"][:10] if rows else None, "days": days,
                 "scope": scope, "flagged": True, "truncated": False, "has_more": False,
@@ -385,17 +398,13 @@ async def tape(
     # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев
     # контекстов по сотне выпусков занимает минуту на первом запросе.
     priced = sum(1 for r in rows if r.get("y_idx_bps") is not None)
-    # база спреда за предыдущие 7 дней: строка ленты показывает, на сколько
-    # спред сделки отклонился от того уровня, по которому бумага торговалась
-    # неделю (services.bars.spread_avg_map — кэш в памяти, запрос раз в 15 мин)
+    # базы спреда и цены за предыдущие 7 дней: строка ленты показывает, на
+    # сколько сделка отклонилась от того уровня, по которому бумага торговалась
+    # неделю (services.bars — кэш в памяти, запрос раз в 15 мин)
     from services import bars as bars_svc
-    try:
-        avg7 = await asyncio.to_thread(bars_svc.spread_avg_map, 7)
-    except Exception as e:
-        logger.warning("spread_avg_map failed: %s", e)
-        avg7 = {}
+    avg7, pavg7 = await _bases7(bars_svc)
 
-    _decorate(rows, labels, moex, um, avg7)
+    _decorate(rows, labels, moex, um, avg7, pavg7)
     flags = await asyncio.to_thread(trade_flags.ids, user["email"])
     for r in rows:
         r["flagged"] = r.get("trade_id") in flags

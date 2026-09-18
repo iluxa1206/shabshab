@@ -139,6 +139,15 @@ function SideTag({ side }) {
 // бумаг без истории баров отклонения нет.
 const dev7 = (r) => (r.y_idx_bps == null || r.y_idx_avg7_bps == null
   ? null : r.y_idx_bps - r.y_idx_avg7_bps);
+// То же по цене, в пунктах цены (% номинала). Отдельный параметр, а не замена
+// спреду: есть у всех строк, где есть цена, — у фиксов и мелких принтов спреда
+// нет, а «мимо рынка» видно и так. База — средневзвешенная по обороту цена
+// прошлых 7 дней (services.bars.price_avg_map).
+const devPx = (r) => (r.price == null || r.price_avg7_pct == null
+  ? null : r.price - r.price_avg7_pct);
+// Цвет — как у спреда по смыслу «дёшево/дорого»: цена ниже базы = спред шире
+// = зелёный. Одна и та же сделка в двух колонках горит одним цветом.
+const pxColor = (d) => dmColor(d == null ? null : -d);
 
 // ── колонки ленты ───────────────────────────────────────────────────────────
 // Порядок, ширины и сортировка — как в СПИСКЕ (общий HeaderCell): переносятся
@@ -175,6 +184,11 @@ const COLS = [
   { key: "dev7",   label: "ОТКЛ 7Д", sub: "БП / БАЗА", align: "num", w: 10, get: (r) => dev7(r),
     title: "отклонение spread сделки от средневзвешенного по обороту спреда"
            + " за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)" },
+  // Отклонение ЦЕНЫ сделки от базы недели — отдельным параметром: без методики
+  // спреда, есть у фиксов и мелочи. Сверху отклонение в пунктах, под ним база.
+  { key: "devpx",  label: "ОТКЛ Ц 7Д", sub: "П.П. / БАЗА", align: "num", w: 10, get: (r) => devPx(r),
+    title: "отклонение цены сделки (п.п. номинала) от средневзвешенной по обороту"
+           + " цены за предыдущие 7 дней (по средневзвесу часа, без сегодня)" },
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
   // график и карточка — последней колонкой: у имени они перетягивали взгляд,
   // а место в колонке БУМАГА нужнее самому имени
@@ -420,8 +434,16 @@ export default function TradesTape() {
     const saved = readLS(LS_ORDER, null);
     const known = new Set(DEFAULT_COLS);
     const kept = Array.isArray(saved) ? saved.filter((k) => known.has(k)) : [];
-    // новые колонки версии дописываем в конец, а не теряем молча
-    return kept.length ? [...kept, ...DEFAULT_COLS.filter((k) => !kept.includes(k))] : DEFAULT_COLS;
+    // новые колонки версии не теряем молча: встают следом за своим соседом
+    // из порядка по умолчанию (в конец нельзя — там кнопки строки)
+    if (!kept.length) return DEFAULT_COLS;
+    const out = [...kept];
+    DEFAULT_COLS.forEach((k, i) => {
+      if (out.includes(k)) return;
+      const prev = i > 0 ? out.indexOf(DEFAULT_COLS[i - 1]) : -1;
+      out.splice(prev + 1, 0, k);
+    });
+    return out;
   });
   const [sort, setSort] = useState({ key: null, dir: "desc" });
   const dragRef = useRef(null);
@@ -1041,6 +1063,14 @@ export default function TradesTape() {
                           {fmt.devBps(dev7(r)) ?? "—"}</span>
                         <span className="tape-dev7-b">
                           {r.y_idx_avg7_bps == null ? "—" : fmt.num(r.y_idx_avg7_bps, 0)}</span>
+                      </span>
+                    ),
+                    devpx: (devPx(r) == null && r.price_avg7_pct == null) ? "—" : (
+                      <span className="tape-dev7">
+                        <span className="tape-dev7-v" style={devPx(r) == null ? undefined : pxColor(devPx(r))}>
+                          {fmt.signed(devPx(r), 2) ?? "—"}</span>
+                        <span className="tape-dev7-b">
+                          {r.price_avg7_pct == null ? "—" : fmt.pct(r.price_avg7_pct)}</span>
                       </span>
                     ),
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",

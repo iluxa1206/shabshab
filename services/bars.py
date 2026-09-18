@@ -915,6 +915,36 @@ def adv_map(days: int = 30, kind: Optional[str] = None) -> dict:
 # одним запросом и живёт в памяти, потому что архив баров дописывается раз в час.
 _SPREAD_AVG_TTL_SEC = 900.0
 _spread_avg_cache: dict = {"key": None, "at": 0.0, "map": {}}
+# База цены — та же механика, свой слот кэша: витрина запрашивает обе базы в
+# одном запросе, общий слот вытеснял бы их друг другом.
+_price_avg_cache: dict = {"key": None, "at": 0.0, "map": {}}
+
+
+def _wavg_map(metric_sql: str, days: int, kind: Optional[str], cache: dict) -> dict:
+    """ISIN → средневзвешенная по обороту бара (`value`) метрика за ПРЕДЫДУЩИЕ
+    `days` дней. Окно ЗАКАНЧИВАЕТСЯ вчера: сегодняшние сделки сравниваются с
+    историей, а не сами с собой."""
+    import time
+    key = (days, kind)
+    now = time.monotonic()
+    if cache["key"] == key and now - cache["at"] < _SPREAD_AVG_TTL_SEC:
+        return cache["map"]
+
+    today = date.today().isoformat()
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    q = (f"SELECT isin, SUM({metric_sql} * value) n, SUM(value) d "
+         "FROM bar_hourly WHERE ts >= ? AND ts < ? AND value > 0 "
+         f"AND {metric_sql} IS NOT NULL")
+    args: list = [cutoff, today]
+    if kind:
+        q += " AND kind = ?"
+        args.append(kind)
+    q += " GROUP BY isin"
+    with _connect() as c:
+        rows = c.execute(q, args).fetchall()
+    out = {r["isin"]: r["n"] / r["d"] for r in rows if r["d"]}
+    cache.update(key=key, at=now, map=out)
+    return out
 
 
 def spread_avg_map(days: int = 7, kind: Optional[str] = None) -> dict:
@@ -925,31 +955,20 @@ def spread_avg_map(days: int = 7, kind: Optional[str] = None) -> dict:
     «где бумага реально торговалась», а не среднее по часам, где одна сделка
     весит столько же, сколько миллиардный час.
 
-    Окно ЗАКАНЧИВАЕТСЯ вчера: сегодняшние сделки сравниваются с историей, а не
-    сами с собой. Спред прошлых дней в баре — честный as-of того дня
-    (см. BARS_METRICS_VERSION), поэтому база не переоценивается сегодняшней
-    кривой."""
-    import time
-    key = (days, kind)
-    now = time.monotonic()
-    if _spread_avg_cache["key"] == key and now - _spread_avg_cache["at"] < _SPREAD_AVG_TTL_SEC:
-        return _spread_avg_cache["map"]
+    Спред прошлых дней в баре — честный as-of того дня (см.
+    BARS_METRICS_VERSION), поэтому база не переоценивается сегодняшней кривой."""
+    return _wavg_map("COALESCE(y_idx_bps, g_spread_bps)", days, kind, _spread_avg_cache)
 
-    today = date.today().isoformat()
-    cutoff = (date.today() - timedelta(days=days)).isoformat()
-    q = ("SELECT isin, SUM(COALESCE(y_idx_bps, g_spread_bps) * value) n, SUM(value) d "
-         "FROM bar_hourly WHERE ts >= ? AND ts < ? AND value > 0 "
-         "AND COALESCE(y_idx_bps, g_spread_bps) IS NOT NULL")
-    args: list = [cutoff, today]
-    if kind:
-        q += " AND kind = ?"
-        args.append(kind)
-    q += " GROUP BY isin"
-    with _connect() as c:
-        rows = c.execute(q, args).fetchall()
-    out = {r["isin"]: r["n"] / r["d"] for r in rows if r["d"]}
-    _spread_avg_cache.update(key=key, at=now, map=out)
-    return out
+
+def price_avg_map(days: int = 7, kind: Optional[str] = None) -> dict:
+    """ISIN → средневзвешенная ЧИСТАЯ цена за ПРЕДЫДУЩИЕ `days` дней, % номинала.
+
+    Та же база, что у спреда, только по цене: отклонение цены сделки от неё
+    читается без методики — у фиксов и мелких принтов, где спреда нет, оно
+    единственное «мимо рынка / по рынку». Взвешивание по обороту, а не
+    Σvalue/Σvolume/face: номинал между днями меняется (амортизация, линкеры),
+    и деление на один номинал врало бы ровно на дате смены."""
+    return _wavg_map("vwap_pct", days, kind, _price_avg_cache)
 
 
 def active_isins(days: int = 7) -> set:
