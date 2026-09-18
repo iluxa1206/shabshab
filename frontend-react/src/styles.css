@@ -1521,7 +1521,14 @@ body.col-resizing * { cursor: col-resize !important; }
   border: 1px solid var(--line-2); text-transform: uppercase; letter-spacing: 0.12em;
   font-size: 11px; line-height: 15.4px; }
 .tool-btn.active { border-color: var(--fg); }
-.module-seg .seg-btn { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; }
+.module-seg .seg-btn { text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px;
+                       white-space: nowrap; }   /* значок и подпись — одной строкой и в тесноте */
+/* Эмодзи вкладки: SVG Twemoji высотой в строку текста, чуть приглушён у
+   неактивной вкладки, чтобы ряд не пестрил; на активной (инверсный фон) и при
+   наведении — в полную силу. Размер в em — тянется за шрифтом темы. */
+.nav-emoji { height: 1.25em; width: 1.25em; vertical-align: -0.3em; margin-right: 0.45em;
+             opacity: .75; transition: opacity .12s; }
+.seg-btn:hover .nav-emoji, .seg-btn.active .nav-emoji { opacity: 1; }
 
 .fund-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; align-content: start; }
 .fund-card { border: 1px solid var(--line); padding: 16px 20px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }

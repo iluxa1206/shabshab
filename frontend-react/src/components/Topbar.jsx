@@ -3,6 +3,15 @@ import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchNewIssues } from "../api.js";
+import emChick from "../assets/emoji/1f423.svg";
+import emLaptop from "../assets/emoji/1f4bb.svg";
+import emSiren from "../assets/emoji/1f6a8.svg";
+import emHands from "../assets/emoji/1f91d.svg";
+import emScales from "../assets/emoji/2696.svg";
+import emCalendar from "../assets/emoji/1f4c5.svg";
+import emAbacus from "../assets/emoji/1f9ee.svg";
+import emColumns from "../assets/emoji/1f3db.svg";
+import emHammer from "../assets/emoji/1f528.svg";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
@@ -25,6 +34,20 @@ const SUBNAV = {
   reference: [],
   status: [],
 };
+// Эмодзи вкладок — SVG Twemoji из бандла (см. assets/emoji/README.md), а не
+// текст: текстовый эмодзи рисует шрифт ОС, и на Windows тот же 🐣 выглядит
+// плоско и иначе, чем на Mac. Картинка одинакова везде. Не понравится —
+// убрать строку здесь, разметка ниже сама перестанет рисовать значок.
+const NAV_EMOJI = {
+  "/floaters": emLaptop, "/fixed": emLaptop,     // Монитор
+  "/trades": emHands,                             // Сделки
+  "/signals": emSiren,                            // Сигналы
+  "/primary": emChick,                            // Первичка
+  "/compare": emScales, "/payments": emCalendar,
+  "/calc": emAbacus, "/calc/float": emAbacus,
+  "/fixed/ofz": emColumns, "/fixed/auction": emHammer,
+};
+
 // Пути, живущие СРАЗУ В ДВУХ разделах: анонс первички не знает своего класса
 // (в одной выгрузке и флоатеры, и фиксы), поэтому /primary висит в обоих меню.
 const SHARED_PATHS = ["/primary"];
@@ -110,7 +133,10 @@ export default function Topbar({ user, onLogout, onOpenSettings, extra, features
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
             {sub.map(([to, label]) => (
-              <NavLink key={to} className={tabCls} to={to} end>{label}</NavLink>
+              <NavLink key={to} className={tabCls} to={to} end>
+                {NAV_EMOJI[to] && <img className="nav-emoji" src={NAV_EMOJI[to]} alt="" aria-hidden="true" />}
+                {label}
+              </NavLink>
             ))}
           </span>
         )}
