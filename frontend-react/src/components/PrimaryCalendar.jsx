@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchPrimaryCalendar } from "../api.js";
-import { fmt } from "../format.js";
+import { fmt, RT_COLOR, ratingMatches, ratingOptions } from "../format.js";
+import RatingMenu from "./RatingMenu.jsx";
 import PlacementHistory from "./PlacementHistory.jsx";
 import PrimarySlices from "./PrimarySlices.jsx";
 import AnnounceMatch from "./AnnounceMatch.jsx";
@@ -11,6 +12,19 @@ import AnnounceMatch from "./AnnounceMatch.jsx";
 // у нас только кэш — своих расчётов на этой вкладке нет и быть не должно.
 
 const TABS = [["all", "Все"], ["float", "Флоатеры"], ["fix", "Фиксы"]];
+// чипы грейдов — те же, что в тулбаре МОНИТОРА (Toolbar.RATINGS)
+const RATINGS = [
+  ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
+];
+
+// Рейтинг анонса — СПИСОК оценок агентств («AA+ / AAA / AA+»), и читается он
+// как «и»: у выпуска есть и AAA, и AA+. Поэтому строка проходит фильтр, если
+// подходит ЛЮБАЯ из оценок — под чип «AAA» и под ступень «AA+» одновременно.
+// Правило совпадения общее с монитором (format.ratingMatches): грейд «AA»
+// забирает AA/AA+/AA−, «BB↓» — всё ниже BBB. Без оценок — только под NR.
+const ratingsPass = (ratings, sel) => (ratings?.length
+  ? ratings.some((x) => ratingMatches(x, sel))
+  : ratingMatches(null, sel));
 
 // Две половины вкладки: ЧУЖОЙ ПРОГНОЗ до выхода на биржу и НАШ ФАКТ после.
 // Разделены жёстко и намеренно: в анонсе ISIN'а ещё нет и объём — ориентир
@@ -66,6 +80,12 @@ export default function PrimaryCalendar() {
   const [view, setView] = useState("plan");
   const [tab, setTab] = useState("all");
   const [q, setQ] = useState("");
+  // фильтры как в МОНИТОРЕ: грейды/ступени рейтинга и окно срока в годах
+  const [ratingsSel, setRatingsSel] = useState([]);
+  const [termFrom, setTermFrom] = useState("");
+  const [termTo, setTermTo] = useState("");
+  const toggleRating = (v) =>
+    setRatingsSel((arr) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]));
 
   // раз в час: источник обновляется раз в сутки, бэк сам держит TTL и ходит
   // условным GET — частый refetch тут ничего не стоит и ничего не даёт
@@ -76,15 +96,27 @@ export default function PrimaryCalendar() {
   });
 
   const t = today();
+  // ступени, реально встречающиеся в анонсах — меню «▾» рядом с чипами.
+  // Считаем ДО фильтров, чтобы список не схлопывался от собственного выбора.
+  const ratingOpts = useMemo(
+    () => ratingOptions((data?.rows || []).flatMap((r) => (r.ratings?.length ? r.ratings : [null]))),
+    [data]);
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
+    const tFrom = parseFloat(termFrom), tTo = parseFloat(termTo);
     return (data?.rows || []).filter((r) => {
       if (tab === "float" && !r.is_floater) return false;
       if (tab === "fix" && r.is_floater) return false;
       if (needle && !(r.issuer || "").toLowerCase().includes(needle)) return false;
+      if (ratingsSel.length && !ratingsPass(r.ratings, ratingsSel)) return false;
+      // срок — до погашения/оферты, как его даёт источник. Анонс без срока при
+      // заданной границе прячем — иначе он молча пролезает в любое окно
+      // (правило монитора для бумаг без даты горизонта)
+      if (Number.isFinite(tFrom) && !(r.term_years != null && r.term_years >= tFrom)) return false;
+      if (Number.isFinite(tTo) && !(r.term_years != null && r.term_years <= tTo)) return false;
       return true;
     });
-  }, [data, tab, q]);
+  }, [data, tab, q, ratingsSel, termFrom, termTo]);
 
   const counts = useMemo(() => {
     const all = data?.rows || [];
@@ -140,6 +172,38 @@ export default function PrimaryCalendar() {
                    onChange={(e) => setQ(e.target.value)} />
             {q && <button className="search-clear" onClick={() => setQ("")}>×</button>}
           </span>
+          {/* рейтинг: чипы грейдов + меню ступеней — как в тулбаре МОНИТОРА.
+              Совпадение по ЛЮБОЙ из оценок агентств (см. ratingsPass). */}
+          <div className="fgroup" title="Рейтинг любого из агентств в описании выпуска: «AA+ / AAA» подходит и под AAA, и под AA+. Грейд «AA» забирает AA, AA+, AA−; «BB↓» — всё ниже BBB; NR — без рейтинга.">
+            {RATINGS.map(([v, l]) => (
+              <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")}
+                aria-pressed={ratingsSel.includes(v)}
+                style={ratingsSel.includes(v)
+                  ? { background: RT_COLOR[v], borderColor: RT_COLOR[v], color: "var(--bg)" }
+                  : { color: RT_COLOR[v] }}
+                onClick={() => toggleRating(v)}>{l}</button>
+            ))}
+            <RatingMenu options={ratingOpts} sel={ratingsSel} onToggle={toggleRating} />
+          </div>
+          {/* окно срока в годах — до погашения/оферты по данным источника */}
+          <div className="fgroup" title="Срок обращения (до погашения или оферты) в интервале [от, до], лет. Анонсы без срока при заданной границе скрыты.">
+            <span className="fg-lbl">СРОК, Y</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
+              aria-label="Срок, лет — от" value={termFrom}
+              onChange={(e) => setTermFrom(e.target.value)} />
+            <span className="fg-lbl">—</span>
+            <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
+              aria-label="Срок, лет — до" value={termTo}
+              onChange={(e) => setTermTo(e.target.value)} />
+            {(termFrom || termTo) && (
+              <button className="chip-btn" title="Сбросить окно срока"
+                onClick={() => { setTermFrom(""); setTermTo(""); }}>×</button>
+            )}
+          </div>
+          {(ratingsSel.length > 0 || termFrom || termTo) && (
+            <button className="chip-btn" title="Снять рейтинг и срок"
+              onClick={() => { setRatingsSel([]); setTermFrom(""); setTermTo(""); }}>сброс</button>
+          )}
         </div>
       </div>
 
