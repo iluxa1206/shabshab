@@ -19,7 +19,8 @@ import Catalog from "./components/Catalog.jsx";
 import Topbar from "./components/Topbar.jsx";
 import { IconChart } from "./components/icons.jsx";
 import Toolbar from "./components/Toolbar.jsx";
-import BondTable, { DEFAULT_COLS } from "./components/BondTable.jsx";
+import BondTable, { COLS as BOND_COLS, DEFAULT_COLS } from "./components/BondTable.jsx";
+import { mergeColumnLayout } from "./columnLayout.js";
 import AnalyticsPanel, { focusMatch } from "./components/AnalyticsPanel.jsx";
 import CompareModule, { CMP_MAX } from "./components/CompareModule.jsx";
 import Drawer from "./components/Drawer.jsx";
@@ -37,6 +38,9 @@ import BondAudit from "./components/BondAudit.jsx";
 import PaymentsCalendar from "./components/PaymentsCalendar.jsx";
 import PrimaryCalendar from "./components/PrimaryCalendar.jsx";
 import TradesTape from "./components/TradesTape.jsx";
+
+// все ключи колонок монитора — для склейки сохранённой раскладки (valid)
+const ALL_COL_KEYS = BOND_COLS.map((c) => c.key);
 // lightweight-charts тянет ~180 kB — грузим только на самой странице графика,
 // а не в общий бандл дашборда
 const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
@@ -162,10 +166,10 @@ function Dashboard() {
       const s = JSON.parse(localStorage.getItem("cols") || "null");
       if (!Array.isArray(s) || !s.length) return DEFAULT_COLS;
       // колонки, добавленные после того, как юзер последний раз сохранял набор,
-      // показываем: иначе новая колонка невидима всем, кто хоть раз трогал меню
-      const known = new Set(JSON.parse(localStorage.getItem("cols_known") || "[]"));
-      const fresh = DEFAULT_COLS.filter((k) => !known.has(k) && !s.includes(k));
-      let next = fresh.length ? [...s, ...fresh] : s;
+      // показываем на своём месте (общее правило — src/columnLayout.js): иначе
+      // новая колонка невидима всем, кто хоть раз трогал меню
+      const known = JSON.parse(localStorage.getItem("cols_known") || "[]");
+      let next = mergeColumnLayout(s, DEFAULT_COLS, { known, valid: ALL_COL_KEYS });
       // Одноразовая нормализация: до появления drag-n-drop порядок в cols не имел
       // значения (таблица шла по COLS), и новые колонки просто дописывались в
       // конец. Теперь порядок — источник истины, поэтому первый заход на новую

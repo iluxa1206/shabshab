@@ -28,8 +28,9 @@ from pydantic import BaseModel
 
 from api.routes.auth import require_user
 from api.routes.blocks import (BOARD_TITLES, SCOPES, _labels, _moex_names, _moex_secids,
-                              _scope_isins,
-                               _win, board_short)
+                               _scope_isins, _win)
+from services.bars import BASE_WINDOW_DAYS
+from services.block_trades import tag_board
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -157,20 +158,23 @@ def _search_isins(labels: dict, moex: dict, isins: Optional[list[str]],
     return out
 
 
-def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict,
-              pavg7: Optional[dict] = None) -> None:
+def _decorate(rows: list, labels: dict, moex: dict, um: dict, bases: dict,
+              base_cutoff: str) -> None:
     """Разметка строк ленты справочниками (имя/эмитент/формула/оферта/базы
     спреда и цены). Общая для ленты архива и для списка отмеченных сделок —
-    иначе у флажков был бы свой, отстающий набор полей."""
-    pavg7 = pavg7 or {}
+    иначе у флажков был бы свой, отстающий набор полей.
+
+    Базы недели (services.bars.bases_map) привязаны к СЕГОДНЯШНЕЙ дате, а не к
+    дате сделки: строка старше окна (период «всё», окно календаря в прошлом,
+    флажок месячной давности) с ними не сравнивается — иначе августовский
+    принт «отклонялся» от сентябрьской цены и горел зелёным «мимо рынка»."""
     for r in rows:
         lb = labels.get(r["isin"]) or {}
         r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
         r["emitter"] = lb.get("emitter")
         r["base"] = lb.get("base")
         r["rating"] = lb.get("rating")
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
-        r["board_short"] = board_short(r.get("board"))
+        tag_board(r)
         r["maturity"] = lb.get("maturity")
         # формула купона рисуется тем же компонентом, что в СПИСКЕ
         r["margin_bps"] = lb.get("margin_bps")
@@ -181,21 +185,20 @@ def _decorate(rows: list, labels: dict, moex: dict, um: dict, avg7: dict,
         r["offer_kind"] = mx.get("offer_kind")
         r["preferred_horizon"] = mx.get("horizon")
         r["has_call"] = lb.get("has_call")
-        r["y_idx_avg7_bps"] = avg7.get(r["isin"])
-        r["price_avg7_pct"] = pavg7.get(r["isin"])
+        b = bases.get(r["isin"]) if str(r.get("ts") or "")[:10] >= base_cutoff else None
+        r["y_idx_avg7_bps"] = b["spread"] if b else None
+        r["price_avg7_pct"] = b["price"] if b else None
 
 
-async def _bases7(bars_svc) -> tuple[dict, dict]:
-    """Базы недели (спред и цена) для колонок ОТКЛ. Отказ одной не валит ленту —
-    колонка просто остаётся с прочерками."""
-    out = []
-    for fn in (bars_svc.spread_avg_map, bars_svc.price_avg_map):
-        try:
-            out.append(await asyncio.to_thread(fn, 7))
-        except Exception as e:
-            logger.warning("%s failed: %s", fn.__name__, e)
-            out.append({})
-    return out[0], out[1]
+async def _bases() -> tuple[dict, str]:
+    """Базы недели (спред и цена одним сканом) и первая дата их окна. Отказ
+    не валит ленту — колонки ОТКЛ просто остаются с прочерками."""
+    from services import bars as bars_svc
+    try:
+        return await asyncio.to_thread(bars_svc.bases_map), bars_svc.base_cutoff()
+    except Exception as e:
+        logger.warning("bases_map failed: %s", e)
+        return {}, bars_svc.base_cutoff()
 
 
 class TradeFlagBody(BaseModel):
@@ -308,13 +311,13 @@ async def tape(
             keep = set(_search_isins(labels, moex, [r["isin"] for r in rows], q) or [])
             rows = [r for r in rows if r["isin"] in keep]
         from services.market_data import MarketDataService as _MD
-        from services import bars as _bars
         um = _MD.universe_metrics() or {}
-        avg7, pavg7 = await _bases7(_bars)
-        _decorate(rows, labels, moex, um, avg7, pavg7)
+        bases, cutoff = await _bases()
+        _decorate(rows, labels, moex, um, bases, cutoff)
         val = sum(r.get("value") or 0 for r in rows if (r.get("cur") or "SUR") == "SUR")
         return {"from": rows[-1]["ts"][:10] if rows else None, "days": days,
                 "scope": scope, "flagged": True, "truncated": False, "has_more": False,
+                "base_days": BASE_WINDOW_DAYS,
                 "y_idx_rows": sum(1 for r in rows if r.get("y_idx_bps") is not None),
                 "trades": rows,
                 "summary": {"n": len(rows), "value": val,
@@ -398,13 +401,12 @@ async def tape(
     # несравнима, спред к индексу — сравним. Считать здесь нельзя: прогрев
     # контекстов по сотне выпусков занимает минуту на первом запросе.
     priced = sum(1 for r in rows if r.get("y_idx_bps") is not None)
-    # базы спреда и цены за предыдущие 7 дней: строка ленты показывает, на
+    # базы спреда и цены за предыдущую неделю: строка ленты показывает, на
     # сколько сделка отклонилась от того уровня, по которому бумага торговалась
-    # неделю (services.bars — кэш в памяти, запрос раз в 15 мин)
-    from services import bars as bars_svc
-    avg7, pavg7 = await _bases7(bars_svc)
+    # неделю (services.bars.bases_map — один скан, кэш в памяти на 15 мин)
+    bases, cutoff = await _bases()
 
-    _decorate(rows, labels, moex, um, avg7, pavg7)
+    _decorate(rows, labels, moex, um, bases, cutoff)
     flags = await asyncio.to_thread(trade_flags.ids, user["email"])
     for r in rows:
         r["flagged"] = r.get("trade_id") in flags
@@ -415,6 +417,8 @@ async def tape(
 
     return {"from": frm, "till": till, "days": days, "min_value": min_value, "side": side,
             "market": market, "board": board, "scope": scope,
+            # окно баз недели (колонки ОТКЛ) — подпись колонки строится от него
+            "base_days": BASE_WINDOW_DAYS,
             # has_more — есть ли следующая страница: на страницах пагинации
             # итогов нет (их считает только первый запрос), поэтому полный
             # лимит строк сам по себе означает «дальше ещё есть»

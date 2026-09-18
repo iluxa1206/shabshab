@@ -41,30 +41,11 @@ def _win(date_from: Optional[str], date_to: Optional[str]) -> tuple[Optional[str
     return frm, till
 
 
-# Человеческие названия режимов живут в services.block_trades.BOARD_LABELS
-# (один словарь на ленту и тултип объёмов витрины ОФЗ); имя оставлено.
-from services.block_trades import BOARD_LABELS as BOARD_TITLES  # noqa: E402
-
-# Короткая подпись режима для таблиц: в ленте колонка узкая, а трейдеру важна
-# только суть режима (безадресный стакан / адресная сделка / с ЦК), валюта и
-# тип бумаги видны по самой бумаге.
-BOARD_SHORT = {
-    "TQCB": "Т+", "TQOB": "Т+", "TQRD": "Т+", "TQOD": "Т+", "TQOY": "Т+",
-    "TQOE": "Т+", "TQIR": "Т+", "TQUD": "Т+",
-    "PSOB": "РПС", "PSDB": "РПС", "PSYO": "РПС", "PSEU": "РПС", "PSUD": "РПС",
-    "PSEO": "РПС",
-    "PTOB": "РПС с ЦК", "PTDB": "РПС с ЦК", "PTOY": "РПС с ЦК", "PTUD": "РПС с ЦК",
-    "PTOD": "РПС с ЦК", "PTOE": "РПС с ЦК",
-    "PSAU": "Размещ.", "PACY": "Размещ.", "PAUS": "Размещ.", "AUCT": "Размещ.",
-    "PSBB": "Выкуп", "PSBU": "Выкуп", "PSBY": "Выкуп", "AUBB": "Выкуп",
-    "PACT": "Аукцион",
-}
-
-
-def board_short(board: Optional[str]) -> str:
-    """Короткая подпись; неизвестный борд показываем кодом — врать нечем."""
-    b = board or ""
-    return BOARD_SHORT.get(b, b)
+# Названия и вид режимов живут в services.block_trades (BOARD_LABELS /
+# BOARD_SHORT / board_kind / tag_board) — один словарь на все ленты и тултипы;
+# имена здесь оставлены для существующих импортов.
+from services.block_trades import (BOARD_LABELS as BOARD_TITLES,  # noqa: E402,F401
+                                   BOARD_SHORT, board_short, tag_board)
 
 
 def _labels() -> dict:
@@ -126,8 +107,7 @@ def _decorate(rows: list[dict], labels: dict, moex: dict) -> None:
         r["base"] = lb.get("base")
         r["rating"] = lb.get("rating")
         r["in_universe"] = bool(lb)
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
-        r["board_short"] = board_short(r.get("board"))
+        tag_board(r)
         r["negotiated"] = r.get("market") == "ndm"
 
 
@@ -274,8 +254,7 @@ async def days_agg(
         lb = labels.get(r["isin"]) or {}
         r["name"] = lb.get("name") or moex.get(r["isin"]) or r["isin"]
         r["emitter"] = lb.get("emitter")
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
-        r["board_short"] = board_short(r.get("board"))
+        tag_board(r)
     for t in summary.get("top") or []:
         lb = labels.get(t["isin"]) or {}
         t["name"] = lb.get("name") or moex.get(t["isin"]) or t["isin"]
@@ -304,8 +283,7 @@ async def by_isin(isin: str, days: int = Query(90, ge=1, le=400),
         asyncio.to_thread(bt.blocks_stats, frm=frm, min_value=min_value, isins=[isin]),
         asyncio.to_thread(bt.count_blocks, frm=frm, min_value=min_value, isins=[isin]))
     for r in rows:
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
-        r["board_short"] = board_short(r.get("board"))
+        tag_board(r)
         r["negotiated"] = r.get("market") == "ndm"
     # Спред в базе посчитан ЖИВОЙ моделью в момент прихода сделки: для сегодняшних
     # это верно, для прошлых сессий — оценка, расходящаяся с линией спреда на
@@ -323,7 +301,7 @@ async def by_isin(isin: str, days: int = Query(90, ge=1, le=400),
         except Exception as e:
             logger.info("blocks pricing %s: as-of недоступен (%s) — спред из базы", isin, e)
     for r in days_rows:
-        r["board_title"] = BOARD_TITLES.get(r.get("board") or "", r.get("board"))
+        tag_board(r)
     return {"isin": isin, "from": frm, "days": days, "blocks": rows,
             # сколько подходит под фильтр всего и срезал ли лимит: без этого
             # график молча показывал часть точек как «все»

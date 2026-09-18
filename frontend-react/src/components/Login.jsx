@@ -45,6 +45,12 @@ export default function Login({ onSuccess }) {
           {busy ? "Вход…" : "Войти"}
         </button>
       </form>
+      {/* значки вкладок — графика Twemoji под CC-BY 4.0: атрибуция обязана
+          быть в продукте, а не только в репозитории (assets/emoji/README.md) */}
+      <div className="login-credit">
+        значки: <a href="https://github.com/twitter/twemoji" target="_blank" rel="noreferrer noopener">Twemoji</a>
+        {" · "}<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer noopener">CC-BY 4.0</a>
+      </div>
     </div>
   );
 }

@@ -704,6 +704,11 @@ _MIGRATIONS = [
     "ALTER TABLE sec_ref ADD COLUMN offer_date TEXT",
     "ALTER TABLE sec_ref ADD COLUMN face_value REAL",
     "ALTER TABLE sec_ref ADD COLUMN details_at TEXT",
+    # Окна по времени (ADV, базы недели, active/hot) — единственные запросы к
+    # bar_hourly не по ISIN; без индекса по ts каждое = полный скан 3+ млн
+    # строк ради 1 % (замер 2026-09-18: ~4 с на скан, витрина ленты платила
+    # два). Строится один раз на старте (~4 с локально).
+    "CREATE INDEX IF NOT EXISTS ix_bar_ts ON bar_hourly(ts)",
 ]
 
 

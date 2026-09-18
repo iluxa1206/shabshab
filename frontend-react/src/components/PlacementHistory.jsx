@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { mergeColumnLayout } from "../columnLayout.js";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { fetchPlacements, fetchPlacementDays, fetchPlacementAftermarket,
@@ -237,14 +238,19 @@ function Aftermarket({ secid }) {
 export default function PlacementHistory() {
   const [period, setPeriod] = useState(90);
   // набор и порядок столбцов переживают перезагрузку, как в мониторе
+  // Новые колонки версии показываем на своём месте, скрытые пользователем —
+  // не возвращаем: plCols_known помнит, какой набор по умолчанию он видел
+  // (общее правило — src/columnLayout.js; раньше новая колонка терялась у
+  // всех, кто хоть раз сохранил раскладку).
   const [cols, setCols] = useState(() => {
     try {
       const s = JSON.parse(localStorage.getItem("plCols") || "null");
-      return Array.isArray(s) && s.length ? s.filter((k) => COLS.some((c) => c.key === k))
-                                          : DEFAULT_COLS;
+      const known = JSON.parse(localStorage.getItem("plCols_known") || "[]");
+      return mergeColumnLayout(s, DEFAULT_COLS, { known, valid: COLS.map((c) => c.key) });
     } catch { return DEFAULT_COLS; }
   });
   useEffect(() => { localStorage.setItem("plCols", JSON.stringify(cols)); }, [cols]);
+  useEffect(() => { localStorage.setItem("plCols_known", JSON.stringify(DEFAULT_COLS)); }, []);
   // «идёт сейчас» — книга ещё набирается. Окно периода при этом снимается: такие
   // выпуски стартовали задолго до него (ВТБ капает с ноября), и внутри «3М»
   // фильтр показывал бы пустоту ровно там, где он нужен.

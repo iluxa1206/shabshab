@@ -1,12 +1,8 @@
 import ColumnsMenu from "./ColumnsMenu.jsx";
 import FiltersMenu from "./FiltersMenu.jsx";
 import { IconCoins, IconLink, IconSearch, IconTwoWay, IconUnlink, IconX } from "./icons.jsx";
-import { RT_COLOR as RTCOLOR } from "../format.js";
-import RatingMenu from "./RatingMenu.jsx";
-
-const RATINGS = [
-  ["AAA", "AAA"], ["AA", "AA"], ["A", "A"], ["BBB", "BBB"], ["BELOW", "BB↓"], ["NR", "NR"],
-];
+import RatingChips from "./RatingChips.jsx";
+import RangeWindow from "./RangeWindow.jsx";
 
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating, ratingOpts,
@@ -94,19 +90,8 @@ export default function Toolbar({
         </button>
       </div>
 
-      {/* группа 3: рейтинг — размер/форма как соседние chip-btn, цвет = бакет.
-          Чипы держат КРУПНУЮ шкалу; ступени (AA+/AA−) — в меню «▾» справа,
-          чтобы ряд фильтра не разъезжался от появления подрейтингов. */}
-      <div className="fgroup">
-        {RATINGS.map(([v, l]) => (
-          <button key={v} className={"chip-btn" + (ratingsSel.includes(v) ? " on" : "")}
-            style={ratingsSel.includes(v)
-              ? { background: RTCOLOR[v], borderColor: RTCOLOR[v], color: "var(--bg)" }
-              : { color: RTCOLOR[v] }}
-            onClick={() => toggleRating(v)}>{l}</button>
-        ))}
-        <RatingMenu options={ratingOpts} sel={ratingsSel} onToggle={toggleRating} />
-      </div>
+      {/* группа 3: рейтинг — чипы грейдов + меню ступеней (общий RatingChips) */}
+      <RatingChips sel={ratingsSel} onToggle={toggleRating} options={ratingOpts} />
 
       {/* группа: ликвидность — только бумаги с обеими сторонами стакана */}
       {setTwoSided && <div className="fgroup">
@@ -141,39 +126,19 @@ export default function Toolbar({
       </div>}
 
       {/* группа: окно срока в годах — до ГОРИЗОНТА ПРАЙСИНГА, не до погашения */}
-      <div className="fgroup" title="Лет до даты, к которой посчитаны метрики строки (оферта/колл по правилу цены, иначе погашение), в интервале [от, до]. Бумаги без даты при заданной границе скрыты.">
-        <span className="fg-lbl">СРОК, Y</span>
-        <input className="num-input" type="number" min="0" step="0.5" placeholder="от"
-          aria-label="Лет до горизонта — от" value={matFrom}
-          onChange={(e) => setMatFrom(e.target.value)} />
-        <span className="fg-lbl">—</span>
-        <input className="num-input" type="number" min="0" step="0.5" placeholder="до"
-          aria-label="Лет до горизонта — до" value={matTo}
-          onChange={(e) => setMatTo(e.target.value)} />
-        {(matFrom || matTo) && (
-          <button className="chip-btn" title="Сбросить окно срока"
-            onClick={() => { setMatFrom(""); setMatTo(""); }}>×</button>
-        )}
-      </div>
+      <RangeWindow label="СРОК, Y" from={matFrom} to={matTo} setFrom={setMatFrom} setTo={setMatTo}
+        min="0" resetTitle="Сбросить окно срока"
+        ariaFrom="Лет до горизонта — от" ariaTo="Лет до горизонта — до"
+        title="Лет до даты, к которой посчитаны метрики строки (оферта/колл по правилу цены, иначе погашение), в интервале [от, до]. Бумаги без даты при заданной границе скрыты." />
 
       {/* группа: окно спреда, bps */}
-      <div className="fgroup" title={spreadTitle
-        || `${spreadLabel} в интервале [от, до], bps. Границы применяются к тому же числу, что в колонке ${spreadLabel}`
-           + (setVolBid ? " (с учётом фильтра по объёму)" : "")
-           + ". Бумаги без посчитанного спреда при заданной границе скрыты."}>
-        <span className="fg-lbl">{spreadLabel}</span>
-        <input className="num-input" type="number" step="10" placeholder="от"
-          aria-label={spreadLabel + " — от, bps"} value={spreadFrom}
-          onChange={(e) => setSpreadFrom(e.target.value)} />
-        <span className="fg-lbl">—</span>
-        <input className="num-input" type="number" step="10" placeholder="до"
-          aria-label={spreadLabel + " — до, bps"} value={spreadTo}
-          onChange={(e) => setSpreadTo(e.target.value)} />
-        {(spreadFrom || spreadTo) && (
-          <button className="chip-btn" title="Сбросить окно спреда"
-            onClick={() => { setSpreadFrom(""); setSpreadTo(""); }}>×</button>
-        )}
-      </div>
+      <RangeWindow label={spreadLabel} from={spreadFrom} to={spreadTo}
+        setFrom={setSpreadFrom} setTo={setSpreadTo} step="10" resetTitle="Сбросить окно спреда"
+        ariaFrom={spreadLabel + " — от, bps"} ariaTo={spreadLabel + " — до, bps"}
+        title={spreadTitle
+          || `${spreadLabel} в интервале [от, до], bps. Границы применяются к тому же числу, что в колонке ${spreadLabel}`
+             + (setVolBid ? " (с учётом фильтра по объёму)" : "")
+             + ". Бумаги без посчитанного спреда при заданной границе скрыты."} />
 
       {/* группа: порог ликвидности по ADV — одно число и сторона сравнения.
           Неликвид даёт «спред» по случайной сделке в пустом стакане: порогом
@@ -201,20 +166,9 @@ export default function Toolbar({
 
       {/* группа: окно доходности к погашению, % (вторая первичная метрика фиксов) */}
       {setYtmFrom && (
-        <div className="fgroup" title="Доходность к погашению в интервале [от, до], % годовых. Бумаги без посчитанной YTM при заданной границе скрыты.">
-          <span className="fg-lbl">YTM, %</span>
-          <input className="num-input" type="number" step="0.5" placeholder="от"
-            aria-label="YTM — от, %" value={ytmFrom}
-            onChange={(e) => setYtmFrom(e.target.value)} />
-          <span className="fg-lbl">—</span>
-          <input className="num-input" type="number" step="0.5" placeholder="до"
-            aria-label="YTM — до, %" value={ytmTo}
-            onChange={(e) => setYtmTo(e.target.value)} />
-          {(ytmFrom || ytmTo) && (
-            <button className="chip-btn" title="Сбросить окно доходности"
-              onClick={() => { setYtmFrom(""); setYtmTo(""); }}>×</button>
-          )}
-        </div>
+        <RangeWindow label="YTM, %" from={ytmFrom} to={ytmTo} setFrom={setYtmFrom} setTo={setYtmTo}
+          resetTitle="Сбросить окно доходности" ariaFrom="YTM — от, %" ariaTo="YTM — до, %"
+          title="Доходность к погашению в интервале [от, до], % годовых. Бумаги без посчитанной YTM при заданной границе скрыты." />
       )}
 
       {/* группа: столбцы. На вкладках без витрины МОНИТОРА (СРАВНЕНИЕ) меню

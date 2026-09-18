@@ -23,29 +23,23 @@ const TYPES = [
   { id: "reference", label: "Справочник", home: "/reference", admin: true },
   { id: "status", label: "Статус", home: "/status" },
 ];
+// Вкладка = [путь, подпись, значок]. Значок — SVG Twemoji из бандла (см.
+// assets/emoji/README.md), а не текст: текстовый эмодзи рисует шрифт ОС, и на
+// Windows тот же 🐣 выглядит плоско и иначе, чем на Mac. Значок лежит прямо в
+// кортеже, а не в параллельной карте по пути: переименование маршрута не
+// может молча оставить вкладку без него. Не понравится — убрать третий элемент.
 const SUBNAV = {
-  floaters: [["/floaters", "Монитор"], ["/compare", "Сравнение"],
-             ["/trades", "Сделки"], ["/signals", "Сигналы"], ["/payments", "Выплаты"],
-             ["/primary", "Первичка"], ["/calc/float", "Калькулятор"]],
-  fixed: [["/fixed", "Монитор"], ["/fixed/ofz", "ОФЗ"], ["/fixed/auction", "Аукцион"],
-          ["/primary", "Первичка"], ["/calc", "Калькулятор"]],
+  floaters: [["/floaters", "Монитор", emLaptop], ["/compare", "Сравнение", emScales],
+             ["/trades", "Сделки", emHands], ["/signals", "Сигналы", emSiren],
+             ["/payments", "Выплаты", emCalendar], ["/primary", "Первичка", emChick],
+             ["/calc/float", "Калькулятор", emAbacus]],
+  fixed: [["/fixed", "Монитор", emLaptop], ["/fixed/ofz", "ОФЗ", emColumns],
+          ["/fixed/auction", "Аукцион", emHammer], ["/primary", "Первичка", emChick],
+          ["/calc", "Калькулятор", emAbacus]],
   portfolio: [],
   curves: [],
   reference: [],
   status: [],
-};
-// Эмодзи вкладок — SVG Twemoji из бандла (см. assets/emoji/README.md), а не
-// текст: текстовый эмодзи рисует шрифт ОС, и на Windows тот же 🐣 выглядит
-// плоско и иначе, чем на Mac. Картинка одинакова везде. Не понравится —
-// убрать строку здесь, разметка ниже сама перестанет рисовать значок.
-const NAV_EMOJI = {
-  "/floaters": emLaptop, "/fixed": emLaptop,     // Монитор
-  "/trades": emHands,                             // Сделки
-  "/signals": emSiren,                            // Сигналы
-  "/primary": emChick,                            // Первичка
-  "/compare": emScales, "/payments": emCalendar,
-  "/calc": emAbacus, "/calc/float": emAbacus,
-  "/fixed/ofz": emColumns, "/fixed/auction": emHammer,
 };
 
 // Пути, живущие СРАЗУ В ДВУХ разделах: анонс первички не знает своего класса
@@ -132,9 +126,9 @@ export default function Topbar({ user, onLogout, onOpenSettings, extra, features
         <TypeMenu type={type} isAdmin={user?.role === "admin"} features={features} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
-            {sub.map(([to, label]) => (
+            {sub.map(([to, label, emoji]) => (
               <NavLink key={to} className={tabCls} to={to} end>
-                {NAV_EMOJI[to] && <img className="nav-emoji" src={NAV_EMOJI[to]} alt="" aria-hidden="true" />}
+                {emoji && <img className="nav-emoji" src={emoji} alt="" aria-hidden="true" />}
                 {label}
               </NavLink>
             ))}

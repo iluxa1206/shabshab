@@ -983,6 +983,63 @@ def classify_board(board: Optional[str], market: Optional[str] = None) -> str:
     return "other"
 
 
+# Короткая подпись режима для таблиц: колонка узкая, а трейдеру важна только
+# суть режима (стакан / адресная / с ЦК / размещение / выкуп), валюта и тип
+# бумаги видны по самой бумаге. Неизвестный борд показываем кодом — врать нечем.
+BOARD_SHORT = {
+    "TQCB": "Т+", "TQOB": "Т+", "TQRD": "Т+", "TQOD": "Т+", "TQOY": "Т+",
+    "TQOE": "Т+", "TQIR": "Т+", "TQUD": "Т+",
+    "PSOB": "РПС", "PSDB": "РПС", "PSYO": "РПС", "PSEU": "РПС", "PSUD": "РПС",
+    "PSEO": "РПС",
+    "PTOB": "РПС с ЦК", "PTDB": "РПС с ЦК", "PTOY": "РПС с ЦК", "PTUD": "РПС с ЦК",
+    "PTOD": "РПС с ЦК", "PTOE": "РПС с ЦК",
+    "PSAU": "Размещ.", "PACY": "Размещ.", "PAUS": "Размещ.", "AUCT": "Размещ.",
+    "PSBB": "Выкуп", "PSBU": "Выкуп", "PSBY": "Выкуп", "AUBB": "Выкуп",
+    "PACT": "Аукцион",
+}
+
+# ВИД режима — машинное поле для витрин. Размещение и выкуп — тоже адресные
+# борды (market=ndm), но это не сделка между двумя контрагентами: цена
+# размещения — 100 по книге, выкуп — по оферте. Витрины различают их по
+# этому полю, а не по подписи: подпись — текст для человека и может меняться.
+PLACEMENT_BOARDS = frozenset({"PSAU", "PACY", "PAUS", "AUCT"})
+BUYBACK_BOARDS = frozenset({"PSBB", "PSBU", "PSBY", "AUBB"})
+
+
+def board_kind(board: Optional[str], market: Optional[str] = None) -> str:
+    """'book' | 'rps' | 'rps_cc' | 'placement' | 'buyback' | 'auction' | 'other'.
+    Как и classify_board, market='ndm' делает неизвестный борд адресным."""
+    b = (board or "").upper()
+    if b in PLACEMENT_BOARDS:
+        return "placement"
+    if b in BUYBACK_BOARDS:
+        return "buyback"
+    if b == "PACT":
+        return "auction"
+    if b in BOOK_BOARDS or b.startswith("TQ"):
+        return "book"
+    if b.startswith("PT"):
+        return "rps_cc"
+    if market == "ndm" or b in RPS_BOARDS:
+        return "rps"
+    return "other"
+
+
+def board_short(board: Optional[str]) -> str:
+    b = board or ""
+    return BOARD_SHORT.get(b, b)
+
+
+def tag_board(row: dict) -> None:
+    """Единая разметка режима строки сделки: подпись для таблицы, полное
+    название для подсказки и машинный вид. Одно место на все ленты (общая,
+    крупные, панель карточки) — иначе у каждой ручки был бы свой набор полей."""
+    b = row.get("board")
+    row["board_short"] = board_short(b)
+    row["board_title"] = BOARD_LABELS.get(b or "", b)
+    row["board_kind"] = board_kind(b, row.get("market"))
+
+
 def market_adv_map(days: int = 30) -> dict[str, float]:
     """ISIN → средний дневной оборот по ВСЕМУ рынку за окно, ₽ (дневные итоги
     биржи bond_day, все борды). Знаменатель — торговые дни рынка в окне.

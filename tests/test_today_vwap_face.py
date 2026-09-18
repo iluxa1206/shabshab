@@ -100,7 +100,7 @@ def test_spread_avg_map_window_cuts_old_days(mods):
     with pdb._lock, pdb._connect() as c:
         c.execute("INSERT INTO bar_hourly(isin,ts,kind,y_idx_bps,value) "
                   "VALUES('X',?,'floater',500,1e6)", (f"{old} 10:00",))
-    bars._spread_avg_cache.update(key=None, at=0.0, map={})
+    bars._map_cache.clear()
     assert bars.spread_avg_map(7) == {}
 
 
@@ -128,7 +128,7 @@ def test_side_vwap_from_tick_price(mods):
 
 def test_price_avg_map_weights_by_turnover_and_skips_today(mods):
     """База ОТКЛ Ц 7Д: средневзвешенная по обороту цена ПРОШЛЫХ дней, без сегодня;
-    свой кэш, не делит слот со спредом."""
+    у бумаги без спреда вовсе — по всем барам с ценой."""
     from datetime import timedelta
     bars, _ = mods
     import services.portfolio_db as pdb
@@ -143,8 +143,47 @@ def test_price_avg_map_weights_by_turnover_and_skips_today(mods):
     with pdb._lock, pdb._connect() as c:
         c.executemany("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,value) "
                       "VALUES('X',?,'floater',?,?)", rows)
-    bars._price_avg_cache.update(key=None, at=0.0, map={})
-    bars._spread_avg_cache.update(key=None, at=0.0, map={})
+    bars._map_cache.clear()
     assert bars.price_avg_map(7)["X"] == pytest.approx(101.5)
     assert bars.spread_avg_map(7) == {}           # спреда в барах нет — база спреда пуста
-    assert bars.price_avg_map(7)["X"] == pytest.approx(101.5)  # кэш цены не вытеснен
+    assert bars.price_avg_map(7)["X"] == pytest.approx(101.5)  # кэш общий, без вытеснения
+
+
+def test_bases_share_bar_set_when_spread_partial(mods):
+    """Reprice удался на части часов: цена усредняется по ТЕМ ЖЕ барам, что и
+    спред, — иначе одна сделка горела бы в двух колонках разными цветами."""
+    from datetime import timedelta
+    bars, _ = mods
+    import services.portfolio_db as pdb
+    d1 = (date.today() - timedelta(days=2)).isoformat()
+    d2 = (date.today() - timedelta(days=1)).isoformat()
+    with pdb._lock, pdb._connect() as c:
+        # час со спредом — цена 100 при обороте 1 млн; час без спреда — цена 90
+        # при обороте 99 млн (упавший as-of), в базу цены он входить не должен
+        c.execute("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,y_idx_bps,value) "
+                  "VALUES('X',?,'floater',100.0,150.0,1e6)", (f"{d1} 10:00",))
+        c.execute("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,value) "
+                  "VALUES('X',?,'floater',90.0,99e6)", (f"{d2} 10:00",))
+    bars._map_cache.clear()
+    b = bars.bases_map(7)["X"]
+    assert b["spread"] == pytest.approx(150.0)
+    assert b["price"] == pytest.approx(100.0)
+
+
+def test_cached_maps_keyed_by_window(mods):
+    """Карточка (30 дней) и лента (7 дней) не вытесняют друг друга из кэша."""
+    from datetime import timedelta
+    bars, _ = mods
+    import services.portfolio_db as pdb
+    old = (date.today() - timedelta(days=20)).isoformat()
+    new = (date.today() - timedelta(days=2)).isoformat()
+    with pdb._lock, pdb._connect() as c:
+        c.execute("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,y_idx_bps,value) "
+                  "VALUES('X',?,'floater',100.0,300.0,1e6)", (f"{old} 10:00",))
+        c.execute("INSERT INTO bar_hourly(isin,ts,kind,vwap_pct,y_idx_bps,value) "
+                  "VALUES('X',?,'floater',100.0,100.0,1e6)", (f"{new} 10:00",))
+    bars._map_cache.clear()
+    assert bars.spread_avg_map(7)["X"] == pytest.approx(100.0)
+    assert bars.spread_avg_map(30)["X"] == pytest.approx(200.0)
+    assert bars.spread_avg_map(7)["X"] == pytest.approx(100.0)
+    assert ("bases", (7, None)) in bars._map_cache and ("bases", (30, None)) in bars._map_cache

@@ -31,13 +31,32 @@ const tpart = (s) => ((s || "").split(" ")[1] || "").slice(0, 5) || "—";
 // Подпись адресной сделки по режиму. Размещение и выкуп — тоже борды NDM, но
 // это не РПС между двумя контрагентами: цена размещения — 100 по книге, выкуп —
 // по оферте. Раньше все три шли одним «РПС», и день размещения читался как
-// поток договорных сделок. Режим приходит короткой подписью с бэка
-// (board_short — та же таблица, что в общей ленте).
-const ndmTag = (r) => (r.board_short === "Размещ."
-  ? { t: "Р", cls: "bt-plc", title: `размещение${r.board ? ` (${r.board})` : ""}` }
-  : r.board_short === "Выкуп"
-    ? { t: "В", cls: "bt-bb", title: `выкуп${r.board ? ` (${r.board})` : ""}` }
-    : { t: "РПС", cls: "", title: `адресная сделка${r.board ? ` (${r.board})` : ""}` });
+// поток договорных сделок. Вид приходит машинным полем board_kind (бэк,
+// services.block_trades.tag_board) — подпись «Размещ.» текст для человека и
+// разбирать её нельзя.
+const NDM_TAGS = {
+  placement: { t: "Р", cls: "bt-plc", what: "размещение" },
+  buyback: { t: "В", cls: "bt-bb", what: "выкуп" },
+};
+const ndmTag = (r) => {
+  const { t, cls, what } = NDM_TAGS[r.board_kind] || { t: "РПС", cls: "", what: "адресная сделка" };
+  return { t, cls, title: what + (r.board ? ` (${r.board})` : "") };
+};
+
+// Итог по адресным в шапке — раздельно по видам, тем же правилом, что теги
+// строк: «РПС 2 на 14» при строках «Р» противоречило бы само себе.
+function ndmSummary(rows) {
+  const acc = {};
+  for (const r of rows) {
+    if (!r.negotiated) continue;
+    const k = NDM_TAGS[r.board_kind] ? r.board_kind : "rps";
+    acc[k] = acc[k] || { n: 0, value: 0 };
+    acc[k].n += 1;
+    acc[k].value += r.value || 0;
+  }
+  return ["rps", "placement", "buyback"].filter((k) => acc[k]).map((k) =>
+    `${k === "rps" ? "РПС" : NDM_TAGS[k].t} ${acc[k].n} на ${fmt.mln(acc[k].value) ?? "—"}`);
+}
 
 export default function BondTrades({ isin, kind, onClose }) {
   const isFixed = kind === "fixed";
@@ -115,7 +134,7 @@ export default function BondTrades({ isin, kind, onClose }) {
           : rows.length === 0
             ? (volMln > 0 ? "нет сделок крупнее порога" : "сделок за окно нет")
           : `${d.n} сд · оборот ${fmt.mln(d.value) ?? "—"} млн ₽`
-            + (d.ndm_n ? ` · РПС ${d.ndm_n} на ${fmt.mln(d.ndm_value) ?? "—"}` : "")
+            + ndmSummary(rows).map((x) => ` · ${x}`).join("")
             + (d.truncated ? ` · последние ${LIMIT} из ${d.total}` : "")}
       </div>
 
@@ -137,22 +156,22 @@ export default function BondTrades({ isin, kind, onClose }) {
               {shown.map((r) => {
                 const sp = spreadOf(r);
                 const bd = bandOf(r);
+                const tag = r.negotiated ? ndmTag(r) : null;
                 return (
                   <tr key={r.trade_id}
-                    className={"bt-row" + (bd ? " bt-band" : "") + (r.negotiated ? " bt-ndm"
+                    className={"bt-row" + (bd ? " bt-band" : "") + (tag ? " bt-ndm"
                       : r.side === "buy" ? " bt-buy" : r.side === "sell" ? " bt-sell" : "")}
                     title={`${r.ts} · ${fmt.num(r.qty, 0)} шт`
                       + (r.side ? ` · агрессор ${r.side}` : "")
-                      + (r.negotiated ? ` · ${ndmTag(r).title}` : "")}>
+                      + (tag ? ` · ${tag.title}` : "")}>
                     <td className={"left bt-d" + (String(r.ts || "").slice(0, 10) === today ? " bt-today" : "")}>
                       {dpart(r.ts)}</td>
                     <td className="left bt-d">{tpart(r.ts)}</td>
                     <td>{fmt.pct(r.price) ?? "—"}</td>
                     {/* у адресной сделки агрессора нет по определению — она
                         договорная; вместо стороны показываем сам режим */}
-                    <td className={"bt-side" + (r.negotiated ? " " + ndmTag(r).cls : "")}
-                        title={r.negotiated ? ndmTag(r).title : undefined}>
-                      {r.negotiated ? ndmTag(r).t
+                    <td className={"bt-side" + (tag?.cls ? " " + tag.cls : "")} title={tag?.title}>
+                      {tag ? tag.t
                       : r.side === "buy" ? "buy"
                       : r.side === "sell" ? "sell" : "—"}</td>
                     <td>{fmt.mln1(r.value) ?? "—"}</td>

@@ -12,6 +12,7 @@ import FiltersMenu from "./FiltersMenu.jsx";
 import CouponFormula from "./CouponFormula.jsx";
 import TradeMiniChart from "./TradeMiniChart.jsx";
 import { usePageStatus } from "../pageStatus.jsx";
+import { mergeColumnLayout } from "../columnLayout.js";
 
 // Вкладка СДЕЛКИ — единая лента рынка.
 //
@@ -134,20 +135,38 @@ function SideTag({ side }) {
     {buy ? "buy" : "sell"}</span>;
 }
 
+// Окно баз недели (колонки ОТКЛ) — одно число на подписи и тултипы; обязано
+// совпадать с services.bars.BASE_WINDOW_DAYS (бэк отдаёт своё как base_days).
+const BASE_DAYS = 7;
 // Отклонение спреда сделки от базы прошлой недели, бп. База приходит с бэком
-// строкой (services.bars.spread_avg_map) — у сделок без посчитанного спреда и у
-// бумаг без истории баров отклонения нет.
+// строкой (services.bars.bases_map) — у сделок без посчитанного спреда, у
+// бумаг без истории баров и у строк старше окна базы отклонения нет.
 const dev7 = (r) => (r.y_idx_bps == null || r.y_idx_avg7_bps == null
   ? null : r.y_idx_bps - r.y_idx_avg7_bps);
 // То же по цене, в пунктах цены (% номинала). Отдельный параметр, а не замена
 // спреду: есть у всех строк, где есть цена, — у фиксов и мелких принтов спреда
 // нет, а «мимо рынка» видно и так. База — средневзвешенная по обороту цена
-// прошлых 7 дней (services.bars.price_avg_map).
+// прошлой недели по ТЕМ ЖЕ барам, что база спреда (services.bars.bases_map).
+// Округляем до сотых ЗДЕСЬ: знак и цвет ниже выбираются по округлённому
+// значению, иначе −0,004 рисовалось бы как «−0,00» зелёным (см. fmt.devBps).
 const devPx = (r) => (r.price == null || r.price_avg7_pct == null
-  ? null : r.price - r.price_avg7_pct);
-// Цвет — как у спреда по смыслу «дёшево/дорого»: цена ниже базы = спред шире
-// = зелёный. Одна и та же сделка в двух колонках горит одним цветом.
-const pxColor = (d) => dmColor(d == null ? null : -d);
+  ? null : Math.round((r.price - r.price_avg7_pct) * 100) / 100);
+
+// Ячейка отклонения: сверху отклонение от базы недели, под ним сама база
+// (справочная, приглушена). Одна на спред и цену — раньше две копии уже
+// разошлись в правиле цвета у нуля. Ноль — серый: сделка по базе, ни дёшево,
+// ни дорого; иначе цвет по знаку (sign: +1 — рост значения = дёшево, как у
+// спреда; −1 — рост цены = дорого).
+function DevCell({ dev, base, sign, fmtDev, fmtBase }) {
+  if (base == null) return "—";
+  const style = dev == null ? undefined : dmColor(dev ? sign * dev : null);
+  return (
+    <span className="tape-dev7">
+      <span className="tape-dev7-v" style={style}>{fmtDev(dev) ?? "—"}</span>
+      <span className="tape-dev7-b">{fmtBase(base)}</span>
+    </span>
+  );
+}
 
 // ── колонки ленты ───────────────────────────────────────────────────────────
 // Порядок, ширины и сортировка — как в СПИСКЕ (общий HeaderCell): переносятся
@@ -181,14 +200,16 @@ const COLS = [
   // Насколько сделка ушла от того уровня, по которому бумага торговалась неделю:
   // сверху отклонение, под ним сама база (средневзвешенный по обороту спред за
   // предыдущие 7 дней). Сортировка — по отклонению, база справочная.
-  { key: "dev7",   label: "ОТКЛ 7Д", sub: "БП / БАЗА", align: "num", w: 10, get: (r) => dev7(r),
+  { key: "dev7",   label: `ОТКЛ ${BASE_DAYS}Д`, sub: "БП / БАЗА", align: "num", w: 10, get: dev7,
     title: "отклонение spread сделки от средневзвешенного по обороту спреда"
-           + " за предыдущие 7 дней (по средневзвешенной цене часа, без сегодня)" },
+           + ` за предыдущие ${BASE_DAYS} дней (по средневзвешенной цене часа, без сегодня;`
+           + " у сделок старше окна — прочерк)" },
   // Отклонение ЦЕНЫ сделки от базы недели — отдельным параметром: без методики
   // спреда, есть у фиксов и мелочи. Сверху отклонение в пунктах, под ним база.
-  { key: "devpx",  label: "ОТКЛ Ц 7Д", sub: "П.П. / БАЗА", align: "num", w: 10, get: (r) => devPx(r),
+  { key: "devpx",  label: `ОТКЛ Ц ${BASE_DAYS}Д`, sub: "П.П. / БАЗА", align: "num", w: 10, get: devPx,
     title: "отклонение цены сделки (п.п. номинала) от средневзвешенной по обороту"
-           + " цены за предыдущие 7 дней (по средневзвесу часа, без сегодня)" },
+           + ` цены за предыдущие ${BASE_DAYS} дней (те же бары, что у базы спреда;`
+           + " у сделок старше окна — прочерк)" },
   { key: "yld",    label: "ДОХ-ТЬ", sub: "%",  align: "num",  w: 8,  get: (r) => r.yld },
   // график и карточка — последней колонкой: у имени они перетягивали взгляд,
   // а место в колонке БУМАГА нужнее самому имени
@@ -430,21 +451,10 @@ export default function TradesTape() {
   const [live, setLive] = useState(true);
   const [lastAt, setLastAt] = useState(null);
   // раскладка колонок: порядок и ширины переживают перезагрузку
-  const [colOrder, setColOrder] = useState(() => {
-    const saved = readLS(LS_ORDER, null);
-    const known = new Set(DEFAULT_COLS);
-    const kept = Array.isArray(saved) ? saved.filter((k) => known.has(k)) : [];
-    // новые колонки версии не теряем молча: встают следом за своим соседом
-    // из порядка по умолчанию (в конец нельзя — там кнопки строки)
-    if (!kept.length) return DEFAULT_COLS;
-    const out = [...kept];
-    DEFAULT_COLS.forEach((k, i) => {
-      if (out.includes(k)) return;
-      const prev = i > 0 ? out.indexOf(DEFAULT_COLS[i - 1]) : -1;
-      out.splice(prev + 1, 0, k);
-    });
-    return out;
-  });
+  // новые колонки версии встают за своим соседом, кнопки строки всегда
+  // последними (общее правило склейки — src/columnLayout.js)
+  const [colOrder, setColOrder] = useState(
+    () => mergeColumnLayout(readLS(LS_ORDER, null), DEFAULT_COLS, { tail: "act" }));
   const [sort, setSort] = useState({ key: null, dir: "desc" });
   const dragRef = useRef(null);
   const [dragKey, setDragKey] = useState(null);
@@ -1048,7 +1058,7 @@ export default function TradesTape() {
                     mat: r.maturity ? <MaturityCell r={r} /> : <span className="dash">—</span>,
                     board: (
                       <span className={"blk-tag" + (r.negotiated ? " blk-tag-ndm" : "")
-                          + (r.board_short === "Размещ." ? " blk-tag-plc" : "")}
+                          + (r.board_kind === "placement" ? " blk-tag-plc" : "")}
                         title={r.board_title || r.board}>
                         {r.board_short || r.board}
                       </span>
@@ -1057,23 +1067,11 @@ export default function TradesTape() {
                     value: <>{money(r.value)}{r.cur && r.cur !== "SUR" ? ` ${r.cur}` : ""}</>,
                     side: <SideTag side={r.side} />,
                     yidx: r.y_idx_bps != null ? fmt.num(r.y_idx_bps, 0) : "—",
-                    dev7: (dev7(r) == null && r.y_idx_avg7_bps == null) ? "—" : (
-                      <span className="tape-dev7">
-                        <span className="tape-dev7-v"
-                          style={dev7(r) == null ? undefined : dmColor(Math.round(dev7(r)) || null)}>
-                          {fmt.devBps(dev7(r)) ?? "—"}</span>
-                        <span className="tape-dev7-b">
-                          {r.y_idx_avg7_bps == null ? "—" : fmt.num(r.y_idx_avg7_bps, 0)}</span>
-                      </span>
-                    ),
-                    devpx: (devPx(r) == null && r.price_avg7_pct == null) ? "—" : (
-                      <span className="tape-dev7">
-                        <span className="tape-dev7-v" style={devPx(r) == null ? undefined : pxColor(devPx(r))}>
-                          {fmt.signed(devPx(r), 2) ?? "—"}</span>
-                        <span className="tape-dev7-b">
-                          {r.price_avg7_pct == null ? "—" : fmt.pct(r.price_avg7_pct)}</span>
-                      </span>
-                    ),
+                    // бп округляются в fmt.devBps; цвет — по округлённому
+                    dev7: <DevCell dev={dev7(r) == null ? null : Math.round(dev7(r))} base={r.y_idx_avg7_bps}
+                            sign={1} fmtDev={fmt.devBps} fmtBase={(b) => fmt.num(b, 0)} />,
+                    devpx: <DevCell dev={devPx(r)} base={r.price_avg7_pct}
+                             sign={-1} fmtDev={(d) => fmt.signed(d, 2)} fmtBase={fmt.pct} />,
                     yld: r.yld != null ? fmt.num(r.yld, 2) : "—",
                     // у бумаг вне юниверса карточки нет — кнопки строки не рисуем
                     act: clickable
@@ -1153,7 +1151,8 @@ export default function TradesTape() {
                     <td className="left tape-ts">{fmt.date(r.date)}</td>
                     <td className="left tape-name">{r.name}</td>
                     <td className="left blk-board">
-                      <span className="blk-tag blk-tag-ndm" title={r.board_title || r.board}>
+                      <span className={"blk-tag blk-tag-ndm" + (r.board_kind === "placement" ? " blk-tag-plc" : "")}
+                        title={r.board_title || r.board}>
                         {r.board_short || r.board}
                       </span>
                     </td>

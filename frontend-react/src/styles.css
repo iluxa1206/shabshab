@@ -157,7 +157,10 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
 .tagline { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.18em; }
 .menu-item, .titlebar, .tb-caption, .tb-ico, .tb-btns, .tb-sq { display: none; }
 
-.topbar-right { display: flex; align-items: center; gap: 22px; margin-left: auto; }
+.topbar-right { display: flex; align-items: center; gap: 22px; margin-left: auto; flex-shrink: 0; }
+/* длинный email не должен выталкивать «Выход» за экран: обрезаем многоточием */
+.topbar-right .btn:first-child { max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+                                 white-space: nowrap; }
 .meta-chip { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--mut); white-space: nowrap; }
 .meta-k { color: var(--mut-2); }
 .meta-v { color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -1456,6 +1459,9 @@ body.col-resizing * { cursor: col-resize !important; }
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
 .login-card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 14px; border: 1px solid var(--line); padding: 28px 24px; background: var(--bg); }
 .login-sub { color: var(--mut); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 4px; }
+.login-credit { margin-top: 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+                color: var(--mut-2); text-transform: uppercase; }
+.login-credit a { color: inherit; }
 .login-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--mut); }
 .login-field input { font-family: var(--mono); font-size: 13px; padding: 9px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .login-field input:focus { outline: none; border-color: var(--fg); }
@@ -1525,10 +1531,16 @@ body.col-resizing * { cursor: col-resize !important; }
                        white-space: nowrap; }   /* значок и подпись — одной строкой и в тесноте */
 /* Эмодзи вкладки: SVG Twemoji высотой в строку текста, чуть приглушён у
    неактивной вкладки, чтобы ряд не пестрил; на активной (инверсный фон) и при
-   наведении — в полную силу. Размер в em — тянется за шрифтом темы. */
-.nav-emoji { height: 1.25em; width: 1.25em; vertical-align: -0.3em; margin-right: 0.45em;
+   наведении — в полную силу. Размер в em — тянется за шрифтом темы.
+   Шапка не переносится и не скроллится (body overflow: hidden), а значки
+   удлиняют ряд Флоатеров на ~90 px: на ширине ноутбука (1440/1512) с длинным
+   email и кнопкой «Аналитика» правый край уезжал за экран и «Выход» пропадал
+   (замер 2026-09-18). Ниже 1560 px значки прячем — это украшение, кнопка
+   выхода важнее; email при этом обрезается многоточием. */
+.nav-emoji { height: 1.1em; width: 1.1em; vertical-align: -0.2em; margin-right: 0.4em;
              opacity: .75; transition: opacity .12s; }
 .seg-btn:hover .nav-emoji, .seg-btn.active .nav-emoji { opacity: 1; }
+@media (max-width: 1560px) { .nav-emoji { display: none; } }
 
 .fund-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; padding: 20px 24px; align-content: start; }
 .fund-card { border: 1px solid var(--line); padding: 16px 20px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; background: var(--bg); }

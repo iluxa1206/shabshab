@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { mergeColumnLayout } from "../../columnLayout.js";
 import BondTable from "../BondTable.jsx";
 import { FIXED_COLS } from "./fixedCols.jsx";
 
@@ -54,9 +55,9 @@ export function useFixedCols({ storageKey = "fx", extraCols } = {}) {
       const s = Array.isArray(raw) ? raw.map((k) => COL_RENAMED[k] || k) : raw;
       if (!Array.isArray(s) || !s.length) return defaultCols;
       // колонки, добавленные после последнего сохранения набора, показываем
-      const known = new Set(JSON.parse(localStorage.getItem(kKnown) || "[]"));
-      const fresh = defaultCols.filter((k) => !known.has(k) && !s.includes(k));
-      return fresh.length ? [...s, ...fresh] : s;
+      // на своём месте (общее правило — src/columnLayout.js)
+      const known = JSON.parse(localStorage.getItem(kKnown) || "[]");
+      return mergeColumnLayout(s, defaultCols, { known });
     } catch { return defaultCols; }
   });
   const [colWidths, setColWidths] = useState(() => {

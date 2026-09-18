@@ -14,18 +14,18 @@ import BondTrades from "./BondTrades.jsx";
 const ISIN = "RU000A0000A1";
 
 const RESPONSE = {
-  isin: ISIN, n: 2, total: 2, truncated: false, value: 11_000_000,
-  ndm_n: 1, ndm_value: 9_000_000, vwap_pct: 100.1,
+  isin: ISIN, n: 3, total: 3, truncated: false, value: 16_000_000,
+  ndm_n: 2, ndm_value: 14_000_000, vwap_pct: 100.1,
   trades: [
     { trade_id: 1, ts: "2026-08-31 10:00:00", price: 100.1, qty: 20,
       value: 2_000_000, side: "buy", board: "TQCB", negotiated: false,
       y_idx_bps: 150 },
     { trade_id: 2, ts: "2026-08-31 11:00:00", price: 99.0, qty: 90,
-      value: 9_000_000, side: null, board: "PSOB", board_short: "РПС", negotiated: true,
+      value: 9_000_000, side: null, board: "PSOB", board_short: "РПС", board_kind: "rps", negotiated: true,
       y_idx_bps: 210 },
     // размещение — тоже адресный борд, но в панели это «Р», а не РПС
     { trade_id: 3, ts: "2026-08-31 12:00:00", price: 100.0, qty: 50,
-      value: 5_000_000, side: null, board: "PSAU", board_short: "Размещ.", negotiated: true,
+      value: 5_000_000, side: null, board: "PSAU", board_short: "Размещ.", board_kind: "placement", negotiated: true,
       y_idx_bps: 200 },
   ],
 };
@@ -69,8 +69,9 @@ describe("Лента сделок выпуска", () => {
     expect(await screen.findByText("РПС")).toBeTruthy();
     // и безадресная рядом, со своей стороной
     expect(await screen.findByText("buy")).toBeTruthy();
-    // в шапке видно, сколько из оборота прошло адресно
-    expect(await screen.findByText(/РПС 1 на 9/)).toBeTruthy();
+    // в шапке видно, сколько из оборота прошло адресно — раздельно по видам,
+    // размещение не считается за РПС
+    expect(await screen.findByText(/РПС 1 на 9,0 · Р 1 на 5,0/)).toBeTruthy();
   });
 
   it("размещение помечено «Р» рыжим, а не общим РПС", async () => {

@@ -332,11 +332,11 @@ async def trades(
     # ответы мемоизируем — уникальных цен на сотню принтов десятки.
     if rows:
         await _price_trades(isin, rows, kind, days=days, board=board)
-    # короткая подпись режима — та же, что в общей ленте (api.routes.blocks):
-    # панель карточки различает по ней размещение/выкуп среди адресных
-    from api.routes.blocks import board_short
+    # разметка режима — та же, что в общей ленте: панель карточки различает
+    # размещение/выкуп среди адресных по board_kind
+    from services.block_trades import tag_board
     for r in rows:
-        r["board_short"] = board_short(r.get("board"))
+        tag_board(r)
 
     def _vwap(rs):
         q = sum(r.get("qty") or 0 for r in rs)
