@@ -183,3 +183,26 @@ describe("наложение стрима на строку списка", () =>
     expect(out._mstale).toBe(false);
   });
 });
+
+describe("самолечение прочерка числом списка", () => {
+  it("цена наложения совпала с ценой списка — прочерк стороны закрывается числом списка", () => {
+    const row = { bid: 99.1, g_spread_bid_bps: 66, ytm_bid: 15.2 };
+    const out = mergeLive(row, { bid: 99.1, g_spread_bid_bps: null, ytm_bid: null });
+    expect(out.g_spread_bid_bps).toBe(66);
+    expect(out.ytm_bid).toBe(15.2);
+  });
+
+  it("цена другая — прочерк остаётся, число списка не идёт", () => {
+    const row = { bid: 99.1, g_spread_bid_bps: 66 };
+    const out = mergeLive(row, { bid: 99.2, g_spread_bid_bps: null });
+    expect(out.g_spread_bid_bps).toBeNull();
+  });
+
+  it("звёздочка снимается, когда список догнал цену сделки", () => {
+    const row = { last_price_pct: 99.3, ytm: 15.3, g_spread_bps: 70, mod_dur: 2.1 };
+    const out = mergeLive(row, { last_price_pct: 99.3, ytm: 15.0, _mstale: true });
+    expect(out._mstale).toBe(false);
+    expect(out.ytm).toBe(15.3);
+    expect(out.mod_dur).toBe(2.1);
+  });
+});

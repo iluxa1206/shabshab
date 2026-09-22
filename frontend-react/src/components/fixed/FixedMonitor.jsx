@@ -132,6 +132,8 @@ const LIVE_DERIVED = [
   ["bid", ["g_spread_bid_bps", "ytm_bid"]],
   ["ask", ["g_spread_ask_bps", "ytm_ask"]],
 ];
+const LAST_DERIVED = ["ytm", "g_spread_bps", "z_spread_bps", "dirty", "cur_yield",
+                      "mod_dur", "mac_dur", "convexity", "dv01"];
 
 /** Наложение стрима поверх строки списка. Если наложение принесло цену, но не
  *  принесло числа к ней (первый патч бумаги — котировка, а не метрики), а цена
@@ -140,12 +142,24 @@ const LIVE_DERIVED = [
 export function mergeLive(row, live) {
   const out = { ...row, ...live };
   for (const [px, derived] of LIVE_DERIVED) {
-    if (!(px in live) || (live[px] ?? null) === (row[px] ?? null)) continue;
-    for (const k of derived) if (!(k in live)) out[k] = null;
+    if (!(px in live)) continue;
+    if ((live[px] ?? null) !== (row[px] ?? null)) {
+      for (const k of derived) if (!(k in live)) out[k] = null;
+    } else {
+      // ТА ЖЕ ЦЕНА, ЧТО В СПИСКЕ: число списка посчитано ровно к ней. Прочерк
+      // наложения (цена сдвинулась, патч движка ещё не дошёл или потерялся)
+      // закрываем числом списка — он обновляется раз в минуту из fixed_metrics.
+      for (const k of derived) if (out[k] == null && row[k] != null) out[k] = row[k];
+    }
   }
-  if (live.last_price_pct != null && !("ytm" in live)
-      && live.last_price_pct !== row.last_price_pct && !("_mstale" in live)) {
-    out._mstale = true;
+  if (live.last_price_pct != null) {
+    if (live.last_price_pct !== row.last_price_pct) {
+      if (!("ytm" in live) && !("_mstale" in live)) out._mstale = true;
+    } else if (live._mstale) {
+      // звёздочка снята: список уже несёт числа к этой цене
+      for (const k of LAST_DERIVED) if (row[k] != null) out[k] = row[k];
+      out._mstale = false;
+    }
   }
   return out;
 }

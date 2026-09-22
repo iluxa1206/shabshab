@@ -103,6 +103,28 @@ def test_fixed_partial_side_patch_keeps_full_row():
     assert cache["fixed_metrics"]["RU000A1FIX01"]["ytm"] is None
 
 
+def test_fixed_sides_batch_fetches_missing_schedules(fixed_row, monkeypatch):
+    """Ветка сторон обязана сама добыть расписание бумаги, которой нет в
+    full_by (его заполняет только полный пересчёт своей пачкой): иначе патча
+    сторон нет, и прочерк у ликвидной ОФЗ живёт, пока идут котировки."""
+    from services.market_data import MarketDataService
+    row, sched = fixed_row
+    ctx = _ctx({row["isin"]: row}, {"RU000A1OTHER": {"coupons": [1]}})
+    calls = []
+
+    async def fake_full(key):
+        calls.append(key)
+        return sched
+    monkeypatch.setattr(MarketDataService, "fetch_bond_schedule_full", staticmethod(fake_full))
+    asyncio.run(us._ensure_full_by(ctx, [row["isin"], "RU000A1OTHER"]))
+    assert calls == [row["secid"]]                       # только недостающая, по SECID
+    assert ctx["full_by"][row["isin"]] is sched
+    assert ctx["full_by"]["RU000A1OTHER"] == {"coupons": [1]}   # чужое цело (слияние)
+    # повторный вызов — без сети
+    asyncio.run(us._ensure_full_by(ctx, [row["isin"]]))
+    assert len(calls) == 1
+
+
 def test_side_move_queues_cheap_recount_for_fixed(monkeypatch):
     """Движение стакана у фикса идёт в ту же дешёвую очередь, что и флоатер;
     полная очередь нужна только при новой цене сделки."""

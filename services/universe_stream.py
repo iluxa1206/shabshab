@@ -1857,6 +1857,31 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
     return out
 
 
+async def _ensure_full_by(ctx: dict, isins: list) -> None:
+    """Расписания купонов ЭТИХ бумаг — в ctx["full_by"], слиянием.
+
+    Ветка сторон фикса (_recrunch_fixed_sides) считает YTM по купонам из
+    ctx["full_by"], а заполнял его только ПОЛНЫЙ пересчёт — своей пачкой и
+    заменой словаря. Бумага вне последней полной пачки получала пустое
+    расписание, ветка молча возвращала None, патча не было — и на витрине
+    спред стороны у ликвидных ОФЗ стоял прочерком, пока шли котировки
+    (фронт честно гасит число под сдвинувшуюся цену и ждёт движок).
+    Расписания day-кэшированы: промах — одна ходка на бумагу в день."""
+    from services.market_data import MarketDataService
+    fb = ctx.get("full_by") or {}
+    need = [i for i in isins if not (fb.get(i) or {}).get("coupons")]
+    if not need:
+        return
+    keys = {i: ((ctx.get("fixed_by") or {}).get(i) or {}).get("secid") or i for i in need}
+    fulls = await asyncio.gather(
+        *(MarketDataService.fetch_bond_schedule_full(keys[i]) for i in need),
+        return_exceptions=True)
+    merged = dict(fb)
+    for i, f in zip(need, fulls):
+        merged[i] = {} if isinstance(f, Exception) else (f or {})
+    ctx["full_by"] = merged
+
+
 def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
     """Точный патч только BID/ASK и цен набора для фикса.
 
@@ -3033,6 +3058,7 @@ async def metrics_worker() -> None:
             # короткий, чтобы шквал стакана не задерживал полный пересчёт.
             if _fixed_sides_dirty:
                 take_fx, prio_fx = _take_fixed_sides_batch()
+                await _ensure_full_by(ctx, take_fx)    # см. докстринг
                 _t0 = time.perf_counter()
                 _pend_fx: list = []
                 fxrows = await run_heavy(recrunch_sides, take_fx, ctx["board"],
