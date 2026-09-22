@@ -81,6 +81,28 @@ def test_daily_delta_survives_tick():
     assert cache["fixed_metrics"]["RU000A1FIX01"]["delta_ytm"] == -0.2
 
 
+def test_fixed_partial_side_patch_keeps_full_row():
+    """Патч сторон (дешёвая ветка) несёт только bid/ask и их числа: запись в
+    витрину обязана СЛИТЬ его с прежней строкой, а не заменить её. Иначе после
+    каждого движения стакана /api/fixed отдавал цену и прочерки по YTM,
+    g-спреду, дюрации — до перезагрузки, заставшей полный пересчёт."""
+    cache = {"fixed_metrics": {"RU000A1FIX01": {
+        "last": 99.5, "ytm": 14.0, "g_spread_bps": 120.0, "mod_dur": 2.3,
+        "dirty": 1010.0, "bid": 99.3, "ytm_bid": 14.1, "g_spread_bid_bps": 130.0}}}
+    us._store_rows(cache, {"RU000A1FIX01": {
+        "_kind": "fixed", "bid": 99.2, "ask": 99.7,
+        "ytm_bid": 14.2, "ytm_ask": 13.9,
+        "g_spread_bid_bps": 140.0, "g_spread_ask_bps": 110.0}})
+    row = cache["fixed_metrics"]["RU000A1FIX01"]
+    assert row["bid"] == 99.2 and row["ytm_bid"] == 14.2          # своё обновлено
+    assert row["last"] == 99.5 and row["ytm"] == 14.0             # чужое цело
+    assert row["g_spread_bps"] == 120.0 and row["mod_dur"] == 2.3
+    assert row["dirty"] == 1010.0
+    # явный null полного пересчёта — стирает («считать стало нечем»)
+    us._store_rows(cache, {"RU000A1FIX01": {"_kind": "fixed", "ytm": None}})
+    assert cache["fixed_metrics"]["RU000A1FIX01"]["ytm"] is None
+
+
 def test_side_move_queues_cheap_recount_for_fixed(monkeypatch):
     """Движение стакана у фикса идёт в ту же дешёвую очередь, что и флоатер;
     полная очередь нужна только при новой цене сделки."""

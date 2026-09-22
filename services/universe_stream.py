@@ -2696,13 +2696,23 @@ def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
         market_cache["universe_metrics"] = um
     if fx:
         fm = market_cache.get("fixed_metrics") or {}
-        # delta_ytm живёт дневным срезом (apply_ytm_delta) и от цены не зависит —
-        # сохраняем прежнее значение, иначе тик сделки стирал бы колонку Δ YTM
+        _now = time.time()
         for isin, row in fx.items():
             prev = fm.get(isin) or {}
+            # delta_ytm живёт дневным срезом (apply_ytm_delta) и от цены не
+            # зависит — сохраняем прежнее значение, иначе тик сделки стирал бы
+            # колонку Δ YTM
             if row.get("delta_ytm") is None and prev.get("delta_ytm") is not None:
                 row["delta_ytm"] = prev["delta_ytm"]
-        fm.update(fx)
+            row["_calc_ts"] = _now
+            # СЛИЯНИЕ ПО ПОЛЯМ, КАК У ФЛОАТЕРОВ. Дешёвая ветка сторон
+            # (_recrunch_fixed_sides) отдаёт ТОЛЬКО bid/ask и их числа — без
+            # last, YTM, g-спреда и дюрации. Замена строки целиком (fm.update)
+            # стирала всё это при каждом движении стакана: /api/fixed отдавал
+            # цену и прочерки по остальным колонкам, а WS-патч сторон их не
+            # возвращал — витрина стояла с прочерками до перезагрузки, которая
+            # заставала полный пересчёт по следующей сделке.
+            fm[isin] = {**prev, **row}
         market_cache["fixed_metrics"] = fm
 
 

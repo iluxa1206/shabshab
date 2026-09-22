@@ -7,7 +7,7 @@
  * флоатеров 27.08.2026 в телеграм уехала вся лестница стакана.
  */
 import { describe, expect, it } from "vitest";
-import { applyPatch, applyPrice } from "./FixedMonitor.jsx";
+import { applyPatch, applyPrice, mergeLive } from "./FixedMonitor.jsx";
 
 describe("новая цена гасит производные", () => {
   it("сдвиг цены сделки стирает метрики, посчитанные по прежней", () => {
@@ -140,5 +140,46 @@ describe("числа набора из котировок (такт 5 с)", () =
     const row = { g_spread_vol_ask_bps: 90 };
     applyVolQuote(row, { vol_ask_px: null });
     expect(row.g_spread_vol_ask_bps).toBe(90);
+  });
+});
+
+describe("повтор котировки без движения цены", () => {
+  it("та же сторона и тот же принт не гасят числа и не ставят звёздочку", () => {
+    const cur = { last_price_pct: 101, bid: 100.9, ask: 101.2,
+                  ytm: 15, g_spread_bid_bps: 70, ytm_bid: 15.1, g_spread_ask_bps: 60 };
+    const n = applyPatch(cur, { last_price_pct: 101, bid: 100.9, ask: 101.2, bid_qty: 5 });
+    expect(n._mstale).toBeUndefined();
+    expect(n.g_spread_bid_bps).toBe(70);
+    expect(n.ytm_bid).toBe(15.1);
+    expect(n.g_spread_ask_bps).toBe(60);
+  });
+
+  it("сдвинулась одна сторона — гаснут числа только у неё", () => {
+    const cur = { bid: 100.9, ask: 101.2, g_spread_bid_bps: 70, g_spread_ask_bps: 60 };
+    const n = applyPatch(cur, { bid: 100.8, ask: 101.2 });
+    expect(n.g_spread_bid_bps).toBeNull();
+    expect(n.g_spread_ask_bps).toBe(60);
+  });
+});
+
+describe("наложение стрима на строку списка", () => {
+  it("цена наложения другая, чисел к ней нет — число списка гаснет", () => {
+    const row = { bid: 99.0, g_spread_bid_bps: 70, ask: 99.5, g_spread_ask_bps: 60,
+                  last_price_pct: 99.2, ytm: 15 };
+    const out = mergeLive(row, { bid: 99.1, ask: 99.5, last_price_pct: 99.3 });
+    expect(out.bid).toBe(99.1);
+    expect(out.g_spread_bid_bps).toBeNull();
+    expect(out.g_spread_ask_bps).toBe(60);
+    expect(out._mstale).toBe(true);
+    expect(out.ytm).toBe(15);
+  });
+
+  it("наложение с числами движка — они и идут в строку", () => {
+    const row = { bid: 99.0, g_spread_bid_bps: 70, last_price_pct: 99.2, ytm: 15 };
+    const out = mergeLive(row, { bid: 99.1, g_spread_bid_bps: 66, last_price_pct: 99.3,
+                                 ytm: 15.2, _mstale: false });
+    expect(out.g_spread_bid_bps).toBe(66);
+    expect(out.ytm).toBe(15.2);
+    expect(out._mstale).toBe(false);
   });
 });

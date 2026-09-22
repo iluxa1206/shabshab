@@ -82,6 +82,16 @@ export function applyPrice(row, field, px, derived, full = false) {
 /** Наложение патча стрима на прежнее наложение той же бумаги. */
 export function applyPatch(cur, q) {
   const n = { ...(cur || {}), _live: true };
+  // СМЕНУ цены судим ПРОТИВ прежнего наложения: котировка Alor — полный снимок
+  // верха стакана и приходит с каждым тиком, в том числе когда bid/ask/last не
+  // сдвинулись (изменился объём стороны, повторный принт по той же цене).
+  // Бэк по такой котировке ничего не пересчитывает (universe_stream._on_quote
+  // ставит в очередь только СМЕНУ цены), и гашение «на всякий случай»
+  // оставляло прочерк в спредах сторон и звёздочку на строке до следующей
+  // настоящей сделки — то есть, у неликвида, до конца дня.
+  const bidMoved = "bid" in q && cur && (q.bid ?? null) !== (cur.bid ?? null);
+  const askMoved = "ask" in q && cur && (q.ask ?? null) !== (cur.ask ?? null);
+  const lastMoved = q.last_price_pct != null && cur && q.last_price_pct !== cur.last_price_pct;
   if ("bid" in q) n.bid = q.bid ?? null;
   if ("ask" in q) n.ask = q.ask ?? null;
   if (q.vwap_pct != null) n.wap_pct = q.vwap_pct;
@@ -95,10 +105,11 @@ export function applyPatch(cur, q) {
     for (const k of PATCH_METRIC_KEYS) if (k in q) n[k] = q[k];
     n._mstale = false;
   } else {
-    // патч без метрик — цены новее производных: гасим то, что от них зависит
-    if ("bid" in q) { n.g_spread_bid_bps = null; n.ytm_bid = null; }
-    if ("ask" in q) { n.g_spread_ask_bps = null; n.ytm_ask = null; }
-    if (q.last_price_pct != null) n._mstale = true;
+    // патч без метрик — цены новее производных: гасим то, что от них зависит,
+    // но только у СДВИНУВШЕЙСЯ цены (см. выше)
+    if (bidMoved) { n.g_spread_bid_bps = null; n.ytm_bid = null; }
+    if (askMoved) { n.g_spread_ask_bps = null; n.ytm_ask = null; }
+    if (lastMoved) n._mstale = true;
   }
   return n;
 }
@@ -113,6 +124,30 @@ export function applyVolQuote(row, it) {
     if (g != null) row[`g_spread_vol_${side}_bps`] = g;
     if (y != null) row[`ytm_vol_${side}`] = y;
   }
+}
+
+// Цена наложения → её производные в строке списка. Список несёт числа к ТОЙ
+// цене, по которой считал движок (fixed_metrics хранит last/bid/ask расчёта).
+const LIVE_DERIVED = [
+  ["bid", ["g_spread_bid_bps", "ytm_bid"]],
+  ["ask", ["g_spread_ask_bps", "ytm_ask"]],
+];
+
+/** Наложение стрима поверх строки списка. Если наложение принесло цену, но не
+ *  принесло числа к ней (первый патч бумаги — котировка, а не метрики), а цена
+ *  списка другая — число списка посчитано к прежней цене и в строку не идёт:
+ *  то же правило, что applyPatch применяет между двумя патчами. */
+export function mergeLive(row, live) {
+  const out = { ...row, ...live };
+  for (const [px, derived] of LIVE_DERIVED) {
+    if (!(px in live) || (live[px] ?? null) === (row[px] ?? null)) continue;
+    for (const k of derived) if (!(k in live)) out[k] = null;
+  }
+  if (live.last_price_pct != null && !("ytm" in live)
+      && live.last_price_pct !== row.last_price_pct && !("_mstale" in live)) {
+    out._mstale = true;
+  }
+  return out;
 }
 
 /** Поверхностное сравнение строк: одинаковый набор ключей и значений. */
@@ -376,7 +411,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       // повторить ровно тот рассинхрон «свежая цена, старое число», от которого
       // гасятся производные выше. Движок пишет свои числа и в fixed_metrics,
       // поэтому они вернутся ближайшим обновлением списка.
-      const next = fresh ? { ...row, ...live } : row;
+      const next = fresh ? mergeLive(row, live) : row;
       const prev = rowRef.current.get(b.isin);
       const out = sameRow(prev, next) ? prev : next;
       kept.set(b.isin, out);
