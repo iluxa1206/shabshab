@@ -12,6 +12,7 @@ import emCalendar from "../assets/emoji/1f4c5.svg";
 import emAbacus from "../assets/emoji/1f9ee.svg";
 import emColumns from "../assets/emoji/1f3db.svg";
 import emHammer from "../assets/emoji/1f528.svg";
+import BrandBlobatar from "./Blobatar.jsx";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
@@ -122,7 +123,7 @@ export default function Topbar({ user, onLogout, onOpenSettings, extra, features
   return (
     <header className="menubar">
       <div className="brand-row">
-        <span className="wordmark">DESK</span>
+        <BrandBlobatar />
         <TypeMenu type={type} isAdmin={user?.role === "admin"} features={features} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">

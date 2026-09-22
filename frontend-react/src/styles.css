@@ -151,8 +151,19 @@ a, .link { color: var(--fg); text-decoration: underline; text-underline-offset: 
   padding: 0 24px; height: 56px; flex: 0 0 56px;
   border-bottom: 1px solid var(--fg);
 }
-.brand-row { display: flex; align-items: baseline; gap: 10px; }
+/* по центру строки, а не по baseline: у кнопки с иконкой («Аналитика») baseline
+   свой, и она вставала ниже текстовых табов */
+.brand-row { display: flex; align-items: center; gap: 10px; height: 100%; }
 .wordmark { font-size: 15px; font-weight: 800; letter-spacing: 0.02em; }
+/* Блоб-аватар вместо надписи DESK. Высота бокса — по строке шапки, а SVG
+   крупнее и вылезает за неё симметрично: морда занимает не весь viewBox, так
+   что видимого клипа нет, а высота шапки не растёт. */
+.brand-blob { display: inline-flex; align-items: center; justify-content: center;
+  line-height: 0; flex-shrink: 0; height: 100%; }
+.brand-blob svg { display: block; }
+/* кликабельна — по клику корчит рожу; фокус-кольцо как у прочих кнопок шапки */
+.brand-blob { cursor: pointer; }
+.brand-blob:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
 .wordmark .dot { color: var(--mut); }
 .tagline { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: 0.18em; }
 .menu-item, .titlebar, .tb-caption, .tb-ico, .tb-btns, .tb-sq { display: none; }
@@ -1517,11 +1528,7 @@ body.col-resizing * { cursor: col-resize !important; }
 .module-seg { margin-left: 18px; }
 /* инструменты раздела в шапке (Аналитика): вид как у таба навигации, но это
    переключатель окна над таблицей, а не маршрут — потому в своей рамке */
-/* .brand-row выравнивает по baseline (так садятся текстовые табы), а у кнопки с
-   иконкой baseline свой — она вставала на 1.5px выше соседей. Центрируем её в
-   строке явно. */
-.menubar-tools { display: inline-flex; align-items: center; align-self: center;
-  margin-left: 18px; }
+.menubar-tools { display: inline-flex; align-items: center; margin-left: 18px; }
 /* padding на 1px меньше таба: рамка добавляет свои 2px, иначе кнопка выше ряда */
 .tool-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
   border: 1px solid var(--line-2); text-transform: uppercase; letter-spacing: 0.12em;
