@@ -2982,17 +2982,14 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* ---- Первичка (анонсы размещений, внешний источник) ---- */
 .pri-cal .grid tbody tr { cursor: default; }
 .pri-cal .grid tbody td { white-space: nowrap; }
+.pri-cal td.pri-comment { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; color: var(--mut); }
 /* первичка: книга прошла — зелёная дата; книга сегодня — оранжевая плашка, чтоб не пропустить */
 .pri-cal td.pri-book-past { color: var(--up); font-weight: 600; }
 .pri-cal td.pri-book-today { background: var(--rt-a); color: var(--bg); font-weight: 700; }
-/* Комментарий (серия, оферта, поручители) колонкой больше не стоит — он уехал
-   в подсказку ячейки формулы. Метка «i» говорит, что подсказка там есть:
-   иначе текст не найти, наводить курсор наугад никто не станет. */
-.pri-note {
-  margin-left: 6px; padding: 0 4px; font-size: 10px; font-style: italic;
-  color: var(--mut); border: 1px solid var(--line); border-radius: 2px;
-  cursor: help;
-}
+/* подсветка строки при наведении не должна гасить плашку «сегодня»:
+   правило .grid tbody tr:hover td (и его nth-child(2)) специфичнее — перебиваем */
+.pri-cal .grid tbody tr:hover td.pri-book-today,
+.theme-win .pri-cal .grid tbody tr:hover td.pri-book-today { background: var(--rt-a); color: var(--bg); }
 .pri-badge {
   margin-left: 8px; padding: 1px 5px; font-size: 10px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--bg); background: var(--up);
@@ -3003,6 +3000,7 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   letter-spacing: 0.04em; color: var(--mut);
 }
 .pri-fl { color: var(--up); }
+.pri-ccy-fx { color: var(--plc); font-weight: 700; }
 .pri-fx { color: var(--mut); }
 .pri-src { display: block; margin-top: 14px; }
 .pri-spread { font-variant-numeric: tabular-nums; }

@@ -192,13 +192,15 @@ export default function PrimaryCalendar() {
             <th className="left">Размещение</th>
             <th className="left">Эмитент</th>
             <th className="left">Рейтинг</th>
-            <th className="num" title="млн ₽">Объём</th>
+            <th className="num" title="млн, в валюте выпуска">Объём</th>
+            <th className="left">Валюта</th>
             <th className="num" title="лет">Срок</th>
             <th className="left">Формула</th>
             <th className="num" title="базисные пункты">Спред модели</th>
             <th className="left">Частота</th>
             <th className="num" title="проценты годовых">Ориентир YTM</th>
             <th className="num" title="лет">Дюрация</th>
+            <th className="left">Комментарий</th>
           </tr>
         </thead>
         <tbody>
@@ -209,7 +211,10 @@ export default function PrimaryCalendar() {
                   title={r.book_date === t ? "книга сегодня" : r.book_date < t ? "книга прошла" : undefined}>
                 {fmt.date(r.book_date) || "—"}
               </td>
-              <td className="left">{fmt.date(r.issue_date) || "—"}</td>
+              <td className={"left" + (r.issue_date === t ? " pri-book-today" : "")}
+                  title={r.issue_date === t ? "размещение сегодня" : undefined}>
+                {fmt.date(r.issue_date) || "—"}
+              </td>
               <td className="left">
                 {r.url
                   ? <a href={r.url} target="_blank" rel="noreferrer noopener">{r.issuer}</a>
@@ -221,27 +226,31 @@ export default function PrimaryCalendar() {
               <td className="num" title={r.volume_raw || ""}>
                 {r.volume_raw?.startsWith("≥") ? "≥ " : ""}{fmt.num(r.volume_mln, 0) || "—"}
               </td>
+              {/* валюта выпуска: не рубль подсвечиваем — объём и ориентир в ней же */}
+              <td className={"left" + (r.currency && r.currency !== "RUB" ? " pri-ccy-fx" : "")}>
+                {r.currency || "—"}
+              </td>
               <td className="num" title={r.term_raw || ""}>{fmt.num(r.term_years, 1) || "—"}</td>
-              {/* Формула = ориентир организатора («КС + не выше 300 бп»), а
-                  комментарий (серия, оферта, поручитель) ушёл в подсказку: он
-                  длиннее всех остальных колонок вместе и растягивал таблицу
-                  ради текста, который читают у одной строки из двадцати. */}
-              <td className="left" title={r.comment || r.coupon_guide || ""}>
+              {/* Формула = ориентир организатора («КС + не выше 300 бп») */}
+              <td className="left" title={r.coupon_guide || ""}>
                 <span className={"pri-type " + (r.is_floater ? "pri-fl" : "pri-fx")}>
                   {r.is_floater ? "флоатер" : "фикс"}
                 </span>
                 {" "}{guide(r.coupon_guide)}
-                {r.comment && <span className="pri-note">i</span>}
               </td>
               <td className="num pri-spread"><ModelSpread m={r.model} /></td>
               <td className="left">{r.coupon_freq || "—"}</td>
               {/* YTM/дюрация источник считает только по фиксам — у флоатеров пусто */}
               <td className="num" title={r.ytm_raw || ""}>{ytm(r)}</td>
               <td className="num">{fmt.num(r.duration_years, 2) || "—"}</td>
+              {/* комментарий bondresearch (серия, оферта, поручитель, амортизация):
+                  обрезаем по ширине, чтобы длинный текст не растягивал таблицу;
+                  полный — в подсказке */}
+              <td className="left pri-comment" title={r.comment || ""}>{r.comment || "—"}</td>
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={11} className="left mut">Ничего не найдено</td></tr>
+            <tr><td colSpan={13} className="left mut">Ничего не найдено</td></tr>
           )}
         </tbody>
       </table>
