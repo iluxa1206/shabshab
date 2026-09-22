@@ -651,7 +651,8 @@ async def get_bond_candles(
         secid, board = secid or rsec, board or rboard
     if not _SECID_RE.fullmatch(secid) or not re.fullmatch(r"[A-Z0-9]{4}", board):
         raise HTTPException(status_code=400, detail="bad secid/board")
-    return {"isin": isin, "tf": tf, "candles": await MarketDataService.fetch_candles(secid, tf, board)}
+    return {"isin": isin, "tf": tf,
+            "candles": await MarketDataService.fetch_candles(secid, tf, board, isin=isin)}
 
 
 

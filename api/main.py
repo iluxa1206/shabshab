@@ -1059,6 +1059,9 @@ async def hourly_bars_worker():
             stat = await bars_svc.refresh_universe(days=BARS_WORKER_DAYS, full=full,
                                                    concurrency=2)
             logger.info("hourly bars (full=%s): %s", full, stat)
+            # отметка «проход дошёл до конца»: по ней ensure_bars решает, сколько
+            # дней хвоста перечитывать после рестарта/простоя (см. bars._PASS_KEY)
+            await run_bg(bars_svc.mark_pass_finished)
             # хвост дневной свёртки тем же тактом: окно то же, что у налива
             # часов, и трогаются только дни, где оборот изменился
             daily = await bars_svc.build_daily_universe(days=BARS_WORKER_DAYS)

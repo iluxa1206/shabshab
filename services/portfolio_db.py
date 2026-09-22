@@ -11,7 +11,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 _ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("PORTFOLIO_DB", _ROOT / "data" / "portfolio.db"))
@@ -107,6 +109,15 @@ CREATE TABLE IF NOT EXISTS bar_daily(
 );
 CREATE INDEX IF NOT EXISTS ix_bard_isin ON bar_daily(isin, date);
 CREATE INDEX IF NOT EXISTS ix_bard_date ON bar_daily(date);
+
+-- Служебные отметки процесса, которые должны пережить рестарт (см. kv_get/kv_set):
+-- например, момент последнего завершённого прохода демона баров — по нему
+-- ensure_bars понимает, сколько дней хвоста перечитать после простоя.
+CREATE TABLE IF NOT EXISTS kv(
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
+);
 
 -- Прогресс фоновых задач (см. services/progress.py). В базе, а не в памяти:
 -- бэкфиллы запускаются отдельным процессом и иначе не были бы видны, плюс после
@@ -730,6 +741,21 @@ def init_db() -> None:
                 conn.execute(mig)
             except sqlite3.OperationalError:
                 pass    # колонка уже есть
+
+
+def kv_get(key: str) -> Optional[str]:
+    """Служебная отметка по ключу (None — не ставилась)."""
+    with _connect() as c:
+        r = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+    return r[0] if r else None
+
+
+def kv_set(key: str, value: str) -> None:
+    with _lock, _connect() as c:
+        c.execute(
+            "INSERT INTO kv(key,value,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, datetime.now(timezone.utc).isoformat(timespec="seconds")))
 
 
 def _rows(cur) -> list[dict]:

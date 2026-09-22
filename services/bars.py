@@ -34,7 +34,7 @@ import httpx
 # Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
 from services.market_data import moex_client
 
-from services.portfolio_db import _connect, _lock
+from services.portfolio_db import _connect, _lock, kv_get, kv_set
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,26 @@ def tick_vwap_hours(isin: str, day: str) -> dict[str, float]:
             "FROM trade_tick WHERE isin=? AND ts>=? AND ts<? GROUP BY h",
             (isin, day, day + " 24")).fetchall()
     return {r["h"]: r["n"] / r["q"] for r in rows if r["q"]}
+
+
+def tick_hour_bars(isin: str, since_ts: str) -> list[dict]:
+    """OHLCV по часам из тикового архива Alor за ts > since_ts, формат свечей ISS
+    [{'t','o','h','l','c','v'}] (t = 'YYYY-MM-DD HH:00:00', v — штук).
+    Нужен графику: незакрытый час ISS не отдаёт, а тики у нас без лага."""
+    with _connect() as c:
+        rows = c.execute(
+            "SELECT ts, price, qty FROM trade_tick WHERE isin=? AND ts>? "
+            "ORDER BY ts, trade_id", (isin, since_ts)).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        t = r["ts"][:13] + ":00:00"
+        if not out or out[-1]["t"] != t:
+            out.append({"t": t, "o": r["price"], "h": r["price"], "l": r["price"],
+                        "c": r["price"], "v": 0.0})
+        b = out[-1]
+        b["h"] = max(b["h"], r["price"]); b["l"] = min(b["l"], r["price"])
+        b["c"] = r["price"]; b["v"] += r["qty"]
+    return out
 
 
 def _implied_face(candles_of_day: list[dict]) -> Optional[float]:
@@ -534,6 +554,37 @@ def _unpriced_in_window(isin: str, frm: str, till: str) -> int:
     return r[0] if r else 0
 
 
+# МОМЕНТ ПОСЛЕДНЕГО ЗАВЕРШЁННОГО ПРОХОДА ДЕМОНА (в базе — переживает рестарт).
+# «Вчера покрыто» по одному бару (_day_covered) врёт в двух случаях, и оба —
+# про день, оборванный на середине: (1) каждый будний день бар 23:00 писался
+# в 23:07 с семью минутами сделок, а в 00:07 «вчера» уже считалось готовым —
+# 18.09.2026: час 22 — 768 баров, час 23 — 39; (2) простой сервера (19.09.2026
+# 16:37→10:52) оставил день без часов 15–18, и следующий проход их не долил,
+# потому что бары за 09–14 уже были. Лечение одно: хвост инлайн — все дни с
+# последнего завершённого прохода, а не только «сегодня, вчера если пусто».
+_PASS_KEY = "bars_pass_finished"
+
+
+def mark_pass_finished() -> None:
+    """Зовёт демон после удачного прохода по юниверсу (см. hourly_bars_worker)."""
+    # локальное время процесса — контейнер живёт в МСК, как и date.today() ниже
+    kv_set(_PASS_KEY, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def _tail_days_since_pass(cap: int) -> int:
+    """Сколько дней хвоста перечитать: от дня последнего завершённого прохода до
+    сегодня. Проход, закончившийся уже сегодня, закрыл вчера целиком → 0; проход
+    вчера вечером (или простой с позавчера) → 1, 2, … Отметки нет — 1 (вчера)."""
+    last = kv_get(_PASS_KEY)
+    if not last:
+        return min(cap, 1)
+    try:
+        gap = (date.today() - date.fromisoformat(last[:10])).days
+    except ValueError:
+        return min(cap, 1)
+    return max(0, min(cap, gap))
+
+
 def _day_covered(isin: str, day: str) -> bool:
     with _connect() as c:
         r = c.execute(
@@ -557,8 +608,11 @@ async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
     if stale:
         logger.info("bars %s: занулено %d стейл-спредов старой версии", isin, stale)
 
-    # хвост инлайн: сегодня живой моделью; вчера (as-of) — только если не покрыт
+    # хвост инлайн: сегодня живой моделью; вчера (as-of) — если не покрыт ИЛИ
+    # демон не дожил до конца дня (см. _tail_days_since_pass): день с барами за
+    # утро ещё не готов
     tail_days = 0 if await asyncio.to_thread(_day_covered, isin, yesterday) else 1
+    tail_days = max(tail_days, await asyncio.to_thread(_tail_days_since_pass, days))
     tail = await build_bars(isin, min(days, tail_days), kind, board)
     n = await asyncio.to_thread(upsert_bars, tail)
 

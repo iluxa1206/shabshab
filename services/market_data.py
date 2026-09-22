@@ -1387,7 +1387,8 @@ class MarketDataService:
     _CANDLES_TTL = 120.0
 
     @classmethod
-    async def fetch_candles(cls, security: str, tf: str = "1d", board: str = "TQCB") -> List[dict]:
+    async def fetch_candles(cls, security: str, tf: str = "1d", board: str = "TQCB",
+                            isin: Optional[str] = None) -> List[dict]:
         """OHLCV-свечи MOEX для карточки. tf ∈ 5m/1h/1d/1w. security — SECID/ISIN
         бумаги на борде board (корпораты TQCB: SECID=ISIN; ОФЗ TQOB: SECID=SU26…,
         по ISIN не резолвится). Возвращает [{'t','o','h','l','c','v'}] по возрастанию
@@ -1404,35 +1405,20 @@ class MarketDataService:
         raw: List[dict] = []
         try:
             async with moex_client() as client:
-                # iss.reverse=true → СВЕЖИЕ свечи первыми (проверено на живом ISS),
-                # страница 500 строк. Одной страницы мало: 1ч×45д ≈ 630 баров,
-                # 5м(1-мин)×4д ≈ 2500 — без пагинации старый хвост окна молча
-                # отрезался. Листаем start= до конца окна; потолок страниц —
-                # предохранитель от бесконечного цикла на кривом ответе.
-                start = 0
-                for _page in range(40):
-                    resp = await _moex_get(client, url,
-                                           params={"interval": interval, "from": frm,
-                                                   "iss.reverse": "true", "start": start},
-                                           timeout=20)
-                    if resp is None or resp.status_code != 200:
-                        break
-                    c = (await asyncio.to_thread(resp.json)).get("candles", {})
-                    cols, data = c.get("columns", []), c.get("data", [])
-                    idx = {n: cols.index(n) for n in cols}
-                    for row in data:
-                        try:
-                            raw.append({
-                                "t": row[idx["begin"]],
-                                "o": float(row[idx["open"]]), "h": float(row[idx["high"]]),
-                                "l": float(row[idx["low"]]), "c": float(row[idx["close"]]),
-                                "v": float(row[idx["volume"]] or 0),
-                            })
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                    if len(data) < 500:
-                        break
-                    start += len(data)
+                raw = await cls._iss_candle_pages(client, url, interval, frm)
+                # НЕЗАКРЫТУЮ часовую свечу ISS не отдаёт вовсе (в отличие от
+                # дневной): в 12:44 последний бар interval=60 — 11:00, и график
+                # «не обновляется в лайве» до 75 минут. Текущий час дописываем
+                # сами: из тикового архива Alor (без лага), а если архив по
+                # бумаге неполный — из минутных свечей ISS (лаг ~15 мин).
+                if tf == "1h" and raw:
+                    last_t = max(r["t"] for r in raw)
+                    tail = await cls._tick_tail_hours(isin, raw, last_t) if isin else []
+                    if not tail:
+                        fine = await cls._iss_candle_pages(client, url, 1, date.today().isoformat())
+                        fine.sort(key=lambda x: x["t"])
+                        tail = [b for b in cls._agg_candles(fine, 60) if b["t"] > last_t]
+                    raw.extend(tail)
         except Exception as e:
             logger.warning(f"candles error {security} tf={tf}: {e}")
             return []
@@ -1445,6 +1431,60 @@ class MarketDataService:
             if len(cls._candles_mem) > 400:      # окно памяти, не вечный рост
                 for k in list(cls._candles_mem)[:100]:
                     cls._candles_mem.pop(k, None)
+        return raw
+
+    # Тиковому архиву верим, только если он покрывает оборот бумаги: у фиксов
+    # вне юниверса и мелких бумаг в архив попадает лишь крупняк (порог стрима), и
+    # «час из тиков» был бы парой сделок вместо бара. Мерило — последний
+    # закрытый час ISS: штук в тиках ≥ 70% штук в свече.
+    _TICK_TAIL_COVER = 0.7
+
+    @classmethod
+    async def _tick_tail_hours(cls, isin: str, iss_hours: List[dict], last_t: str) -> List[dict]:
+        from services.bars import tick_hour_bars
+        last = max(iss_hours, key=lambda r: r["t"])
+        since = (datetime.strptime(last_t, "%Y-%m-%d %H:%M:%S")
+                 - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        bars = await asyncio.to_thread(tick_hour_bars, isin, since)
+        ref = next((b for b in bars if b["t"] == last_t), None)
+        if not ref or not last["v"] or ref["v"] < cls._TICK_TAIL_COVER * last["v"]:
+            return []
+        return [b for b in bars if b["t"] > last_t]
+
+    @staticmethod
+    async def _iss_candle_pages(client, url: str, interval: int, frm: str) -> List[dict]:
+        """Все страницы свечей ISS с даты frm → [{'t','o','h','l','c','v'}] (без сортировки).
+
+        iss.reverse=true → СВЕЖИЕ свечи первыми (проверено на живом ISS),
+        страница 500 строк. Одной страницы мало: 1ч×45д ≈ 630 баров,
+        5м(1-мин)×4д ≈ 2500 — без пагинации старый хвост окна молча
+        отрезался. Листаем start= до конца окна; потолок страниц —
+        предохранитель от бесконечного цикла на кривом ответе."""
+        raw: List[dict] = []
+        start = 0
+        for _page in range(40):
+            resp = await _moex_get(client, url,
+                                   params={"interval": interval, "from": frm,
+                                           "iss.reverse": "true", "start": start},
+                                   timeout=20)
+            if resp is None or resp.status_code != 200:
+                break
+            c = (await asyncio.to_thread(resp.json)).get("candles", {})
+            cols, data = c.get("columns", []), c.get("data", [])
+            idx = {n: cols.index(n) for n in cols}
+            for row in data:
+                try:
+                    raw.append({
+                        "t": row[idx["begin"]],
+                        "o": float(row[idx["open"]]), "h": float(row[idx["high"]]),
+                        "l": float(row[idx["low"]]), "c": float(row[idx["close"]]),
+                        "v": float(row[idx["volume"]] or 0),
+                    })
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if len(data) < 500:
+                break
+            start += len(data)
         return raw
 
     @staticmethod
