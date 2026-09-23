@@ -151,7 +151,14 @@ async def _warm_fixed(market_cache):
         fm = await fi.compute_fixed_metrics_all(funi, g, fcd)
         fi.apply_ytm_delta(fm, fcd.isoformat())   # Δ YTM день-к-дню
         market_cache["fixed_universe"] = funi
-        market_cache["fixed_metrics"] = fm
+        # СЛИЯНИЕ, А НЕ ЗАМЕНА: строки движка за этот торговый день считаны по
+        # живому потоку и свежее прогрева (см. universe_stream.merge_fixed_metrics)
+        from services import universe_stream as _us
+        _since = time.mktime(fcd.timetuple())
+        _kept, _merged = _us.merge_fixed_metrics(market_cache, fm, _since)
+        if _kept:
+            logger.info("прогрев фиксов: %d строк оставлено за движком, %d слито",
+                        _kept, _merged)
         market_cache["fixed_calc_date"] = fcd.isoformat()
     except Exception as e:
         logger.warning(f"fixed warm error: {e}")

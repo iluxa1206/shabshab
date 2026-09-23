@@ -125,6 +125,34 @@ def test_fixed_sides_batch_fetches_missing_schedules(fixed_row, monkeypatch):
     assert len(calls) == 1
 
 
+def test_fixed_warm_merge_keeps_engine_rows_of_the_day():
+    """Прогрев фиксов не затирает строку, которую движок посчитал в этот
+    торговый день: его цена — живой поток, у прогрева — борд с задержкой."""
+    import time as _t
+    since = _t.mktime((2026, 9, 23, 0, 0, 0, 0, 0, -1))
+    cache = {"fixed_metrics": {
+        # движок считал сегодня — остаётся, прогрев доливает Δ YTM и недостающее
+        "RU000A1FIX01": {"last": 99.5, "ytm": 15.46, "g_spread_bps": 78,
+                         "vol_px": {"bid:5000000": 99.4}, "_calc_ts": since + 3600},
+        # строка вчерашняя — прогрев побеждает, поля движка переживают
+        "RU000A1FIX02": {"last": 98.0, "ytm": 14.0, "vol_px": {"bid:5000000": 97.9},
+                         "_calc_ts": since - 3600},
+    }}
+    fm = {"RU000A1FIX01": {"last": 99.76, "ytm": 15.3, "g_spread_bps": 70,
+                           "delta_ytm": -0.1, "put_date": "2027-01-01"},
+          "RU000A1FIX02": {"last": 98.2, "ytm": 14.1, "delta_ytm": 0.05},
+          "RU000A1FIX03": {"last": 100.0, "ytm": 13.0}}
+    kept, merged = us.merge_fixed_metrics(cache, fm, since)
+    assert (kept, merged) == (1, 2)
+    r1 = cache["fixed_metrics"]["RU000A1FIX01"]
+    assert r1["last"] == 99.5 and r1["ytm"] == 15.46 and r1["g_spread_bps"] == 78
+    assert r1["delta_ytm"] == -0.1 and r1["put_date"] == "2027-01-01"
+    assert r1["vol_px"] == {"bid:5000000": 99.4}
+    r2 = cache["fixed_metrics"]["RU000A1FIX02"]
+    assert r2["last"] == 98.2 and r2["ytm"] == 14.1 and r2["vol_px"] == {"bid:5000000": 97.9}
+    assert cache["fixed_metrics"]["RU000A1FIX03"]["ytm"] == 13.0
+
+
 def test_side_move_queues_cheap_recount_for_fixed(monkeypatch):
     """Движение стакана у фикса идёт в ту же дешёвую очередь, что и флоатер;
     полная очередь нужна только при новой цене сделки."""

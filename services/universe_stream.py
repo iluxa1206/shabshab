@@ -2696,6 +2696,46 @@ def merge_universe_metrics(market_cache: dict, metrics: Dict[str, dict],
     return kept, merged
 
 
+def merge_fixed_metrics(market_cache: dict, fm: Dict[str, dict], since: float) -> tuple:
+    """Прогрев фиксов (api.main._warm_fixed) — в кэш, НЕ затирая работу движка.
+
+    Прогрев делал `market_cache["fixed_metrics"] = fm` — замену ВСЕГО словаря,
+    и зовётся он десятиминутным поллером витрины. Его цены — борд-снапшот ISS,
+    который для сервера отстаёт на 15 минут, а движок считает по живому потоку
+    Alor. Каждые десять минут строка фикса откатывалась к цене «до сделки», и
+    пересчёт никто не заказывал — до следующей сделки в биде/оффере и в спреде
+    жили числа прогрева. Замер 23.09.2026 10:05: у 201 из 657 фиксов со сделкой
+    сегодня цена расчёта не совпадала с Alor спустя 15+ минут; у флоатеров,
+    где проход давно сливается (merge_universe_metrics), — 0.
+
+    Правило ДРУГОЕ, чем у флоатеров: там проход сам берёт живые цены, и строка
+    движка побеждает, только если посчитана ПОСЛЕ старта прохода. Здесь цена
+    прогрева заведомо старее любой строки движка за этот торговый день, поэтому
+    since — начало торгового дня: строка движка с `_calc_ts` не раньше него
+    остаётся целиком, прогрев лишь доливает поля, которых у движка нет, и
+    дневной Δ YTM (apply_ytm_delta считает его только прогрев). Строки без
+    расчёта движка сегодня (нет пуша — нет события) берутся от прогрева поверх
+    прежних, чтобы пережили поля движка (vol_px и числа наборов).
+
+    → (сколько строк оставили за движком, сколько слили)."""
+    prev_all = market_cache.get("fixed_metrics") or {}
+    kept = merged = 0
+    out: Dict[str, dict] = {}
+    for isin, row in fm.items():
+        prev = prev_all.get(isin) or {}
+        if float(prev.get("_calc_ts") or 0.0) >= since:
+            kept += 1
+            r = {**row, **prev}
+            if row.get("delta_ytm") is not None:
+                r["delta_ytm"] = row["delta_ytm"]
+            out[isin] = r
+        else:
+            merged += 1
+            out[isin] = {**prev, **row}
+    market_cache["fixed_metrics"] = out
+    return kept, merged
+
+
 def _store_rows(market_cache: dict, rows: Dict[str, dict]) -> None:
     """Строки такта — по своим витринам: флоатеры в universe_metrics (его читает
     /api/bonds), фиксы в fixed_metrics (его читает /api/fixed). Один кэш на всех
