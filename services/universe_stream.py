@@ -915,6 +915,7 @@ async def _shard_socket(shard_id: int, isins: list, stop: asyncio.Event) -> None
                     for n, isin in enumerate(isins):
                         guid = f"up{shard_id}-{isin}-{n}"
                         guid_isin[guid] = isin
+                        _isin_shard[isin] = shard_id
                         await ws.send_json({
                             "opcode": "QuotesSubscribe", "code": isin,
                             "exchange": "MOEX", "format": "Simple",
@@ -1359,6 +1360,38 @@ def _grid_nodes(isin: str, sides: dict, wap,
 # порога его последняя котировка навсегда выигрывала бы у снапшота ISS —
 # то есть замороженный верх стакана выдавался бы за текущий.
 _LIVE_SIDE_MAX_AGE_SEC = float(os.getenv("LIVE_SIDE_MAX_AGE_SEC", "120"))
+# ISIN → шард пула котировок: по нему пуш бумаги судится вместе с сокетом,
+# через который он приходит (см. _push_usable)
+_isin_shard: Dict[str, int] = {}
+
+
+def _push_usable(isin: str, q: Optional[dict]) -> bool:
+    """Годится ли последний пуш бумаги как текущий верх стакана.
+
+    Alor шлёт котировку ТОЛЬКО НА ИЗМЕНЕНИЕ: у тихой бумаги пуш стареет
+    законно — книга просто не двигалась. Прежний порог судил по возрасту пуша
+    самой бумаги и через две минуты тишины отбрасывал его ради снапшота ISS,
+    который для сервера отстаёт на 15 минут: движок считал стороны по цене
+    четвертьчасовой давности, а живой верх книги тем временем лежал в
+    _last_quote. Замер 23.09.2026 14:10: 11 % бидов и 9 % офферов флоатеров
+    стояли на цене, не совпадающей с книгой, половина из них — ровно на цене
+    ISS; книга у них не двигалась медианно 9,5 минуты.
+
+    Мёртвый сокет — свойство ШАРДА, а не бумаги: его и проверяем. Старый пуш
+    принимаем, пока сокет шарда поднят и получал сообщения не позже порога;
+    бумага без шарда (пул ещё не собран, тесты) — по прежнему правилу."""
+    q = q or {}
+    ts = float(q.get("_ts") or 0.0)
+    if not ts:
+        return True                    # синтетический словарь (тесты, ранние ветки)
+    now = time.time()
+    if now - ts <= _LIVE_SIDE_MAX_AGE_SEC:
+        return True
+    sid = _isin_shard.get(isin)
+    st = _shards.get(sid) if sid is not None else None
+    if not st:
+        return False
+    return bool(st.get("up")) and now - float(st.get("last") or 0.0) <= _LIVE_SIDE_MAX_AGE_SEC
 
 
 def live_sides(isin: str, row: Optional[dict] = None) -> dict:
@@ -1379,8 +1412,8 @@ def live_sides(isin: str, row: Optional[dict] = None) -> dict:
     q = _last_quote.get(isin) or {}
     if not q:
         return {}
-    if time.time() - float(q.get("_ts") or 0.0) > _LIVE_SIDE_MAX_AGE_SEC:
-        return {}                      # стрим молчит — верх стакана не свежее снапшота
+    if not _push_usable(isin, q):
+        return {}                      # сокет шарда молчит — верх стакана не свежее снапшота
     out = {}
     for side in ("bid", "ask"):
         px = q.get(side)
@@ -1772,7 +1805,7 @@ def _sides_of(q: dict) -> dict:
     return out
 
 
-def _sides_from(q: Optional[dict], snap: dict) -> dict:
+def _sides_from(q: Optional[dict], snap: dict, isin: Optional[str] = None) -> dict:
     """Цены сторон: из котировочного пуша, а чего в нём нет — из биржевого
     снапшота.
 
@@ -1791,8 +1824,9 @@ def _sides_from(q: Optional[dict], snap: dict) -> dict:
     q = q or {}
     # Метку ставит _on_quote на КАЖДЫЙ пуш, поэтому её отсутствие — не «очень
     # старая котировка», а синтетический словарь (тесты, ранние ветки): такой
-    # отбрасывать нечестно, стареем только то, у чего метка есть.
-    if q.get("_ts") and time.time() - float(q["_ts"]) > _LIVE_SIDE_MAX_AGE_SEC:
+    # отбрасывать нечестно. Старый пуш ЖИВОГО шарда — тоже верх книги: Alor
+    # шлёт котировку только на изменение (см. _push_usable).
+    if not _push_usable(isin or "", q):
         q = {}
     return _sides_of({side: (q.get(side) if q.get(side) is not None
                              else (snap or {}).get(side))
@@ -1846,7 +1880,7 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
         # КОТИРОВОЧНЫЙ ПУШ НЕ ОБЯЗАТЕЛЕН и не обязан быть полным: сторону, которой
         # в нём нет, берём из биржевого снапшота (см. _sides_from).
         row = dict(row)
-        sides = _sides_from(_last_quote.get(isin), snap)
+        sides = _sides_from(_last_quote.get(isin), snap, isin)
         for side, v in sides.items():
             row[side] = v
         _fill_side_metrics(row, isin, sides, snap, book)
@@ -1904,7 +1938,7 @@ def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
                      ("vol", "val_today")):
         if snap.get(src) is not None:
             row[dst] = snap[src]
-    sides = _sides_from(_last_quote.get(isin), snap)
+    sides = _sides_from(_last_quote.get(isin), snap, isin)
     row["bid"], row["ask"] = sides["bid"], sides["ask"]
     face_unit = (row.get("faceunit") or "RUB").upper()
     curve = ctx.get("g_curve") if face_unit in ("", "RUB", "SUR", "RUR") else None
@@ -2008,7 +2042,7 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict,
     # сторон (тик сделки), а row["bid"]/row["ask"] пишутся безусловно и уезжают
     # на фронт явным null — у ОФЗ гасли обе стороны и все их метрики при живых
     # ценах в борд-снапшоте.
-    sides = _sides_from(q, snap)
+    sides = _sides_from(q, snap, isin)
     row["bid"], row["ask"] = sides["bid"], sides["ask"]
     # НКД и вчерашнее закрытие — из борд-снапшота: в справке универса они от
     # часового кэша, а НКД капает каждый день
@@ -2493,7 +2527,7 @@ def _crunch(batch: list, ctx: dict, enrich=None, deadline: Optional[float] = Non
         # (прод 27.08.2026 — вся лестница стакана в телеграме). Батч из двух-трёх
         # цен стоит ~13 мс на бумагу (замер там же), поток и база не пересобираются.
         _snap = ctx["board"].get(isin, {}) or {}
-        sides = _sides_from(q, _snap)
+        sides = _sides_from(q, _snap, isin)
         for side, v in sides.items():
             row[side] = v
         _fill_side_metrics(row, isin, sides, _snap, book)
