@@ -2993,8 +2993,10 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* первичка: книга прошла — зелёная дата; книга сегодня — оранжевая плашка, чтоб не пропустить */
 .pri-cal td.pri-book-past { color: var(--up); font-weight: 600; }
 .pri-cal td.pri-book-today { background: var(--rt-a); color: var(--bg); font-weight: 700; }
-/* подсветка строки при наведении не должна гасить плашку «сегодня»:
-   правило .grid tbody tr:hover td (и его nth-child(2)) специфичнее — перебиваем */
+/* ни sticky-фон 2-й колонки (.grid tbody td:nth-child(2) — там дата размещения),
+   ни подсветка строки при наведении не должны гасить плашку «сегодня» — перебиваем */
+.pri-cal .grid tbody td.pri-book-today,
+.theme-win .pri-cal .grid tbody td.pri-book-today,
 .pri-cal .grid tbody tr:hover td.pri-book-today,
 .theme-win .pri-cal .grid tbody tr:hover td.pri-book-today { background: var(--rt-a); color: var(--bg); }
 .pri-badge {
