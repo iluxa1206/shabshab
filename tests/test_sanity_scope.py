@@ -111,12 +111,16 @@ def test_beyond_scale_is_flagged_not_just_blank(ruonia_curve):
 
 def test_insane_foreign_horizon_does_not_blank_the_priced_one(ruonia_curve):
     """ВТБСУБТ2-2 (прод 29.09): цена 84, колл через считанные дни — к нему
-    доходность в сотни тысяч процентов, но при цене ниже выкупа колл никто не
-    исполнит, и строка прайсится к погашению. Число погашения остаётся."""
-    call_day = CD + timedelta(days=5)
+    доходность в тысячи процентов, но при цене ниже выкупа колл никто не
+    исполнит, и строка прайсится к погашению. Число погашения остаётся.
+
+    Колл через 20 дней, а не через 5, и НКД ненулевой: у крайних доходностей
+    XIRR сходится не всегда, а нулевой НКД уводит расчёт в лестницу начисления,
+    которая читает локальные кэши, — тест зависел от чекаута."""
+    call_day = CD + timedelta(days=20)
     m = calculate_valuation_metrics(
         make_bond(base="RUONIA", maturity=MATURITY, issue=ISSUE),
-        84.0, ruonia_curve, CD, accrued_override=0.0, periods=_periods(),
+        84.0, ruonia_curve, CD, accrued_override=5.0, periods=_periods(),
         amorts=None, offers=[{"date": call_day.isoformat(), "type": "Колл-опцион",
                               "price": 100.0}],
         ruonia_curve=ruonia_curve, with_margins=False)
