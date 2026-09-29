@@ -472,6 +472,11 @@ td.mut { color: var(--mut); }
 td.mstale { opacity: 0.4; font-style: italic; }
 /* цена = prev-close (нет сделки сегодня / не в Alor-потоке) — приглушаем */
 td.px-stale { color: var(--mut); }
+/* сделок не было ни разу: цена в ячейке — цена размещения, подпись под ней */
+.px-never { display: block; font-size: 9px; letter-spacing: 0.06em; color: var(--mut-2);
+  cursor: help; line-height: 1.1; }
+/* Y-IDX за верхом шкалы (дефолт/дистресс) — метка вместо прочерка */
+.oos { font-size: 10px; font-weight: 600; color: var(--neg); cursor: help; }
 /* бейдж «стейл» — цена подразумевает номинальный убыток (битая/тонкая) */
 .badge-stale { margin-left: 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--neg); border: 1px solid var(--neg); border-radius: 3px; padding: 0 4px; vertical-align: middle; cursor: help; }

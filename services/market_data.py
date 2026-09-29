@@ -1239,7 +1239,7 @@ class MarketDataService:
     # закрытия. Блок marketdata несёт средневзвес и оборот дня — они растут
     # внутри сессии. Раньше оба тянулись вместе каждые 5 секунд, хотя половина
     # ответа заведомо не менялась (и стоила нам доступа к ISS 10.09.2026).
-    _DAILY_FIELDS = ("prev", "accrued", "accrued_date", "prev_date")
+    _DAILY_FIELDS = ("prev", "accrued", "accrued_date", "prev_date", "prev_trade")
     _INTRADAY_FIELDS = ("last", "waprice", "vol", "bid", "ask")
 
     @classmethod
@@ -1360,6 +1360,18 @@ class MarketDataService:
                             "bid": bid_by_secid.get(g(row, "SECID")),
                             "ask": ask_by_secid.get(g(row, "SECID")),
                         }
+                        # СЫРОЙ PREVPRICE — цена последней сделки последнего дня
+                        # со сделками; биржа держит её годами (СитиматНН: сделка
+                        # 2020-го, поле на месте). Пусто = сделок на борде не было
+                        # НИ РАЗУ: сверка 29.09.2026 по истории ISS — 92 из 92
+                        # таких бумаг TQCB без единой сделки. `prev` выше это
+                        # скрывает фолбэком на PREVWAPRICE, а там у такой бумаги
+                        # цена размещения (Самолёт2P5 — 75, доразмещение на PSAU).
+                        # Ключ только когда колонку запрашивали: marketdata-заход
+                        # её не несёт, и отсутствие не должно читаться как «пусто».
+                        if "PREVPRICE" in cols:
+                            pt = g(row, "PREVPRICE")
+                            out[isin]["prev_trade"] = float(pt) if pt is not None else None
         except Exception as e:
             logger.warning(f"board snapshot error: {e}")
         if out:

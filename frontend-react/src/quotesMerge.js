@@ -30,6 +30,9 @@
  * самом запросе котировок (см. fetchQuotes). */
 export const QUOTE_METRIC_FIELDS = {
   yoi: "yield_over_index_bps",
+  // Y-IDX цены сделки за верхом шкалы (доходность > 1000 %): бэк везёт флаг
+  // только на месте пустого числа — ячейка пишет «>1000%» вместо прочерка
+  yoi_oos: "y_idx_oos",
   vol_bid_px: "vol_bid_price_pct",
   vol_ask_px: "vol_ask_price_pct",
   vol_bid_y: "y_idx_vol_bid_bps",
@@ -205,7 +208,7 @@ export function applySideQuote(b, n, side, px, hasKey) {
 
 /** Поля патча движка, посчитанные ПО ЦЕНЕ СДЕЛКИ. */
 export const STREAM_LEVEL_KEYS = [
-  "yield_over_index_bps", "dm_bps", "disc_margin_bps", "z_model_bps",
+  "yield_over_index_bps", "y_idx_oos", "dm_bps", "disc_margin_bps", "z_model_bps",
   "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
   "delta_to_prev_close", "preferred_horizon", "spread_dur_yrs",
 ];

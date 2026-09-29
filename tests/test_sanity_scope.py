@@ -10,7 +10,7 @@
 них проходит отсечку поштучно — одна мусорная сторона гасила Y-IDX по цене
 сделки.
 """
-from datetime import date
+from datetime import date, timedelta
 
 from services.valuation import calculate_valuation_metrics
 from tests.conftest import make_bond, quarterly_periods
@@ -75,3 +75,72 @@ def test_row_sanity_keeps_healthy_prices_of_the_batch(ruonia_curve):
     alive = {p: v for p, v in (hz.get("y_idx_by_price") or {}).items()
              if v is not None}
     assert set(alive) == {99.0, 99.5}, hz.get("y_idx_by_price")
+
+
+# ── потолок шкалы и горизонт «за себя» (29.09.2026) ─────────────────────────
+#
+# Прежний потолок (150 % / 15 000 бп) резал именно дистресс: СамолетP14 по 46
+# за 0,8 года — 226 %, и в день обвала у бумаги молчали Y-IDX, бид и оффер.
+# А безумие горизонта, к которому строка не прайсится (колл через дни при цене
+# ниже выкупа), гасило честный спред к погашению.
+
+
+def _ytm(m):
+    return (m.get("horizons") or {}).get("maturity", {}).get("yield_xirr_pct")
+
+
+def test_distress_band_keeps_its_spread(ruonia_curve):
+    """Доходность 150–1000 % — дистресс, а не мусор входа: число показываем."""
+    m = _calc(10.0, None, ruonia_curve)
+    y = _ytm(m)
+    assert y is not None and 150.0 < y < 1000.0, f"фикстура вне полосы дистресса: {y}"
+    assert m["yield_over_index_bps"] is not None
+    assert m["pricing_status"] != "SANITY_FLAG"
+    assert m["horizons"]["maturity"]["y_idx_oos"] is False
+
+
+def test_beyond_scale_is_flagged_not_just_blank(ruonia_curve):
+    """Выше потолка число снимается, но горизонт несёт флаг «вне шкалы» —
+    витрине есть чем отличить дефолт от «нет данных»."""
+    m = _calc(0.5, None, ruonia_curve)
+    hz = m["horizons"]["maturity"]
+    assert m["yield_over_index_bps"] is None and hz["yield_over_index_bps"] is None
+    assert hz["y_idx_oos"] is True
+    assert m["pricing_status"] == "SANITY_FLAG"
+
+
+def test_insane_foreign_horizon_does_not_blank_the_priced_one(ruonia_curve):
+    """ВТБСУБТ2-2 (прод 29.09): цена 84, колл через считанные дни — к нему
+    доходность в сотни тысяч процентов, но при цене ниже выкупа колл никто не
+    исполнит, и строка прайсится к погашению. Число погашения остаётся."""
+    call_day = CD + timedelta(days=5)
+    m = calculate_valuation_metrics(
+        make_bond(base="RUONIA", maturity=MATURITY, issue=ISSUE),
+        84.0, ruonia_curve, CD, accrued_override=0.0, periods=_periods(),
+        amorts=None, offers=[{"date": call_day.isoformat(), "type": "Колл-опцион",
+                              "price": 100.0}],
+        ruonia_curve=ruonia_curve, with_margins=False)
+    assert "call" in m["horizons"], "фикстура без колл-горизонта"
+    call = m["horizons"]["call"]
+    assert call["yield_over_index_bps"] is None and call["y_idx_oos"] is True
+    assert m["preferred_horizon"] == "maturity"
+    assert m["horizons"]["maturity"]["yield_over_index_bps"] is not None
+    assert m["yield_over_index_bps"] is not None
+    assert m["pricing_status"] != "SANITY_FLAG"
+
+
+def test_price_level_sanity_still_blanks_every_horizon(ruonia_curve, monkeypatch):
+    """Вердикт самой ЦЕНЫ (НКД источника 0 и нет расписания — dirty не собрать
+    честно) гасит все горизонты, как и до разделения сторожа по горизонтам."""
+    # лестница НКД ничего не нашла — ровно тот случай, когда вердикт взводится
+    monkeypatch.setattr("services.accrued.accrued_for", lambda *a, **k: (None, "нет"))
+    put_day = CD + timedelta(days=400)
+    m = calculate_valuation_metrics(
+        make_bond(base="RUONIA", maturity=MATURITY, issue=ISSUE),
+        99.0, ruonia_curve, CD, accrued_override=0.0, periods=None,
+        amorts=None, offers=[{"date": put_day.isoformat(), "type": "Оферта", "price": 100.0}],
+        ruonia_curve=ruonia_curve, with_margins=False)
+    assert any(w.startswith("sanity: НКД") for w in m["warnings"]), "фикстура без вердикта цены"
+    assert m["pricing_status"] == "SANITY_FLAG"
+    for name, h in (m.get("horizons") or {}).items():
+        assert h.get("yield_over_index_bps") is None, name

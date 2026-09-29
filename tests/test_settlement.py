@@ -374,12 +374,15 @@ def test_sanity_hides_all_spread_metrics_together(keyrate_curve, calc_date,
 
     Регресс 24.08: у дефолтного неликвида (цена 8 % от номинала) Y-IDX был
     скрыт как безумный, а DM из того же расчёта оставался — 14 824 bps, и это
-    уезжало в spread_daily. Либо все спред-метрики осмысленны, либо ни одна."""
+    уезжало в spread_daily. Либо все спред-метрики осмысленны, либо ни одна.
+
+    Цена 1 %, а не 8 %: с 29.09.2026 потолок сторожа — 1000 % доходности, и
+    8 % номинала на этой фикстуре законно проходят как дистресс."""
     monkeypatch.setattr("services.valuation._index_provider",
                         lambda base, warnings, calc_date=None: (flat_index_15[0], list(zip(*flat_index_15[1]))))
     bond = make_bond(margin_bps=150)
     periods = _periods(calc_date - timedelta(days=40), value=25.0)
-    m = calculate_valuation_metrics(bond, 8.0, keyrate_curve, calc_date,
+    m = calculate_valuation_metrics(bond, 1.0, keyrate_curve, calc_date,
                                     accrued_override=accrued_at(periods, settle_date(calc_date)),
                                     periods=periods)
     if m["pricing_status"] != "SANITY_FLAG":

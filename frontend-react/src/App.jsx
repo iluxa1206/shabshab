@@ -50,7 +50,7 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "advf", "advm", "nosub", "noam", "cls"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "advf", "advm", "nosub", "noam", "nodead", "cls"];
 // Субординация — по имени бумаги: отдельного признака нет ни у MOEX, ни у
 // corpbonds, а маркер в short_name — устойчивая конвенция («ВТБСУБ1-12»,
 // «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
@@ -118,6 +118,14 @@ function Dashboard() {
     const p = initialParams();
     if (p.has("noam")) return p.get("noam") === "1";
     return localStorage.getItem("hideAmort") === "1";
+  });
+  // неторгуемые вон: по бумаге не было НИ ОДНОЙ сделки на бирже (флаг
+  // never_traded с бэка — пустой PREVPRICE борда). Цена у такой строки — цена
+  // размещения, спред посчитан к ней, рынка нет. Выключен по умолчанию.
+  const [hideDead, setHideDead] = useState(() => {
+    const p = initialParams();
+    if (p.has("nodead")) return p.get("nodead") === "1";
+    return localStorage.getItem("hideNeverTraded") === "1";
   });
   // класс эмитента: OFZ (суверен Минфина) / CORP (всё остальное, включая субфеды).
   // Пустой список = оба, как и у прочих групп-мультивыборов.
@@ -218,6 +226,7 @@ function Dashboard() {
       if (twoSided) next.set("two", "1");
       if (hideSub) next.set("nosub", "1");
       if (hideAmort) next.set("noam", "1");
+      if (hideDead) next.set("nodead", "1");
       clsSel.forEach((v) => next.append("cls", v));
       if (volBid) next.set("vb", String(volBid));
       if (volAsk) next.set("va", String(volAsk));
@@ -230,11 +239,12 @@ function Dashboard() {
       if (advMin && advMode === "lte") next.set("advm", "lte");
       return next;
     }, { replace: true });
-  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, clsSel,
+  }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, hideDead, clsSel,
       volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
+  useEffect(() => { localStorage.setItem("hideNeverTraded", hideDead ? "1" : "0"); }, [hideDead]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
   useEffect(() => { localStorage.setItem("volMode", volMode); }, [volMode]);
@@ -734,6 +744,8 @@ function Dashboard() {
     if (hideSub) rows = rows.filter((b) => !SUBORD_RE.test(b.short_name || ""));
     // амортизация — факт графика MOEX (больше одного транша погашения), флаг с бэка
     if (hideAmort) rows = rows.filter((b) => !b.has_amort);
+    // ни одной сделки на бирже — флаг с бэка; null (не знаем) не прячем
+    if (hideDead) rows = rows.filter((b) => b.never_traded !== true);
     // ОФЗ / КОРП: класс считает бэк (is_ofz), фронт только сопоставляет выбор
     if (clsSel.length) rows = rows.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
@@ -789,7 +801,7 @@ function Dashboard() {
     // одиннадцатилетних, хотя её метрики посчитаны к оферте.
     return sortRows(rows, key, dir, sortMemo.current,
                     (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, clsSel, twoSided,
+  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, hideDead, clsSel, twoSided,
       query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode,
       volOn, volBid, volAsk, volMode, depth]);
 
@@ -906,12 +918,12 @@ function Dashboard() {
   // поэтому в бейдж он попадает только когда СНЯТ (рынок показан целиком).
   const activeFilters = (onlyWatch ? 1 : 0) + (basesSel.length ? 1 : 0) + (ratingsSel.length ? 1 : 0)
     + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 0 : 1) + (query !== "" ? 1 : 0)
-    + (hideAmort ? 1 : 0) + (clsSel.length ? 1 : 0)
+    + (hideAmort ? 1 : 0) + (hideDead ? 1 : 0) + (clsSel.length ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
-    setTwoSided(false); setHideSub(true); setHideAmort(false); setClsSel([]);
+    setTwoSided(false); setHideSub(true); setHideAmort(false); setHideDead(false); setClsSel([]);
     setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
     setSpreadFrom(""); setSpreadTo(""); setAdvMin("");
   }, []);
@@ -931,6 +943,7 @@ function Dashboard() {
         twoSided={twoSided} setTwoSided={setTwoSided}
         hideSub={hideSub} setHideSub={setHideSub}
         hideAmort={hideAmort} setHideAmort={setHideAmort}
+        hideDead={hideDead} setHideDead={setHideDead}
         clsSel={clsSel} toggleCls={toggleIn(setClsSel)}
         volBid={volBid} setVolBid={setVolBid} volAsk={volAsk} setVolAsk={setVolAsk}
         volMode={volMode} setVolMode={setVolMode}

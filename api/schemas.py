@@ -349,12 +349,20 @@ class BondListItem(BaseModel):
     index_yield_pct: Optional[float] = None    # YTM роллирования RUONIA на тот же срок, % (база для всех флоатеров)
     disc_margin_bps: Optional[int] = None      # наш discount margin (Fabozzi)
     yield_over_index_bps: Optional[int] = None # IRR бумаги − доходность роллирования индекса, bps
+    # Y-IDX цены сделки ЗА ВЕРХОМ ШКАЛЫ (доходность > 1000 %, services.valuation.
+    # _SANE_PCT): число снято сторожем, но это дефолт/дистресс, а не «нет
+    # данных» — витрина пишет «>1000%» вместо прочерка
+    y_idx_oos: bool = False
     # средневзвешенный (по обороту) спред за ПРЕДЫДУЩИЕ 7 дней, bps — база, от
     # которой витрина считает отклонение текущего Y-IDX (services.bars.spread_avg_map)
     y_idx_avg7_bps: Optional[float] = None
     price_implausible: bool = False            # цена → гарант. убыток (стейл/тонкая), спреды скрыты
     price_thin: bool = False                    # 0 сделок сегодня → цена несвежая, DM/z с ненадёжной цены
     price_stale: bool = False                   # показана prev-close (нет live/сделки сегодня), не текущая
+    # СДЕЛОК НА БИРЖЕ НЕ БЫЛО НИ РАЗУ (PREVPRICE борда пуст и сегодня сделок нет).
+    # Цена в строке тогда — PREVWAPRICE MOEX, обычно цена размещения/доразмещения,
+    # и спред посчитан к ней, а не к рынку. None — борд-снимок бумагу не знает.
+    never_traded: Optional[bool] = None
     z_model_bps: Optional[int] = None  # наш z-спред над КБД ОФЗ
     rating: Optional[str] = None
     # Рейтинги ПО АГЕНТСТВАМ (слой bondresearch): «A+/A» = Эксперт РА / АКРА,

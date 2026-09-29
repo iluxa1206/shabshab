@@ -743,6 +743,9 @@ def _seed_price(isin: str, px) -> None:
 # ключи enrich_bond → имена полей строки таблицы (те же, что в /api/bonds)
 _METRIC_FIELDS = {
     "yoi": "yield_over_index_bps", "dm": "dm_bps", "disc_dm": "disc_margin_bps",
+    # Y-IDX цены сделки за верхом шкалы (дефолт/дистресс): едет вместе с yoi,
+    # иначе «>1000%» остался бы в строке после возврата числа в шкалу
+    "yoi_oos": "y_idx_oos",
     "z_model": "z_model_bps", "ytm": "yield_xirr_pct", "base_ytm": "index_yield_pct",
     "dirty": "dirty_price_rub", "delta": "delta_to_prev_close",
     # Y-IDX верха стакана — те же числа, что в /api/bonds. Уходят в патч ВМЕСТЕ
@@ -2941,7 +2944,7 @@ def _restore_snapshot(ctx: dict, market_cache: dict) -> int:
 # Поля строки, посчитанные ПО ЦЕНЕ СДЕЛКИ: их можно взять из снимка только
 # если цена та же. Иначе в таблице окажется свежая цена со спредом от прежней —
 # ровно тот рассинхрон, от которого гасятся производные при живом пересчёте.
-_SNAP_LEVEL_FIELDS = ("yoi", "dm", "disc_dm", "z_model", "ytm", "base_ytm",
+_SNAP_LEVEL_FIELDS = ("yoi", "yoi_oos", "dm", "disc_dm", "z_model", "ytm", "base_ytm",
                       "dirty", "delta", "horizon", "spread_dur")
 # Поля, посчитанные по цене СТОРОНЫ и по средневзвесу — каждое со своей ценой.
 _SNAP_PRICE_FIELDS = {"last": _SNAP_LEVEL_FIELDS, "bid": ("yoi_bid",),

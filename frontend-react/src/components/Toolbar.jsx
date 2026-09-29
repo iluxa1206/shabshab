@@ -7,7 +7,7 @@ import RangeWindow from "./RangeWindow.jsx";
 export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating, ratingOpts,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
-  hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
+  hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
   currencies, currenciesSel, toggleCurrency, resetCurrencies,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
@@ -78,6 +78,7 @@ export default function Toolbar({
           toggleEmitter={toggleEmitter} clearEmitters={clearEmitters}
           hideSub={hideSub} setHideSub={setHideSub}
           hideAmort={hideAmort} setHideAmort={setHideAmort}
+          hideDead={hideDead} setHideDead={setHideDead}
           clsSel={clsSel} toggleCls={toggleCls}
           currencies={currencies} currenciesSel={currenciesSel}
           toggleCurrency={toggleCurrency} resetCurrencies={resetCurrencies}

@@ -129,6 +129,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     implausible = False
     hz, off_d, sm_off, dm_off = "maturity", None, None, None
     yoi_wap = None
+    yoi_oos = False        # Y-IDX цены расчёта за верхом шкалы (valuation._over_scale)
     hz_alt, yoi_alt = None, None
     # Маркер оферты для таблицы (даты из MOEX bondization). offertype у MOEX
     # колл не различает — на всём универсе только 'Оферта'/'Оферта (состоялось)'/
@@ -183,6 +184,9 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
             dm = _hzm.get("sm_bps", m.get("dm_bps"))
             disc_dm = _hzm.get("disc_margin_bps", m.get("disc_margin_bps"))
             yoi = _hzm.get("yield_over_index_bps", m.get("yield_over_index_bps"))
+            # число есть, но показать его нечем (дефолт/дистресс за потолком
+            # сторожа) — витрина пишет «>1000%» вместо прочерка «нет данных»
+            yoi_oos = bool(yoi is None and _hzm.get("y_idx_oos"))
             # Дюрация — ИЗ ТОГО ЖЕ горизонта, что и спред: иначе точка на графике
             # аналитики стоит на сроке до погашения, а её Y-IDX посчитан к оферте.
             dur_hz = _hzm.get("dur_yrs")
@@ -284,6 +288,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     # в WS-патч не уходит; нужен фильтру «без аморт» на фронте.
     has_amort = sum(1 for a in (amorts or []) if a.get("value") is not None) > 1
     return {"last": px_display, "dirty": dirty, "dm": dm, "disc_dm": disc_dm, "yoi": yoi, "delta": delta,
+            "yoi_oos": yoi_oos,
             "has_amort": has_amort,
             "bid": bid, "ask": ask, "yoi_bid": yoi_bid, "yoi_ask": yoi_ask,
             "face_px": face_px, "accrued_settle": accrued_settle, "yoi_slope": yoi_slope,

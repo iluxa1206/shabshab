@@ -9,7 +9,7 @@ import { filterByText } from "../search.js";
 export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
-  hideSub, setHideSub, hideAmort, setHideAmort, clsSel, toggleCls,
+  hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
   currencies, currenciesSel, toggleCurrency, resetCurrencies,
   activeCount, extra,
 }) {
@@ -70,6 +70,12 @@ export default function FiltersMenu({
                 title={"Убрать амортизируемые выпуски (в графике MOEX больше одного транша погашения). "
                   + "У них падающий номинал — спред и спред-дюрация не сопоставимы с bullet-выпусками."}
                 onClick={() => setHideAmort(!hideAmort)}>БЕЗ АМОРТ</button>
+              {/* только у витрины флоатеров: флаг never_traded считает её бэк */}
+              {setHideDead && <button className={"chip-btn" + (hideDead ? " on" : "")}
+                aria-pressed={!!hideDead}
+                title={"Убрать выпуски, по которым на бирже не было ни одной сделки. "
+                  + "Цена у них — цена размещения, спред посчитан к ней, а не к рынку."}
+                onClick={() => setHideDead(!hideDead)}>БЕЗ НЕТОРГУЕМЫХ</button>}
             </div>
           </div>}
 

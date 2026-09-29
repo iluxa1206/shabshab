@@ -65,8 +65,24 @@ async def compute_universe_metrics(uni: list, isins: list) -> dict:
     return await _cum(uni, isins, _cache_path("isins_cache.json"))
 
 
+def _never_traded(board_row: Optional[dict], mx: dict) -> Optional[bool]:
+    """Бумага, по которой на бирже не было НИ ОДНОЙ сделки.
+
+    Признак — пустой сырой PREVPRICE борда (MarketDataService.fetch_board_
+    snapshot, ключ prev_trade) плюс ни одной сделки сегодня: ни в снимке ISS,
+    ни в потоке движка (last без price_stale — цена сегодняшней сделки).
+    None — не знаем: бумаги нет в борд-снимке или колонку ещё не тянули."""
+    if not board_row or "prev_trade" not in board_row:
+        return None
+    if board_row["prev_trade"] is not None or board_row.get("last") is not None:
+        return False
+    if mx.get("last") is not None and not mx.get("price_stale"):
+        return False
+    return True
+
+
 def _uni_item(u, name, mx, adv=None, avg7=None,
-              vol_bid=None, vol_ask=None, issue_volume=None):
+              vol_bid=None, vol_ask=None, issue_volume=None, board_row=None):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond).
 
     Спред-дюрация приходит ТОЛЬКО из движка (mx["spread_dur"] — Macaulay потока
@@ -104,6 +120,8 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
         delta_to_prev_close=mx.get("delta"), disc_margin_bps=mx.get("disc_dm"),
         yield_xirr_pct=mx.get("ytm"), index_yield_pct=mx.get("base_ytm"),
         yield_over_index_bps=mx.get("yoi"), y_idx_avg7_bps=avg7,
+        y_idx_oos=bool(mx.get("yoi_oos")) and mx.get("yoi") is None,
+        never_traded=_never_traded(board_row, mx),
         price_implausible=mx.get("implausible") or False,
         price_thin=mx.get("price_thin") or False, price_stale=mx.get("price_stale") or False,
         emitter_id=u.get("emitter_id"), emitter_name=u.get("emitter_name"),
@@ -131,6 +149,13 @@ async def _universe_bonds(extra_list, cache, limit, offset,
     shortnames = await MarketDataService.fetch_moex_shortnames()
     # объём выпуска деньгами — дневной кэш того же батча, что штуки для календаря
     issue_vol = await MarketDataService.fetch_issue_volumes()
+    # борд-снимок держит свежим поллер котировок — здесь попадание в кэш; из
+    # него только признак «сделок не было ни разу» (см. _never_traded)
+    try:
+        board = await MarketDataService.fetch_board_snapshot()
+    except Exception as e:
+        logger.warning("board snapshot for never_traded failed: %s", e)
+        board = {}
     watch = set(extra_list)
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
@@ -168,7 +193,8 @@ async def _universe_bonds(extra_list, cache, limit, offset,
         if mx is None:
             mx = {"last": cached_prices.get(isin)}
         items.append(_uni_item(u, name, mx, adv.get(isin),
-                               avg7.get(isin), vol_bid, vol_ask, issue_vol.get(isin)))
+                               avg7.get(isin), vol_bid, vol_ask, issue_vol.get(isin),
+                               board.get(isin)))
     return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
 
 
@@ -475,6 +501,10 @@ async def get_quotes(
         # изменилось» и держал в ячейке спред от прошлой цены.
         if m and "yoi" in m:
             it["yoi"] = m["yoi"]
+            # «за верхом шкалы» — вердикт того же расчёта. Нужен только на
+            # месте пустого числа: у строк с числом не везём (такт секунда)
+            if m["yoi"] is None:
+                it["yoi_oos"] = bool(m.get("yoi_oos"))
             # ЦЕНА РАСЧЁТА У ПЕРВИЧНОЙ МЕТРИКИ — как у сторон и средневзвеса.
             # Без неё клиент ставил yoi вообще без сверки и снимал приглушение,
             # перетирая результат более строгой WS-сверки: поллер ходит раз в

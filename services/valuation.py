@@ -588,8 +588,15 @@ def calculate_valuation_metrics(
 
     # SANITY-GUARD (C6): вывод вне разумных границ = плохой вход (кривая/параметры/
     # цена) → чистим метрику в None + помечаем, а не выдаём мусор в таблицу. Границы
-    # широкие: ловят только явную дичь (SM −30000bps, ytm 900%), не режут дистресс.
+    # широкие: ловят только явную дичь (SM −30000bps, ytm 1000%+), не режут дистресс.
     # Стоит ДО сборки горизонтов: в horizons["maturity"] должны лечь уже чистые цифры.
+    #
+    # Сторож строки судит ГОРИЗОНТ, а не весь расчёт: warnings общий на все
+    # горизонты, поэтому считаем «свои» предупреждения по отметке длины списка.
+    # Всё, что взведено ДО отметки (НКД источника 0 без расписания) и dirty ≤ 0
+    # ниже, — вердикт самой ЦЕНЫ: он гасит все горизонты сразу.
+    _w_mat = len(warnings)
+    mat_oos = _over_scale(impl_yield, yield_over_index_bps)
     sm_bps = _sane_bps(sm_bps, warnings, "sm")
     disc_margin_bps = _sane_bps(disc_margin_bps, warnings, "disc_margin")
     yield_over_index_bps = _sane_bps(yield_over_index_bps, warnings, "yield_over_index")
@@ -602,8 +609,11 @@ def calculate_valuation_metrics(
     dm_by_price = {p: _sane_bps(v, warnings, "disc_margin_alt", alt=True)
                    for p, v in dm_by_price.items()}
     impl_yield = _sane_pct(impl_yield, warnings, "yield")
+    _w_dirty = len(warnings)
     if dirty_rub is not None and dirty_rub <= 0:
         warnings.append("sanity: dirty_price ≤ 0")
+    price_bad = _row_sanity(warnings[:_w_mat]) or _row_sanity(warnings[_w_dirty:])
+    hz_bad: Dict[str, bool] = {"maturity": price_bad or _row_sanity(warnings[_w_mat:_w_dirty])}
 
     def _dur_block(cfs_list, dirty) -> Dict[str, Any]:
         """Блок дюраций ИМЕННО ТОГО потока, из которого посчитан спред горизонта:
@@ -716,9 +726,12 @@ def calculate_valuation_metrics(
                 except Exception as e:
                     logger.warning(f"alt-price horizon DM error {bond.isin} @{_p}: {e}")
                     dm_alt_h[_p] = None
+        _yoi_h = (round((y_h - idx_y_h) * 100.0)
+                  if (y_h is not None and idx_y_h is not None) else None)
         return {
             "y_idx_by_price": y_idx_alt_h,
             "ytm_by_price": ytm_alt_h, "dm_by_price": dm_alt_h,
+            "y_idx_oos": _over_scale(y_h, _yoi_h),
             "date": cut,
             **_dur_block(cfs_h, dirty_rub),
             "price_pct": _opp(offers, cut),
@@ -727,9 +740,7 @@ def calculate_valuation_metrics(
             "yield_xirr_pct": _sane_pct(round(y_h, 4) if y_h is not None else None,
                                         warnings, "yield_horizon"),
             "index_yield_pct": round(idx_y_h, 4) if idx_y_h is not None else None,
-            "yield_over_index_bps": (_sane_bps(round((y_h - idx_y_h) * 100.0), warnings,
-                                               "yield_over_index_horizon")
-                                     if (y_h is not None and idx_y_h is not None) else None),
+            "yield_over_index_bps": _sane_bps(_yoi_h, warnings, "yield_over_index_horizon"),
         }
 
     _mat_end = max((cf.pay_date for cf in cfs), default=None) or bond.maturity_date
@@ -740,6 +751,7 @@ def calculate_valuation_metrics(
         **_dur_block(cfs, dirty_rub),
         "y_idx_by_price": y_idx_by_price,
         "ytm_by_price": ytm_by_price, "dm_by_price": dm_by_price,
+        "y_idx_oos": mat_oos,
         "sm_bps": sm_bps, "disc_margin_bps": disc_margin_bps,
         "yield_xirr_pct": round(impl_yield, 4) if impl_yield is not None else None,
         "index_yield_pct": round(index_yield, 4) if index_yield is not None else None,
@@ -756,9 +768,11 @@ def calculate_valuation_metrics(
         if _dt is None or (_mat_end is not None and _dt >= _mat_end):
             continue
         try:
+            _w0 = len(warnings)
             _m = _metrics_at(_dt)
             if _m:
                 horizons[_key] = _m
+                hz_bad[_key] = price_bad or _row_sanity(warnings[_w0:])
         except Exception as e:
             logger.warning(f"{_key}-horizon valuation error for {bond.isin}: {e}")
 
@@ -802,10 +816,19 @@ def calculate_valuation_metrics(
     # расчёта остаётся (24.08: dm 14 824 bps при пустом Y-IDX — цена 8 % от
     # номинала, дефолтный неликвид). Спред-метрики одного расчёта либо все
     # осмысленны, либо все нет; yield и dirty оставляем — это факт от цены.
-    _sanity = any(w.startswith("sanity:") for w in warnings)
-    if _sanity:
-        sm_bps = disc_margin_bps = yield_over_index_bps = None
-        sm_to_offer = dm_to_offer = None
+    #
+    # ...НО ГОРИЗОНТ ЗА СЕБЯ, А НЕ ЗА СОСЕДА (29.09.2026). У каждого горизонта
+    # свой поток и своя база, это разные расчёты. Раньше безумие одного гасило
+    # все: ВТБСУБТ2-2 по 84 даёт 490 751 % к коллу через считанные дни (при такой
+    # цене его никто не исполнит, строка прайсится к погашению), и честные 23 % к
+    # погашению уходили в прочерк вместе с ним. Теперь горизонт молчит сам;
+    # верхнеуровневые поля (они к погашению) — по вердикту погашения, флаг строки —
+    # по погашению и по горизонту, к которому строка прайсится.
+    for _k, _bad in hz_bad.items():
+        _h = horizons.get(_k)
+        if not _bad or not _h:
+            continue
+        _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
         # ...И ЗАПИСЬ ЦЕНЫ РАСЧЁТА В КАРТАХ ПО ЦЕНАМ — но ТОЛЬКО ЕЁ.
         #
         # horizons["maturity"]["y_idx_by_price"] лежит здесь ПО ССЫЛКЕ, поэтому
@@ -818,14 +841,17 @@ def calculate_valuation_metrics(
         # аргументом ПРОИЗВОЛЬНЫЙ элемент своего набора: лучший бид, нижний узел
         # сетки, самый нижний уровень книги. Стирая карты целиком, одна безумная
         # цена в батче гасила бы все остальные — у бумаги в последние дни жизни
-        # нижний узел сетки уводит доходность за 150 %, и молчала бы вся сетка.
-        y_idx_by_price.pop(price, None)
-        for _h in horizons.values():
-            _h["sm_bps"] = _h["disc_margin_bps"] = _h["yield_over_index_bps"] = None
-            for _m in ("y_idx_by_price", "ytm_by_price", "dm_by_price"):
-                if isinstance(_h.get(_m), dict):
-                    _h[_m].pop(price, None)
-            _clear_dur(_h)
+        # нижний узел сетки уводит доходность за потолок, и молчала бы вся сетка.
+        for _m in ("y_idx_by_price", "ytm_by_price", "dm_by_price"):
+            if isinstance(_h.get(_m), dict):
+                _h[_m].pop(price, None)
+        _clear_dur(_h)
+    if hz_bad.get("maturity"):
+        sm_bps = disc_margin_bps = yield_over_index_bps = None
+        y_idx_by_price.pop(price, None)     # та же карта, что у горизонта погашения
+    if hz_bad.get("put"):
+        sm_to_offer = dm_to_offer = None     # legacy-поля пут-горизонта
+    _sanity = bool(hz_bad.get("maturity") or hz_bad.get(horizon))
 
     # Y-IDX пуст, а статус «успех» — противоречие: так выглядела недоступная
     # RUONIA-кривая (база сравнения), и потребитель считал число просто
@@ -1053,9 +1079,28 @@ def _preferred_horizon(price: Optional[float], horizons: Dict[str, Any]) -> str:
 
 
 # Разумные границы вывода — ловят data-driven регрессии (плохой параметр → дичь),
-# не режут реальный дистресс. Спред флоатера ±10000bps, доходность 0..150%.
-_SANE_BPS = (-5000, 15000)
-_SANE_PCT = (-5.0, 150.0)
+# не режут реальный дистресс.
+#
+# ВЕРХ ПОДНЯТ 29.09.2026 со 150 % / 15 000 бп: прежний потолок резал именно
+# дистресс, который обещал не трогать. СамолетP14 по 46 за 0,8 года до
+# погашения — 226 % к погашению, и у бумаги в день обвала витрина показывала
+# прочерк в Y-IDX, биде и оффере (а средневзвес 56 проходил — 13 830 бп, строка
+# противоречила сама себе). На проде так молчали 8 бумаг в полосе 150–1000 %:
+# Самолёт, Омега, ВТБСУБ, КВС, Ситимат, СОБИЛИЗ, СЛДК, МИРРИКО. Выше 1000 % —
+# дефолтные выпуски по 1–15 % номинала и горизонты «через считанные дни»: там
+# число ничего не говорит, и строка получает флаг y_idx_oos вместо прочерка
+# (витрина пишет «>1000%»). Фиксы потолка не имели вовсе.
+# Потолок бп согласован с потолком доходности: 1000 % над индексом ~15 % —
+# ~98 500 бп, так что по верху срабатывает доходность, а не спред.
+_SANE_BPS = (-5000, 100000)
+_SANE_PCT = (-5.0, 1000.0)
+
+
+def _over_scale(y_pct, y_idx_bps) -> bool:
+    """Число вышло за ВЕРХ шкалы — не мусор входа, а доходность, которую некуда
+    показать (дефолт/дистресс). Витрина ставит на место прочерка метку."""
+    return bool((y_pct is not None and y_pct > _SANE_PCT[1])
+                or (y_idx_bps is not None and y_idx_bps > _SANE_BPS[1]))
 
 
 # ЧУЖАЯ ЦЕНА НЕ СНИМАЕТ МЕТРИКИ ЦЕНЫ РАСЧЁТА. Альт-цены (bid/ask/средневзвес,
@@ -1065,6 +1110,12 @@ _SANE_PCT = (-5.0, 150.0)
 # и одна мусорная сторона гасила Y-IDX по цене сделки. Префикс другой — сам
 # текст предупреждения остаётся видимым в карточке.
 _ALT_PREFIX = "sanity(цена): "
+
+
+def _row_sanity(ws) -> bool:
+    """Взведён ли сторож строки: предупреждение «sanity:» о числе ЦЕНЫ РАСЧЁТА.
+    Альт-цены пишут своим префиксом (_ALT_PREFIX) и строку не трогают."""
+    return any(w.startswith("sanity:") for w in ws)
 
 
 def _sane_bps(v, warnings: list, name: str, alt: bool = False):
