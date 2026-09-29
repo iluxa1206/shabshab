@@ -187,7 +187,7 @@ def test_recrunch_sides_respects_deadline(monkeypatch):
     us._eval_ctx.update({i: {"ref_obj": None} for i in isins})
     monkeypatch.setattr(us, "_fill_side_metrics",
                         lambda row, isin, sides, snap, book=None: None)
-    monkeypatch.setattr(us, "_sides_from", lambda q, snap: {})
+    monkeypatch.setattr(us, "_sides_from", lambda q, snap, isin=None: {})
     try:
         pend = []
         # дедлайн уже позади: первая бумага считается всегда (иначе очередь
@@ -256,7 +256,7 @@ def test_level_memo_survives_its_own_context_store(monkeypatch):
     monkeypatch.setattr(us, "build_ref", lambda u, i, c, s: _ref(), raising=False)
     monkeypatch.setattr(us, "_fill_side_metrics",
                         lambda row, isin, sides, snap, book=None: None)
-    monkeypatch.setattr(us, "_sides_from", lambda q, snap: {})
+    monkeypatch.setattr(us, "_sides_from", lambda q, snap, isin=None: {})
     try:
         q = [(isin, {"last_price": 100.0})]
         us._crunch(q, ctx, enrich=enrich)
