@@ -117,3 +117,21 @@ describe("срок бессрочной", () => {
     expect(mats[1]).toContain("30.07.2036");
   });
 });
+
+describe("купон, продлённый до погашения", () => {
+  it("под сроком — дата, с которой ставка не объявлена; у оферты и обычной бумаги строки нет", () => {
+    const rows = [
+      { isin: "RU000A103Q24", name: "Сбер2СУБ3R", cls: "corp", maturity_date: "2031-11-14",
+        put_date: null, coupon_assumed_from: "2026-11-20", ytm: 10.06 },
+      { isin: "RU000A1064G3", name: "ГПБ001P26P", cls: "corp", maturity_date: "2033-04-18",
+        put_date: "2026-10-21", coupon_assumed_from: null, ytm: 14.57 },
+    ];
+    const { container } = render(<Host storageKey="t_assumed" rows={rows} />);
+    const cells = [...container.querySelectorAll("td.mat-cell")];
+    const assumed = cells[0].querySelector(".mat-assumed");
+    expect(assumed.textContent).toContain("20.11.2026");
+    expect(assumed.getAttribute("title")).toContain("продлён до погашения");
+    expect(cells[1].querySelector(".mat-assumed")).toBeNull();
+    expect(cells[1].querySelector(".mat-offer").textContent).toContain("21.10.2026");
+  });
+});

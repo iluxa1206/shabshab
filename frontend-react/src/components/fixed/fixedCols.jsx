@@ -93,6 +93,15 @@ export const FIXED_COLS = [
             )}
           </div>
         )}
+        {/* оферт у выпуска нет, ставка дальше не объявлена: YTM держится на
+            допущении «последний купон до погашения» (так же считает MOEX) */}
+        {b.coupon_assumed_from && (
+          <div className="mat-offer mat-assumed"
+               title={"Ставка купона с " + fmt.date(b.coupon_assumed_from) + " не объявлена, оферты нет: "
+                      + "в YTM последний известный купон продлён до погашения (как MOEX)"}>
+            купон ≈ с {fmt.date(b.coupon_assumed_from)}
+          </div>
+        )}
       </td>
     ) },
   { key: "issue_date", label: "РАЗМЕЩ", sub: "ДАТА (МЛРД)", w: 15,

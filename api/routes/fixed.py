@@ -23,6 +23,9 @@ _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
                 "dv01", "put_date", "issue_date",
+                # ставка купона с этой даты не объявлена, в YTM продлён последний
+                # известный (у выпуска нет оферт) — число держится на допущении
+                "coupon_assumed_from",
                 # средневзвес дня и g-спред по нему — база графиков аналитики
                 # (last price в неликвиде это один случайный принт)
                 "wap_pct", "g_spread_wap_bps", "ytm_wap",
@@ -578,6 +581,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
             "convexity": m.get("convexity"), "dv01": m.get("dv01"),
             "put_date": m.get("put_date"),
+            "coupon_assumed_from": m.get("coupon_assumed_from"),
         },
         "cashflow": _display_cashflow(full, calc_date),
         "calc_date": calc_date.isoformat(),

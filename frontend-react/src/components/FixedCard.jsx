@@ -56,7 +56,10 @@ export default function FixedCard({ d }) {
   const dirtyVal = isRepriced ? repriced.dirty_rub : mk.dirty_rub;
   const priceVal = isRepriced ? repriced.clean_price_pct : mk.last_price_pct;
   const gc = m.g_spread_bps != null ? dmColor(m.g_spread_bps) : {};
-  const putHint = mBase.put_date ? ` (к оферте ${fmt.date(mBase.put_date)})` : "";
+  const putHint = mBase.put_date ? ` (к оферте ${fmt.date(mBase.put_date)})`
+    : mBase.coupon_assumed_from
+      ? ` (купон с ${fmt.date(mBase.coupon_assumed_from)} не объявлен — продлён последний известный)`
+      : "";
 
   return (
     <>

@@ -1,9 +1,11 @@
 """Метрики облигаций с фиксированным купоном: YTM, мод. дюрация, DV01, G-spread.
 
 Кэшфлоу — из реального расписания MOEX bondization (fetch_bond_schedule_full):
-купоны с известным value + амортизации. Будущие купоны без value (купон после
-оферты не определён) → оценка к оферте (yield-to-put): поток до последнего
-известного купона + выкуп остаточного номинала на его дату.
+купоны с известным value + амортизации. Будущий купон без value: ставка
+объявлена (ABS/ИЦБ) → сумма по ставке и номиналу в обращении; ставка не
+объявлена → последний известный купон продлевается до оферты MOEX (yield-to-put,
+выкуп остатка номинала на дату выкупа), а без будущей оферты — до погашения,
+как MOEX (см. _offer_horizon).
 
 Бессрочные (MOEX MATDATE 0000-00-00) — рента: опубликованные купоны + последний
 известный купон, продлённый вперёд, без номинала (см. _perpetual_coupons).
@@ -21,14 +23,14 @@ import json
 import time
 import logging
 from collections import OrderedDict
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional, Tuple, Dict
 
 import httpx
 
 from core.forwards import add_months
 from core.valuation import xirr, xnpv, settle_date, accrued_at, accrued_estimate
-from services.market_data import moex_client, MarketDataService, _moex_get
+from services.market_data import moex_client, MarketDataService, _moex_get, CALL_OFFER_SOURCE
 from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
@@ -55,12 +57,20 @@ def clear_price_metrics_cache() -> None:
 
 def _schedule_cache_key(schedule: dict) -> tuple:
     """Содержательный ключ потока, а не id объекта: расписание может обновиться
-    в течение одного процесса после корректировки MOEX."""
-    coupons = tuple((c.get("end"), c.get("value"), c.get("face"))
+    в течение одного процесса после корректировки MOEX.
+
+    Всё, из чего build_fixed_cashflows собирает поток: start и valueprc считают
+    купон с объявленной ставкой, но без суммы, а оферты решают, где поток рвётся
+    на неопределённом купоне (синтетический колл реестра подмешивается к
+    расписанию после кэша, см. market_data._with_call_offers)."""
+    coupons = tuple((c.get("start"), c.get("end"), c.get("value"), c.get("valueprc"),
+                     c.get("face"))
                     for c in (schedule.get("coupons") or []))
     amorts = tuple((a.get("date"), a.get("value"))
                    for a in (schedule.get("amorts") or []))
-    return coupons, amorts
+    offers = tuple((o.get("date"), o.get("source"))
+                   for o in (schedule.get("offers") or []))
+    return coupons, amorts, offers
 
 
 def _price_metrics_key(row: dict, schedule: dict, price_pct: float,
@@ -97,9 +107,9 @@ def _cashflows_at_date(schedule: dict, calc_date: date, exchange_face,
     key = _cashflow_template_key(schedule, calc_date, exchange_face, perpetual)
     cached = _cashflow_template_cache.get(key)
     if cached is None:
-        cfs, face, put_date = build_fixed_cashflows(schedule, calc_date, exchange_face,
-                                                    perpetual=perpetual)
-        cached = (tuple(cfs), face, put_date)
+        cfs, face, put_date, assumed_from = build_fixed_cashflows(
+            schedule, calc_date, exchange_face, perpetual=perpetual, with_assumed=True)
+        cached = (tuple(cfs), face, put_date, assumed_from)
         _cashflow_template_cache[key] = cached
         if len(_cashflow_template_cache) > _CASHFLOW_TEMPLATE_CACHE_MAX:
             _cashflow_template_cache.popitem(last=False)
@@ -175,7 +185,7 @@ def _solve_z_spread(schedule: dict, calc_date: date, g_curve, exchange_face,
                     dirty: float, perpetual: bool = False) -> Optional[int]:
     """Один фактический прогон Z-солвера, вынесен для точного LRU выше."""
     from services.zspread import solve_z_discrete
-    cfs, _face, _put = _cashflows_at_date(schedule, calc_date, exchange_face, perpetual)
+    cfs, _face, _put, _assumed = _cashflows_at_date(schedule, calc_date, exchange_face, perpetual)
     return solve_z_discrete(g_curve, cfs, calc_date, dirty) if cfs else None
 
 
@@ -253,23 +263,68 @@ def _perpetual_coupons(coupons: list, settle: date) -> List[tuple]:
     return out
 
 
+# Оферта MOEX чуть раньше даты последнего известного купона ещё относится к
+# границе неопределённого купона: выкуп обычно ПОСЛЕ купона, но бывает и в день
+# купона. Оферты задолго до неё — прошлый пересмотр ставки: после них купоны уже
+# объявлены (Роделен2P1: оферта 01.10.2026, ставка — до 21.07.2027).
+_OFFER_BEFORE_COUPON_DAYS = 10
+
+
+def _offer_horizon(schedule: dict, settle: date, last_end: Optional[date]) -> Optional[date]:
+    """Дата выкупа MOEX, к которой считать поток, когда ставка купона после
+    last_end не объявлена: первая будущая оферта на этой границе или позже.
+    None — такой оферты нет, и последний известный купон продлевается до
+    погашения (как MOEX в YIELD).
+
+    Раньше любой неопределённый купон считался офертой на дате последнего
+    известного купона. Без оферты это мусор: РКСОлмA902 189 % при 16.35 у
+    MOEX, Сбер2СУБ3R 57 % при 10.06, АЛЬФАЗО350 225 % при 7.51, iХРОМОС Б1
+    35 % при 12.90 (у него оферты только прошлые — будущей никто не объявлял).
+    С офертой — дата купона вместо даты выкупа, а MOEX выкупает на 2–14 дней
+    позже (110 из 119 бумаг снимка 29.09.2026): на коротких офертах это до
+    2.5 п.п. (ГПБ001P26P: 17.07 к купону, 14.57 к выкупу — ровно YIELDTOOFFER).
+
+    Только оферты MOEX. Синтетический колл реестра (market_data._with_call_offers)
+    здесь не горизонт: колл — опцион ЭМИТЕНТА, по правилу горизонта проекта он в
+    силе, лишь когда цена выше цены выкупа, а шаблон потока от цены не зависит.
+    АЛЬФАЗО350 — колл ровно на границе (26.10), цена 92: рынок отзыва не ждёт,
+    выкуп по 100 через 4 недели дал бы те же 225 %.
+    """
+    lo = (last_end or settle) - timedelta(days=_OFFER_BEFORE_COUPON_DAYS)
+    after = sorted(d for o in (schedule.get("offers") or [])
+                   if o.get("source") != CALL_OFFER_SOURCE
+                   and (d := _d(o.get("date")))            # '0000-00-00' → None
+                   and d > settle and d >= lo)
+    return after[0] if after else None
+
+
 def build_fixed_cashflows(schedule: dict, calc_date: date,
                           exchange_face=None,
-                          perpetual: bool = False) -> Tuple[List[tuple], Optional[float], Optional[date]]:
+                          perpetual: bool = False, *,
+                          with_assumed: bool = False):
     """Будущие кэшфлоу (pay_date, amount) из bondization + остаточный номинал на calc_date.
 
-    Будущие купоны без value (после оферты купон не определён) → поток обрезается
-    на последнем ИЗВЕСТНОМ купоне, и на его дату добавляется выкуп остаточного
-    номинала (put@100) — стандартный yield-to-worst/to-put для корпов с офертой.
+    Купоны без value:
+      * ставка объявлена (valueprc), сумма нет — ABS/ИЦБ, где сумма зависит от
+        будущей амортизации пула: сумма = номинал в обращении × ставка × дни/365;
+      * ставка не объявлена — последний известный купон продлевается (сумма
+        пересчитана на длину периода и номинал в обращении) до оферты MOEX, где
+        остаток номинала выкупается по 100 (put_date), а без будущей оферты —
+        до погашения (см. _offer_horizon).
     Возвращает (cfs, current_face, put_date): put_date=None если поток полный
-    до погашения (редемпшн из амортизаций bondization).
+    до погашения (редемпшн из амортизаций bondization). with_assumed=True —
+    четвёртым элементом дата, с которой купон ПРЕДПОЛОЖЕН (продлён), или None.
 
     perpetual — бессрочная: поток-рента без номинала (_perpetual_coupons).
     """
-    coupons: List[tuple] = []      # (date, value) известных будущих купонов
+    coupons: List[tuple] = []      # (date, value) будущих купонов
     put_date: Optional[date] = None
+    assumed_from: Optional[date] = None
     # T+1: купон с pay_date <= settle покупателю не достаётся (ex-coupon, НКД=0)
     settle = settle_date(calc_date)
+
+    def _ret(cfs, face, put):
+        return (cfs, face, put, assumed_from) if with_assumed else (cfs, face, put)
 
     if perpetual:
         # БЕССРОЧНАЯ: в графике MOEX нет ни траншей погашения, ни неопределённых
@@ -277,27 +332,63 @@ def build_fixed_cashflows(schedule: dict, calc_date: date,
         # номинала, и YTM уходил в −99 % (ВТБСУБ1-11 при цене 63: −99.4 против
         # 15.87 у MOEX). Выкуп номинала на дату последнего купона тоже неверен:
         # это была бы оферта, которой у бессрочной нет.
-        return _perpetual_coupons(schedule.get("coupons") or [], settle), \
-            _face_from_coupons(schedule, settle), None
+        return _ret(_perpetual_coupons(schedule.get("coupons") or [], settle),
+                    _face_from_coupons(schedule, settle), None)
 
-    # будущие погашения принципала из bondization (весь принципал, включая
-    # финальный редемпшн, идёт строками амортизаций)
-    future_am = sorted(
+    # погашения принципала из bondization (весь принципал, включая финальный
+    # редемпшн, идёт строками амортизаций); прошлые нужны номиналу в обращении
+    # на начало уже идущего купонного периода
+    all_am = sorted(
         (d, float(a["value"])) for a in schedule.get("amorts", [])
-        if a.get("value") is not None and (d := _d(a.get("date"))) and d > settle
+        if a.get("value") is not None and (d := _d(a.get("date")))
     )
+    future_am = [(d, v) for d, v in all_am if d > settle]
 
-    for c in schedule.get("coupons", []):
+    def _outstanding(start: date) -> Optional[float]:
+        """Номинал в обращении на купонный период с началом start (транш в день
+        окончания периода ещё в обращении). None — графика амортизаций нет."""
+        return sum(v for d, v in all_am if d > start) if all_am else None
+
+    last_known = None          # (start, end, сумма) последнего купона с известной суммой
+    undefined_seen = False     # встречен купон с необъявленной ставкой
+    for c in sorted(schedule.get("coupons", []), key=lambda c: c.get("end") or ""):
         end = _d(c.get("end"))
-        if end is None or end <= settle:
+        if end is None:
             continue
-        if c.get("value") is None:
-            # первый неизвестный купон → оценка к оферте: всё после отбрасываем.
-            # если неизвестен уже ближайший купон (оферта вплотную) — путим на его
-            # дату (иначе бумага ошибочно оценилась бы к погашению по амортизациям)
-            put_date = coupons[-1][0] if coupons else end
-            break
-        coupons.append((end, float(c["value"])))
+        start = _d(c.get("start"))
+        if c.get("value") is not None:
+            last_known = (start, end, float(c["value"]))
+            if end > settle:
+                coupons.append((end, float(c["value"])))
+            continue
+        if end <= settle:
+            continue
+        rate = _numf(c.get("valueprc"))
+        if rate and start and end > start:
+            # ставка объявлена, сумма нет (ABS/ИЦБ): после полного погашения
+            # по графику номинала в обращении нет — и купона тоже
+            out = _outstanding(start)
+            amount = (out if out is not None else _face_from_coupons(schedule, settle)) \
+                * rate / 100.0 * (end - start).days / 365.0
+            last_known = (start, end, amount)
+            if amount > 0:
+                coupons.append((end, amount))
+            continue
+        if not undefined_seen:
+            undefined_seen = True
+            put_date = _offer_horizon(schedule, settle, last_known[1] if last_known else None)
+        if put_date is not None and end > put_date:
+            break              # купон за офертой предъявившему бумагу не достаётся
+        if last_known is None or (put_date is None and not future_am):
+            # продлевать нечего (ни одного известного купона) или некуда (нет
+            # графика погашения — поток остался бы без номинала): честный
+            # прочерк вместо выдуманного потока
+            return _ret([], _face_from_coupons(schedule, settle), None)
+        if assumed_from is None:
+            assumed_from = start or last_known[1]
+        amount = _extended_coupon(last_known, start, end, _outstanding)
+        if amount > 0:
+            coupons.append((end, amount))
 
     # Остаточный номинал = Σ будущих погашений принципала (надёжно); поле face
     # строк купонов MOEX ненадёжно (для будущих периодов бывает стейл/1000) —
@@ -314,7 +405,8 @@ def build_fixed_cashflows(schedule: dict, calc_date: date,
         # residual: put_date у таких бумаг — ближайший НЕОПРЕДЕЛЁННЫЙ купон, а не
         # оферта, и выкуп всего номинала на эту дату дал бы 33-143% годовых.
         if exchange_face and face < float(exchange_face) * 0.95:
-            return [], None, None
+            assumed_from = None
+            return _ret([], None, None)
     else:
         face = _face_from_coupons(schedule, settle)
 
@@ -331,7 +423,26 @@ def build_fixed_cashflows(schedule: dict, calc_date: date,
         cfs.extend(future_am)
 
     cfs.sort(key=lambda x: x[0])
-    return cfs, face, put_date
+    return _ret(cfs, face, put_date)
+
+
+def _extended_coupon(last_known: tuple, start: Optional[date], end: date,
+                     outstanding) -> float:
+    """Купон с необъявленной ставкой = последний известный, пересчитанный на
+    длину периода и номинал в обращении (методика MOEX: ставка последнего
+    известного купона до погашения). При равных периодах без амортизации —
+    буквально та же сумма."""
+    l_start, l_end, l_val = last_known
+    if not (start and l_start and l_end > l_start and end > start):
+        return l_val
+    out_last, out_now = outstanding(l_start), outstanding(start)
+    if out_last is None:            # графика амортизаций нет — номинал не меняется
+        scale = 1.0
+    elif out_last <= 0:
+        return 0.0
+    else:
+        scale = out_now / out_last
+    return l_val * scale * (end - start).days / (l_end - l_start).days
 
 
 def fixed_metrics_from_schedule(
@@ -349,17 +460,21 @@ def fixed_metrics_from_schedule(
     price_pct — чистая цена в % от остаточного номинала; accrued — НКД в валюте
     номинала на одну бумагу. dirty/dv01 — на одну бумагу в валюте номинала.
     perpetual — бессрочная: YTM ренты (см. build_fixed_cashflows).
+    coupon_assumed_from — с этой даты ставка не объявлена и в потоке продлён
+    последний известный купон: число держится на допущении, фронт это пишет.
     """
     out = {"ytm_pct": None, "mod_dur": None, "mac_dur": None, "convexity": None,
            "dv01": None, "g_spread_bps": None, "dirty": None, "face_current": None,
-           "put_date": None}
-    cfs, face, put_date = _cashflows_at_date(schedule, calc_date, exchange_face, perpetual)
+           "put_date": None, "coupon_assumed_from": None}
+    cfs, face, put_date, assumed_from = _cashflows_at_date(schedule, calc_date,
+                                                           exchange_face, perpetual)
     if face is None:
         # график амортизаций пришёл обрезанным — метрики считать не на чем
         out["incomplete_schedule"] = True
         return out
     out["face_current"] = face
     out["put_date"] = put_date.isoformat() if put_date else None
+    out["coupon_assumed_from"] = assumed_from.isoformat() if assumed_from else None
     if not cfs:
         return out
 
@@ -755,7 +870,7 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
         "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
-        "put_date": m.get("put_date"),
+        "put_date": m.get("put_date"), "coupon_assumed_from": m.get("coupon_assumed_from"),
         # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
         # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
         # флоатеров, чтобы арифметика книги на фронте была одна на две витрины

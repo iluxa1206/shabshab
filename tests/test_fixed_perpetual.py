@@ -151,7 +151,9 @@ def test_perpetual_undefined_coupons_fill_forward_without_par_redemption():
     assert max(v for _, v in cfs) == 50.0            # номинала в потоке нет
     assert cfs[2][0] == date(2027, 12, 1)            # шаг — полгода, как у графика
     assert cfs[-1][0].year >= CD.year + fi._PERPETUAL_YEARS - 1
-    # тот же график как ДАТИРОВАННАЯ бумага — прежняя логика оферты не тронута
+    # тот же график как ДАТИРОВАННАЯ бумага с офертой — логика оферты не тронута
+    # (без оферт у датированной — продление купона, tests/test_fixed_undefined_coupon.py)
+    sched = {**sched, "offers": [{"date": "2026-12-01", "type": "Оферта", "price": 100}]}
     cfs_d, _f, put_d = fi.build_fixed_cashflows(sched, CD, 1000.0)
     assert put_d == date(2026, 12, 1) and cfs_d == [(date(2026, 12, 1), 50.0),
                                                      (date(2026, 12, 1), 1000.0)]
