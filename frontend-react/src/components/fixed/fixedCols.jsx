@@ -71,7 +71,11 @@ export const FIXED_COLS = [
     cell: (b) => (
       <td className="num mat-cell" key="maturity_date">
         <div className="mat-main">
-          {fmt.date(b.maturity_date) ?? <D />}
+          {/* бессрочная: даты погашения нет, YTM строки — доходность ренты
+              (последний купон продлён вперёд, номинал не гасится) */}
+          {fmt.date(b.maturity_date) ?? (b.perpetual
+            ? <span title="Бессрочная: погашения нет, YTM — доходность ренты (купон продлён вперёд без выкупа номинала)">PERP</span>
+            : <D />)}
           {yearsTo(b.maturity_date) != null && (
             <span className={"mat-yrs" + (b.put_date ? "" : " mat-hz")
                              + (!b.put_date && isShortBond(b) ? " mat-short" : "")}

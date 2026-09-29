@@ -102,3 +102,18 @@ describe("префикс localStorage", () => {
     expect(container.querySelector("colgroup col:nth-child(3)").style.width).toBe("120px");
   });
 });
+
+describe("срок бессрочной", () => {
+  it("MATURITY у перпа — PERP, а не «00.00.0000» и не прочерк", () => {
+    const rows = [
+      { isin: "RU000A103SB8", name: "ВТБСУБ1-11", cls: "corp", maturity_date: null,
+        perpetual: true, ytm: 16.44 },
+      { isin: "RU000A0JX0J2", name: "ОФЗ 26240", cls: "ofz", maturity_date: "2036-07-30",
+        perpetual: false, ytm: 15.2 },
+    ];
+    const { container } = render(<Host storageKey="t_perp" rows={rows} />);
+    const mats = [...container.querySelectorAll("td.mat-cell .mat-main")].map((d) => d.textContent);
+    expect(mats[0]).toBe("PERP");
+    expect(mats[1]).toContain("30.07.2036");
+  });
+});

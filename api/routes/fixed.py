@@ -107,6 +107,8 @@ async def get_fixed(
             "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
             "ratings_ea": ea.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
+            # бессрочная: даты погашения нет (maturity_date=None), YTM — рента
+            "perpetual": bool(u.get("perpetual")),
             # Валюта номинала — отдельна от валюты расчётов и нужна фильтру
             # витрины. Старые коды рубля приводим к одному значению на UI.
             "face_unit": "RUB" if (u.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
@@ -555,6 +557,7 @@ async def get_fixed_details(isin: str = Path(...)):
         "reference": {
             "isin": isin, "secid": secid, "name": row.get("name"), "cls": row.get("cls"),
             "board": board, "maturity_date": row.get("maturity_date"),
+            "perpetual": bool(row.get("perpetual")),
             "face_unit": "RUB" if (row.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
                          else (row.get("faceunit") or "RUB").upper(),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
