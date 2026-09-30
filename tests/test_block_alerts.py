@@ -336,3 +336,79 @@ def test_same_channel_still_gets_one_message(bt, sig, monkeypatch):
     sent: list = []
     assert _run(mod, monkeypatch, sent) == 1
     assert [p["filter_name"] for p in sent] == ["широкий"]
+
+
+# ── фильтр стакана с галочкой «и сделки» ───────────────────────────────────
+
+def _price_all(monkeypatch, val):
+    from services import trade_yidx
+
+    async def _for_rows(rows):
+        for r in rows:
+            r["y_idx_bps"] = val
+        return len(rows)
+    monkeypatch.setattr(trade_yidx, "for_rows", _for_rows)
+
+
+def test_book_filter_with_trades_rings_on_trade(bt, sig, monkeypatch):
+    """Галочка подключает фильтр стакана к ленте: сделка по спреду из диапазона
+    звонит с id и именем ЭТОГО фильтра; сторона стакана не мешает (фильтр на
+    оффер, агрессор — покупатель/продавец не важно)."""
+    pdb, mod = bt
+    f = sig.create("u@x.ru", "широкие", {"side": "bid", "spread_min": 250,
+                                         "notify_trades": True})
+    _seed(pdb, [(1, "RU000FLOAT01", 2_000_000)])
+    _price_all(monkeypatch, 300.0)
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    # умолчание (≥100 млн) сюда не дотягивает, звонок ровно один — от фильтра
+    assert [(p["filter_id"], p["type"]) for p in sent] == [(f["id"], "block")]
+    assert [m["val_bps"] for p in sent for m in p["matches"]] == [300.0]
+
+
+def test_book_filter_without_checkbox_ignores_trades(bt, sig, monkeypatch):
+    pdb, mod = bt
+    sig.create("u@x.ru", "широкие", {"spread_min": 250})
+    _seed(pdb, [(1, "RU000FLOAT01", 2_000_000)])
+    _price_all(monkeypatch, 300.0)
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0
+
+
+def test_book_filter_trades_respect_spread_and_money(bt, sig, monkeypatch):
+    """Спред вне диапазона — мимо; объём фильтра становится порогом сделки."""
+    pdb, mod = bt
+    sig.create("u@x.ru", "узкие", {"spread_max": 100, "notify_trades": True})
+    sig.create("u@x.ru", "крупные", {"min_money_rub": 20_000_000,
+                                     "notify_trades": True})
+    _seed(pdb, [(1, "RU000FLOAT01", 5_000_000), (2, "RU000FLOAT01", 25_000_000)])
+    _price_all(monkeypatch, 300.0)
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [(p["filter_name"], m["money_rub"]) for p in sent
+            for m in p["matches"]] == [("крупные", 25_000_000)]
+
+
+def test_book_trades_do_not_duplicate_default(bt, sig, monkeypatch):
+    """Без block-фильтров работает умолчание (≥100 млн флоатеры). Если ту же
+    сделку в личку уже принёс фильтр стакана с галочкой — второй карточки нет."""
+    pdb, mod = bt
+    f = sig.create("u@x.ru", "всё", {"min_money_rub": 1_000_000,
+                                     "notify_trades": True})
+    _seed(pdb, [(1, "RU000FLOAT01", mod.BLOCK_ALERT_MIN_RUB + 1)])
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    assert [p["filter_id"] for p in sent] == [f["id"]]
+
+
+def test_book_trade_params_translation():
+    from services.screener_core import (TRADE_NOTIFY_MIN_RUB, book_trade_params,
+                                        normalize_params)
+    p = normalize_params({"side": "bid", "spread_min": 200, "years_max": 3,
+                          "emitters": ["X"], "notify_trades": True})
+    q = book_trade_params(p)
+    assert q["side"] == "any" and q["markets"] == "all" and q["bases"] == []
+    assert (q["spread_min"], q["years_max"], q["emitters"]) == (200, 3, ["X"])
+    assert q["min_value_rub"] == TRADE_NOTIFY_MIN_RUB
+    q = book_trade_params(normalize_params({"min_money_rub": 30e6}))
+    assert q["min_value_rub"] == 30e6

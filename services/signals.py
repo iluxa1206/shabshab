@@ -20,7 +20,8 @@ from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
 from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
-                                    block_matches, block_meta, evaluate,
+                                    block_matches, block_meta,
+                                    book_trade_params, evaluate,
                                     evaluate_candidates, market_snapshot,
                                     meta_years, money_floor,
                                     normalize_block_params, normalize_params,
@@ -120,12 +121,23 @@ def list_enabled() -> List[dict]:
     return [_row(r) for r in rows]
 
 
-def list_enabled_blocks() -> List[dict]:
-    """Включённые фильтры крупных сделок — их применяет block_trades."""
+def list_trade_watchers() -> List[dict]:
+    """Все, кто слушает ЛЕНТУ СДЕЛОК: включённые block-фильтры + фильтры стакана
+    с галочкой «и сделки» (notify_trades). У вторых params уже переведены на
+    язык сделки (book_trade_params), поэтому block_trades сверяет их тем же
+    block_matches и не знает, из какого вида фильтр пришёл. Порядок — по id:
+    при двух подходящих фильтрах на одного адресата сделку берёт первый."""
     with _connect() as c:
         rows = c.execute("SELECT * FROM signal_filters WHERE enabled=1 "
-                         "AND kind='block' ORDER BY id").fetchall()
-    return [_row(r) for r in rows]
+                         "ORDER BY id").fetchall()
+    out = []
+    for f in map(_row, rows):
+        if f["kind"] == "block":
+            out.append(f)
+        elif f["params"].get("notify_trades"):
+            f["params"] = book_trade_params(f["params"])
+            out.append(f)
+    return out
 
 
 def block_filter_owners() -> set:

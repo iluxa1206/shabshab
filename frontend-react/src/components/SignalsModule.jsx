@@ -361,6 +361,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [repeatMoney, setRepeatMoney] = useState(ep.repeat_on_money !== false);
   const [improveOnly, setImproveOnly] = useState(ep.improve_only !== false);
   const [bookMinQty, setBookMinQty] = useState(numOrEmpty(ep.book_min_qty));
+  const [notifyTrades, setNotifyTrades] = useState(!!ep.notify_trades);
   const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
@@ -382,9 +383,10 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     repeat_on_money: repeatMoney,
     improve_only: improveOnly,
     book_min_qty: bookMinQty === "" ? null : Number(bookMinQty),
+    notify_trades: notifyTrades,
   }), [ratings, emitters, isins, emittersEx, isinsEx, issuers, side, smin, smax,
        minMoney, moneyMode, ymin, ymax, hideSub, repeatMoney, improveOnly,
-       bookMinQty]);
+       bookMinQty, notifyTrades]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
@@ -414,7 +416,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setEmittersEx([]); setIsinsEx([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
-      setMoneyMode("book"); setHideSub(false); setPreview(null);
+      setMoneyMode("book"); setHideSub(false); setNotifyTrades(false); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -509,7 +511,25 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
             title="Заявка на три бумаги строку в сообщении занимает, а не говорит ничего. На расчёт спреда и объёма не влияет."
             onChange={(e) => setBookMinQty(e.target.value)} />
         </div>
+        <div className="sig-field">
+          <label className="sig-label">Сделки</label>
+          {/* Заявка — намерение, сделка — факт. Условия переводятся на язык
+              сделки на сервере (screener_core.book_trade_params). */}
+          <label className="sig-check-line" title="Сделка в ленте по бумаге из отбора, со спредом из диапазона и сроком из окна. Сторона стакана не важна — принт по нужному спреду говорит о рынке при любом агрессоре.">
+            <input type="checkbox" checked={notifyTrades}
+              onChange={(e) => setNotifyTrades(e.target.checked)} />
+            <span>уведомлять и о сделках</span>
+          </label>
+        </div>
       </div>
+
+      {notifyTrades && (
+        <div className="sig-note">
+          Плюс сделки в ленте под теми же условиями: отбор бумаг, spread, срок
+          {minMoney !== "" ? `, сделка от ${minMoney} млн ₽` : ", сделка от 1 млн ₽"};
+          сторона агрессора любая, включая РПС.
+        </div>
+      )}
 
       {improveOnly && (
         <div className="sig-note">
@@ -764,6 +784,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
           {f.params.repeat_on_money === false ? " (только спред)" : ""}
+          {f.params.notify_trades ? " · + сделки" : ""}
           {f.sound ? " · звук" : ""}{f.desktop ? " · окно" : ""}
           {tgTargetTitle(f, targets)}
         </div>

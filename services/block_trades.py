@@ -1423,7 +1423,7 @@ async def alert_floor() -> float:
         return _floor_cache["val"]
     from services import signals
     try:
-        bfilters = await run_bg(signals.list_enabled_blocks)
+        bfilters = await run_bg(signals.list_trade_watchers)
         vals = [f["params"]["min_value_rub"] for f in bfilters
                 if f.get("params", {}).get("min_value_rub") is not None]
     except Exception as e:
@@ -1473,6 +1473,8 @@ async def notify_blocks() -> int:
 
     Кому и что звонит, решают ФИЛЬТРЫ пользователя вида kind='block'
     (services/signals): порог в рублях, режим торгов, база купона, отбор бумаг.
+    Плюс фильтры стакана с галочкой «и сделки» — их условия уже переведены на
+    язык сделки (signals.list_trade_watchers), событие идёт с их filter_id.
     У кого таких фильтров нет — работает умолчание из env (BLOCK_ALERT_MIN_RUB
     + только флоатеры): исторический режим, чтобы включённые уведомления не
     пропали молча у тех, кто фильтр не заводил.
@@ -1495,7 +1497,7 @@ async def _notify_blocks() -> int:
     users = [u["email"] for u in await run_bg(list_users) if u.get("email")]
     if not users:
         return 0
-    bfilters = await run_bg(signals.list_enabled_blocks)
+    bfilters = await run_bg(signals.list_trade_watchers)
     by_user: dict[str, list] = {}
     for f in bfilters:
         by_user.setdefault(f["user_email"], []).append(f)
@@ -1557,9 +1559,7 @@ async def _notify_blocks() -> int:
     _mx = MarketDataService.universe_metrics() or {}
     for r in rows:
         meta = signals.block_meta(labels, r["isin"], _mx)
-        for u in legacy_users:
-            if _legacy_ok(r):
-                routed.setdefault((u, 0, "Крупная сделка", True, True), []).append(r)
+        took: dict[str, set] = {}
         for u, fs in by_user.items():
             # первый подошедший фильтр забирает сделку — НО ОТДЕЛЬНО ПО КАЖДОМУ
             # АДРЕСАТУ: два письма об одном принте в один чат — шум, а вот
@@ -1576,6 +1576,12 @@ async def _notify_blocks() -> int:
                     taken.add(dest)
                     routed.setdefault((u, f["id"], f["name"], f["sound"],
                                        f["desktop"]), []).append(r)
+            took[u] = taken
+        for u in legacy_users:
+            # умолчание звонит в личку; если туда сделку уже принёс фильтр
+            # стакана с галочкой «и сделки», второй карточки о том же не надо
+            if None not in took.get(u, ()) and _legacy_ok(r):
+                routed.setdefault((u, 0, "Крупная сделка", True, True), []).append(r)
     if not routed:
         await run_bg(mark_alerted, seen_ids)
         return 0

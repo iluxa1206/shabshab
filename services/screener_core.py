@@ -72,6 +72,12 @@ PARAM_DEFAULTS = {
     # лестница добирается более глубокими. Только показ — спред и объём фильтра
     # считаются по полной книге (иначе сменился бы смысл самих условий).
     "book_min_qty": None,
+    # СДЕЛКИ ПОД ТЕМИ ЖЕ УСЛОВИЯМИ. Заявка — намерение, сделка — факт: принт по
+    # спреду из диапазона фильтра говорит о рынке не меньше, чем заявка там же.
+    # Галочка подключает фильтр к ленте сделок (block_trades.notify_blocks), а
+    # условия переводятся на язык сделки в book_trade_params — второго фильтра
+    # «крупная сделка» с теми же чипами заводить не нужно.
+    "notify_trades": False,
 }
 
 MAX_SELECTOR_ITEMS = 50
@@ -172,6 +178,7 @@ def normalize_params(raw: dict) -> dict:
                             else bool(raw.get("repeat_on_money")))
     p["improve_only"] = (True if raw.get("improve_only") is None
                          else bool(raw.get("improve_only")))
+    p["notify_trades"] = bool(raw.get("notify_trades"))
     _floats(raw, p, ("spread_min", "spread_max", "min_money_rub",
                      "years_min", "years_max", "book_min_qty"))
     if p["book_min_qty"] is not None:
@@ -262,6 +269,38 @@ def normalize_block_params(raw: dict) -> dict:
     p["repeat_on_money"] = (True if raw.get("repeat_on_money") is None
                             else bool(raw.get("repeat_on_money")))
     return p
+
+
+# Порог сделки для фильтра стакана с галочкой «и сделки», когда объём в нём не
+# задан. Тот же 1 млн, что нижняя граница block-фильтра: мельче сделкам не
+# считается спред (BLOCK_YIDX_MIN_RUB), и ночью их в ленте уже нет.
+TRADE_NOTIFY_MIN_RUB = float(os.getenv("TRADE_NOTIFY_MIN_RUB", "1000000"))
+
+# что из условий стакана имеет смысл для сделки как есть
+_BOOK_TO_TRADE_KEYS = ("ratings", "emitters", "isins", "emitters_ex", "isins_ex",
+                       "issuer", "spread_min", "spread_max", "years_min",
+                       "years_max", "hide_subord")
+
+
+def book_trade_params(p: dict) -> dict:
+    """Условия фильтра стакана → условия сделки (галочка notify_trades).
+
+    Отбор бумаг, спред и срок переносятся как есть. Объём: «от N млн» у заявки
+    становится «сделка от N млн» (без объёма — от TRADE_NOTIFY_MIN_RUB).
+    Сторона стакана НЕ переносится: принт по нужному спреду важен при любом
+    агрессоре — продавец, ударивший в бид по 210 бп, сообщает о рынке ровно то
+    же, что покупатель, забравший оффер там же. Режим торгов — любой, база —
+    любая (у фильтра стакана её нет, а спред сам отсекает фиксы).
+
+    Логики сверки здесь нет: результат идёт в block_matches — одно правило на
+    сделку у обоих видов фильтра."""
+    q = dict(BLOCK_PARAM_DEFAULTS)
+    for k in _BOOK_TO_TRADE_KEYS:
+        if k in p:
+            q[k] = p[k]
+    q["min_value_rub"] = max(float(p.get("min_money_rub") or 0.0),
+                             TRADE_NOTIFY_MIN_RUB)
+    return q
 
 
 def block_matches(trade: dict, meta: dict, params: dict,

@@ -35,6 +35,7 @@ class SignalParams(BaseModel):
     repeat_on_money: bool = True        # повтор при изменении объёма
     improve_only: bool = True           # повтор только при улучшении (планка)
     book_min_qty: Optional[float] = None  # прятать мелочь в стакане сообщения
+    notify_trades: bool = False         # и сделки под теми же условиями
 
 
 class BlockParams(BaseModel):
