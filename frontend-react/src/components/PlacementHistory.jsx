@@ -41,6 +41,7 @@ const COLS = [
   { key: "emitter", label: "Эмитент", cls: "left" },
   { key: "rating", label: "Рейтинг", cls: "left" },
   { key: "coupon", label: "Купон", cls: "left" },
+  { key: "term", label: "Срок", sub: "от первого дня размещения до погашения (и до оферты)", cls: "num" },
   { key: "value", label: "Объём", sub: "млн ₽", cls: "num" },
   { key: "price", label: "Цена", sub: "% номинала", cls: "num" },
   { key: "debut", label: "Дебют", sub: "п.п. к цене первого дня", cls: "num" },
@@ -114,6 +115,31 @@ function PremiumCell({ r }) {
     <span className={v > 0 ? "dm-down" : v < 0 ? "dm-up" : undefined}
           title={`спред вторички ${fmt.date(r.after_date)} минус спред первого дня; тот же горизонт, без поправки на рынок`}>
       {fmt.devBps(r.premium_bps)}
+    </span>
+  );
+}
+
+// СРОК выпуска на момент книги: от первого дня размещения до погашения, а не
+// от сегодня — строка описывает, что продавали, и через год та же бумага не
+// должна «укоротиться» в истории. Оферта (если биржа её знает) — вторым числом:
+// для прайсинга горизонт часто она, а не погашение. Короче месяца — в днях:
+// однодневные ноты иначе читались бы как «0м».
+const DAY_MS = 864e5;
+const termText = (from, to) => {
+  const d = Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+  if (!(d >= 0)) return null;
+  return d < 31 ? fmt.days(d) : fmt.yrs(d / 365.25);
+};
+function TermCell({ r }) {
+  const mat = r.mat_date && r.first_date ? termText(r.first_date, r.mat_date) : null;
+  if (!mat) return <span className="mut">—</span>;
+  const off = r.offer_date && r.offer_date < r.mat_date
+    ? termText(r.first_date, r.offer_date) : null;
+  return (
+    <span title={`погашение ${fmt.date(r.mat_date)}`
+      + (off ? `, оферта ${fmt.date(r.offer_date)}` : "")}>
+      {mat}
+      {off && <span className="mut"> · оф {off}</span>}
     </span>
   );
 }
@@ -339,6 +365,7 @@ export default function PlacementHistory() {
               </span>}
         </>
       );
+      case "term": return <TermCell r={r} />;
       case "value": return <ValueCell r={r} max={maxValue} />;
       case "price": return <PriceCell r={r} />;
       case "debut": return <DebutCell r={r} />;

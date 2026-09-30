@@ -81,6 +81,9 @@ async def get_placements(
         r["rating"] = lab.get("rating")
         r["margin_bps"] = lab.get("margin_bps")
         r["maturity"] = lab.get("maturity")
+        # СРОК: погашение из паспорта MOEX (sec_ref) есть у всего рынка, реестр —
+        # фолбэк на случай, когда паспорт бумаги ещё не собран
+        r["mat_date"] = r.get("mat_date") or lab.get("maturity")
         r["coupon_text"] = lab.get("coupon_text")
         r["coupons_per_year"] = lab.get("coupons_per_year")
         r["in_registry"] = bool(lab)
