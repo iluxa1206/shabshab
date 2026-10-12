@@ -63,9 +63,12 @@ async def build_levels_fn(isin: str, kind: str = "floater", horizon: str = "auto
         def levels_fn(prices):
             # у фикса батч уже есть — тот же, которым витрина считает стороны
             got = fi.fixed_side_metrics(row, full_sched, g, calc_date,
-                                        [p for p in prices if p is not None])
+                                        [p for p in prices if p is not None],
+                                        ru_curve=_r)
             return {p: {"g_spread_bps": (got.get(_px(p)) or {}).get("g_spread_bps"),
-                        "yield_pct": (got.get(_px(p)) or {}).get("ytm")}
+                        "yield_pct": (got.get(_px(p)) or {}).get("ytm"),
+                        # Y-IDX уровня — то же имя, что у флоатеров
+                        "y_idx_bps": (got.get(_px(p)) or {}).get("y_idx_bps")}
                     for p in prices if p is not None}
         return levels_fn, calc_date, face
 

@@ -148,7 +148,8 @@ async def _warm_fixed(market_cache):
         _r, _k, _cd, _rd = await MarketDataService.get_curves()
         _ek, _eu, g = await MarketDataService.get_zspread_ctx()
         fcd = _cd or _rd or date.today()
-        fm = await fi.compute_fixed_metrics_all(funi, g, fcd)
+        # _r — RUONIA-кривая: база Y-IDX фиксов (та же, что у флоатеров)
+        fm = await fi.compute_fixed_metrics_all(funi, g, fcd, ru_curve=_r)
         fi.apply_ytm_delta(fm, fcd.isoformat())   # Δ YTM день-к-дню
         market_cache["fixed_universe"] = funi
         # СЛИЯНИЕ, А НЕ ЗАМЕНА: строки движка за этот торговый день считаны по

@@ -1532,7 +1532,8 @@ async def _notify_blocks() -> int:
     # молча терялась бы. Обычно он уже посчитан демоном (price_new_trades), тут
     # закрывается только хвост — строк в выборке единицы.
     if any(f["params"].get("spread_min") is not None
-           or f["params"].get("spread_max") is not None for f in bfilters):
+           or f["params"].get("spread_max") is not None
+           or f["params"].get("dev7_bps") for f in bfilters):
         cold = [r for r in rows if r.get("y_idx_bps") is None]
         if cold:
             from services import trade_yidx
@@ -1543,6 +1544,15 @@ async def _notify_blocks() -> int:
     # намертво и подходящая за ней никогда бы не позвонила (выборка ограничена
     # limit).
     seen_ids = [r["trade_id"] for r in rows]
+
+    # 7д-средние — один раз на пачку и в потоке (холодный скан баров ~1 с)
+    avg7 = None
+    if any(f["params"].get("dev7_bps") for f in bfilters):
+        try:
+            avg7 = await run_bg(signals.avg7_map)
+        except Exception as e:
+            logger.warning("block avg7 map: %s", e)
+            avg7 = {}
 
     def _legacy_ok(r: dict) -> bool:
         if (r.get("value") or 0) < BLOCK_ALERT_MIN_RUB:
@@ -1572,7 +1582,7 @@ async def _notify_blocks() -> int:
                 dest = f.get("tg_target_id")
                 if dest in taken:
                     continue
-                if signals.block_matches(r, meta, f["params"], today):
+                if signals.block_matches(r, meta, f["params"], today, avg7):
                     taken.add(dest)
                     routed.setdefault((u, f["id"], f["name"], f["sound"],
                                        f["desktop"]), []).append(r)
@@ -1609,6 +1619,7 @@ async def _notify_blocks() -> int:
             "name": lb.get("name") or names.get(r["isin"]) or r["isin"],
             "price": r["price"], "money_rub": r["value"],
             "val_bps": r.get("y_idx_bps"),      # тем же ключом, что у алертов стакана
+            "avg7_bps": (avg7 or {}).get(r["isin"]),
             "board": r["board"], "negotiated": r["market"] == "ndm",
             "side": r["side"], "ts": r["ts"], "reason": "block",
             "rating": lb.get("rating"), "fired_at": now,
@@ -1622,10 +1633,10 @@ async def _notify_blocks() -> int:
         with _lock, _connect() as c:
             c.executemany(
                 "INSERT INTO signal_events(filter_id,user_email,isin,name,side,"
-                "price,money_rub,val_bps,board,negotiated,reason,fired_at,seen) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,'block',?,0)",
+                "price,money_rub,val_bps,avg7_bps,board,negotiated,reason,fired_at,"
+                "seen) VALUES(?,?,?,?,?,?,?,?,?,?,?,'block',?,0)",
                 [(fid, u, m["isin"], m["name"], m["side"], m["price"],
-                  m["money_rub"], m["val_bps"], m["board"],
+                  m["money_rub"], m["val_bps"], m["avg7_bps"], m["board"],
                   1 if m["negotiated"] else 0, now)
                  for (u, fid, _n, _s, _d), ms in payloads.items() for m in ms])
     await run_bg(_persist)

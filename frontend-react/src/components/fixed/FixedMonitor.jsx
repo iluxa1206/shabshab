@@ -59,6 +59,8 @@ const PATCH_METRIC_KEYS = [
   "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
   "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
   "delta_to_prev_close", "price_stale",
+  // Y-IDX к роллированию RUONIA — имена как у флоатеров
+  "yield_over_index_bps", "index_yield_pct", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
   // средневзвес едет ВМЕСТЕ со своим спредом: пара «цена → спред» обязана быть
   // из одного расчёта, иначе в строке окажется спред по другой цене
   "wap_pct",
@@ -107,8 +109,8 @@ export function applyPatch(cur, q) {
   } else {
     // патч без метрик — цены новее производных: гасим то, что от них зависит,
     // но только у СДВИНУВШЕЙСЯ цены (см. выше)
-    if (bidMoved) { n.g_spread_bid_bps = null; n.ytm_bid = null; }
-    if (askMoved) { n.g_spread_ask_bps = null; n.ytm_ask = null; }
+    if (bidMoved) { n.g_spread_bid_bps = null; n.ytm_bid = null; n.y_idx_bid_bps = null; }
+    if (askMoved) { n.g_spread_ask_bps = null; n.ytm_ask = null; n.y_idx_ask_bps = null; }
     if (lastMoved) n._mstale = true;
   }
   return n;
@@ -120,20 +122,22 @@ export function applyPatch(cur, q) {
 export function applyVolQuote(row, it) {
   for (const side of ["bid", "ask"]) {
     const px = it[`vol_${side}_px`], g = it[`vol_${side}_g`], y = it[`vol_${side}_ytm`];
+    const yi = it[`vol_${side}_y`];
     if (px != null) row[`vol_${side}_price_pct`] = px;
     if (g != null) row[`g_spread_vol_${side}_bps`] = g;
     if (y != null) row[`ytm_vol_${side}`] = y;
+    if (yi != null) row[`y_idx_vol_${side}_bps`] = yi;
   }
 }
 
 // Цена наложения → её производные в строке списка. Список несёт числа к ТОЙ
 // цене, по которой считал движок (fixed_metrics хранит last/bid/ask расчёта).
 const LIVE_DERIVED = [
-  ["bid", ["g_spread_bid_bps", "ytm_bid"]],
-  ["ask", ["g_spread_ask_bps", "ytm_ask"]],
+  ["bid", ["g_spread_bid_bps", "ytm_bid", "y_idx_bid_bps"]],
+  ["ask", ["g_spread_ask_bps", "ytm_ask", "y_idx_ask_bps"]],
 ];
 const LAST_DERIVED = ["ytm", "g_spread_bps", "z_spread_bps", "dirty", "cur_yield",
-                      "mod_dur", "mac_dur", "convexity", "dv01"];
+                      "mod_dur", "mac_dur", "convexity", "dv01", "yield_over_index_bps"];
 
 /** Наложение стрима поверх строки списка. Если наложение принесло цену, но не
  *  принесло числа к ней (первый патч бумаги — котировка, а не метрики), а цена
@@ -413,11 +417,10 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
       if (qi) applyVolQuote(row, qi);
       const it = fresh ? null : qi;
       if (it) {
-        applyPrice(row, "last_price_pct", it.last, ["ytm", "g_spread_bps", "z_spread_bps",
-          "dirty", "cur_yield", "mod_dur", "mac_dur", "convexity", "dv01"]);
-        applyPrice(row, "bid", it.bid, ["g_spread_bid_bps", "ytm_bid"], true);
-        applyPrice(row, "ask", it.ask, ["g_spread_ask_bps", "ytm_ask"], true);
-        applyPrice(row, "wap_pct", it.wap, ["g_spread_wap_bps", "ytm_wap"]);
+        applyPrice(row, "last_price_pct", it.last, LAST_DERIVED);
+        applyPrice(row, "bid", it.bid, LIVE_DERIVED[0][1], true);
+        applyPrice(row, "ask", it.ask, LIVE_DERIVED[1][1], true);
+        applyPrice(row, "wap_pct", it.wap, ["g_spread_wap_bps", "ytm_wap", "y_idx_wap_bps"]);
         if (it.vol != null) row.val_today = it.vol;
       }
       // Стрим замолчал — наложение выбрасываем целиком: его метрики посчитаны

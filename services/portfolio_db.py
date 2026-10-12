@@ -689,6 +689,9 @@ _MIGRATIONS = [
     # заявка стоит ПЕРВОЙ в очереди своей стороны: в уведомлении вместо счёта
     # уровней набора (см. screener_core: best)
     "ALTER TABLE signal_events ADD COLUMN best INTEGER",
+    # 7д-средний спред бумаги на момент события — база ОТКЛ 7Д: условие
+    # «отклонение от недели» без неё в ленте не объяснить
+    "ALTER TABLE signal_events ADD COLUMN avg7_bps REAL",
     "CREATE INDEX IF NOT EXISTS ix_block_value_ts ON block_trade(value, ts)",
     # очередь колокольчика флагом вместо водяного знака по TRADENO (см. схему
     # block_trade). Старым строкам ins_at остаётся NULL — они в очередь не

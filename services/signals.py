@@ -21,7 +21,7 @@ from typing import List, Optional
 from services.portfolio_db import _connect, _lock
 from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
                                     block_matches, block_meta,
-                                    book_trade_params, evaluate,
+                                    avg7_map, book_trade_params, evaluate,
                                     evaluate_candidates, market_snapshot,
                                     meta_years, money_floor,
                                     normalize_block_params, normalize_params,
@@ -570,8 +570,8 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                     "val_bps,price,money_rub,money_ok_rub,level_money_rub,"
                     "want_money_rub,levels,best,"
                     "single_px,reason,prev_val_bps,prev_price,prev_money_rub,"
-                    "prev_money_ok_rub,fired_at,seen) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+                    "prev_money_ok_rub,avg7_bps,fired_at,seen) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
                     (fid, user_email, m["isin"], m.get("name"), side,
                      m.get("val_bps"), m.get("price"), m.get("money_rub"),
                      m.get("money_ok_rub"), m.get("level_money_rub"),
@@ -580,7 +580,8 @@ def detect_events(fid: int, user_email: str, side: str, change_pct: float,
                      prev["val_bps"] if prev else None,
                      prev["price"] if prev else None,
                      prev["money_rub"] if prev else None,
-                     prev["money_ok_rub"] if prev else None, now_iso))
+                     prev["money_ok_rub"] if prev else None,
+                     m.get("avg7_bps"), now_iso))
                 events.append(dict(
                     m, reason=reason, fired_at=now_iso, want_money_rub=want_money,
                     prev_price=prev["price"] if prev else None,
@@ -669,7 +670,8 @@ def preview_block(params: dict, limit: int = 20) -> dict:
     from services.market_data import MarketDataService
     _mx = MarketDataService.universe_metrics() or {}
     metas = {r["isin"]: block_meta(labels, r["isin"], _mx) for r in rows}
-    hits = [r for r in rows if block_matches(r, metas[r["isin"]], p, today)]
+    avg7 = avg7_map() if p.get("dev7_bps") else None
+    hits = [r for r in rows if block_matches(r, metas[r["isin"]], p, today, avg7)]
     return {"ready": True, "total": len(hits), "capped": len(rows) >= 500,
             # срок до погашения — как в превью book-фильтра: «блок на 600 млн»
             # читается по-разному для годовой бумаги и для десятилетней
@@ -692,11 +694,25 @@ async def preview(user_email: str, params: dict, limit: int = 20) -> dict:
     # обещала бы один спред, а событие приносило другой
     cands = static_candidates(p, uni, metrics=metrics)
     await warm_exact_ctx([c.get("isin") for c in cands])
-    ms = evaluate_candidates(p, cands, metrics, depth_map, exact=True)
+    avg7 = await _avg7_for([p])
+    ms = evaluate_candidates(p, cands, metrics, depth_map, exact=True, avg7=avg7)
     return {"ready": True, "total": len(ms), "matches": ms[:limit]}
 
 
 # --- цикл мониторинга ---
+
+async def _avg7_for(params_list) -> Optional[dict]:
+    """Карта 7д-средних, если она нужна хоть одному фильтру. Читается в потоке:
+    холодный скан баров длится около секунды и в цикле событий стал бы фризом."""
+    if not any(p.get("dev7_bps") for p in params_list):
+        return None
+    from services.pools import run_bg
+    try:
+        return await run_bg(avg7_map)
+    except Exception as e:
+        logger.warning("avg7 map: %s", e)
+        return {}
+
 
 _candidates_cache: dict = {}      # fid → (params_json, [строки универса])
 
@@ -726,6 +742,7 @@ async def run_cycle() -> int:
     if not metrics:
         return 0
 
+    avg7 = await _avg7_for([f["params"] for f in filters])
     fired = 0
     for f in filters:
         try:
@@ -736,7 +753,7 @@ async def run_cycle() -> int:
             # расходились во времени (см. screener_core.exact_y_idx)
             await warm_exact_ctx([c.get("isin") for c in cands])
             matches = evaluate_candidates(f["params"], cands, metrics, depth_map,
-                                          exact=True)
+                                          exact=True, avg7=avg7)
             events = detect_events(f["id"], f["user_email"], f["params"]["side"],
                                    f.get("change_pct") or 10.0, matches,
                                    f["params"].get("min_money_rub"),

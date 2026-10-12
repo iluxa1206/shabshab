@@ -412,3 +412,74 @@ def test_book_trade_params_translation():
     assert q["min_value_rub"] == TRADE_NOTIFY_MIN_RUB
     q = book_trade_params(normalize_params({"min_money_rub": 30e6}))
     assert q["min_value_rub"] == 30e6
+
+
+# ── отклонение от 7д-средней ───────────────────────────────────────────────
+
+def test_dev7_ok_directions():
+    from services.screener_core import dev7_ok
+    p = {"dev7_bps": 20, "dev7_dir": "any"}
+    assert dev7_ok(230, 200, p) and dev7_ok(170, 200, p)
+    assert not dev7_ok(210, 200, p)
+    assert dev7_ok(220, 200, dict(p, dev7_dir="wide"))
+    assert not dev7_ok(170, 200, dict(p, dev7_dir="wide"))
+    assert dev7_ok(180, 200, dict(p, dev7_dir="tight"))
+    assert not dev7_ok(230, 200, dict(p, dev7_dir="tight"))
+    # без базы или без спреда мерить не от чего
+    assert not dev7_ok(230, None, p) and not dev7_ok(None, 200, p)
+    assert dev7_ok(None, None, {"dev7_bps": None})
+
+
+def test_dev7_alone_is_a_condition_and_validated():
+    from services.screener_core import FilterError, normalize_params
+    p = normalize_params({"dev7_bps": 30, "dev7_dir": "wide"})
+    assert (p["dev7_bps"], p["dev7_dir"]) == (30, "wide")
+    with pytest.raises(FilterError):
+        normalize_params({"dev7_bps": 0})
+    with pytest.raises(FilterError):
+        normalize_params({"dev7_bps": 10, "dev7_dir": "up"})
+
+
+def _avg7(sig, monkeypatch, m):
+    import services.screener_core as sc
+    monkeypatch.setattr(sc, "avg7_map", lambda: m)
+    monkeypatch.setattr(sig, "avg7_map", lambda: m)
+
+
+def test_block_filter_dev7_rings_with_base(bt, sig, monkeypatch):
+    """Сделка ушла от недели на 100 бп — звонит, база едет в событие и в ленту."""
+    pdb, mod = bt
+    sig.create("u@x.ru", "ушли от недели",
+               {"min_value_rub": 5_000_000, "dev7_bps": 50}, kind="block")
+    _seed(pdb, [(1, "RU000FLOAT01", 6_000_000)])
+    _price_all(monkeypatch, 300.0)
+    _avg7(sig, monkeypatch, {"RU000FLOAT01": 200.0})
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 1
+    m = sent[0]["matches"][0]
+    assert (m["val_bps"], m["avg7_bps"]) == (300.0, 200.0)
+    with pdb._connect() as c:
+        assert c.execute("SELECT avg7_bps FROM signal_events").fetchone()[0] == 200.0
+
+
+def test_block_filter_dev7_silent_near_base(bt, sig, monkeypatch):
+    pdb, mod = bt
+    sig.create("u@x.ru", "ушли от недели",
+               {"min_value_rub": 5_000_000, "dev7_bps": 50, "dev7_dir": "tight"},
+               kind="block")
+    _seed(pdb, [(1, "RU000FLOAT01", 6_000_000)])
+    _price_all(monkeypatch, 300.0)               # выше базы, а ждём ниже
+    _avg7(sig, monkeypatch, {"RU000FLOAT01": 200.0})
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0
+
+
+def test_book_filter_dev7_carries_to_trades(bt, sig, monkeypatch):
+    """Галочка «и сделки» переносит и порог отклонения."""
+    pdb, mod = bt
+    sig.create("u@x.ru", "неделя", {"dev7_bps": 50, "notify_trades": True})
+    _seed(pdb, [(1, "RU000FLOAT01", 2_000_000)])
+    _price_all(monkeypatch, 220.0)
+    _avg7(sig, monkeypatch, {"RU000FLOAT01": 200.0})   # всего +20 — мимо
+    sent: list = []
+    assert _run(mod, monkeypatch, sent) == 0

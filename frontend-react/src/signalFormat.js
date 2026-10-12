@@ -222,3 +222,10 @@ export function reasonTitle(e) {
   return `${u.txt}: ${prev != null ? fmt.num(prev, d) + " → " : ""}`
     + (cur != null ? fmt.num(cur, d) : "—");
 }
+
+/** «7д 180 (+25)» — спред события против средневзвеса 7 прошлых дней (база
+ *  колонки ОТКЛ 7Д). Приезжает, только если фильтр меряет отклонение. */
+export function dev7Txt(e) {
+  if (!e || e.avg7_bps == null || e.val_bps == null) return null;
+  return `7д ${fmt.num(e.avg7_bps, 0)} (${fmt.devBps(e.val_bps - e.avg7_bps)})`;
+}

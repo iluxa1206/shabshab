@@ -102,8 +102,12 @@ def write_snapshot(kinds: tuple = ("floater", "fixed")) -> int:
     for isin, m in fxm.items():
         if not isin or not isinstance(m, dict):
             continue
+        # Y-IDX фикса копится с 2026-10-06 (до того слот пуст). Графики фиксов
+        # пока рисуют G-спред (SpreadHistory: key g_spread_bps) — бэкфилл
+        # Y-IDX по архивной RUONIA-кривой отдельным шагом, docs/unified_monitor_tz.md
         rows.append((isin, d, "fixed", m.get("last"), None,
-                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"), None, src,
+                     m.get("g_spread_bps"), m.get("z_spread_bps"), m.get("ytm"),
+                     m.get("yield_over_index_bps"), src,
                      m.get("horizon"), None, None))
 
     # пишем только строки с хоть каким-то числом (иначе шум пустых). YTM

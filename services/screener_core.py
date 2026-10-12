@@ -78,7 +78,21 @@ PARAM_DEFAULTS = {
     # условия переводятся на язык сделки в book_trade_params — второго фильтра
     # «крупная сделка» с теми же чипами заводить не нужно.
     "notify_trades": False,
+    # ОТКЛОНЕНИЕ ОТ 7Д-СРЕДНЕЙ (см. DEV7_DOC ниже). Порог в бп; None — не важно.
+    "dev7_bps": None,
+    "dev7_dir": "any",
 }
+
+# Отклонение спреда от средневзвешенного за 7 прошлых дней — та же база, что
+# колонка ОТКЛ 7Д в мониторе и ленте (bars.spread_avg_map(7)): сигнал обязан
+# звонить ровно тогда, когда колонка показывает это число. Направление:
+#   wide  — спред ВЫШЕ средней (бумага подешевела),
+#   tight — НИЖЕ (подорожала),
+#   any   — по модулю.
+# Бумага без базы (неделю не торговалась) или без спреда — «не подходит»:
+# отклонение не от чего мерить.
+DEV7_DIRS = ("any", "wide", "tight")
+DEV7_WINDOW_DAYS = 7
 
 MAX_SELECTOR_ITEMS = 50
 
@@ -118,6 +132,40 @@ def _years_bounds(raw: dict, p: dict) -> None:
     if (p["years_min"] is not None and p["years_max"] is not None
             and p["years_min"] > p["years_max"]):
         raise FilterError("Срок до погашения: «от» больше «до»")
+
+
+def _dev7(raw: dict, p: dict) -> None:
+    """Порог отклонения от 7д-средней: общая валидация book- и block-фильтра."""
+    _floats(raw, p, ("dev7_bps",))
+    if p["dev7_bps"] is not None and p["dev7_bps"] <= 0:
+        raise FilterError("Отклонение от 7д: положительное число, бп")
+    p["dev7_dir"] = (raw.get("dev7_dir") or "any").strip().lower()
+    if p["dev7_dir"] not in DEV7_DIRS:
+        raise FilterError("dev7_dir: " + " | ".join(DEV7_DIRS))
+
+
+def avg7_map() -> dict:
+    """ISIN → средневзвешенный спред за 7 прошлых дней, бп (кэш bars, 15 мин).
+    Холодный вызов — скан bar_hourly (~1 с): из цикла звать через run_bg и
+    передавать готовую карту, синхронный путь — только запасной."""
+    from services import bars
+    return bars.spread_avg_map(DEV7_WINDOW_DAYS)
+
+
+def dev7_ok(val: Optional[float], avg: Optional[float], params: dict) -> bool:
+    """Проходит ли спред условие отклонения от 7д-средней. Без порога — да."""
+    thr = params.get("dev7_bps")
+    if not thr:
+        return True
+    if val is None or avg is None:
+        return False
+    d = float(val) - float(avg)
+    way = params.get("dev7_dir") or "any"
+    if way == "wide":
+        return d >= thr
+    if way == "tight":
+        return -d >= thr
+    return abs(d) >= thr
 
 
 def _floats(raw: dict, p: dict, keys) -> None:
@@ -179,6 +227,7 @@ def normalize_params(raw: dict) -> dict:
     p["improve_only"] = (True if raw.get("improve_only") is None
                          else bool(raw.get("improve_only")))
     p["notify_trades"] = bool(raw.get("notify_trades"))
+    _dev7(raw, p)
     _floats(raw, p, ("spread_min", "spread_max", "min_money_rub",
                      "years_min", "years_max", "book_min_qty"))
     if p["book_min_qty"] is not None:
@@ -195,10 +244,12 @@ def normalize_params(raw: dict) -> dict:
         raise FilterError("Диапазон спреда: «от» больше «до»")
     # Спред НЕобязателен: «покажи крупные заявки в ААА» — законный фильтр без
     # единого слова про спред. Но совсем пустых условий быть не должно, иначе
-    # сигнал сведётся к «уведомляй обо всём рынке».
+    # сигнал сведётся к «уведомляй обо всём рынке». Отклонение от 7д-средней —
+    # самостоятельное условие («всё, что ушло от недели на 30 бп»).
     if (p["spread_min"] is None and p["spread_max"] is None
-            and p["min_money_rub"] is None):
-        raise FilterError("Задай границу спреда или объём — иначе условий нет")
+            and p["min_money_rub"] is None and p["dev7_bps"] is None):
+        raise FilterError("Задай границу спреда, объём или отклонение от 7д — "
+                          "иначе условий нет")
     _years_bounds(raw, p)
     return p
 
@@ -229,6 +280,8 @@ BLOCK_PARAM_DEFAULTS = {
     "years_min": None,
     "years_max": None,
     "hide_subord": False,
+    "dev7_bps": None,             # отклонение спреда сделки от 7д-средней (DEV7_DIRS)
+    "dev7_dir": "any",
 }
 
 BLOCK_BASES = ["KEYRATE", "RUONIA", "FIXED"]
@@ -265,6 +318,7 @@ def normalize_block_params(raw: dict) -> dict:
             and p["spread_min"] > p["spread_max"]):
         raise FilterError("Диапазон спреда: «от» больше «до»")
     _years_bounds(raw, p)
+    _dev7(raw, p)
     p["hide_subord"] = bool(raw.get("hide_subord"))
     p["repeat_on_money"] = (True if raw.get("repeat_on_money") is None
                             else bool(raw.get("repeat_on_money")))
@@ -279,7 +333,7 @@ TRADE_NOTIFY_MIN_RUB = float(os.getenv("TRADE_NOTIFY_MIN_RUB", "1000000"))
 # что из условий стакана имеет смысл для сделки как есть
 _BOOK_TO_TRADE_KEYS = ("ratings", "emitters", "isins", "emitters_ex", "isins_ex",
                        "issuer", "spread_min", "spread_max", "years_min",
-                       "years_max", "hide_subord")
+                       "years_max", "hide_subord", "dev7_bps", "dev7_dir")
 
 
 def book_trade_params(p: dict) -> dict:
@@ -304,12 +358,14 @@ def book_trade_params(p: dict) -> dict:
 
 
 def block_matches(trade: dict, meta: dict, params: dict,
-                  today: Optional[date] = None) -> bool:
+                  today: Optional[date] = None,
+                  avg7: Optional[dict] = None) -> bool:
     """Подходит ли сделка из ленты под условия block-фильтра.
 
     trade — строка block_trade (value/market/side/isin/secid/y_idx_bps), meta —
     подпись бумаги из instruments_registry.labels_map: {name, emitter, base,
-    rating, maturity}."""
+    rating, maturity}. avg7 — карта 7д-средних (avg7_map), нужна только при
+    заданном dev7_bps; не передали — читается сама."""
     if (trade.get("value") or 0) < money_floor(params["min_value_rub"]):
         return False
     if params["markets"] == "ndm" and trade.get("market") != "ndm":
@@ -339,6 +395,11 @@ def block_matches(trade: dict, meta: dict, params: dict,
         if val is None:
             return False
         if (lo is not None and val < lo) or (hi is not None and val > hi):
+            return False
+    if params.get("dev7_bps"):
+        if avg7 is None:
+            avg7 = avg7_map()
+        if not dev7_ok(trade.get("y_idx_bps"), avg7.get(trade.get("isin")), params):
             return False
     # срок — до горизонта прайсинга сделки, если он известен ленте, иначе до
     # погашения (у ленты есть только справочная метка бумаги)
@@ -1013,7 +1074,8 @@ def _price_y_idx(isin: str, row: dict, px: Optional[float], side: str,
 
 def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                         depth_map: dict, exact: bool = False,
-                        today: Optional[date] = None) -> List[dict]:
+                        today: Optional[date] = None,
+                        avg7: Optional[dict] = None) -> List[dict]:
     """Рыночная часть: по уже отобранным бумагам считает цену/спред/деньги и
     отсеивает по диапазону спреда и объёму.
 
@@ -1025,6 +1087,11 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
     lo, hi = params["spread_min"], params["spread_max"]
     want = params.get("min_money_rub")
     today = today or date.today()
+    # 7д-средние: цикл передаёт готовую карту (прочитанную в потоке), разовые
+    # вызовы (бот, тест) — читают сами; без порога отклонения не нужны вовсе
+    if params.get("dev7_bps") and avg7 is None:
+        avg7 = avg7_map()
+    avg7 = avg7 or {}
     out = []
     for u in candidates:
         isin = u.get("isin")
@@ -1095,6 +1162,9 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                 continue
             if hi is not None and val > hi:
                 continue
+        avg = avg7.get(isin)
+        if not dev7_ok(val, avg, params):
+            continue
         # объём «по нашим условиям» — метрика повторного сигнала, не отбора:
         # на попадание бумаги в набор она не влияет (это делают spread/money выше)
         money_ok = money_in_spread(ladder, row, side, lo, hi, face, accrued, isin)
@@ -1127,6 +1197,9 @@ def evaluate_candidates(params: dict, candidates: List[dict], metrics: dict,
                     # спред может быть неизвестен, если его границы не заданы
                     # (фильтр «крупные заявки») и наклон Y-IDX не посчитался
                     "val_bps": round(val, 1) if val is not None else None,
+                    # база ОТКЛ 7Д — едет в событие, чтобы отклонение было видно
+                    # рядом со спредом, а не только в условии фильтра
+                    "avg7_bps": round(avg, 1) if avg is not None else None,
                     "price": price, "money_rub": money,
                     # деньги ПО ЦЕНЕ СИГНАЛА (весь уровень/уровни набора) —
                     # именно это показывают человеку: money_rub в режиме порога

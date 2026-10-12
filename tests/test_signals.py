@@ -1636,3 +1636,18 @@ def test_book_snapshot_marks_taken_levels_from_full_book(monkeypatch):
     # набор съел 99,90 (скрыт порогом) и 99,92 — метка только на втором
     assert book["hit"] == [99.90, 99.92]
     assert [l["price"] for l in book["asks"]] == [99.95, 99.92]
+
+
+def test_evaluate_dev7_from_week_base(monkeypatch):
+    """Отклонение от 7д-средней: оффер A1 280 при неделе 200 (+80) проходит
+    «выше на 50», C3 180 при неделе 170 (+10) — нет, B2 без базы — нет."""
+    uni, metrics, depth = _market()
+    monkeypatch.setattr(core, "avg7_map", lambda: {"RU000A0000A1": 200.0,
+                                                   "RU000A0000C3": 170.0})
+    p = core.normalize_params({"dev7_bps": 50, "dev7_dir": "wide"})
+    ms = core.evaluate(p, uni, metrics, depth)
+    assert [m["isin"] for m in ms] == ["RU000A0000A1"]
+    assert ms[0]["avg7_bps"] == 200.0
+    # «ниже» на ту же величину — пусто
+    p2 = core.normalize_params({"dev7_bps": 50, "dev7_dir": "tight"})
+    assert core.evaluate(p2, uni, metrics, depth) == []

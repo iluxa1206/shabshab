@@ -9,6 +9,7 @@ import CashflowChart from "./CashflowChart.jsx";
 import FixedCard from "./FixedCard.jsx";
 import Orderbook from "./Orderbook.jsx";
 import BondTrades from "./BondTrades.jsx";
+import WeeklyTable from "./WeeklyTable.jsx";
 import IsinCopy from "./IsinCopy.jsx";
 import { horizonView } from "../horizon.js";
 
@@ -423,6 +424,8 @@ function Content({ d, hzSel = "auto", setHzSel = () => {} }) {
           )}
         </RefCell>
       </div>
+
+      <WeeklyTable isin={r.isin} kind="floater" />
 
       <div className="section-title">Cashflow{cutToOffer ? " · до оферты " + fmt.date(r.offer_date) : ""} ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>

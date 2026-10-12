@@ -870,6 +870,140 @@ def read_daily(isin: str, frm: Optional[str] = None) -> list[dict]:
         return [dict(r) for r in c.execute(q, args)]
 
 
+# ── Недельная свёртка (поверх bar_daily) ───────────────────────────────────
+# Неделя — календарная, ПН–ВС по МСК-дате дня. Средневзвес недели — тот же
+# принцип, что у дня: вес — ОБОРОТ В РУБЛЯХ (Σ wap·value / Σ value), а не
+# среднее по дням: день с одной сделкой не тянет неделю наравне с днём на
+# миллиард. Спред взвешивается оборотом ТОЛЬКО тех дней, где он есть: день без
+# спреда (стейл-версия движка, чужой горизонт) не размывает знаменатель.
+#
+# По ОФЗ рядом кладём аукционы Минфина той же недели (ofz_auction): премия
+# аукциона к вторичке в цене — prem_pp = средневзвес недели − ср.взв. цена
+# аукциона. Знак как у premium_bps вкладки АУКЦИОН: плюс — Минфин разместил
+# ДЕШЕВЛЕ рынка (дал премию покупателям).
+
+def _week_of(d: str) -> str:
+    """Понедельник календарной недели ISO-даты."""
+    dd = date.fromisoformat(d)
+    return (dd - timedelta(days=dd.weekday())).isoformat()
+
+
+def _msk_today() -> date:
+    return datetime.now(timezone(timedelta(hours=3))).date()
+
+
+def weekly_calc(daily: list[dict], auctions: list[dict], weeks: int = 12,
+                today: Optional[date] = None) -> dict:
+    """Чистая свёртка: дневные строки bar_daily + аукционы → недели, новые
+    сверху. Недели без сделок и без аукционов опускаются.
+
+    Спред дня берётся только актуального движка (metrics_ver) и к ОДНОМУ
+    горизонту — последнему известному в окне, как в _one_horizon истории:
+    иначе неделя переключения «погашение ↔ оферта» сложила бы два разных
+    спреда. Нет совпадения ни с основным, ни со вторым горизонтом — спред дня
+    гаснет, цена остаётся."""
+    today = today or _msk_today()
+    start = (today - timedelta(days=today.weekday()) - timedelta(weeks=weeks - 1)).isoformat()
+    daily = sorted((r for r in daily if r["date"] >= start), key=lambda r: r["date"])
+    kind = next((r.get("kind") for r in reversed(daily) if r.get("kind")), None)
+    fixed = kind == "fixed"
+    hz = next((r.get("horizon") for r in reversed(daily) if r.get("horizon")), None)
+
+    acc: dict[str, dict] = {}
+
+    def bucket(d: str) -> dict:
+        wk = _week_of(d)
+        a = acc.get(wk)
+        if a is None:
+            a = acc[wk] = {"pw": 0.0, "w": 0.0, "sw": 0.0, "sws": 0.0, "days": 0,
+                           "value": 0.0, "volume": 0.0, "trades": 0, "auctions": []}
+        return a
+
+    for r in daily:
+        val = r.get("value") or 0.0
+        if val <= 0:
+            continue          # день без оборота: ни цены, ни веса
+        a = bucket(r["date"])
+        a["days"] += 1
+        a["value"] += val
+        a["volume"] += r.get("volume") or 0.0
+        a["trades"] += r.get("trades") or 0
+        if r.get("wap_pct") is None:
+            continue
+        a["pw"] += r["wap_pct"] * val
+        a["w"] += val
+        if (r.get("metrics_ver") or 0) != BARS_METRICS_VERSION:
+            continue          # спред прошлого движка — не смешиваем методики
+        if fixed:
+            sp = r.get("g_spread_wap_bps")
+        else:
+            sp = r.get("y_idx_wap_bps")
+        if hz is not None and r.get("horizon") != hz:
+            sp = (r.get("y_idx_alt_wap_bps")
+                  if not fixed and r.get("alt_horizon") == hz else None)
+        if sp is not None:
+            a["sw"] += sp * val
+            a["sws"] += val
+
+    for au in auctions:
+        if au.get("date") and au["date"] >= start:
+            bucket(au["date"])["auctions"].append(au)
+
+    out = []
+    for wk in sorted(acc, reverse=True):
+        a = acc[wk]
+        wap = round(a["pw"] / a["w"], 4) if a["w"] > 0 else None
+        sp = round(a["sw"] / a["sws"], 1) if a["sws"] > 0 else None
+        aucs = []
+        for au in sorted(a["auctions"], key=lambda x: (x["date"], x.get("fmt") or "")):
+            ap = au.get("wap_price")
+            ok = au.get("status") != "failed"
+            aucs.append({
+                "date": au["date"], "fmt": au.get("fmt"), "status": au.get("status"),
+                "wap_price": ap, "cut_price": au.get("cut_price"),
+                "wap_yield": au.get("wap_yield"), "cut_yield": au.get("cut_yield"),
+                "placed_mln": au.get("placed_mln"), "demand_mln": au.get("demand_mln"),
+                # плюс — аукцион дешевле вторички недели (премия покупателям)
+                "prem_pp": (round(wap - ap, 2)
+                            if ok and wap is not None and ap is not None else None),
+                # премия в доходности к YTM вторички накануне (только ПД, см.
+                # ofz_auctions.enrich) — та же цифра, что во вкладке АУКЦИОН
+                "premium_bps": au.get("premium_bps"),
+            })
+        mon = date.fromisoformat(wk)
+        out.append({
+            "week": wk, "week_end": (mon + timedelta(days=6)).isoformat(),
+            "days": a["days"], "wap_pct": wap,
+            "y_idx_wap_bps": None if fixed else sp,
+            "g_spread_wap_bps": sp if fixed else None,
+            "value": a["value"] or None, "volume": a["volume"] or None,
+            "trades": a["trades"] or None, "auctions": aucs,
+        })
+    return {"kind": kind, "horizon": hz, "from": start, "weeks": out}
+
+
+def weekly(isin: str, weeks: int = 12) -> dict:
+    """Недели бумаги из bar_daily + аукционы ОФЗ той же недели. Без сети и без
+    пересчёта: только чтение готовых свёрток."""
+    today = _msk_today()
+    start = (today - timedelta(days=today.weekday()) - timedelta(weeks=weeks - 1)).isoformat()
+    daily = read_daily(isin, start)
+    # аукцион к бумаге — по ISIN; у строк, где резолв ISIN не нашёл (в isin
+    # тогда лежит SECID), — по SECID бумаги из справочника рынка
+    with _connect() as c:
+        aucs = [dict(r) for r in c.execute(
+            "SELECT * FROM ofz_auction WHERE date >= ? AND (isin = ? OR isin IN "
+            "(SELECT secid FROM sec_ref WHERE isin = ?) OR secid IN "
+            "(SELECT secid FROM sec_ref WHERE isin = ?)) ORDER BY date",
+            (start, isin, isin, isin))]
+    if aucs:
+        from services import ofz_auctions as oa
+        oa.enrich(aucs, oa._secondary_ytm(aucs))
+    res = weekly_calc(daily, aucs, weeks, today)
+    res["isin"] = isin
+    return res
+
+
 async def build_daily_universe(days: Optional[int] = None, limit: Optional[int] = None,
                                kinds: tuple = ("floater", "fixed"),
                                force: bool = False) -> dict:

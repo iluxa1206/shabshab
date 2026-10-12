@@ -36,6 +36,8 @@ class SignalParams(BaseModel):
     improve_only: bool = True           # повтор только при улучшении (планка)
     book_min_qty: Optional[float] = None  # прятать мелочь в стакане сообщения
     notify_trades: bool = False         # и сделки под теми же условиями
+    dev7_bps: Optional[float] = None    # отклонение спреда от 7д-средней, бп
+    dev7_dir: str = "any"               # any | wide (выше средней) | tight (ниже)
 
 
 class BlockParams(BaseModel):
@@ -56,6 +58,8 @@ class BlockParams(BaseModel):
     years_min: Optional[float] = None   # срок до погашения, лет
     years_max: Optional[float] = None
     hide_subord: bool = False
+    dev7_bps: Optional[float] = None    # см. SignalParams
+    dev7_dir: str = "any"
 
 
 class SignalCreate(BaseModel):

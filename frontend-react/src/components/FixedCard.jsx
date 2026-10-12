@@ -4,6 +4,7 @@ import { fmt, dmColor } from "../format.js";
 import { repriceFixed, UnauthorizedError } from "../api.js";
 import PriceChart from "./PriceChart.jsx";
 import SpreadHistory from "./SpreadHistory.jsx";
+import WeeklyTable from "./WeeklyTable.jsx";
 
 const D = "—";
 function Cell({ k, children }) {
@@ -98,6 +99,16 @@ export default function FixedCard({ d }) {
 
       <div className="section-title">Оценка к погашению{putHint}</div>
       <div className={"val-cards" + (isRepriced ? " val-cards-calc" : "")}>
+        {/* spread (Y-IDX) — та же база, что у флоатеров: роллирование RUONIA до
+            конца потока. По нему фиксы и флоатеры сравнимы в одной витрине */}
+        <div className="vc" title={"Спред: YTM бумаги − доходность роллирования RUONIA"
+          + (m.index_yield_pct != null ? ` (${fmt.pct(m.index_yield_pct)} %)` : "")
+          + " до того же горизонта. База та же, что у флоатеров"}>
+          <div className="vc-label">spread</div>
+          <div className="vc-val" style={m.y_idx_bps != null ? dmColor(m.y_idx_bps) : {}}>
+            {m.y_idx_bps != null ? fmt.bps(m.y_idx_bps) : D}<span className="vc-u"> bps</span></div>
+          <div className="vc-sub">к RUONIA</div>
+        </div>
         <div className="vc">
           <div className="vc-label">YTM</div>
           <div className="vc-val">{m.ytm_pct != null ? fmt.pct(m.ytm_pct) : D}<span className="vc-u"> %</span></div>
@@ -142,6 +153,8 @@ export default function FixedCard({ d }) {
         <div className="section-title">Динамика G-спреда</div>
         <SpreadHistory isin={r.isin} kind="fixed" secid={r.secid} board={r.board || "TQOB"} />
       </>}
+
+      <WeeklyTable isin={r.isin} kind="fixed" />
 
       <div className="section-title">Поток платежей ({cf.length})</div>
       <div style={{ maxHeight: 340, overflow: "auto" }}>

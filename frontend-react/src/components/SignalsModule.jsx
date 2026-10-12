@@ -8,7 +8,8 @@ import {
 } from "../api.js";
 import { fmt, RT_FILTER } from "../format.js";
 import { bookMode, eventTag, maturityShort, maturityTxt, reasonDelta, reasonTitle,
-         reasonTone, sideInfo, tradeMode, tradeTone } from "../signalFormat.js";
+         reasonTone, sideInfo, tradeMode, tradeTone,
+         dev7Txt as eventDev7 } from "../signalFormat.js";
 import IsinCopy from "./IsinCopy.jsx";
 
 // значения — из общего списка (совпадает со screener_core.RATINGS на бэке)
@@ -127,6 +128,34 @@ function RangeInputs({ min, max, setMin, setMax, step }) {
   );
 }
 
+// Направление отклонения от 7д-средней: спред выше средней — бумага
+// подешевела, ниже — подорожала (screener_core.DEV7_DIRS).
+const DEV7_DIRS = [["any", "любое"], ["wide", "выше"], ["tight", "ниже"]];
+
+/** Отклонение спреда от средневзвеса 7 дней — общее поле обеих форм. База та
+ *  же, что у колонки ОТКЛ 7Д в мониторе и ленте. */
+function Dev7Field({ dev, setDev, dir, setDir }) {
+  return (
+    <div className="sig-field">
+      <label className="sig-label">Отклонение от 7д-средней, бп</label>
+      <div className="sig-row tight">
+        <input className="sig-input num" type="number" step="1" min="0"
+          placeholder="не важно" value={dev}
+          title="Спред против средневзвешенного за 7 прошлых дней — как колонка ОТКЛ 7Д. Бумага без сделок за неделю не проходит: отклонение не от чего мерить."
+          onChange={(e) => setDev(e.target.value)} />
+        {dev !== "" && <Seg pairs={DEV7_DIRS} value={dir} onChange={setDir} />}
+      </div>
+    </div>
+  );
+}
+
+/** «откл 7д ≥ 30 бп» / «выше 7д ≥ 30 бп» — строкой в карточке фильтра. */
+function dev7Txt(p) {
+  if (!p.dev7_bps) return null;
+  const how = p.dev7_dir === "wide" ? "выше 7д" : p.dev7_dir === "tight" ? "ниже 7д" : "откл 7д";
+  return `${how} ≥ ${fmt.num(p.dev7_bps, 0)} бп`;
+}
+
 /** Блок «какие бумаги» — общий у обеих форм: один порядок полей, одни подписи.
  *  Отбор бумаг ОДИНАКОВ у стакана и у сделок, поэтому и выглядеть должен так же.
  *
@@ -235,7 +264,7 @@ function describeBlock(p) {
   return [`от ${fmt.mln(p.min_value_rub)} млн`, labelOfPair(MARKETS, p.markets), bases,
           p.side !== "any" ? labelOfPair(SIDES, p.side) : null,
           spread ? `spread ${spread}` : null,
-          years ? `срок ${years}` : null,
+          years ? `срок ${years}` : null, dev7Txt(p),
           exceptTxt(p)].filter(Boolean).join(" · ");
 }
 
@@ -362,6 +391,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
   const [improveOnly, setImproveOnly] = useState(ep.improve_only !== false);
   const [bookMinQty, setBookMinQty] = useState(numOrEmpty(ep.book_min_qty));
   const [notifyTrades, setNotifyTrades] = useState(!!ep.notify_trades);
+  const [dev7, setDev7] = useState(numOrEmpty(ep.dev7_bps));
+  const [dev7Dir, setDev7Dir] = useState(ep.dev7_dir || "any");
   const [changePct, setChangePct] = useState(edit?.change_pct ?? 10);
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
@@ -384,14 +415,17 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
     improve_only: improveOnly,
     book_min_qty: bookMinQty === "" ? null : Number(bookMinQty),
     notify_trades: notifyTrades,
+    dev7_bps: dev7 === "" ? null : Number(dev7),
+    dev7_dir: dev7Dir,
   }), [ratings, emitters, isins, emittersEx, isinsEx, issuers, side, smin, smax,
        minMoney, moneyMode, ymin, ymax, hideSub, repeatMoney, improveOnly,
-       bookMinQty, notifyTrades]);
+       bookMinQty, notifyTrades, dev7, dev7Dir]);
 
   // Живое превью: показывает, что попадёт под условия ПРЯМО СЕЙЧАС — иначе
   // фильтр сохраняют вслепую и ждут сигнала, которого может не быть никогда.
   useEffect(() => {
-    if (smin === "" && smax === "" && minMoney === "") { setPreview(null); return; }
+    if (smin === "" && smax === "" && minMoney === "" && dev7 === "") {
+      setPreview(null); return; }
     let dead = false;
     const t = setTimeout(async () => {
       try {
@@ -400,14 +434,14 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       } catch { if (!dead) setPreview(null); }
     }, 400);
     return () => { dead = true; clearTimeout(t); };
-  }, [params, smin, smax, minMoney]);
+  }, [params, smin, smax, minMoney, dev7]);
 
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
     if (!name.trim()) { setErr("Дай сигналу название"); return; }
-    if (smin === "" && smax === "" && minMoney === "") {
-      setErr("Задай диапазон spread или объём — иначе условий нет"); return; }
+    if (smin === "" && smax === "" && minMoney === "" && dev7 === "") {
+      setErr("Задай диапазон spread, объём или отклонение от 7д — иначе условий нет"); return; }
     try {
       await onSubmit({ name: name.trim(), kind: "book", params,
                        change_pct: changePct, sound, desktop,
@@ -416,7 +450,8 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setEmittersEx([]); setIsinsEx([]);
       setSmin(""); setSmax(""); setMinMoney(""); setYmin(""); setYmax("");
-      setMoneyMode("book"); setHideSub(false); setNotifyTrades(false); setPreview(null);
+      setMoneyMode("book"); setHideSub(false); setNotifyTrades(false);
+      setDev7(""); setDev7Dir("any"); setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -464,6 +499,10 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
           <label className="sig-label">Срок до погашения, лет</label>
           <RangeInputs min={ymin} max={ymax} setMin={setYmin} setMax={setYmax} step="any" />
         </div>
+      </div>
+
+      <div className="sig-row">
+        <Dev7Field dev={dev7} setDev={setDev7} dir={dev7Dir} setDir={setDev7Dir} />
       </div>
 
       <div className="sig-row">
@@ -525,7 +564,7 @@ function FilterForm({ onSubmit, busy, edit, onCancel }) {
 
       {notifyTrades && (
         <div className="sig-note">
-          Плюс сделки в ленте под теми же условиями: отбор бумаг, spread, срок
+          Плюс сделки в ленте под теми же условиями: отбор бумаг, spread, отклонение от 7д, срок
           {minMoney !== "" ? `, сделка от ${minMoney} млн ₽` : ", сделка от 1 млн ₽"};
           сторона агрессора любая, включая РПС.
         </div>
@@ -590,6 +629,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const [ymin, setYmin] = useState(numOrEmpty(ep.years_min));
   const [ymax, setYmax] = useState(numOrEmpty(ep.years_max));
   const [hideSub, setHideSub] = useState(!!ep.hide_subord);
+  const [dev7, setDev7] = useState(numOrEmpty(ep.dev7_bps));
+  const [dev7Dir, setDev7Dir] = useState(ep.dev7_dir || "any");
   const [sound, setSound] = useState(edit ? !!edit.sound : true);
   const [desktop, setDesktop] = useState(edit ? !!edit.desktop : true);
   const [target, setTarget] = useState(edit?.tg_target_id ?? null);
@@ -600,6 +641,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
   const params = useMemo(() => ({
     ratings, emitters, isins, emitters_ex: emittersEx, isins_ex: isinsEx,
     issuer: chipsIssuer(issuers), bases, markets,
+    dev7_bps: dev7 === "" ? null : Number(dev7), dev7_dir: dev7Dir,
     side, hide_subord: hideSub,
     min_value_rub: mlnToRub(minValue),
     spread_min: smin === "" ? null : Number(smin),
@@ -607,7 +649,7 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
     years_min: ymin === "" ? null : Number(ymin),
     years_max: ymax === "" ? null : Number(ymax),
   }), [ratings, emitters, isins, emittersEx, isinsEx, issuers, bases, markets,
-       side, hideSub, minValue, smin, smax, ymin, ymax]);
+       side, hideSub, minValue, smin, smax, ymin, ymax, dev7, dev7Dir]);
 
   // Превью по СЕГОДНЯШНЕЙ ленте: у события нет «набора сейчас», а вслепую
   // выставленный порог либо молчит неделю, либо звонит каждые пять минут.
@@ -635,7 +677,8 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
       if (edit) return;
       setName(""); setRatings([]); setEmitters([]); setIsins([]); setIssuers([]);
       setEmittersEx([]); setIsinsEx([]);
-      setSmin(""); setSmax(""); setYmin(""); setYmax(""); setPreview(null);
+      setSmin(""); setSmax(""); setYmin(""); setYmax(""); setDev7(""); setDev7Dir("any");
+      setPreview(null);
     } catch (e2) { setErr(e2.message); }
   };
 
@@ -701,7 +744,11 @@ function BlockForm({ onSubmit, busy, edit, onCancel }) {
         </div>
       </div>
 
-      {(smin !== "" || smax !== "") && (
+      <div className="sig-row">
+        <Dev7Field dev={dev7} setDev={setDev7} dir={dev7Dir} setDir={setDev7Dir} />
+      </div>
+
+      {(smin !== "" || smax !== "" || dev7 !== "") && (
         <div className="sig-note">
           Спред сделки считается только флоатерам — с заданным диапазоном фиксы отсеются,
           даже если база «фикс» отмечена.
@@ -780,6 +827,7 @@ function BookFilterRow({ f, onToggle, onDelete, onEdit, editing }) {
           <span className={f.params.side === "ask" ? "neg" : "pos"}>
             {f.params.side === "ask" ? "оффер" : "бид"}</span>
           {d.range ? ` · spread ${d.range}` : ""}
+          {dev7Txt(f.params) ? ` · ${dev7Txt(f.params)}` : ""}
           {d.moneyTxt ? ` · ${d.moneyTxt}` : ""}
           {d.years ? ` · срок ${d.years}` : ""}
           {" · сдвиг "}{chLabel(f.change_pct)}
@@ -851,7 +899,7 @@ function FilterColumn({ title, hint, empty, Form, formKey, rows, editing, loadin
 /** Условия книжного фильтра одной строкой — для списка выбора в ленте. */
 function bookNote(p) {
   const d = describe(p);
-  return [d.scope, d.range ? `spread ${d.range}` : null,
+  return [d.scope, d.range ? `spread ${d.range}` : null, dev7Txt(p),
           d.years ? `срок ${d.years}` : null, d.moneyTxt].filter(Boolean).join(" · ");
 }
 
@@ -1100,6 +1148,7 @@ export default function SignalsModule() {
                   {h.val_bps != null && (
                     <><span className="sig-hit-k">spread</span> <b>{fmt.num(h.val_bps, 0)} бп</b></>
                   )}
+                  {eventDev7(h) && <> · {eventDev7(h)}</>}
                   {h.price != null && <> · {fmt.num(h.price, 2)}%</>}
                   {h.money_rub != null && <> · {money(h.money_rub)} млн</>}
                 </div>

@@ -155,7 +155,13 @@ export const FIXED_COLS = [
   { key: "cur_yield", label: "CUR Y", sub: "ТЕК. %", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} key="cur_yield">{fmt.pct(b.cur_yield) ?? <D />}</td> },
   // ── спреды ──
-  { key: "g_spread_bps", label: "G-SPRD", sub: "vs КБД", align: "num", grp: true, w: 8,
+  // SPREAD (Y-IDX) — к роллированию RUONIA, той же базе, что у флоатеров: по нему
+  // классы сравнимы между собой (docs/unified_monitor_tz.md). G/Z — к КБД.
+  { key: "yield_over_index_bps", label: "SPREAD", sub: "IRR−RUONIA", align: "num", grp: true, w: 9,
+    title: "YTM − доходность роллирования RUONIA до того же горизонта, б.п. — база та же, что у флоатеров",
+    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.yield_over_index_bps)}
+      key="yield_over_index_bps">{fmt.bps(b.yield_over_index_bps) ?? <D />}</td> },
+  { key: "g_spread_bps", label: "G-SPRD", sub: "vs КБД", align: "num", w: 8,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.g_spread_bps)} key="g_spread_bps">
       {fmt.bps(b.g_spread_bps) ?? <D />}</td> },
   { key: "z_spread_bps", label: "Z-SPRD", sub: "vs КБД", align: "num", w: 8,

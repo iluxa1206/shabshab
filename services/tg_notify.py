@@ -386,6 +386,11 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
     if m.get("val_bps") is not None:
         head.append(f"<b>{m['val_bps']:.0f} бп</b>"
                     + _delta_bit(m, reason, "spread"))
+        # база ОТКЛ 7Д — только у фильтров, которые меряют отклонение
+        if m.get("avg7_bps") is not None:
+            dev = round(m["val_bps"] - m["avg7_bps"])
+            head.append(f"7д {m['avg7_bps']:.0f} ({dev:+d})" if dev
+                        else f"7д {m['avg7_bps']:.0f} (0)")
     years = _fmt_years(m.get("years"))
     head.append(_issue_link(m) + (f" ({years})" if years else ""))
 

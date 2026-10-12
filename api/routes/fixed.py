@@ -23,6 +23,10 @@ _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 _METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
                 "dv01", "put_date", "issue_date",
+                # Y-IDX к роллированию RUONIA и база — имена как у флоатеров
+                # (общий контракт витрины, docs/unified_monitor_tz.md)
+                "yield_over_index_bps", "index_yield_pct",
+                "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
                 # ставка купона с этой даты не объявлена, в YTM продлён последний
                 # известный (у выпуска нет оферт) — число держится на допущении
                 "coupon_assumed_from",
@@ -49,6 +53,7 @@ def _vol_fields(m: dict, vol_bid, vol_ask) -> dict:
     px_map = m.get("vol_px") or {}
     g_map = m.get("g_spread_vol") or {}
     y_map = m.get("ytm_vol") or {}
+    i_map = m.get("y_idx_vol") or {}
     for side, size in (("bid", vol_bid), ("ask", vol_ask)):
         if not size:
             continue
@@ -56,6 +61,8 @@ def _vol_fields(m: dict, vol_bid, vol_ask) -> dict:
         out[f"vol_{side}_price_pct"] = px_map.get(key)
         out[f"g_spread_vol_{side}_bps"] = g_map.get(key)
         out[f"ytm_vol_{side}"] = y_map.get(key)
+        # имя как у флоатеров (api/routes/bonds._vol_fields)
+        out[f"y_idx_vol_{side}_bps"] = i_map.get(key)
     return out
 
 
@@ -189,11 +196,14 @@ async def get_fixed_quotes(
             px_map = m.get("vol_px") or {}
             g_map = m.get("g_spread_vol") or {}
             y_map = m.get("ytm_vol") or {}
+            # «_y» — Y-IDX, тот же суффикс, что у флоатеров (bonds.get_quotes)
+            i_map = m.get("y_idx_vol") or {}
             for side, size in (("bid", vol_bid), ("ask", vol_ask)):
                 if not size:
                     continue
                 key = f"{side}:{float(size):.0f}"
-                for suffix, src in (("px", px_map), ("g", g_map), ("ytm", y_map)):
+                for suffix, src in (("px", px_map), ("g", g_map), ("ytm", y_map),
+                                    ("y", i_map)):
                     if src.get(key) is not None:
                         items[-1][f"vol_{side}_{suffix}"] = src[key]
     return {"ts": market_cache.get("quotes_ts"), "n": len(items), "items": items}
@@ -554,7 +564,7 @@ async def get_fixed_details(isin: str = Path(...)):
     _r, _k, cd, rd = await MarketDataService.get_curves()
     _ek, _eu, g = await MarketDataService.get_zspread_ctx()
     calc_date = cd or rd or date.today()
-    m = fi.compute_fixed_row(row, full, g, calc_date)
+    m = fi.compute_fixed_row(row, full, g, calc_date, ru_curve=_r)
 
     return {
         "reference": {
@@ -578,6 +588,10 @@ async def get_fixed_details(isin: str = Path(...)):
             "ytm_pct": m.get("ytm"), "cur_yield_pct": m.get("cur_yield"),
             "g_spread_bps": m.get("g_spread_bps"), "z_spread_bps": m.get("z_spread_bps"),
             "g_spread_wap_bps": m.get("g_spread_wap_bps"), "ytm_wap_pct": m.get("ytm_wap"),
+            # Y-IDX к роллированию RUONIA — та же база, что у флоатеров
+            "y_idx_bps": m.get("yield_over_index_bps"),
+            "y_idx_wap_bps": m.get("y_idx_wap_bps"),
+            "index_yield_pct": m.get("index_yield_pct"),
             "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
             "convexity": m.get("convexity"), "dv01": m.get("dv01"),
             "put_date": m.get("put_date"),
@@ -610,13 +624,14 @@ async def reprice_fixed(
     _r, _k, cd, rd = await MarketDataService.get_curves()
     _ek, _eu, g = await MarketDataService.get_zspread_ctx()
     calc_date = cd or rd or date.today()
-    m = fi.compute_fixed_row(row, full, g, calc_date, price_override=price)
+    m = fi.compute_fixed_row(row, full, g, calc_date, price_override=price, ru_curve=_r)
 
     return {
         "clean_price_pct": price,
         "dirty_rub": m.get("dirty"),
         "ytm_pct": m.get("ytm"), "cur_yield_pct": m.get("cur_yield"),
         "g_spread_bps": m.get("g_spread_bps"), "z_spread_bps": m.get("z_spread_bps"),
+        "y_idx_bps": m.get("yield_over_index_bps"),
         "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
         "calc_date": calc_date.isoformat(),

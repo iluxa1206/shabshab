@@ -298,6 +298,11 @@ export const fetchRepricePast = (isin, { date, price, board } = {}) => {
   return request(u);
 };
 
+// Средневзвес по календарным неделям (ПН–ВС): цена и спред, взвешенные
+// оборотом, + аукционы Минфина той же недели (у ОФЗ). Готовая bar_daily, без сети.
+export const fetchWeekly = (isin, { weeks = 12 } = {}) =>
+  request(`/api/history/${encodeURIComponent(isin)}/weekly?weeks=${weeks}`);
+
 // Часовые бары: средневзвешенная цена часа (VWAP) + спред по ней + стороны
 // сделок (buy/sell VWAP из тикового архива). hours>1 склеивает часы на бэке.
 export const fetchHourlyBars = (isin, { kind = "floater", days = 30, hours = 1,

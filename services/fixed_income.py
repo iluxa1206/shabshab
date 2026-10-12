@@ -12,6 +12,9 @@
 
 YTM — через xirr (эффективная годовая, ACT/365, как НРД). Дюрация — численная
 (bump ±10бп по ставке дисконтирования). G-spread = YTM − КБД(τ=дюрация).
+Y-IDX = YTM − доходность роллирования RUONIA до конца потока — та же база и
+та же формула, что у флоатеров (services/valuation), поэтому спреды двух классов
+сопоставимы в одной витрине (docs/unified_monitor_tz.md).
 Все расчёты в валюте номинала, включая НКД (см. _accrued_face_ccy); конверсия в
 рубли — на уровне портфеля.
 """
@@ -29,7 +32,8 @@ from typing import List, Optional, Tuple, Dict
 import httpx
 
 from core.forwards import add_months
-from core.valuation import xirr, xnpv, settle_date, accrued_at, accrued_estimate
+from core.valuation import (xirr, xnpv, settle_date, accrued_at, accrued_estimate,
+                            ruonia_rolling_yield_pct)
 from services.market_data import moex_client, MarketDataService, _moex_get, CALL_OFFER_SOURCE
 from services.paths import cache_path
 
@@ -118,13 +122,33 @@ def _cashflows_at_date(schedule: dict, calc_date: date, exchange_face,
     return cached
 
 
+def _index_yield_pct(ru_curve, row: dict, calc_date: date,
+                     flow_end: Optional[date]) -> Optional[float]:
+    """База Y-IDX: доходность роллирования RUONIA calc_date → конец потока, %.
+
+    None там, где сравнение с RUONIA не имеет смысла: бессрочная (горизонта
+    нет — рента на 100 лет), линкер (YTM у него реальная, а RUONIA номинальная)
+    и валютный номинал (RUONIA рублёвая — тот же guard, что у КБД). Путь
+    роллирования кэшируется на объекте кривой (_RuoniaCompoundPath), поэтому
+    вызов на каждый уровень цены дешёв."""
+    if (ru_curve is None or flow_end is None or _is_perpetual(row)
+            or row.get("linked") or not _ruble_face(row)):
+        return None
+    try:
+        return ruonia_rolling_yield_pct(ru_curve, calc_date, flow_end)
+    except Exception as e:
+        logger.warning(f"fixed RUONIA rolling-yield error {row.get('isin')}: {e}")
+        return None
+
+
 def _metrics_at_price(row: dict, schedule: dict, price_pct: float, accrued: float,
-                      calc_date: date, g_curve, exchange_face) -> dict:
+                      calc_date: date, g_curve, exchange_face, ru_curve=None) -> dict:
     """Точные метрики уровня цены с LRU базовой математики.
 
     В кэше лежит результат без КБД и с внутренними неокруглёнными y/duration.
     Это позволяет не гонять xirr/xnpv повторно, но пересчитывать G-spread
-    буквально по той же формуле при каждой новой версии кривой.
+    буквально по той же формуле при каждой новой версии кривой. Y-IDX — так же:
+    база от цены не зависит, вычитается из неокруглённой YTM.
     """
     key = _price_metrics_key(row, schedule, price_pct, accrued, calc_date, exchange_face)
     base = _price_metrics_cache.get(key)
@@ -147,6 +171,13 @@ def _metrics_at_price(row: dict, schedule: dict, price_pct: float, accrued: floa
             and getattr(g_curve, "ok", lambda: False)()):
         tau = max(mod_dur * (1.0 + y), 0.01)
         out["g_spread_bps"] = round((y - g_curve.r(tau)) * 10000.0)
+    out["yield_over_index_bps"] = out["index_yield_pct"] = None
+    if y is not None and ru_curve is not None:
+        base_pct = _index_yield_pct(ru_curve, row, calc_date, base.get("_flow_end"))
+        if base_pct is not None:
+            # формула флоатеров (services/valuation): % − %, в бп
+            out["yield_over_index_bps"] = round((y * 100.0 - base_pct) * 100.0)
+            out["index_yield_pct"] = round(base_pct, 4)
     return out
 
 
@@ -519,6 +550,9 @@ def fixed_metrics_from_schedule(
         # остаётся округлённой, как и раньше.
         out["_ytm_raw"] = y
         out["_mod_dur_raw"] = mod_dur
+        # конец потока — горизонт базы Y-IDX (поток режется пут-офертой и
+        # продлением неопределённого купона до выкупа, база обязана туда же)
+        out["_flow_end"] = max(d for d, _ in cfs)
 
     if g_curve is not None and getattr(g_curve, "ok", lambda: False)():
         # тенор КБД матчим по Маколею (как НРД), не по модифицированной
@@ -759,8 +793,9 @@ def _accrued_face_ccy(row: dict, full: dict, calc_date: date) -> Optional[float]
 
 
 def fixed_side_metrics(row: dict, full: dict, g_curve, calc_date: date,
-                       prices, known: Dict[float, dict] = None) -> Dict[float, dict]:
-    """{цена: {'ytm','g_spread_bps'}} по произвольным ценам одной бумаги.
+                       prices, known: Dict[float, dict] = None,
+                       ru_curve=None) -> Dict[float, dict]:
+    """{цена: {'ytm','g_spread_bps','y_idx_bps'}} по произвольным ценам одной бумаги.
 
     Стороны стакана, средневзвес, VWAP-набор тикета — всё это одна и та же
     бумага по разным ценам: поток, номинал и НКД от цены не зависят, меняется
@@ -777,15 +812,16 @@ def fixed_side_metrics(row: dict, full: dict, g_curve, calc_date: date,
     # КБД — рублёвая: спред к ней у валютной бумаги не считаем (тот же guard,
     # что в compute_fixed_row, — здесь для стакана и набора тикета)
     if not _ruble_face(row):
-        g_curve = None
+        g_curve = ru_curve = None
     for px in prices:
         if px is None or px <= 0:
             continue
         key = round(float(px), 4)
         if key in out:
             continue
-        m = _metrics_at_price(row, full, px, accrued, calc_date, g_curve, face)
-        out[key] = {"ytm": m.get("ytm_pct"), "g_spread_bps": m.get("g_spread_bps")}
+        m = _metrics_at_price(row, full, px, accrued, calc_date, g_curve, face, ru_curve)
+        out[key] = {"ytm": m.get("ytm_pct"), "g_spread_bps": m.get("g_spread_bps"),
+                    "y_idx_bps": m.get("yield_over_index_bps")}
     return out
 
 
@@ -837,12 +873,14 @@ def _static_flags(out: dict, row: dict, full: dict, calc_date: date) -> None:
 
 
 def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
-                      price_override: float = None) -> dict:
+                      price_override: float = None, ru_curve=None) -> dict:
     """Полный набор метрик фикс-бумаги для строки таблицы: цена (last→prev),
-    YTM/тек.доходность/g-спред/z-спред/дюрация/convexity/DV01.
+    YTM/тек.доходность/g-спред/z-спред/Y-IDX/дюрация/convexity/DV01.
 
     price_override — чистая цена калькулятора карточки: считает все метрики под
-    произвольную цену вместо рыночной (last→prev). НКД/поток не зависят от цены."""
+    произвольную цену вместо рыночной (last→prev). НКД/поток не зависят от цены.
+    ru_curve — RUONIA-кривая (база Y-IDX). Не передана — Y-IDX прочерком: его
+    надо прокидывать из каждой точки расчёта, как у флоатеров."""
     if price_override is not None:
         px = price_override
         out = {"last": px, "prev": row.get("prev"), "price_stale": False}
@@ -860,16 +898,19 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     # нельзя. Передаём None, чтобы G/Z остались честным прочерком.
     ruble_face = _ruble_face(row)
     curve = g_curve if ruble_face else None
+    ru = ru_curve if ruble_face else None
     m = _metrics_at_price(
         row, full, px, accrued, calc_date, curve,
         # номинал НА ДАТУ ПОСТАВКИ: face — на сегодня, а Σ будущих траншей
         # считается от settle; транш в окне (calc, settle] давал ложный отказ.
-        row.get("settle_face") or row.get("face"),
+        row.get("settle_face") or row.get("face"), ru,
     )
     out.update({
         "ytm": m.get("ytm_pct"), "mod_dur": m.get("mod_dur"), "mac_dur": m.get("mac_dur"),
         "convexity": m.get("convexity"), "dv01": m.get("dv01"),
         "g_spread_bps": m.get("g_spread_bps"), "dirty": m.get("dirty"),
+        "yield_over_index_bps": m.get("yield_over_index_bps"),
+        "index_yield_pct": m.get("index_yield_pct"),
         "put_date": m.get("put_date"), "coupon_assumed_from": m.get("coupon_assumed_from"),
         # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
         # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
@@ -895,13 +936,16 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         sides = fixed_side_metrics(
             row, full, curve, calc_date, (wap, bid, ask),
             known={round(float(px), 4): {"ytm": m.get("ytm_pct"),
-                                         "g_spread_bps": m.get("g_spread_bps")}})
-        for price, g_key, y_key in ((wap, "g_spread_wap_bps", "ytm_wap"),
-                                    (bid, "g_spread_bid_bps", "ytm_bid"),
-                                    (ask, "g_spread_ask_bps", "ytm_ask")):
-            m_side = sides.get(round(float(price), 4)) if price else {}
-            out[g_key] = (m_side or {}).get("g_spread_bps")
-            out[y_key] = (m_side or {}).get("ytm")
+                                         "g_spread_bps": m.get("g_spread_bps"),
+                                         "y_idx_bps": m.get("yield_over_index_bps")}},
+            ru_curve=ru)
+        for side in ("wap", "bid", "ask"):
+            price = {"wap": wap, "bid": bid, "ask": ask}[side]
+            m_side = (sides.get(round(float(price), 4)) if price else None) or {}
+            out[f"g_spread_{side}_bps"] = m_side.get("g_spread_bps")
+            out[f"ytm_{side}"] = m_side.get("ytm")
+            # имена — как у флоатеров (y_idx_bid_bps…): общий контракт витрины
+            out[f"y_idx_{side}_bps"] = m_side.get("y_idx_bps")
 
     # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
     if ruble_face and g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
@@ -925,7 +969,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     return out
 
 
-async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: date) -> Dict[str, dict]:
+async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: date,
+                                    ru_curve=None) -> Dict[str, dict]:
     """{isin: метрики} по всему универсу фиксов. Расписания MOEX (bondization)
     батчатся из day-кэша; фоновый прогрев — в универс-поллере."""
     import asyncio
@@ -945,7 +990,7 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
         out: Dict[str, dict] = {}
         for u, full in zip(universe, fulls):
             f = {} if isinstance(full, Exception) else (full or {})
-            out[u["isin"]] = compute_fixed_row(u, f, g_curve, calc_date)
+            out[u["isin"]] = compute_fixed_row(u, f, g_curve, calc_date, ru_curve=ru_curve)
         return out
 
     from services.heavy import run_heavy

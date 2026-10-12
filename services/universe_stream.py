@@ -778,9 +778,13 @@ _FIXED_PATCH_FIELDS = (
     "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
     "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
     "delta_to_prev_close", "val_today", "wap_pct", "price_stale",
+    # Y-IDX к роллированию RUONIA — имена как у флоатеров (общий контракт
+    # витрины, docs/unified_monitor_tz.md)
+    "yield_over_index_bps", "index_yield_pct",
+    "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
     # цены наборов тикета и метрики по ним — словарями по размеру («ask:5000000»),
     # потому что размеры выбирает клиент (см. register_vol_sizes)
-    "vol_px", "g_spread_vol", "ytm_vol",
+    "vol_px", "g_spread_vol", "ytm_vol", "y_idx_vol",
     # номинал и НКД: по ним фронт считает деньги уровня стакана
     "face_value_rub", "accrued_rub",
 )
@@ -1949,23 +1953,31 @@ def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
                          accrued=previous.get("accrued_rub"),
                          ladders=(book or {}).get(isin) or {})
     prices = [p for p in list(sides.values()) + list(vol_px.values()) if p is not None]
-    got = fixed_side_metrics(row, full, curve, ctx["calc_date"], prices)
+    got = fixed_side_metrics(row, full, curve, ctx["calc_date"], prices,
+                             ru_curve=ctx.get("ruonia_curve"))
     out = {"_kind": "fixed", "bid": sides["bid"], "ask": sides["ask"],
            "ytm_bid": None, "ytm_ask": None,
            "g_spread_bid_bps": None, "g_spread_ask_bps": None,
-           "vol_px": vol_px or None, "ytm_vol": None, "g_spread_vol": None}
+           "y_idx_bid_bps": None, "y_idx_ask_bps": None,
+           "vol_px": vol_px or None, "ytm_vol": None, "g_spread_vol": None,
+           "y_idx_vol": None}
     for side, price in sides.items():
         m = got.get(round(float(price), 4)) if price is not None else None
         out[f"ytm_{side}"] = (m or {}).get("ytm")
         out[f"g_spread_{side}_bps"] = (m or {}).get("g_spread_bps")
+        out[f"y_idx_{side}_bps"] = (m or {}).get("y_idx_bps")
     if vol_px:
-        out["ytm_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("ytm")
-                          for k, p in vol_px.items() if p is not None}
-        out["g_spread_vol"] = {
-            k: (got.get(round(float(p), 4)) or {}).get("g_spread_bps")
-            for k, p in vol_px.items() if p is not None
-        }
+        out.update(_fixed_vol_maps(got, vol_px))
     return out
+
+
+def _fixed_vol_maps(got: dict, vol_px: dict) -> dict:
+    """Метрики по ценам набора тикета — словарями по ключу размера, как у
+    флоатеров (vol_px → y_idx_vol), плюс фиксовые YTM и g-спред."""
+    pick = lambda field: {k: (got.get(round(float(p), 4)) or {}).get(field)
+                          for k, p in vol_px.items() if p is not None}
+    return {"ytm_vol": pick("ytm"), "g_spread_vol": pick("g_spread_bps"),
+            "y_idx_vol": pick("y_idx_bps")}
 
 
 def _blank_side_targets(board: dict, limit: int) -> list:
@@ -2056,22 +2068,21 @@ def _crunch_fixed(u: dict, ctx: dict, q: dict,
                      ("vol", "val_today")):
         if snap.get(src) is not None:
             row[dst] = snap[src]
-    out = compute_fixed_row(row, full, ctx["g_curve"], ctx["calc_date"])
+    out = compute_fixed_row(row, full, ctx["g_curve"], ctx["calc_date"],
+                            ru_curve=ctx.get("ruonia_curve"))
     # ФИЛЬТР ПО ОБЪЁМУ: цена набора тикета по лестнице стакана и метрики ПО НЕЙ.
     # Считаем здесь, а не в браузере: там нет ни потока, ни кривой, а спред по
     # цене набора обязан считаться той же методикой, что и по цене сделки.
     vol_px = _vol_prices(isin, face=out.get("face_value_rub"),
                          accrued=out.get("accrued_rub"))
     out["vol_px"] = vol_px or None
-    out["g_spread_vol"] = out["ytm_vol"] = None
+    out["g_spread_vol"] = out["ytm_vol"] = out["y_idx_vol"] = None
     if vol_px:
         from services.fixed_income import fixed_side_metrics
         prices = [p for p in vol_px.values() if p is not None]
-        got = fixed_side_metrics(row, full, ctx["g_curve"], ctx["calc_date"], prices)
-        out["g_spread_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("g_spread_bps")
-                               for k, p in vol_px.items() if p is not None}
-        out["ytm_vol"] = {k: (got.get(round(float(p), 4)) or {}).get("ytm")
-                          for k, p in vol_px.items() if p is not None}
+        got = fixed_side_metrics(row, full, ctx["g_curve"], ctx["calc_date"], prices,
+                                 ru_curve=ctx.get("ruonia_curve"))
+        out.update(_fixed_vol_maps(got, vol_px))
     lv = live_quotes.get(isin) or {}
     vol = max(snap.get("vol") or 0, lv.get("val_today") or 0) or None
     if vol is not None:

@@ -755,6 +755,21 @@ async def reprice_past(
     }
 
 
+@router.get("/{isin}/weekly", tags=["History"])
+async def weekly_history(
+    isin: str = Path(...),
+    weeks: int = Query(12, ge=1, le=104),
+):
+    """Средневзвес по календарным неделям (ПН–ВС, МСК): цена и спред (Y-IDX у
+    флоатеров, g-спред у фиксов), взвешенные оборотом дня, + аукционы Минфина
+    той же недели с премией к вторичке. Чтение готовой bar_daily, без сети."""
+    isin = (isin or "").strip().upper()
+    if not _ISIN_RE.fullmatch(isin):
+        raise HTTPException(status_code=400, detail="Некорректный ISIN")
+    from services.bars import weekly
+    return await asyncio.to_thread(weekly, isin, weeks)
+
+
 @router.get("/{isin}/spread_honest", tags=["History"])
 async def spread_honest(
     isin: str = Path(...),

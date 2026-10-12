@@ -3,7 +3,7 @@ import IsinCopy from "./IsinCopy.jsx";
 import BestWorm from "./BestWorm.jsx";
 import { bookMode, eventMoney, eventTag, maturityShort, maturityTxt, moveTone,
          reasonDelta, reasonTitle, reasonTone, sideInfo, tradeMode,
-         tradeTone } from "../signalFormat.js";
+         tradeTone, dev7Txt } from "../signalFormat.js";
 
 // единая единица проекта — млн ₽ голым числом (см. fmt.mln)
 const money = (v) => (v == null ? "—" : fmt.mln(v));
@@ -107,6 +107,10 @@ export default function SignalEventRow({ e, onOpen, filterName }) {
               <Delta prev={e.prev_val_bps} cur={e.val_bps}
                 what="spread" side={e.side} />
             </b>
+            {dev7Txt(e) && (
+              <span className="sb-mat num" title="средневзвешенный spread за 7 прошлых дней и отклонение от него (как ОТКЛ 7Д)">
+                {" "}{dev7Txt(e)}</span>
+            )}
           </>
         )}
         {/* объём — в первой же строке: «212 бп» без денег не говорит, стоит ли

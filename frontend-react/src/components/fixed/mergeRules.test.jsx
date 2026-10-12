@@ -206,3 +206,27 @@ describe("самолечение прочерка числом списка", ()
     expect(out.mod_dur).toBe(2.1);
   });
 });
+
+describe("Y-IDX фикса (spread к RUONIA) живёт по тем же правилам", () => {
+  it("патч метрик приносит Y-IDX и стороны", () => {
+    const n = applyPatch({ bid: 99 }, { metrics: true, yield_over_index_bps: 140,
+                                        y_idx_bid_bps: 155, y_idx_ask_bps: 130 });
+    expect(n.yield_over_index_bps).toBe(140);
+    expect(n.y_idx_bid_bps).toBe(155);
+    expect(n.y_idx_ask_bps).toBe(130);
+  });
+
+  it("сдвинувшийся бид без метрик гасит и Y-IDX стороны", () => {
+    const cur = { bid: 99, ask: 100, y_idx_bid_bps: 155, y_idx_ask_bps: 130 };
+    const n = applyPatch(cur, { bid: 98.9, ask: 100 });
+    expect(n.y_idx_bid_bps).toBeNull();
+    expect(n.y_idx_ask_bps).toBe(130);
+  });
+
+  it("цена наложения другая, чисел к ней нет — Y-IDX списка не показываем", () => {
+    const row = { bid: 99, y_idx_bid_bps: 155, last_price_pct: 99.5, yield_over_index_bps: 140 };
+    const out = mergeLive(row, { bid: 98.8, last_price_pct: 99.6 });
+    expect(out.y_idx_bid_bps).toBeNull();
+    expect(out._mstale).toBe(true);
+  });
+});

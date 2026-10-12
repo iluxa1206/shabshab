@@ -1110,6 +1110,11 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
 .cf-table td.mono-idx { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cf-table tr.past td { color: var(--mut-2); }
 .cf-table tr.redemption td { color: var(--fg); font-weight: 700; }
+/* По неделям: цифры столбиком на табличных цифрах; аукцион Минфина — строка
+   под своей неделей, приглушённая: это контекст к вторичке, а не её колонка */
+.wk-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wk-table tr.wk-auc td { color: var(--mut); font-size: 11.5px; white-space: normal; padding-top: 3px; padding-bottom: 5px; }
+.wk-table .wk-prem { color: var(--fg); font-weight: 600; }
 
 .warn-box { border: 1px solid var(--fg); padding: 10px 14px; font-size: 11px; margin-bottom: 20px; }
 .warn-box::before { content: "! "; font-weight: 700; }
