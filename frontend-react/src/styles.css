@@ -1480,9 +1480,6 @@ body.col-resizing * { cursor: col-resize !important; }
 .login-wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
 .login-card { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 14px; border: 1px solid var(--line); padding: 28px 24px; background: var(--bg); }
 .login-sub { color: var(--mut); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 4px; }
-.login-credit { margin-top: 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
-                color: var(--mut-2); text-transform: uppercase; }
-.login-credit a { color: inherit; }
 .login-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--mut); }
 .login-field input { font-family: var(--mono); font-size: 13px; padding: 9px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .login-field input:focus { outline: none; border-color: var(--fg); }
