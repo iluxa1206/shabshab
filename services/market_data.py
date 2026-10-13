@@ -1671,14 +1671,19 @@ class MarketDataService:
         result: Dict[str, list] = {}
         if not isins:
             return result
-        raw = _load_schedule_cache()
-        # формат v2: {"date": ..., "items": {isin: [[start,end,value],...]}}; старый — discard
-        disk = raw.get("items", {}) if raw.get("date") == today else {}
+        # Диск читаем только при промахе памяти: json.load ~1 МБ на КАЖДЫЙ вызов
+        # блокировал event loop (py-spy 13.10.2026, ~4% времени главного потока)
+        disk = None
         missing = []
         for isin in isins:
             if isin in cls._schedule_mem:
                 result[isin] = cls._schedule_mem[isin]
-            elif isin in disk:
+                continue
+            if disk is None:
+                raw = _load_schedule_cache()
+                # формат v2: {"date": ..., "items": {isin: [[start,end,value],...]}}; старый — discard
+                disk = raw.get("items", {}) if raw.get("date") == today else {}
+            if isin in disk:
                 sched = [(date.fromisoformat(a), date.fromisoformat(b), v) for a, b, v in disk[isin]]
                 cls._schedule_mem[isin] = sched
                 result[isin] = sched

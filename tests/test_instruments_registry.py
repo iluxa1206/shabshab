@@ -652,3 +652,22 @@ def test_priceable_bond_not_in_incomplete_queue(reg):
     reg.upsert({"isin": "RU_OK", "base": "KEYRATE", "margin_bps": 150,
                 "maturity_date": "2030-01-01"}, "moex")
     assert "RU_OK" not in reg.isins_incomplete_newest_first()
+
+
+def test_universe_rows_cached_until_registry_write(reg, monkeypatch):
+    """Движок звал universe_rows на каждом такте (SELECT * в event loop):
+    повторные чтения идут из кэша, любая запись в реестр его сбрасывает, а
+    правка возвращённой строки не отравляет кэш."""
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    calls = []
+    real = reg._universe_rows_uncached
+    monkeypatch.setattr(reg, "_universe_rows_uncached",
+                        lambda *a: calls.append(a) or real(*a))
+    first = reg.universe_rows()
+    first[0]["emitter_name"] = "ИСПОРЧЕНО"            # потребители дописывают поля
+    again = reg.universe_rows()
+    assert len(calls) == 1 and again[0]["emitter_name"] != "ИСПОРЧЕНО"
+    reg.upsert({"isin": "RU1", "margin_bps": 175}, "cbonds")
+    assert reg.universe_rows()[0]["spread_issue_bps"] == 175
+    assert len(calls) == 2

@@ -734,6 +734,7 @@ async def run_cycle() -> int:
     """Один тик: enabled-фильтры против снапшота рынка. События пишутся в ленту
     и пушатся в браузер. → число фильтров, давших события."""
     from api.routes import ws as wsmod
+    from services.heavy import run_heavy
 
     filters = list_enabled()
     if not filters:
@@ -752,8 +753,11 @@ async def run_cycle() -> int:
             # якоря — наклон врал сотнями bps, когда котировка и снимок глубины
             # расходились во времени (см. screener_core.exact_y_idx)
             await warm_exact_ctx([c.get("isin") for c in cands])
-            matches = evaluate_candidates(f["params"], cands, metrics, depth_map,
-                                          exact=True, avg7=avg7)
+            # точный Y-IDX кандидатов — чистый счёт: в heavy-поток, не в event
+            # loop (py-spy 13.10.2026: ~3,6% времени главного потока, блоки до
+            # десятков мс на тик)
+            matches = await run_heavy(evaluate_candidates, f["params"], cands,
+                                      metrics, depth_map, exact=True, avg7=avg7)
             events = detect_events(f["id"], f["user_email"], f["params"]["side"],
                                    f.get("change_pct") or 10.0, matches,
                                    f["params"].get("min_money_rub"),

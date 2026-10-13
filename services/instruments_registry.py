@@ -732,14 +732,46 @@ def canonical_emitter_names(rows) -> dict:
             for eid, c in freq.items()}
 
 
+def _db_stamp() -> tuple:
+    """Отпечаток файла реестра и его WAL: меняется на любом коммите."""
+    out = [str(DB_PATH)]
+    for p in (DB_PATH, DB_PATH.with_name(DB_PATH.name + "-wal")):
+        try:
+            st = p.stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+# (only_floaters, only_priceable) → (отпечаток реестра, строки). Движок звал
+# universe_rows на каждом такте _day_ctx: SELECT * по ~1400 бумагам + склейка
+# имён эмитентов, 16 мс на вызов прямо в event loop (py-spy 13.10.2026, ~6%).
+_UROWS_CACHE: dict = {}
+
+
 def universe_rows(only_floaters: bool = True, only_priceable: bool = True) -> list[dict]:
     """Список бумаг в форме universe-строки. Расчётные поля (base/margin/maturity/
     rating/emitter) — из реестра инструментов.
 
     only_priceable=True (по умолчанию) — в основной универс попадают только бумаги
     с полным набором расчётных параметров (B3): непрайсуемые (без базы/маржи/
-    погашения) висят в очереди ревью, а не мусорят таблицу нулевыми метриками."""
+    погашения) висят в очереди ревью, а не мусорят таблицу нулевыми метриками.
+
+    Результат кэшируется по отпечатку файла реестра (любая запись его меняет),
+    наружу уходят копии строк: потребители дописывают в них поля."""
     _ensure()
+    key = (only_floaters, only_priceable)
+    stamp = _db_stamp()
+    hit = _UROWS_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return [dict(r) for r in hit[1]]
+    out = _universe_rows_uncached(only_floaters, only_priceable)
+    _UROWS_CACHE[key] = (stamp, out)
+    return [dict(r) for r in out]
+
+
+def _universe_rows_uncached(only_floaters: bool, only_priceable: bool) -> list[dict]:
     with _conn() as c:
         rows = c.execute("SELECT * FROM instruments WHERE active=1").fetchall()
     # одно написание имени на юрлицо — считаем по ВСЕМ активным строкам, чтобы
