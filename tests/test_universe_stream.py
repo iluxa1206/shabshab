@@ -421,6 +421,31 @@ def test_vol_wave_queues_only_books_without_grid(monkeypatch):
         us._vol_wave_pending = False
 
 
+def test_vol_wave_queues_fixed_with_book_into_fixed_queue(monkeypatch):
+    """Новый размер тикета: фикс с книгой идёт в СВОЮ очередь сторон, а не в
+    очередь флоатеров и не мимо. Без этого цену набора по оффере у застывшего
+    фикса рисовал браузер, а YTM к ней оставался прочерком весь день."""
+    us._vol_sizes.clear()
+    us._sides_dirty.clear()
+    us._fixed_sides_dirty.clear()
+    us._fixed_isins.clear()
+    ladders = {"RU000A0FX0001": {"b": [[100.0, 20000]], "a": [[100.5, 20000]]}}
+    monkeypatch.setattr("services.depth.get_depth", lambda: ladders)
+    monkeypatch.setattr("services.market_data.market_cache", {"universe_metrics": {}})
+    try:
+        us._fixed_isins.update({"RU000A0FX0001", "RU000A0FX0002"})   # второй без книги
+        us.register_vol_sizes([5e6])
+        us.apply_vol_sizes()
+        assert list(us._fixed_sides_dirty) == ["RU000A0FX0001"]
+        assert us._sides_dirty == {}
+    finally:
+        us._vol_sizes.clear()
+        us._sides_dirty.clear()
+        us._fixed_sides_dirty.clear()
+        us._fixed_isins.clear()
+        us._vol_wave_pending = False
+
+
 def test_live_side_move_outranks_vol_wave():
     """Движение сторон обгоняет добор волны: свежий спред по заявке не должен
     ждать, пока движок построит сетки отставшим бумагам."""

@@ -21,6 +21,7 @@ Y-IDX = YTM − доходность роллирования RUONIA до кон
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import json
 import time
@@ -572,7 +573,12 @@ async def fixed_metrics(isin: str, price_pct: float, accrued: float,
 # Борды MOEX: TQOB — ОФЗ (берём ПД, серии SU25/SU26), TQCB — корпораты.
 _BOARDS = {"TQOB": "ofz", "TQCB": "corp"}
 _UNI_TTL = 3600.0
-_CORP_CAP = 700          # максимум корпоратов (топ по обороту) — bounds прогрев
+# Максимум корпоратов (топ по ADV рынка) — bounds прогрев и пул Alor. Замер
+# 13.10.2026: ликвидных корпоративных фиксов (оборот ≥1 млн ₽ или принт за 5
+# дней) 1954, кап 700 отрезал ранги 865–1773 — РЖД и А101 пропадали из витрины
+# целыми выпусками. Потолок с запасом над числом кандидатов; снижать только по
+# замеру памяти/пула, а не «на глаз» (FIXED_CORP_CAP в env).
+_CORP_CAP = int(os.getenv("FIXED_CORP_CAP", "2500"))
 _uni_mem: dict = {"ts": 0.0, "rows": None}
 def _numf(v) -> Optional[float]:
     try:
