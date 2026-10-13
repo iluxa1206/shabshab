@@ -136,13 +136,54 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
 
 
 async def _universe_bonds(extra_list, cache, limit, offset,
-                          vol_bid=None, vol_ask=None):
+                          vol_bid=None, vol_ask=None, kinds=("floater",)):
+    """Общий список витрины: флоатеры и/или фиксы (kinds). Пагинация — по
+    склейке, флоатеры первыми."""
+    items = []
+    if "floater" in kinds:
+        items += await _floater_items(extra_list, cache, vol_bid, vol_ask)
+    if "fixed" in kinds:
+        from services.feature_flags import fixed_enabled
+        if fixed_enabled():
+            from api.routes.fixed import fixed_rows
+            items += [_fixed_list_item(r) for r in await fixed_rows(vol_bid, vol_ask)]
+    return BondListResponse(items=items[offset:offset + limit], total=len(items),
+                            limit=limit, offset=offset)
+
+
+# Общие понятия под общими именами (ТЗ A2); всё специфичное для фикса
+# (g_spread_*, ytm_bid/ask/wap, mod_dur, dv01, face_unit…) едет своими именами.
+# `dirty` НЕ переименовываем: у фикса он в валюте номинала, а dirty_price_rub
+# флоатера — в рублях.
+_FIXED_RENAME = {"name": "short_name", "issuer": "emitter_name",
+                 "bid": "bid_price_pct", "ask": "ask_price_pct",
+                 "wap_pct": "wap_price_pct", "ytm": "yield_xirr_pct",
+                 "coupon_pct": "current_coupon_pct", "put_date": "offer_date"}
+
+
+def _fixed_list_item(d: dict) -> BondListItem:
+    """Строка /api/fixed → строка общего списка."""
+    row = {_FIXED_RENAME.get(k, k): v for k, v in d.items()}
+    cpn = d.get("coupon_pct")
+    row.update(
+        kind="fixed", base_rate_type="FIXED",
+        short_name=d.get("name") or d["isin"],
+        formula=f"фикс {cpn:g}%" if cpn is not None else "фикс",
+        spread_issue_bps=0, next_coupon_date=None,
+        dirty_price_rub=None, dm_bps=None,
+        offer_kind="put" if d.get("put_date") else None,
+        is_ofz=d.get("cls") == "ofz",
+        **{k: bool(d.get(k)) for k in ("price_stale", "price_thin", "has_amort")})
+    return BondListItem(**row)
+
+
+async def _floater_items(extra_list, cache, vol_bid=None, vol_ask=None) -> list:
     """Весь рынок флоатеров из реестра инструментов. Аналитика по всем;
     live-метрики — только для watchlist (extra). Расчёты в services.universe."""
     from services import universe as universe_svc
     uni = await instruments_registry.fetch_floater_universe()
     if not uni:
-        return BondListResponse(items=[], total=0, limit=limit, offset=offset)
+        return []
 
     cached_prices = MarketDataService.session_prices()   # цены текущего торгового дня
     uni_metrics = MarketDataService.universe_metrics()  # фоновый поллер
@@ -195,7 +236,7 @@ async def _universe_bonds(extra_list, cache, limit, offset,
         items.append(_uni_item(u, name, mx, adv.get(isin),
                                avg7.get(isin), vol_bid, vol_ask, issue_vol.get(isin),
                                board.get(isin)))
-    return BondListResponse(items=items[offset:offset + limit], total=len(items), limit=limit, offset=offset)
+    return items
 
 
 def _vol_fields(mx: dict, vol_bid: Optional[float], vol_ask: Optional[float]) -> dict:
@@ -214,11 +255,12 @@ def _vol_fields(mx: dict, vol_bid: Optional[float], vol_ask: Optional[float]) ->
 
 @router.get("", response_model=BondListResponse, tags=["Bonds"])
 async def get_bonds(
-    limit: int = Query(50, ge=1, le=2000),
+    limit: int = Query(50, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     with_market: bool = Query(True),
     with_valuation: bool = Query(False),
     universe: bool = Query(False, description="Весь юниверс флоатеров из реестра"),
+    kinds: str = Query("floater", description="С universe: классы через запятую — floater,fixed"),
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
     fields: Optional[str] = Query(None),
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
@@ -252,7 +294,9 @@ async def get_bonds(
         if cols:
             from services.universe_stream import register_metric_scope
             register_metric_scope([c.strip() for c in cols.split(",") if c.strip()])
-        return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask)
+        kind_set = {k.strip() for k in kinds.split(",") if k.strip()}
+        return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask,
+                                     kind_set)
 
     # добавленные пользователем бумаги (watchlist) — в начало, чтобы были видны
     base_set = set(isins)
@@ -433,6 +477,53 @@ def _quote_delta(items: list, key: str, since: Optional[float],
     return out, now
 
 
+# КОТИРОВКИ ФИКСА: число едет рядом с ценой, к которой посчитано (то же правило,
+# что у флоатеров ниже). (поле цены в строке движка, ключ цены в ответе,
+# {ключ ответа: поле метрик}). Y-IDX — под именами флоатеров, чтобы фронт сверял
+# пары одним кодом; YTM и g-спред — в той же группе под той же ценой.
+_FIXED_QUOTE_GROUPS = (
+    ("last", "yoi_px", {"yoi": "yield_over_index_bps", "ytm": "ytm", "g": "g_spread_bps"}),
+    ("wap_pct", "yoi_wap_px", {"yoi_wap": "y_idx_wap_bps", "ytm_wap": "ytm_wap",
+                               "g_wap": "g_spread_wap_bps"}),
+    ("bid", "yoi_bid_px", {"yoi_bid": "y_idx_bid_bps", "ytm_bid": "ytm_bid",
+                           "g_bid": "g_spread_bid_bps"}),
+    ("ask", "yoi_ask_px", {"yoi_ask": "y_idx_ask_bps", "ytm_ask": "ytm_ask",
+                           "g_ask": "g_spread_ask_bps"}),
+)
+
+
+def _fixed_quote(it: dict, f: dict, v: dict, vol_bid, vol_ask) -> None:
+    """Дополняет строку котировок фикса метриками движка (fixed_metrics)."""
+    from services import fixed_income as fi
+    it["kind"] = "fixed"
+    # средневзвес — тем же правилом, что расчёт метрик (fixed_income.pick_wap)
+    it["wap"] = fi.pick_wap({"isin": it["isin"], "wap": v.get("waprice"),
+                             "val_today": v.get("vol")})
+    # стороны — из движка по НАЛИЧИЮ ключа: цена и спред к ней одной парой,
+    # пустая сторона у движка = «заявку сняли»
+    for side in ("bid", "ask"):
+        if side in f:
+            it[side] = f[side]
+    for px_field, px_key, fields in _FIXED_QUOTE_GROUPS:
+        if not any(m in f for m in fields.values()):
+            continue
+        for k, m in fields.items():
+            if m in f:
+                it[k] = f[m]
+        if f.get(px_field) is not None:
+            it[px_key] = f[px_field]
+    # цена набора и метрики по ней — плоскими ключами, как /api/fixed/quotes
+    maps = (("px", f.get("vol_px") or {}), ("g", f.get("g_spread_vol") or {}),
+            ("ytm", f.get("ytm_vol") or {}), ("y", f.get("y_idx_vol") or {}))
+    for side, size in (("bid", vol_bid), ("ask", vol_ask)):
+        if not size:
+            continue
+        key = f"{side}:{float(size):.0f}"
+        for suffix, src in maps:
+            if src.get(key) is not None:
+                it[f"vol_{side}_{suffix}"] = src[key]
+
+
 @router.get("/quotes", tags=["Bonds"])
 async def get_quotes(
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
@@ -480,6 +571,7 @@ async def get_quotes(
     # по факту сделки, поэтому спред у торгуемых бумаг здесь живой, а не
     # 10-минутной давности поллера
     um = market_cache.get("universe_metrics") or {}
+    fm = market_cache.get("fixed_metrics") or {}
     items = []
     for isin, v in snap.items():
         if v.get("last") is None and v.get("bid") is None and v.get("ask") is None:
@@ -492,7 +584,14 @@ async def get_quotes(
               "ask": v.get("ask"),
               "wap": lv.get("vwap_pct") or v.get("waprice"),
               "vol": max(v.get("vol") or 0, lv.get("val_today") or 0) or None}
+        f = fm.get(isin)
+        if f is not None:
+            _fixed_quote(it, f, v, vol_bid, vol_ask)
+            items.append(it)
+            continue
         m = um.get(isin)
+        if m is not None:
+            it["kind"] = "floater"
         # ПО НАЛИЧИЮ КЛЮЧА, А НЕ ПО ЗНАЧЕНИЮ (тот же приём, что у bid/ask ниже).
         # Движок кладёт в строку явный None, когда считать стало нечем (контекст
         # остыл, цена ушла из модели, взвёлся sanity), и это НОВОСТЬ. Отдавая

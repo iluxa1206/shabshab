@@ -804,6 +804,7 @@ def _fixed_patch(row: dict) -> dict:
     out = {k: row[k] for k in _FIXED_PATCH_FIELDS if k in row}
     if out:
         out["metrics"] = True
+        out["kind"] = "fixed"
         for k in ("bid", "ask"):
             if k in row:
                 out[k] = row[k]
@@ -835,6 +836,7 @@ def _metrics_patch(row: dict) -> dict:
     out = {_METRIC_FIELDS[k]: row[k] for k in _METRIC_FIELDS if k in row}
     if out:
         out["metrics"] = True     # маркер «производные посчитаны» для фронта
+        out["kind"] = "floater"
         # цены сторон — из ЭТОГО же расчёта, иначе спред стороны лёг бы на цену
         # из другого тика (рассинхрон «цена 99,00 / Y-IDX от 99,28»)
         for k in ("bid", "ask"):

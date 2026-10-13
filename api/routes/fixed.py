@@ -78,12 +78,20 @@ async def get_fixed(
         # MOEX ради пустой витрины незачем — старая вкладка получит пустой ответ
         return {"items": [], "total": 0, "disabled": True,
                 "calc_date": date.today().isoformat()}
-    from services import fixed_income as fi
     # размеры тикета регистрируем В ДВИЖКЕ: он посчитает цену набора и спред по
     # ней в своём такте по методике, а ручка только выберет нужный размер
     if vol_bid or vol_ask:
         from services.universe_stream import register_vol_sizes
         register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
+    items = await fixed_rows(vol_bid, vol_ask)
+    return {"items": items, "total": len(items),
+            "calc_date": market_cache.get("fixed_calc_date") or date.today().isoformat()}
+
+
+async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
+    """Строки витрины фиксов — общие для /api/fixed и общего списка
+    /api/bonds?kinds=…,fixed (docs/unified_monitor_tz.md, A3)."""
+    from services import fixed_income as fi
     uni = market_cache.get("fixed_universe")
     if not uni:
         uni = await fi.fetch_fixed_universe()
@@ -113,7 +121,7 @@ async def get_fixed(
     for u in uni:
         m = metrics.get(u["isin"], {})
         item = {
-            "isin": u["isin"], "secid": u.get("secid"), "name": u.get("name"),
+            "isin": u["isin"], "kind": "fixed", "secid": u.get("secid"), "name": u.get("name"),
             "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
             "ratings_ea": ea.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
@@ -137,9 +145,7 @@ async def get_fixed(
         if vol_bid or vol_ask:
             item.update(_vol_fields(m, vol_bid, vol_ask))
         items.append(item)
-
-    return {"items": items, "total": len(items),
-            "calc_date": market_cache.get("fixed_calc_date") or date.today().isoformat()}
+    return items
 
 
 @router.get("/quotes", tags=["Fixed"])

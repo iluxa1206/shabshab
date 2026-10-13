@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from datetime import date as _date   # для моделей, где поле называется date
 from typing import List, Optional, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # --- General System Models ---
 class HealthResponse(BaseModel):
@@ -295,7 +295,13 @@ class ValuationResponse(BaseModel):
 
 # --- 6.2 Bond List / Dashboard Models ---
 class BondListItem(BaseModel):
+    # Строка фикса везёт свои поля (g_spread_*, ytm_bid/ask/wap, mod_dur, dv01,
+    # face_unit, dirty в валюте номинала…) — описывать их здесь значит держать
+    # второй список полей фиксов рядом с /api/fixed (docs/unified_monitor_tz.md)
+    model_config = ConfigDict(extra="allow")
+
     isin: str
+    kind: str = "floater"                  # "floater" | "fixed"
     short_name: str
     base_rate_type: str
     # ЛИНКЕР: база индексации НОМИНАЛА ('RUONIA' | None). У такой бумаги ставка
