@@ -2596,7 +2596,10 @@ async def _day_ctx() -> Optional[dict]:
         return None
     exp_ks, exp_ru, g_curve = zctx
     from services import instruments_registry
-    uni = await instruments_registry.fetch_floater_universe()
+    # общий словарь под отпечаток реестра: строки только читаются (enrich_bond,
+    # build_universe_ref их не мутируют), сборка из копий на КАЖДЫЙ такт стоила
+    # ~3% главного потока
+    uni_by = await instruments_registry.floater_universe_by_isin()
     fixed_by: Dict[str, dict] = {}
     if _FIXED_STREAM:
         # справка фиксов (номинал/НКД/купон/прошлое закрытие) — из того же
@@ -2604,7 +2607,7 @@ async def _day_ctx() -> Optional[dict]:
         fixed_by = {u["isin"]: u for u in (market_cache.get("fixed_universe") or [])
                     if u.get("isin")}
     return {
-        "uni_by": {u["isin"]: u for u in uni if u.get("isin")},
+        "uni_by": uni_by,
         "fixed_by": fixed_by,
         "cache": MarketDataService.get_local_bond_cache(cache_path("isins_cache.json")),
         "secs": {},              # промахи локального кэша обходятся без MOEX-добора

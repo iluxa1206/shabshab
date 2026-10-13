@@ -671,3 +671,16 @@ def test_universe_rows_cached_until_registry_write(reg, monkeypatch):
     reg.upsert({"isin": "RU1", "margin_bps": 175}, "cbonds")
     assert reg.universe_rows()[0]["spread_issue_bps"] == 175
     assert len(calls) == 2
+
+
+def test_floater_universe_by_isin_shared_until_registry_write(reg):
+    """_day_ctx берёт словарь универса без копирования строк: тот же объект,
+    пока реестр не менялся, и свежий после любой записи."""
+    import asyncio
+    reg.upsert({"isin": "RU1", "base": "KEYRATE", "margin_bps": 150,
+                "maturity_date": "2030-01-01"}, "cbonds")
+    first = asyncio.run(reg.floater_universe_by_isin())
+    assert asyncio.run(reg.floater_universe_by_isin()) is first
+    reg.upsert({"isin": "RU1", "margin_bps": 175}, "cbonds")
+    after = asyncio.run(reg.floater_universe_by_isin())
+    assert after is not first and after["RU1"]["spread_issue_bps"] == 175

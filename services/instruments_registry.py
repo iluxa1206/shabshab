@@ -822,6 +822,27 @@ async def fetch_floater_universe() -> list[dict]:
     return universe_rows()
 
 
+# {isin: строка} флоатер-универса одним ОБЩИМ словарём под отпечаток реестра.
+# Движок собирал его из копий на каждом такте _day_ctx (py-spy 13.10.2026, ещё
+# ~3% главного потока после кэша universe_rows).
+_UNI_BY: dict = {"stamp": None, "by": {}}
+
+
+async def floater_universe_by_isin() -> dict:
+    """{isin: строка универса} — ОБЩИЙ словарь, строки не копируются: только
+    чтение. Кто собирается дописывать в строку — берёт fetch_floater_universe()
+    (там копии)."""
+    stamp = _db_stamp()
+    if _UNI_BY["by"] and _UNI_BY["stamp"] == stamp:
+        return _UNI_BY["by"]
+    rows = await fetch_floater_universe()       # учтёт холодный реестр (bootstrap)
+    by = {r["isin"]: r for r in rows if r.get("isin")}
+    # отпечаток взят ДО чтения: запись между ними даст лишний пересбор, не
+    # устаревший словарь
+    _UNI_BY.update(stamp=stamp, by=by)
+    return by
+
+
 def sync_active_set(traded_isins: set, min_expected: int = 500) -> dict:
     """Держит active в согласии с набором ТОРГУЕМЫХ на MOEX бумаг:
     не-торгуемые (нет в traded_isins — коммерческие/OTC/делистинг) → active=0;
