@@ -70,9 +70,16 @@ def _cond(frm: Optional[str], till: Optional[str], min_value: float,
     return q, args
 
 
-def _union(frm, till, min_value, market, boards, isins, side, tmp,
-           max_value=None) -> tuple[str, list]:
-    """Подзапрос «объединённая лента»: block_trade + тики, которых там нет.
+def _parts(frm, till, min_value, market, boards, isins, side, tmp,
+           max_value=None, tick_by_ts=False) -> list[tuple[str, list]]:
+    """Ветки «объединённой ленты» по отдельности: [(SQL, args)] — блоки и
+    (если режим допускает) тики, которых в блоках нет.
+
+    tick_by_ts — подсказка ветке тиков идти по ix_tick_ts. Нужна странице ленты
+    при БОЛЬШОМ наборе бумаг (временная таблица): планировщик берёт
+    ix_tick_isin_ts, собирает все тики окна по набору (миллионы), для каждого
+    делает NOT EXISTS и только потом сортирует — 5–7 с при LIMIT 500. Обход по
+    времени отдаёт страницу за сотые доли секунды (замер на проде 14.10.2026).
 
     Порядок веток важен только для читаемости — дедуп делает NOT EXISTS по
     первичному ключу block_trade, то есть индексным поиском на каждую строку
@@ -97,7 +104,7 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp,
     # тики знают только безадресные борды: при выборе адресного режима их вклад
     # заведомо пуст, и лишний скан 8+ млн строк не нужен
     if market == "ndm":
-        return "(" + blocks + " AND market='ndm')", b_args
+        return [(blocks + " AND market='ndm'", b_args)]
     if market == "bonds":
         blocks += " AND market='bonds'"
 
@@ -110,12 +117,23 @@ def _union(frm, till, min_value, market, boards, isins, side, tmp,
     # trades_archive._tick_rows). У block_trade поле означает другое — валюту
     # РАСЧЁТОВ, и там VALUE приходит в ней же, поэтому нерублёвые из оборота
     # исключаются.
+    t_from = "trade_tick t INDEXED BY ix_tick_ts" if tick_by_ts else "trade_tick t"
     ticks = ("SELECT t.trade_id, t.isin, t.ts, t.price, t.qty, t.value, t.side, "
              "t.board, 'bonds' AS market, NULL AS yld, 'SUR' AS cur, NULL AS secid, "
              "t.y_idx_bps, t.dm_bps "
-             "FROM trade_tick t WHERE 1=1" + t_cond +
+             f"FROM {t_from} WHERE 1=1" + t_cond +
              " AND NOT EXISTS (SELECT 1 FROM block_trade b WHERE b.trade_id = t.trade_id)")
-    return "(" + blocks + " UNION ALL " + ticks + ")", [*b_args, *t_args]
+    return [(blocks, b_args), (ticks, t_args)]
+
+
+def _union(frm, till, min_value, market, boards, isins, side, tmp,
+           max_value=None) -> tuple[str, list]:
+    """Подзапрос «объединённая лента»: block_trade + тики, которых там нет.
+    Порядок веток важен только для читаемости — дедуп делает NOT EXISTS по
+    первичному ключу block_trade (см. _parts)."""
+    parts = _parts(frm, till, min_value, market, boards, isins, side, tmp, max_value)
+    return ("(" + " UNION ALL ".join(sql for sql, _ in parts) + ")",
+            [a for _, args in parts for a in args])
 
 
 def _spread_clause(y_min: Optional[float], y_max: Optional[float]) -> tuple[str, list]:
@@ -161,6 +179,12 @@ def _windows(frm: Optional[str], till: Optional[str],
     return out
 
 
+# Порог суммы, с которого страницу выгоднее брать одним запросом по value-индексу,
+# а не топ-N по веткам. shortcut: подобрано замером на проде 14.10.2026 (на 3М
+# новый путь быстрее в 3 раза, на 10М медленнее в 2); пересмотреть при смене индексов.
+_TOPN_MAX_VALUE = 5_000_000.0
+
+
 def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
               min_value: float = 0, market: Optional[str] = None,
               boards: Optional[list[str]] = None, isins: Optional[list[str]] = None,
@@ -189,11 +213,27 @@ def read_tape(frm: Optional[str] = None, till: Optional[str] = None,
         yq, yargs = _spread_clause(y_min, y_max)
 
         def _page(lo: Optional[str]) -> list:
-            sub, args = _union(lo, till, min_value, market, boards, isins, side, tmp,
-                               max_value=max_value)
-            return c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
-                             f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
-                             [*args, *yargs, *cur_args, limit]).fetchall()
+            if (min_value or 0) >= _TOPN_MAX_VALUE:
+                # высокий порог суммы: строк мало, правильный план — по value-
+                # индексу блоков (INDEXED BY в _parts) и одна сортировка; топ-N
+                # по времени тут проигрывал вдвое (замер: 1,26с против 0,57с)
+                sub, args = _union(lo, till, min_value, market, boards, isins, side,
+                                   tmp, max_value=max_value)
+                return c.execute(f"SELECT * FROM {sub} WHERE 1=1{yq}{cur_q} "
+                                 f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
+                                 [*args, *yargs, *cur_args, limit]).fetchall()
+            # ТОП-N ПО ВЕТКАМ: LIMIT не проходит сквозь UNION ALL, и планировщик
+            # собирал и сортировал всё окно (2,5с на 30 днях без порога). Топ-N
+            # объединения = топ-N из топ-N каждой ветки, поэтому режем в ветках
+            # по индексу времени и склеиваем в Python.
+            got: list = []
+            for sql, a in _parts(lo, till, min_value, market, boards, isins, side, tmp,
+                                 max_value=max_value, tick_by_ts=bool(tmp)):
+                got += c.execute(f"SELECT * FROM ({sql}) WHERE 1=1{yq}{cur_q} "
+                                 f"ORDER BY ts DESC, trade_id DESC LIMIT ?",
+                                 [*a, *yargs, *cur_args, limit]).fetchall()
+            got.sort(key=lambda r: (r["ts"], r["trade_id"]), reverse=True)
+            return got[:limit]
 
         rows = []
         for lo in _windows(frm, till, before_ts):
@@ -321,16 +361,18 @@ def tape_stats(frm: Optional[str] = None, till: Optional[str] = None,
         yq, yargs = _spread_clause(y_min, y_max)
         if yq:
             sub, args = f"(SELECT * FROM {sub} WHERE 1=1{yq})", [*args, *yargs]
-        tot = c.execute(
-            f"SELECT COUNT(*) n, {_V} v, "
+        # ОДИН ПРОХОД: раньше итоги и топ были двумя полными сканами окна (на
+        # 30 днях без порога 2,5 + 5,4 с). Группы по бумаге несут все суммы, итог
+        # — их сумма в Python (≈2 тыс. групп), топ — сортировка тех же групп.
+        groups = c.execute(
+            f"SELECT isin, COUNT(*) n, {_V} v, "
             f"SUM(CASE WHEN side='buy' THEN value ELSE 0 END) bv, "
             f"SUM(CASE WHEN side='sell' THEN value ELSE 0 END) sv, "
             f"SUM(CASE WHEN market='ndm' THEN 1 ELSE 0 END) nn, "
             f"SUM(CASE WHEN market='ndm' THEN value ELSE 0 END) nv "
-            f"FROM {sub}", args).fetchone()
-        tops = c.execute(f"SELECT isin, COUNT(*) n, {_V} v FROM {sub} "
-                         f"GROUP BY isin ORDER BY v DESC LIMIT ?",
-                         [*args, top]).fetchall()
+            f"FROM {sub} GROUP BY isin", args).fetchall()
+        tot = {k: sum((g[k] or 0) for g in groups) for k in ("n", "v", "bv", "sv", "nn", "nv")}
+        tops = sorted(groups, key=lambda g: -(g["v"] or 0))[:top]
         last = c.execute("SELECT MAX(ts) t FROM ("
                          "SELECT MAX(ts) ts FROM block_trade "
                          "UNION ALL SELECT MAX(ts) FROM trade_tick)").fetchone()
