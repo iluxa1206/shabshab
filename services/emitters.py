@@ -102,9 +102,12 @@ def registry_names() -> dict:
 
 def fixed_emitter(u: dict, canon: Optional[dict] = None) -> tuple:
     """(emitter_id, имя) строки универса фиксов. canon — registry_names()
-    (передают, когда зовут в цикле). Нет эмитента — id None, имя из имени выпуска."""
+    (передают, когда зовут в цикле). Нет эмитента в карте — id None, имя из выпуска."""
     if u.get("cls") == "ofz":
         return OFZ_EMITTER
-    eid, _title = emitter_of(u.get("isin")) or (None, None)
+    eid, title = emitter_of(u.get("isin")) or (None, None)
     name = (canon if canon is not None else registry_names()).get(eid)
-    return eid, name or u.get("issuer")
+    # каноническое имя реестра → официальное название MOEX → имя из выпуска. Имя
+    # из выпуска ('МКАОВокс02') — по эмитенту на каждую серию: фильтр «все бумаги
+    # эмитента» превращался в список бумаг (на проде 462 «эмитента» у фиксов).
+    return eid, name or title or u.get("issuer")

@@ -281,8 +281,8 @@ def test_fixed_rows_emitter_structured_rating(monkeypatch):
     # имя эмитента — реестра по id; ступень рейтинга вместо грейда
     assert got["RZD1"]["emitter_id"] == 712 and got["RZD1"]["emitter_name"] == "РЖД БО"
     assert got["RZD1"]["rating"] == "AA+" and got["RZD1"]["structured"] is False
-    # нет эмитента в реестре — прежнее короткое имя; ступени нет — грейд
-    assert got["IOS1"]["emitter_id"] == 484 and got["IOS1"]["emitter_name"] == "СберИОС"
+    # нет эмитента в реестре — официальное название MOEX (а не имя серии выпуска)
+    assert got["IOS1"]["emitter_id"] == 484 and got["IOS1"]["emitter_name"] == "ПАО Сбербанк"
     assert got["IOS1"]["rating"] == "AA" and got["IOS1"]["structured"] is True
 
 
@@ -324,3 +324,13 @@ def test_only_finds_fixed_when_not_floater(monkeypatch):
 
 def test_only_unknown_is_empty_not_whole_market(monkeypatch):
     assert _list_only(monkeypatch, "-", {"floater", "fixed"}).total == 0
+
+
+def test_emitter_name_order_registry_then_moex_then_issue(monkeypatch):
+    import services.emitters as em
+    monkeypatch.setattr(em, "emitter_of", lambda i: {"A": (1, "ООО Эмитент"), "B": (2, "ПАО Банк")}.get(i))
+    canon = {2: "Банк БО"}
+    assert em.fixed_emitter({"isin": "A", "issuer": "Серия 02"}, canon) == (1, "ООО Эмитент")
+    assert em.fixed_emitter({"isin": "B", "issuer": "Серия 03"}, canon) == (2, "Банк БО")
+    assert em.fixed_emitter({"isin": "Z", "issuer": "Серия 04"}, canon) == (None, "Серия 04")
+    assert em.fixed_emitter({"isin": "O", "cls": "ofz"}, canon) == (-1, "Минфин России")
