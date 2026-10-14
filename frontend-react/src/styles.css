@@ -572,8 +572,8 @@ td.mstale::after { content: "*"; color: var(--mut-2); font-style: normal; }
    справочная величина при главной цифре, а не вторая равноправная. */
 .q-sp-dev { font-size: 9.5px; font-weight: 400; color: var(--mut); margin-left: 4px; }
 .q-sp .dash { font-weight: 400; }
-/* YTM фикса третьей строкой: справочная к спреду, поэтому мельче и серее */
-.q-ytm { font-size: 10px; color: var(--mut); line-height: 1.1; }
+/* YTM фикса через «/» после спреда: справочная к нему, поэтому мельче и серее */
+.q-ytm { font-size: 10px; font-weight: 400; color: var(--mut); }
 /* Сторона стакана — сверхпрозрачной заливкой ячейки: бид зелёный, оффер
    красный. Альфа мелкая нарочно: подсказка глазу, а не раскраска таблицы. */
 .grid tbody td.q-bid { background: rgba(46, 204, 113, 0.07); }

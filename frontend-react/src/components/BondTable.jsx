@@ -79,17 +79,17 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
            title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
                                 : "спред к прежней цене — пересчитывается") : undefined}>
         {shown == null ? (oos ? <Oos /> : <D />) : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
+        {/* фикс: YTM по этой же цене в той же строке — «спред / ytm» */}
+        {ytm !== undefined && (
+          <span className="q-ytm" title="доходность к погашению по этой цене">
+            {" / "}{ytm == null ? <D /> : fmt.pct(ytm)}</span>
+        )}
         {dev != null && (
           <span className="q-sp-dev"
             title={`отклонение от средневзвешенного спреда за 7 дней (${fmt.bps(base7)} бп)`}>
             {fmt.devBps(dev)}</span>
         )}
       </div>
-      {/* фикс: третьей строкой YTM к той же цене (ytm передан — значит нужен) */}
-      {ytm !== undefined && (
-        <div className="q-ytm" title="доходность к погашению по этой цене">
-          {ytm == null ? <D /> : fmt.pct(ytm)}</div>
-      )}
     </td>
   );
 }

@@ -137,7 +137,7 @@ describe("купон, продлённый до погашения", () => {
 });
 
 describe("сторона стакана фикса", () => {
-  it("под ценой BID — спред Y-IDX, ниже YTM к той же цене", () => {
+  it("под ценой BID — одна строка «спред / YTM» к той же цене", () => {
     const rows = [{ isin: "RU000A10RZD1", name: "РЖД 1Р-05R", cls: "corp", bid: 99.62,
                     y_idx_bid_bps: 155, ytm_bid: 15.1 }];
     const { container } = render(<Host storageKey="t_side" rows={rows} />);
@@ -145,5 +145,6 @@ describe("сторона стакана фикса", () => {
     expect(cell.querySelector(".q-px").textContent).toContain("99");
     expect(cell.querySelector(".q-sp").textContent).toContain("155");
     expect(cell.querySelector(".q-ytm").textContent).toContain("15");
+    expect(cell.querySelector(".q-sp").textContent).toMatch(/155.*\/.*15/);
   });
 });
