@@ -1649,6 +1649,47 @@ def yoi_at(isin: str, price) -> Optional[int]:
     return int(round(a + (b - a) * (px - lo) / (hi - lo)))
 
 
+def _heal_accrued_ctx(ev: dict, isin: str, snap: dict) -> bool:
+    """Контекст собран без биржевого НКД, а снапшот его уже несёт — доливаем на
+    месте. Без биржевого НКД точный спред не считается вовсе (см.
+    yidx_exact.y_idx_many: выдумывать начисление нельзя, десятые доли рубля
+    стоят десятков б.п.), и контекст, собранный до прихода снапшота, держал бы
+    прочерк в сторонах до конца дня. НКД от цены не зависит — пересобирать ради
+    него весь контекст незачем."""
+    if not (ev.get("accrued_missing") and snap.get("accrued") is not None):
+        return False
+    from services.bond_details import _acc_date
+    ev["accrued_live"] = snap.get("accrued")
+    ev["accrued_date"] = _acc_date(snap.get("accrued_date"))
+    ev["accrued_missing"] = False
+    # НКД входит в dirty, то есть в КАЖДОЕ число, посчитанное по цене — не только
+    # в узлы сетки. Кэш набора цен и кэш уровней иначе продолжали бы отдавать
+    # числа по ОЦЕНОЧНОМУ начислению: десятые доли рубля стоят десятков б.п.
+    # (27.08.2026 — РЕСОЛизБО5 368 против 382, ВЭБ2Р-53 166 против 188).
+    _drop_price_caches(isin)
+    # ...И СТРОКУ ЦЕЛИКОМ НА ПЕРЕСЧЁТ: саму строку витрины (yoi/sm/dm/ytm по
+    # цене сделки) никто не пересчитывает, она приезжает из universe_metrics с
+    # ОЦЕНОЧНЫМ начислением. Тот же пинок стоит в invalidate_params.
+    if isin in _last_quote:
+        _dirty.add(isin)
+    return True
+
+
+def heal_missing_accrued(board: dict) -> int:
+    """Долить НКД во ВСЕ контексты, собранные без него, как только снапшот его
+    принёс. Раньше это делала только дешёвая ветка сторон, то есть лечение шло
+    вместе с движением котировок: ночью их нет, и контексты, пересобранные в
+    полночь на пустом снапшоте (сбой сети 13→14.10.2026), стояли «без НКД» до
+    утреннего потока — 498 бумаг пять часов, тревога каждый час."""
+    if not board:
+        return 0
+    n = 0
+    for isin, ev in list(_eval_ctx.items()):
+        if ev.get("accrued_missing") and _heal_accrued_ctx(ev, isin, board.get(isin) or {}):
+            n += 1
+    return n
+
+
 def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict,
                        book: Optional[dict] = None) -> None:
     """Y-IDX сторон стакана и средневзвеса дня — ПО МЕТОДИКЕ, одним батчем.
@@ -1670,30 +1711,8 @@ def _fill_side_metrics(row: dict, isin: str, sides: dict, snap: dict,
         request_bond(isin)
         return
 
-    # НКД МОГ ПРИЕХАТЬ ПОЗЖЕ КОНТЕКСТА. Без биржевого НКД точный спред не
-    # считается вовсе (см. yidx_exact.y_idx_many: выдумывать начисление нельзя,
-    # десятые доли рубля стоят десятков б.п.), и контекст, собранный до прихода
-    # снапшота, держал бы прочерк в сторонах до конца дня — хотя НКД в строке к
-    # тому времени уже есть. Обновляем на месте: он от цены не зависит,
-    # пересобирать ради него весь контекст незачем.
-    if ev.get("accrued_missing") and snap.get("accrued") is not None:
-        from services.bond_details import _acc_date
-        ev["accrued_live"] = snap.get("accrued")
-        ev["accrued_date"] = _acc_date(snap.get("accrued_date"))
-        ev["accrued_missing"] = False
-        # НКД входит в dirty, то есть в КАЖДОЕ число, посчитанное по цене —
-        # не только в узлы сетки. Раньше сносили одну сетку, а кэш набора цен и
-        # кэш уровней продолжали отдавать числа по ОЦЕНОЧНОМУ начислению:
-        # десятые доли рубля стоят десятков б.п. (27.08.2026 — РЕСОЛизБО5 368
-        # против 382, ВЭБ2Р-53 166 против 188).
-        _drop_price_caches(isin)
-        # ...И СТРОКУ ЦЕЛИКОМ НА ПЕРЕСЧЁТ. Кэши сняты, но саму строку витрины
-        # (yoi/sm/dm/ytm по цене сделки) никто не пересчитывает: она приезжает
-        # из universe_metrics с ОЦЕНОЧНЫМ начислением и тут же дополняется
-        # сторонами, посчитанными уже по биржевому. Тот же пинок стоит в
-        # invalidate_params по тому же поводу.
-        if isin in _last_quote:
-            _dirty.add(isin)
+    # НКД МОГ ПРИЕХАТЬ ПОЗЖЕ КОНТЕКСТА — доливаем на месте, см. _heal_accrued_ctx
+    _heal_accrued_ctx(ev, isin, snap)
 
     lvq = _lq.get(isin) or {}
     wap = lvq.get("vwap_pct") or snap.get("waprice")
@@ -3113,6 +3132,9 @@ async def metrics_worker() -> None:
             # день и эту кривую, и без них первые минуты после рестарта таблица
             # стоит с прочерками (см. _restore_snapshot)
             _restore_snapshot(ctx, market_cache)
+            _n_healed = heal_missing_accrued(ctx.get("board") or {})
+            if _n_healed:
+                logger.info("НКД долит в %d контекстов (снапшот вернулся)", _n_healed)
             globals()["_last_ctx"] = ctx
             from services.heavy import run_heavy
             _tick0 = time.monotonic()

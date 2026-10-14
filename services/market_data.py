@@ -1232,7 +1232,13 @@ class MarketDataService:
         async with cls._board_snap_lock:
             if not force and cls._board_snap and time.time() - cls._board_snap_ts < _SNAP_TTL:
                 return cls._board_snap
-            return await cls._fetch_board_snapshot_inner(boards, only)
+            res = await cls._fetch_board_snapshot_inner(boards, only)
+            # ISS не ответил — читателю (не поллеру) отдаём ПРЕЖНИЙ снимок, а не
+            # пустой: контексты расчёта, собранные в полночь на пустом снимке,
+            # застряли «без НКД» на пять часов (сбой сети 13→14.10.2026)
+            if not res and not force and cls._board_snap:
+                return cls._board_snap
+            return res
 
     # Блок securities несёт НКД, вчерашнее закрытие и дату поставки — это
     # ДНЕВНЫЕ величины: НКД пересчитывается на начало дня, prev появляется после
