@@ -3172,3 +3172,5 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 /* меню столбцов: заголовки групп скрытых колонок */
 .colmenu-group-title { margin: 8px 0 2px; padding: 0 6px; font-size: 10px; letter-spacing: .1em;
   color: var(--mut); text-transform: uppercase; border-top: 1px solid var(--line); padding-top: 6px; }
+/* Сравнение: пояснение, почему фикс не показан на барной базе */
+.cmp-note { margin: 6px 0; color: var(--mut); }

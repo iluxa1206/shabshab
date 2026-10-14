@@ -637,7 +637,23 @@ async def multi_spread(body: MultiSpreadBody):
     isins = isins[:_CMP_MAX_ISINS]
     if not isins:
         return {"days": body.days, "base": body.base, "series": [], "dates": [],
-                "exact_from": None}
+                "exact_from": None, "kinds": {}, "unsupported": []}
+
+    # КЛАСС БУМАГИ. У фиксов честный Y-IDX лежит только в spread_daily (бэкфилл
+    # scripts/backfill_fixed_yidx.py + живой движок с 12.10). Дневные бары
+    # (vwap/bar_close) у них хранят G-СПРЕД под именами y_idx_*, и выдать его в
+    # линии «Y-IDX» значило бы молча смешать две метрики — поэтому на барных
+    # базах фиксы не отдаём, а называем в `unsupported`.
+    from services.screener_core import bond_kind
+    from services.market_data import market_cache
+    _fx = {u.get("isin") for u in (market_cache.get("fixed_universe") or [])}
+    kinds = {i: bond_kind(i, _fx) for i in isins}
+    unsupported = [i for i in isins if kinds[i] == "fixed"] if body.base != "close" else []
+    if unsupported:
+        isins = [i for i in isins if i not in set(unsupported)]
+        if not isins:
+            return {"days": body.days, "base": body.base, "series": [], "dates": [],
+                    "exact_from": None, "kinds": kinds, "unsupported": unsupported}
 
     from datetime import date as _date, timedelta
     from services.portfolio_db import _connect
@@ -652,8 +668,8 @@ async def multi_spread(body: MultiSpreadBody):
             with _connect() as c:
                 return c.execute(
                     "SELECT isin, date, price_pct, y_idx, y_idx_alt, horizon, alt_horizon "
-                    f"FROM spread_daily WHERE kind='floater' AND date >= ? AND isin IN ({ph}) "
-                    "ORDER BY date", (cutoff, *isins)).fetchall()
+                    f"FROM spread_daily WHERE kind IN ('floater','fixed') AND date >= ? "
+                    f"AND isin IN ({ph}) ORDER BY date", (cutoff, *isins)).fetchall()
 
         rows = await asyncio.to_thread(_read)
         for r in _one_horizon(rows, lo, hi):
@@ -701,7 +717,9 @@ async def multi_spread(body: MultiSpreadBody):
     series = [{"isin": i, "points": acc[i]} for i in isins if acc[i]]
     dates = sorted({p["date"] for s in series for p in s["points"]})
     return {"days": body.days, "base": body.base, "series": series, "dates": dates,
-            "exact_from": dates[0] if dates else None}
+            "exact_from": dates[0] if dates else None,
+            # класс каждой бумаги выбора и те, кого эта база показать не может
+            "kinds": kinds, "unsupported": unsupported}
 
 
 @router.get("/{isin}/reprice", tags=["History"])

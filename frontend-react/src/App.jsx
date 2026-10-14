@@ -100,7 +100,7 @@ const BASES_FIXED = ["FIXED"];
 // эффект, синхронизирующий фильтры с query string, перебивает <Navigate>
 // (та же гонка, что у /blocks → TradesTape).
 const isUnifiedPath = (p) => p.startsWith("/bonds") || p.startsWith("/floaters")
-  || p === "/fixed" || p === "/fixed/";
+  || p === "/fixed" || p === "/fixed/" || p.startsWith("/compare");
 const classBases = (p) => (p.startsWith("/floaters") ? BASES_FLOATERS
   : p === "/fixed" || p === "/fixed/" ? BASES_FIXED : null);
 
@@ -1059,7 +1059,7 @@ function Dashboard() {
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
         shown={tableRows.length} total={srcBonds.length}
-        visibleCols={unified ? uCols.visibleCols : withCols ? visibleCols : null}
+        visibleCols={!withCols ? null : unified ? uCols.visibleCols : visibleCols}
         colsMeta={unified ? uCols.colsMeta : undefined}
         onToggleCol={unified ? uCols.onToggleCol : toggleCol}
         onResetCols={unified ? uCols.onResetCols : resetCols}
@@ -1132,7 +1132,7 @@ function Dashboard() {
 
   const compareView = (
     <>
-      {toolbar(false)}
+      {toolbar(false, true)}
       <CompareModule rows={filtered} sel={cmpSel} onToggle={toggleCmp} onSetAll={setCmpAll}
         onClear={clearCmp} onOpen={openDrawer} />
     </>

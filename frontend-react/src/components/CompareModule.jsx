@@ -349,6 +349,9 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
   const names = useMemo(() => Object.fromEntries(
     rows.map((b) => [b.isin, b.short_name || b.isin])), [rows]);
 
+  // выбранные фиксы, которых барная база показать не может (бэк называет их сам)
+  const unsupported = data?.unsupported || [];
+
   // серии в порядке выбора: цвет линии = позиция в sel
   const series = useMemo(() => {
     if (!data?.series) return [];
@@ -399,6 +402,13 @@ export default function CompareModule({ rows, sel, onToggle, onSetAll, onClear, 
           <div className="an-empty">загрузка…</div>
         ) : (
           <>
+            {unsupported.length > 0 && (
+              <div className="an-hint cmp-note" role="note">
+                {unsupported.length === 1 ? "Фикс" : `Фиксов: ${unsupported.length}`}
+                {" "}на этой базе не показать ({unsupported.map((i) => names[i] || i).join(", ")}):
+                дневные бары хранят у них G-спред, а не Y-IDX. Переключите «база дня» на «As-of».
+              </div>
+            )}
             <CompareChart series={series} names={names} metric={metric} height={420}
               hi={hi} onHi={setHi} />
             <CompareLegend series={series} names={names} metric={metric}
