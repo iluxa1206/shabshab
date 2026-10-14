@@ -20,7 +20,7 @@ from typing import List, Optional
 
 from services.portfolio_db import _connect, _lock
 from services.screener_core import (BLOCK_BASES, RATINGS, FilterError,  # noqa: F401
-                                    block_matches, block_meta,
+                                    block_matches, block_meta, bond_kind,
                                     avg7_map, book_trade_params, evaluate,
                                     evaluate_candidates, market_snapshot,
                                     meta_years, money_floor,
@@ -249,10 +249,13 @@ def _with_maturity(rows: List[dict]) -> List[dict]:
         labels = reg.labels_map(sorted({r["isin"] for r in rows}))
     except Exception:
         return rows
-    from services.market_data import MarketDataService
+    from services.market_data import MarketDataService, market_cache
     mx = MarketDataService.universe_metrics() or {}
+    fixed = {u.get("isin") for u in (market_cache.get("fixed_universe") or [])}
     today = date.today()
     for r in rows:
+        # класс бумаги — чтобы клик по событию открывал карточку своего вида
+        r["kind"] = bond_kind(r["isin"], fixed)
         meta = block_meta(labels, r["isin"], mx)
         r["maturity"] = meta.get("maturity")
         yrs = meta_years(meta, today)

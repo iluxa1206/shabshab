@@ -443,6 +443,17 @@ def horizon_years(u: dict, row: Optional[dict], today: date) -> Optional[float]:
     return years_left(d or u.get("maturity_date"), today)
 
 
+def bond_kind(isin: str, fixed_isins: Optional[set] = None) -> str:
+    """Класс бумаги для карточки: "fixed" — бумага универса фиксов, иначе
+    "floater". Опираемся на универс, а не на отсутствие базы в реестре: у
+    флоатера с неподтверждёнными параметрами базы тоже нет, и такая бумага
+    открылась бы карточкой фикса. fixed_isins — набор, если звать в цикле."""
+    if fixed_isins is None:
+        from services.market_data import market_cache
+        fixed_isins = {u.get("isin") for u in (market_cache.get("fixed_universe") or [])}
+    return "fixed" if isin in fixed_isins else "floater"
+
+
 def block_meta(labels: dict, isin: str, metrics: Optional[dict] = None) -> dict:
     """Справочная метка бумаги для ленты сделок + ГОРИЗОНТ ПРАЙСИНГА из живых
     метрик. Без горизонта фильтр ленты мерил срок только до погашения, а тот же

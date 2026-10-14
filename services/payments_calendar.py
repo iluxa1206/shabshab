@@ -158,6 +158,44 @@ def _bond_events(ref, u: dict, name: str, curve, calc_date: date,
     return out
 
 
+def fixed_bond_events(u: dict, name: str, emitter: str, full: dict, calc_date: date,
+                      size: Optional[float]) -> List[dict]:
+    """Платежи одной бумаги с ФИКСИРОВАННЫМ купоном — из графика MOEX как есть.
+
+    Своего прогноза нет и быть не должно: сумма купона либо объявлена биржей
+    (value), либо её нет. Купон без суммы (ставка не объявлена, ABS/ИЦБ) в
+    календарь не попадает — расчётное допущение «продлим последний» годится для
+    YTM (так считает сама биржа), но не для даты и суммы выплаты, которую кто-то
+    запланирует. Весь принципал, включая финальное погашение, лежит в графике
+    амортизаций; у бессрочных его нет, и погашения в календаре тоже нет.
+
+    Только рублёвый номинал: сумма в валюте номинала с подписью «₽» вводила бы в
+    заблуждение, а перемножение на объём выпуска дало бы чужие деньги."""
+    past_lo = calc_date - timedelta(days=PAST_WINDOW_DAYS)
+    base = {"isin": u["isin"], "name": name, "emitter": emitter or "—", "base": "FIXED",
+            "kind": "fixed"}
+    out: List[dict] = []
+    for c in full.get("coupons") or []:
+        end = _d(c.get("end"))
+        if not end or end < past_lo or c.get("value") is None:
+            continue
+        vp = c.get("valueprc")
+        out.append({**base, "date": end, "type": "COUPON",
+                    "amount_rub": round(float(c["value"]), 2),
+                    "rate_pct": round(float(vp), 4) if vp is not None else None,
+                    "projected": False, "paid": end <= calc_date})
+    for a in full.get("amorts") or []:
+        d = _d(a.get("date"))
+        if not d or d < past_lo or a.get("value") is None:
+            continue
+        out.append({**base, "date": d, "type": "REDEMPTION",
+                    "amount_rub": round(float(a["value"]), 2), "rate_pct": None,
+                    "projected": False, "paid": d <= calc_date})
+    for e in out:
+        e["total_rub"] = round(e["amount_rub"] * size, 2) if size else None
+    return out
+
+
 async def build_payments_calendar() -> dict:
     """Все будущие платежи юниверса. {calc_date, events:[...]} — кэш на день."""
     from services.paths import cache_path as _cache_path
@@ -175,6 +213,13 @@ async def build_payments_calendar() -> dict:
             return {"calc_date": _cache["calc_date"], "events": _cache["events"]}
 
         uni = await instruments_registry.fetch_floater_universe()
+        # фиксы: рублёвые выпуски универса (см. fixed_bond_events)
+        from services import emitters
+        from services.fixed_income import _ruble_face as is_ruble_face
+        from services.market_data import market_cache
+        fixed_uni = [u for u in (market_cache.get("fixed_universe") or [])
+                     if u.get("isin") and is_ruble_face(u)]
+        fixed_ids = [u["isin"] for u in fixed_uni]
         cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
         ids = [u["isin"] for u in uni if u.get("isin")]
         external = [i for i in ids if i not in cache]
@@ -184,11 +229,12 @@ async def build_payments_calendar() -> dict:
             MarketDataService.fetch_issue_sizes(),
             # return_exceptions: одна бумага с обрывом пагинации ISS не должна
             # валить сборку ВСЕГО календаря (см. fetch_bond_schedule_full)
-            asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i) for i in ids),
+            asyncio.gather(*(MarketDataService.fetch_bond_schedule_full(i)
+                             for i in ids + fixed_ids),
                            return_exceptions=True),
         )
         await asyncio.to_thread(MarketDataService.flush_schedule_cache)
-        full_by = dict(zip(ids, fulls))
+        full_by = dict(zip(ids + fixed_ids, fulls))
 
         # индекс-провайдеры фиксинга начавшегося периода — один на базу
         index_fns = {}
@@ -235,6 +281,18 @@ async def build_payments_calendar() -> dict:
                     events.extend(evs)
                 except Exception as e:
                     logger.warning(f"calendar skip {isin}: {e}")
+            canon = emitters.registry_names()
+            for u in fixed_uni:
+                try:
+                    full_i = full_by.get(u["isin"])
+                    if not isinstance(full_i, dict):      # обрыв пагинации ISS
+                        continue
+                    _eid, ename = emitters.fixed_emitter(u, canon)
+                    events.extend(fixed_bond_events(
+                        u, u.get("name") or u["isin"], ename, full_i, calc_date,
+                        sizes.get(u["isin"])))
+                except Exception as e:
+                    logger.warning(f"calendar skip fixed {u.get('isin')}: {e}")
             return events
 
         from services.heavy import run_heavy

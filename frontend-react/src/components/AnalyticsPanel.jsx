@@ -355,7 +355,8 @@ function YidxHistory({ groupBy, rows, period, focus, onPick, height, full }) {
 
   if (err) return <div className="an-empty">не загрузилось: {err}</div>;
   if (!data) return <div className="an-empty">загрузка…</div>;
-  const { dates, series } = withToday(data, rows, byIss);
+  // пустой ответ ({}), а не {dates:[], series:[]}, не должен ронять панель
+  const { dates = [], series = [] } = withToday(data, rows, byIss);
   if (!dates.length || !series.length) return <div className="an-empty">нет истории снапшотов за период</div>;
   // Глубина архива меньше запрошенного окна — обычное дело: агрегат берёт только
   // бары, посчитанные АКТУАЛЬНОЙ версией движка (см. /aggregate/yidx), и старые

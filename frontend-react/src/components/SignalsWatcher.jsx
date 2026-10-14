@@ -63,7 +63,8 @@ export default function SignalsWatcher() {
   const openBond = (m, side) => {
     setSearchParams((sp) => {
       const n = new URLSearchParams(sp);
-      n.set("isin", m.isin); n.delete("k"); n.set("ob", "1");
+      n.set("isin", m.isin); n.set("ob", "1");
+      if (m.kind === "fixed") n.set("k", "fixed"); else n.delete("k");
       const vol = m.want_money_rub || m.money_rub;
       if (vol) {
         n.set("sigvol", String(Math.round(vol)));

@@ -76,7 +76,8 @@ export default function SignalsBell() {
     setSearchParams((sp) => {
       const n = new URLSearchParams(sp);
       n.set("isin", e.isin);
-      n.delete("k");
+      // карточка своего вида: фикс открывается FixedCard, а не флоатерной
+      if (e.kind === "fixed") n.set("k", "fixed"); else n.delete("k");
       n.set("ob", "1");
       if (e.want_money_rub || e.money_rub) {
         n.set("sigvol", String(Math.round(e.want_money_rub || e.money_rub)));

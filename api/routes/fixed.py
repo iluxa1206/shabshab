@@ -88,22 +88,10 @@ async def get_fixed(
             "calc_date": market_cache.get("fixed_calc_date") or date.today().isoformat()}
 
 
-# синтетический эмитент Минфина — тот же, что у ОФЗ-флоатеров в реестре
-# (services.instruments_registry._OFZ_EMITTER_ID): MOEX у ОФЗ EMITTER_ID не даёт
-_OFZ_EMITTER = (-1, "Минфин России")
+# общие с календарём выплат и сигналами — services/emitters.py
+from services.emitters import OFZ_EMITTER as _OFZ_EMITTER  # noqa: E402
+from services.emitters import registry_names as _registry_emitter_names  # noqa: E402
 _STRUCTURED_MAX_CPN = 1.0
-
-
-def _registry_emitter_names() -> dict:
-    """{emitter_id: имя} из реестра (кэш по отметке базы)."""
-    from services import instruments_registry as reg
-    try:
-        rows = reg.universe_rows(only_floaters=False, only_priceable=False)
-    except Exception as e:
-        logger.warning("registry emitter names failed: %s", e)
-        return {}
-    return {r["emitter_id"]: r["emitter_name"] for r in rows
-            if r.get("emitter_id") and r.get("emitter_name")}
 
 
 async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
@@ -144,8 +132,7 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
-        eid, _title = (_OFZ_EMITTER if u.get("cls") == "ofz"
-                       else (emitters.emitter_of(u["isin"]) or (None, None)))
+        eid, ename = emitters.fixed_emitter(u, canon)
         cpn = u.get("coupon_pct")
         item = {
             "isin": u["isin"], "kind": "fixed", "secid": u.get("secid"), "name": u.get("name"),
@@ -154,8 +141,7 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
             # MOEX EMITTER_ID — общий ключ эмитента с флоатерами; имя — реестра
             # по тому же id (у флоатеров оно короткое), иначе прежнее из имени
             "emitter_id": eid,
-            "emitter_name": canon.get(eid) or (_OFZ_EMITTER[1] if eid == _OFZ_EMITTER[0]
-                                               else u.get("issuer")),
+            "emitter_name": ename,
             # около-нулевой купон: структурные ноты (ИОС, CIB, ВТБС…) и глубокий
             # дисконт (Пересвет, младшие транши СФО). YTM-спред тут не про рынок
             # ставок — в общем мониторе по умолчанию скрыты фильтром.

@@ -267,7 +267,8 @@ class PaymentEvent(BaseModel):
     isin: str
     name: str
     emitter: str
-    base: str                      # KEYRATE | RUONIA | прочее
+    base: str                      # KEYRATE | RUONIA | FIXED | прочее
+    kind: str = "floater"          # floater | fixed — класс бумаги (карточка своего вида)
     type: str                      # COUPON | REDEMPTION
     amount_rub: float              # на одну бумагу
     total_rub: Optional[float] = None   # всего по выпуску (× ISSUESIZE); None если объём неизвестен

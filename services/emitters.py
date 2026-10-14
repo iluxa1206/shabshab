@@ -79,3 +79,32 @@ async def ensure(isins: Iterable[str]) -> None:
     paths.atomic_write_json(paths.cache_path(CACHE_FILE), new_doc)
     _mem["doc"] = new_doc
     logger.info("emitters: карта эмитентов обновлена, %d бумаг", len(fresh))
+
+
+# Синтетический эмитент Минфина — тот же, что у ОФЗ-флоатеров в реестре
+# (services.instruments_registry._OFZ_EMITTER_ID): MOEX у ОФЗ EMITTER_ID не даёт.
+OFZ_EMITTER = (-1, "Минфин России")
+
+
+def registry_names() -> dict:
+    """{emitter_id: имя} из реестра: у флоатеров оно короткое и каноничное, и
+    эмитент фикса под тем же id должен называться так же — иначе фильтр «все
+    бумаги эмитента» делит одного эмитента на два имени."""
+    from services import instruments_registry as reg
+    try:
+        rows = reg.universe_rows(only_floaters=False, only_priceable=False)
+    except Exception as e:
+        logger.warning("registry emitter names failed: %s", e)
+        return {}
+    return {r["emitter_id"]: r["emitter_name"] for r in rows
+            if r.get("emitter_id") and r.get("emitter_name")}
+
+
+def fixed_emitter(u: dict, canon: Optional[dict] = None) -> tuple:
+    """(emitter_id, имя) строки универса фиксов. canon — registry_names()
+    (передают, когда зовут в цикле). Нет эмитента — id None, имя из имени выпуска."""
+    if u.get("cls") == "ofz":
+        return OFZ_EMITTER
+    eid, _title = emitter_of(u.get("isin")) or (None, None)
+    name = (canon if canon is not None else registry_names()).get(eid)
+    return eid, name or u.get("issuer")

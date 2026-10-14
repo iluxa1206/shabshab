@@ -293,6 +293,26 @@ describe("монтирование приложения", () => {
     window.history.pushState({}, "", back);
   });
 
+  it("общий монитор: «Аналитика» монтируется для обоих классов без ошибок", async () => {
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/bonds");
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a.join(" ")));
+    stubNetwork();
+    render(<App />);
+    expect(await screen.findByText(/26999/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Аналитика"));
+    // панели обоих классов рисуются вместе с таблицей (в jsdom графики без
+    // размеров — важно, что дерево смонтировалось целиком)
+    await waitFor(() => expect(screen.getByText("Аналитика").closest("button")
+      .getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByText(/26999/)).toBeTruthy();
+    const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
+    expect(fatal).toEqual([]);
+    spy.mockRestore();
+    window.history.pushState({}, "", back);
+  });
+
   it("общий монитор: структурные ноты возвращаются по ссылке, класс — по пути", async () => {
     const back = window.location.pathname + window.location.search;
     // nostr=0 в URL — фильтр «без структурных» выключен; /fixed — только фиксы

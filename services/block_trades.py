@@ -1606,9 +1606,14 @@ async def _notify_blocks() -> int:
         from services import trade_yidx
         await trade_yidx.for_rows(todo)
 
+    from services.market_data import market_cache as _mc
+    _fixed = {u.get("isin") for u in (_mc.get("fixed_universe") or [])}
+
     def _match(r: dict) -> dict:
         lb = signals.block_meta(labels, r["isin"], _mx)
         return {
+            # класс бумаги: клик по тосту открывает карточку своего вида
+            "kind": signals.bond_kind(r["isin"], _fixed),
             # срок — до ГОРИЗОНТА ПРАЙСИНГА: «блок на 600 млн» читается
             # по-разному для годовой бумаги и для десятилетней, и та же
             # методика стоит в фильтре и в мониторе
