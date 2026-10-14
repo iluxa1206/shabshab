@@ -136,17 +136,21 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
 
 
 async def _universe_bonds(extra_list, cache, limit, offset,
-                          vol_bid=None, vol_ask=None, kinds=("floater",)):
+                          vol_bid=None, vol_ask=None, kinds=("floater",), only=None):
     """Общий список витрины: флоатеры и/или фиксы (kinds). Пагинация — по
-    склейке, флоатеры первыми."""
+    склейке, флоатеры первыми. only — одна бумага (строка для страницы графика:
+    рейтинг, эмитент, Y-IDX; старая ветка без universe их не заполняет)."""
     items = []
     if "floater" in kinds:
         items += await _floater_items(extra_list, cache, vol_bid, vol_ask)
-    if "fixed" in kinds:
+    if only:
+        items = [i for i in items if i.isin == only]
+    if "fixed" in kinds and not (only and items):
         from services.feature_flags import fixed_enabled
         if fixed_enabled():
             from api.routes.fixed import fixed_rows
-            items += [_fixed_list_item(r) for r in await fixed_rows(vol_bid, vol_ask)]
+            rows = await fixed_rows(vol_bid, vol_ask)
+            items += [_fixed_list_item(r) for r in rows if not only or r["isin"] == only]
     return BondListResponse(items=items[offset:offset + limit], total=len(items),
                             limit=limit, offset=offset)
 
@@ -262,6 +266,7 @@ async def get_bonds(
     with_valuation: bool = Query(False),
     universe: bool = Query(False, description="Весь юниверс флоатеров из реестра"),
     kinds: str = Query("floater", description="С universe: классы через запятую — floater,fixed"),
+    only: Optional[str] = Query(None, description="С universe: только эта бумага (ISIN)"),
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
     fields: Optional[str] = Query(None),
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
@@ -296,8 +301,11 @@ async def get_bonds(
             from services.universe_stream import register_metric_scope
             register_metric_scope([c.strip() for c in cols.split(",") if c.strip()])
         kind_set = {k.strip() for k in kinds.split(",") if k.strip()}
+        only_isin = only.strip().upper() if only else None
+        if only_isin and not _ISIN_RE.fullmatch(only_isin):
+            only_isin = "-"            # мусор не должен превращаться в «весь рынок»
         return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask,
-                                     kind_set)
+                                     kind_set, only_isin)
 
     # добавленные пользователем бумаги (watchlist) — в начало, чтобы были видны
     base_set = set(isins)

@@ -290,3 +290,37 @@ def test_list_item_carries_structured_and_emitter():
     it = _fixed_list_item({**FIXED_ROW, "emitter_id": 712, "emitter_name": "РЖД БО",
                            "structured": True})
     assert it.emitter_id == 712 and it.emitter_name == "РЖД БО" and it.structured is True
+
+
+# ── only: строка одной бумаги для страницы графика ────────────────────────────
+
+def _list_only(monkeypatch, only, kinds):
+    async def floaters(*a, **k):
+        return [BondListItem(isin="RU000A0FLT00", short_name="F", base_rate_type="KEYRATE",
+                             formula="КС", spread_issue_bps=100, maturity_date=None,
+                             next_coupon_date=None, last_price_pct=100.0,
+                             dirty_price_rub=None, dm_bps=None, rating="AA-",
+                             emitter_name="РЖД БО")]
+
+    async def fixed(*a, **k):
+        return [FIXED_ROW, {**FIXED_ROW, "isin": "RU000A0FIX02"}]
+    import api.routes.fixed as fixed_mod
+    import services.feature_flags as ff
+    monkeypatch.setattr(mod, "_floater_items", floaters)
+    monkeypatch.setattr(fixed_mod, "fixed_rows", fixed)
+    monkeypatch.setattr(ff, "fixed_enabled", lambda: True)
+    return asyncio.run(_universe_bonds([], {}, 1, 0, kinds=kinds, only=only))
+
+
+def test_only_floater_row_has_rating_and_emitter(monkeypatch):
+    r = _list_only(monkeypatch, "RU000A0FLT00", {"floater", "fixed"})
+    assert r.total == 1 and r.items[0].rating == "AA-" and r.items[0].emitter_name == "РЖД БО"
+
+
+def test_only_finds_fixed_when_not_floater(monkeypatch):
+    r = _list_only(monkeypatch, "RU000A0FIX02", {"floater", "fixed"})
+    assert r.total == 1 and r.items[0].isin == "RU000A0FIX02" and r.items[0].kind == "fixed"
+
+
+def test_only_unknown_is_empty_not_whole_market(monkeypatch):
+    assert _list_only(monkeypatch, "-", {"floater", "fixed"}).total == 0

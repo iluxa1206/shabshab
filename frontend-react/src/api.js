@@ -238,11 +238,12 @@ export const fetchDepth = () => request("/api/orderbook/depth/all");
 export const fetchBondDetails = (isin) => request(`/api/bonds/${isin}`);
 
 // Строка списка по одной бумаге (рейтинг, эмитент, Y-IDX, DM, спред-дюрация) —
-// того в /api/bonds/{isin} нет. extra тянет любой ISIN вне базового списка;
-// limit=1 держит ответ маленьким, нужную строку выбираем по ISIN.
+// того в /api/bonds/{isin} нет. Через universe: старая ветка /api/bonds без него
+// этих полей не заполняет (до 14.10.2026 рейтинг и эмитент на странице графика
+// не показывались ни у одной бумаги).
 export const fetchBondRow = async (isin) => {
-  const r = await request(`/api/bonds?with_market=true&with_valuation=true&limit=1`
-    + `&extra=${encodeURIComponent(isin)}`);
+  const r = await request(`/api/bonds?universe=true&kinds=floater,fixed&limit=1`
+    + `&only=${encodeURIComponent(isin)}`);
   return (r.items || []).find((b) => b.isin === isin) || null;
 };
 
