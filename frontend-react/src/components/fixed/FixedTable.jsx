@@ -40,10 +40,17 @@ export function fixedColsDef(extraCols) {
  * Возвращает объект с именами пропсов Toolbar/ColumnsMenu и FixedTable, чтобы
  * хост раздавал его спредом.
  */
-export function useFixedCols({ storageKey = "fx", extraCols, colsDef: colsOverride } = {}) {
+export function useFixedCols({ storageKey = "fx", extraCols, colsDef: colsOverride, defaultVisible } = {}) {
   // colsOverride — полный набор колонок хоста (общий монитор облигаций), минуя FIXED_COLS
   const colsDef = useMemo(() => colsOverride || fixedColsDef(extraCols), [colsOverride, extraCols]);
   const defaultCols = useMemo(() => colsDef.map((c) => c.key), [colsDef]);
+  // что видно без сохранённой раскладки и после «сбросить» — подмножество defaultCols
+  // (общий монитор: скрытое в меню, но известное, чтобы не всплывало «новым»)
+  const initialCols = useMemo(() => {
+    const ok = new Set(defaultCols);
+    const v = (defaultVisible || []).filter((k) => ok.has(k));
+    return v.length ? v : defaultCols;
+  }, [defaultCols, defaultVisible]);
   const colsMeta = useMemo(() => colsDef.map(({ key, label, sub, only }) => (
     { key, label, sub, ...(colsOverride ? { group: only || "common" } : {}) })), [colsDef, colsOverride]);
   const kCols = `cols_${storageKey}`, kWidths = `colw_${storageKey}`, kKnown = `cols_known_${storageKey}`;
@@ -55,12 +62,12 @@ export function useFixedCols({ storageKey = "fx", extraCols, colsDef: colsOverri
       // смыслом. Сохранённый набор переименовываем на месте: иначе у всех, кто
       // хоть раз трогал меню столбцов, три колонки просто исчезли бы.
       const s = Array.isArray(raw) ? raw.map((k) => COL_RENAMED[k] || k) : raw;
-      if (!Array.isArray(s) || !s.length) return defaultCols;
+      if (!Array.isArray(s) || !s.length) return initialCols;
       // колонки, добавленные после последнего сохранения набора, показываем
       // на своём месте (общее правило — src/columnLayout.js)
       const known = JSON.parse(localStorage.getItem(kKnown) || "[]");
       return mergeColumnLayout(s, defaultCols, { known });
-    } catch { return defaultCols; }
+    } catch { return initialCols; }
   });
   const [colWidths, setColWidths] = useState(() => {
     try {
@@ -86,7 +93,7 @@ export function useFixedCols({ storageKey = "fx", extraCols, colsDef: colsOverri
     next.splice(j, 0, from);
     return next;
   }), []);
-  const onResetCols = useCallback(() => { setVisibleCols(defaultCols); setColWidths({}); }, [defaultCols]);
+  const onResetCols = useCallback(() => { setVisibleCols(initialCols); setColWidths({}); }, [initialCols]);
   const onResizeCol = useCallback((key, px) => setColWidths((w) => ({ ...w, [key]: px })), []);
   const onResetColWidth = useCallback((key) => setColWidths((w) => {
     const next = { ...w }; delete next[key]; return next;

@@ -254,7 +254,8 @@ function Dashboard() {
   const searchRef = useRef(null);
   // раскладка колонок ОБЩЕГО монитора — отдельно от флоатерной (cols/colw), чтобы
   // перестановки здесь не ломали привычный монитор флоатеров и наоборот
-  const uCols = useFixedCols({ storageKey: "u", colsDef: UNIFIED_COLS });
+  const uCols = useFixedCols({ storageKey: "u", colsDef: UNIFIED_COLS,
+                               defaultVisible: UNIFIED_DEFAULT_COLS });
 
   // «/» — фокус в поиск (терминальная привычка). Игнорируем, когда юзер уже
   // печатает в каком-нибудь поле, иначе слэш не набрать.
@@ -351,8 +352,11 @@ function Dashboard() {
   // ЗЕРКАЛО В REF, а не зависимость загрузки: набор колонок нужен запросу, но
   // менять его — не повод перезагружать таблицу. Ref читается в момент запроса,
   // поэтому бэк всегда получает актуальный набор.
-  const visibleColsRef = useRef(visibleCols);
-  useEffect(() => { visibleColsRef.current = visibleCols; }, [visibleCols]);
+  // На общем мониторе видны колонки ЕГО раскладки, а не флоатерной: иначе движок
+  // считал бы спреды сторон по чужому набору (скрыл BID/ASK здесь — не считаем).
+  const scopeCols = onUnified ? uCols.visibleCols : visibleCols;
+  const visibleColsRef = useRef(scopeCols);
+  useEffect(() => { visibleColsRef.current = scopeCols; }, [scopeCols]);
   // снимок известных на этой сборке колонок — база для авто-показа новых (см. выше)
   useEffect(() => { localStorage.setItem("cols_known", JSON.stringify(DEFAULT_COLS)); }, []);
   // порядок колонок нормализован — дальше он пользовательский, не трогаем

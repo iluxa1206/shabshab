@@ -114,8 +114,13 @@ const FIXED_ONLY = ["delta_ytm", "cur_yield", "g_spread_bps", "z_spread_bps", "c
 
 export const UNIFIED_COLS = [...COMMON, ...FLOATER_ONLY, ...FIXED_ONLY];
 
-// По умолчанию видно только общее ядро (решение владельца: спец-колонки — в меню).
-export const UNIFIED_DEFAULT_COLS = COMMON.map((c) => c.key);
+// По умолчанию (решение владельца 16.10): ядро без PRICE/CHG/DIRTY/ISSUE/ОБЪЁМ и Δ YTM
+// в конце; остальные колонки — в меню. Порядок = порядок показа.
+export const UNIFIED_DEFAULT_COLS = [
+  "short_name", "base_rate_type", "coupon", "maturity_date", "y_idx_bid_bps", "y_idx_ask_bps",
+  "wap_price_pct", "yield_over_index_bps", "yield_xirr_pct", "val_today", "adv_1m_rub",
+  "dur", "delta_ytm",
+];
 
 // Метаданные меню с группой: общие / флоатеры / фиксы.
 export const UNIFIED_COL_META = UNIFIED_COLS.map(({ key, label, sub, only }) => (

@@ -36,10 +36,10 @@ describe("колонки общего монитора", () => {
     expect(UNIFIED_COL_META.length).toBe(UNIFIED_COLS.length);
   });
 
-  it("по умолчанию спец-колонки классов скрыты", () => {
+  it("по умолчанию из спец-колонок видна только Δ YTM", () => {
     const only = UNIFIED_COLS.filter((c) => c.only).map((c) => c.key);
     expect(only.length).toBeGreaterThan(5);
-    expect(only.some((k) => UNIFIED_DEFAULT_COLS.includes(k))).toBe(false);
+    expect(only.filter((k) => UNIFIED_DEFAULT_COLS.includes(k))).toEqual(["delta_ytm"]);
   });
 
   it("каждая колонка рисует одну ячейку и для флоатера, и для фикса", () => {
