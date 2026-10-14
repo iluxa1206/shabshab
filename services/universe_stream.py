@@ -1990,8 +1990,8 @@ def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
             row[dst] = snap[src]
     sides = _sides_from(_last_quote.get(isin), snap, isin)
     row["bid"], row["ask"] = sides["bid"], sides["ask"]
-    face_unit = (row.get("faceunit") or "RUB").upper()
-    curve = ctx.get("g_curve") if face_unit in ("", "RUB", "SUR", "RUR") else None
+    from services.currency import is_ruble
+    curve = ctx.get("g_curve") if is_ruble(row.get("faceunit")) else None
     vol_px = _vol_prices(isin, face=previous.get("face_value_rub"),
                          accrued=previous.get("accrued_rub"),
                          ladders=(book or {}).get(isin) or {})
@@ -2086,8 +2086,8 @@ def _yidx_undefined(isin: str) -> bool:
     """Y-IDX у бумаги не определён ПО СМЫСЛУ: валюта не рубль (база — RUONIA) или
     бессрочная (рента). Такие стороны вечно «пустые» — это не прочерк-дефект."""
     u = ((_last_ctx or {}).get("fixed_by") or {}).get(isin) or {}
-    face = (u.get("faceunit") or "RUB").upper()
-    return face not in ("", "RUB", "SUR", "RUR") or bool(u.get("perpetual"))
+    from services.currency import is_ruble
+    return not is_ruble(u.get("faceunit")) or bool(u.get("perpetual"))
 
 
 def heal_fixed_blank_sides() -> int:

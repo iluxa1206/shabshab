@@ -8,7 +8,7 @@ export default function Toolbar({
   onlyWatch, setOnlyWatch, basesSel, toggleBase, ratingsSel, toggleRating, ratingOpts,
   clearBases, issuers, emittersSel, toggleEmitter, clearEmitters, twoSided, setTwoSided,
   hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
-  currencies, currenciesSel, toggleCurrency, resetCurrencies,
+  currencies, currenciesSel, currencyCounts, toggleCurrency, resetCurrencies,
   volBid, setVolBid, volAsk, setVolAsk, volMode, setVolMode,
   depthTs, depthLoading, matFrom, setMatFrom, matTo, setMatTo,
   spreadFrom, setSpreadFrom, spreadTo, setSpreadTo,
@@ -82,7 +82,7 @@ export default function Toolbar({
           hideAmort={hideAmort} setHideAmort={setHideAmort}
           hideDead={hideDead} setHideDead={setHideDead}
           clsSel={clsSel} toggleCls={toggleCls}
-          currencies={currencies} currenciesSel={currenciesSel}
+          currencies={currencies} currenciesSel={currenciesSel} currencyCounts={currencyCounts}
           toggleCurrency={toggleCurrency} resetCurrencies={resetCurrencies}
           activeCount={activeFilters}
           showFixedBase={showFixedBase} extra={filtersExtra}

@@ -773,7 +773,8 @@ def apply_board_prices(universe: List[dict], snap: Dict[str, dict]) -> None:
 
 
 def _ruble_face(row: dict) -> bool:
-    return (row.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
+    from services.currency import is_ruble
+    return is_ruble(row.get("faceunit"))
 
 
 def _accrued_face_ccy(row: dict, full: dict, calc_date: date) -> Optional[float]:

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Path, Query, HTTPException
 
 from services.market_data import market_cache, MarketDataService
 from services.exceptions import NotFoundException
+from services.currency import normalize_ccy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -152,8 +153,7 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
             "perpetual": bool(u.get("perpetual")),
             # Валюта номинала — отдельна от валюты расчётов и нужна фильтру
             # витрины. Старые коды рубля приводим к одному значению на UI.
-            "face_unit": "RUB" if (u.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
-                         else (u.get("faceunit") or "RUB").upper(),
+            "face_unit": normalize_ccy(u.get("faceunit")),
             "coupon_pct": u.get("coupon_pct"), "val_today": u.get("val_today"),
             "adv_1m_rub": adv.get(u["isin"]),
             # размещено штук × номинал, в валюте номинала (тот же дневной батч,
@@ -600,8 +600,7 @@ async def get_fixed_details(isin: str = Path(...)):
             "isin": isin, "secid": secid, "name": row.get("name"), "cls": row.get("cls"),
             "board": board, "maturity_date": row.get("maturity_date"),
             "perpetual": bool(row.get("perpetual")),
-            "face_unit": "RUB" if (row.get("faceunit") or "RUB").upper() in ("", "RUB", "SUR", "RUR")
-                         else (row.get("faceunit") or "RUB").upper(),
+            "face_unit": normalize_ccy(row.get("faceunit")),
             "coupon_pct": row.get("coupon_pct"), "face": row.get("face"),
             "issuer": row.get("issuer"), "rating": ratings.bucket_of_fixed(isin, row.get("cls")),
             "ratings_ea": ratings_br.ea_map([isin]).get(isin),

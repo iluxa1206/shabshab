@@ -18,6 +18,7 @@ from services.bonds import (
     coupons_per_year as _coupons_per_year,
 )
 from services.exceptions import NotFoundException
+from services.currency import normalize_ccy
 from services import instruments_registry
 from services import live_quotes
 from services.paths import cache_path as _cache_path
@@ -80,7 +81,8 @@ def _never_traded(board_row: Optional[dict], mx: dict) -> Optional[bool]:
 
 
 def _uni_item(u, name, mx, adv=None, avg7=None,
-              vol_bid=None, vol_ask=None, issue_volume=None, board_row=None):
+              vol_bid=None, vol_ask=None, issue_volume=None, board_row=None,
+              face_unit="RUB"):
     """BondListItem: строка универса реестра + наши метрики mx (universe.enrich_bond).
 
     Спред-дюрация приходит ТОЛЬКО из движка (mx["spread_dur"] — Macaulay потока
@@ -105,7 +107,7 @@ def _uni_item(u, name, mx, adv=None, avg7=None,
         coupons_per_year=_coupons_per_year(u.get("coupon_period_days"),
                                            u.get("coupons_per_year")),
         maturity_date=u.get("maturity_date"), issue_date=u.get("issue_date"),
-        issue_volume=issue_volume,
+        issue_volume=issue_volume, face_unit=face_unit,
         next_coupon_date=mx.get("next_coupon"), last_price_pct=last,
         bid_price_pct=mx.get("bid"), ask_price_pct=mx.get("ask"),
         y_idx_bid_bps=mx.get("yoi_bid"), y_idx_ask_bps=mx.get("yoi_ask"),
@@ -200,6 +202,14 @@ async def _floater_items(extra_list, cache, vol_bid=None, vol_ask=None) -> list:
     except Exception as e:
         logger.warning("board snapshot for never_traded failed: %s", e)
         board = {}
+    # валюта номинала по листингу MOEX (кэш 6 ч). Нет в листинге — рубль: реестр
+    # флоатеров рублёвый, валютный номинал туда не пишется (instruments_sync)
+    try:
+        from services.trades_archive import face_units
+        units = await face_units()
+    except Exception as e:
+        logger.warning("face_units for floaters failed: %s", e)
+        units = {}
     watch = set(extra_list)
 
     watch_rows = [u for u in uni if u.get("isin") in watch]
@@ -238,7 +248,7 @@ async def _floater_items(extra_list, cache, vol_bid=None, vol_ask=None) -> list:
             mx = {"last": cached_prices.get(isin)}
         items.append(_uni_item(u, name, mx, adv.get(isin),
                                avg7.get(isin), vol_bid, vol_ask, issue_vol.get(isin),
-                               board.get(isin)))
+                               board.get(isin), normalize_ccy(units.get(isin))))
     return items
 
 

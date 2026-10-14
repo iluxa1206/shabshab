@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, date, timezone
 from typing import Optional
 
+from services.currency import normalize_ccy
 from services.market_data import MarketDataService
 from services import metrics
 from services.bonds import (
@@ -66,7 +67,7 @@ async def build_bond_details(isin: str, cache: dict) -> dict:
             "isin": isin,
             "short_name": shortnames.get(isin) or mo.get("name") or isin,
             "face_value": ref_obj.face_value,
-            "face_unit": mo.get("face_unit") or "RUB",
+            "face_unit": normalize_ccy(mo.get("face_unit")),
             "base_rate_type": ref_obj.base,
             "spread_bps": ref_obj.spread_issue_bps,
             "formula": external_formula(ref_obj),

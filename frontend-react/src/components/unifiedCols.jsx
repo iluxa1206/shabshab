@@ -2,6 +2,7 @@ import { fmt } from "../format.js";
 import { COLS as FLOATER_COLS, D } from "./BondTable.jsx";
 import { FIXED_COLS } from "./fixed/fixedCols.jsx";
 import { durValue } from "../unifiedRows.js";
+import { fixedCurrency } from "./fixed/currency.js";
 
 // КОЛОНКИ ОБЩЕГО МОНИТОРА ОБЛИГАЦИЙ (docs/unified_monitor_tz.md, этап B).
 //
@@ -48,6 +49,18 @@ const DUR = {
         {b.kind !== "fixed" && v != null && <span className="dur-hz" aria-hidden="true">·срок</span>}
       </td>
     );
+  },
+};
+
+// ВАЛЮТА НОМИНАЛА: общая колонка двух классов. Не-рубль подсвечен: у такой
+// бумаги Y-IDX и спреды не определены (база — рублёвая RUONIA), YTM — в её валюте.
+const CCY = {
+  key: "face_unit", label: "ВАЛ.", sub: "НОМИНАЛ", align: "left", w: 6,
+  title: "Валюта номинала выпуска (не валюта расчётов). У не-рублёвых Y-IDX и спреды "
+         + "не определены: база — рублёвая RUONIA, YTM и дюрация — в валюте номинала.",
+  cell: (b) => {
+    const c = fixedCurrency(b);
+    return <td key="face_unit" className={"ccy" + (c === "RUB" ? "" : " ccy-fx")}>{c}</td>;
   },
 };
 
@@ -98,6 +111,7 @@ const COMMON = [
     cell: (b) => (b.kind === "fixed"
       ? <td key="base_rate_type"><span className="badge FIXED" title="Фиксированный купон">ФИКС</span></td>
       : FL.base_rate_type.cell(b)) },
+  CCY,
   COUPON,
   FL.maturity_date && { ...FL.maturity_date, cell: pick("maturity_date") },
   BID, ASK, FL.last_price_pct, WAP, FL.delta_to_prev_close,
@@ -117,7 +131,7 @@ export const UNIFIED_COLS = [...COMMON, ...FLOATER_ONLY, ...FIXED_ONLY];
 // По умолчанию (решение владельца 16.10): ядро без PRICE/CHG/DIRTY/ISSUE/ОБЪЁМ и Δ YTM
 // в конце; остальные колонки — в меню. Порядок = порядок показа.
 export const UNIFIED_DEFAULT_COLS = [
-  "short_name", "base_rate_type", "coupon", "maturity_date", "y_idx_bid_bps", "y_idx_ask_bps",
+  "short_name", "base_rate_type", "face_unit", "coupon", "maturity_date", "y_idx_bid_bps", "y_idx_ask_bps",
   "wap_price_pct", "yield_over_index_bps", "yield_xirr_pct", "val_today", "adv_1m_rub",
   "dur", "delta_ytm",
 ];

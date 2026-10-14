@@ -10,7 +10,7 @@ export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
   hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
-  currencies, currenciesSel, toggleCurrency, resetCurrencies,
+  currencies, currenciesSel, currencyCounts, toggleCurrency, resetCurrencies,
   activeCount, extra, showFixedBase,
 }) {
   const [open, setOpen] = useState(false);
@@ -110,7 +110,9 @@ export default function FiltersMenu({
               {(currencies || []).map((ccy) => <button key={ccy}
                 className={"chip-btn" + (currenciesSel?.includes(ccy) ? " on" : "")}
                 aria-pressed={!!currenciesSel?.includes(ccy)}
-                onClick={() => toggleCurrency(ccy)}>{ccy}</button>)}
+                onClick={() => toggleCurrency(ccy)}>
+                {ccy}{currencyCounts?.[ccy] != null && <span className="ccy-n"> {currencyCounts[ccy]}</span>}
+              </button>)}
             </div>
           </div>}
 

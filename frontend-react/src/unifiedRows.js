@@ -56,8 +56,9 @@ export function unifiedSortValue(b, key) {
 }
 
 /**
- * Дефолтные отсечки, действующие ТОЛЬКО на фиксы (у флоатеров свой, давно
- * сложившийся набор фильтров): структурные ноты, порог ликвидности, валюта.
+ * Дефолтные отсечки общего монитора. Структурные ноты и порог ликвидности —
+ * ТОЛЬКО на фиксы (у флоатеров свой, давно сложившийся набор фильтров); валюта
+ * номинала — на оба класса (у флоатера её отдаёт бэк, нет поля — рубль).
  *  - hideStructured: купон ≤ 1 % у не-ОФЗ (флаг structured с бэка) — спред
  *    структурной ноты не про рынок ставок и забивает верх сортировки;
  *  - advMinRub: порог ADV, ₽; бумага без посчитанного ADV при заданном
@@ -65,9 +66,9 @@ export function unifiedSortValue(b, key) {
  *  - currencies: пустой массив = все валюты.
  */
 export function passesFixedDefaults(b, { hideStructured, advMinRub, currencies }) {
+  if (currencies?.length && !currencies.includes(fixedCurrency(b))) return false;
   if (b.kind !== "fixed") return true;
   if (hideStructured && b.structured) return false;
   if (advMinRub > 0 && !((b.adv_1m_rub ?? -1) >= advMinRub)) return false;
-  if (currencies?.length && !currencies.includes(fixedCurrency(b))) return false;
   return true;
 }

@@ -68,8 +68,14 @@ describe("значение сортировки", () => {
 
 describe("дефолтные отсечки фиксов", () => {
   const D = { hideStructured: true, advMinRub: 1e6, currencies: ["RUB"] };
-  it("флоатер не затрагивается никогда", () => {
+  it("флоатер не затрагивается отсечками фиксов (ADV, структурные)", () => {
     expect(passesFixedDefaults(FL, { ...D, advMinRub: 1e12 })).toBe(true);
+  });
+  it("валюта режет и флоатер: валютный номинал скрыт при выборе RUB", () => {
+    const usd = { ...FL, face_unit: "USD" };
+    expect(passesFixedDefaults(usd, D)).toBe(false);
+    expect(passesFixedDefaults(usd, { ...D, currencies: ["USD"] })).toBe(true);
+    expect(passesFixedDefaults({ ...FL, face_unit: undefined }, D)).toBe(true);   // нет поля — рубль
   });
   it("структурная нота скрыта, пока фильтр включён", () => {
     const n = { ...FX, structured: true };

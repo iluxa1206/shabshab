@@ -3174,3 +3174,8 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
   color: var(--mut); text-transform: uppercase; border-top: 1px solid var(--line); padding-top: 6px; }
 /* Сравнение: пояснение, почему фикс не показан на барной базе */
 .cmp-note { margin: 6px 0; color: var(--mut); }
+
+/* Валюта номинала: рубль приглушён, не-рубль — акцентом (спреды у него пусты по смыслу) */
+.grid td.ccy { font-size: 11px; color: var(--mut); letter-spacing: .04em; }
+.grid td.ccy-fx { color: var(--fg); font-weight: 600; }
+.ccy-n { font-size: 10px; color: var(--mut); font-weight: 400; }

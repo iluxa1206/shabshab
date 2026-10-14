@@ -318,6 +318,8 @@ class BondListItem(BaseModel):
     maturity_date: Optional[date]
     issue_date: Optional[date] = None      # дата размещения (реестр): свежие ≤30 дн подсвечены в мониторе
     issue_volume: Optional[float] = None   # размещено штук × номинал, в валюте номинала (MOEX ISSUESIZEPLACED)
+    # валюта номинала, нормализованная (services.currency): RUB/USD/CNY/EUR…
+    face_unit: Optional[str] = None
     next_coupon_date: Optional[date]
     last_price_pct: Optional[float]
     # верх стакана MOEX (чистые цены, % номинала) + Y-IDX по ним. ask — это MOEX

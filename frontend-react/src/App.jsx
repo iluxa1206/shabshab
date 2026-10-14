@@ -949,12 +949,17 @@ function Dashboard() {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }, [srcBonds]);
 
-  // валюты номинала, реально встречающиеся у фиксов (+ выбранные): чипы в фильтрах
+  // валюты номинала по всему набору (оба класса) + выбранные: чипы в фильтрах
+  // и число бумаг в каждой (до остальных фильтров — это классификация рынка)
+  const currencyCounts = useMemo(() => {
+    const m = {};
+    srcBonds.forEach((b) => { const c = fixedCurrency(b); m[c] = (m[c] || 0) + 1; });
+    return m;
+  }, [srcBonds]);
   const fixCurrencyList = useMemo(() => {
-    const all = new Set(["RUB", ...fixCurrencies]);
-    fixedRows.forEach((b) => all.add(fixedCurrency(b)));
+    const all = new Set(["RUB", ...fixCurrencies, ...Object.keys(currencyCounts)]);
     return [...all].sort((a, b) => (a === "RUB" ? -1 : b === "RUB" ? 1 : a.localeCompare(b)));
-  }, [fixedRows, fixCurrencies]);
+  }, [currencyCounts, fixCurrencies]);
 
   const toggleIn = (setter) => (val) =>
     setter((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
@@ -1072,7 +1077,7 @@ function Dashboard() {
           showFixedBase: fixedOn,
           // секция «ФИКСЫ» в окне фильтров: отсечки, которые действуют только на
           // фиксы (у флоатеров свой набор, давно сложившийся)
-          currencies: fixCurrencyList, currenciesSel: fixCurrencies,
+          currencies: fixCurrencyList, currenciesSel: fixCurrencies, currencyCounts,
           toggleCurrency: toggleIn(setFixCurrencies),
           resetCurrencies: () => setFixCurrencies(DEFAULT_FIXED_CURRENCIES),
           filtersExtra: (
