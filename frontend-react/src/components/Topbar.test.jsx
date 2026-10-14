@@ -1,8 +1,9 @@
 /**
- * Меню типов бумаг: выключенный слой не должен смотреть пустой витриной.
+ * Меню: один раздел «Облигации» (флоатеры и фиксы — общий монитор).
  *
- * Слои гасятся переменной окружения на бэке (services/feature_flags) и
- * приезжают во фронт в /api/meta.features. Флага нет — слой считается
+ * Слой фиксов гасится переменной окружения на бэке (services/feature_flags) и
+ * приезжает во фронт в /api/meta.features. Выключенный слой не должен смотреть
+ * пустой витриной: вкладки ОФЗ и Аукцион исчезают. Флага нет — слой считается
  * включённым, иначе старый бэкенд прятал бы рабочие вкладки.
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,11 +14,10 @@ import Topbar from "./Topbar.jsx";
 
 const USER = { email: "t@test", role: "user" };
 
-// DOM между тестами не убирается сам — иначе следующий рендер видит меню
-// предыдущего и находит «Фиксы» там, где их уже не рисуют
+// DOM между тестами не убирается сам
 afterEach(cleanup);
 
-function show(features, path = "/floaters") {
+function show(features, path = "/bonds") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -28,46 +28,43 @@ function show(features, path = "/floaters") {
   );
 }
 
-describe("вкладка типа бумаг", () => {
-  it("слой фиксов включён — пункт на месте", () => {
+describe("раздел «Облигации»", () => {
+  it("отдельных пунктов «Флоатеры» и «Фиксы» больше нет", () => {
     show({ fixed: true });
-    expect(screen.getByText("Фиксы")).toBeTruthy();
-  });
-
-  it("слой выключен — пункта нет", () => {
-    show({ fixed: false });
     expect(screen.queryByText("Фиксы")).toBeNull();
-    expect(screen.getByText("Флоатеры")).toBeTruthy();
+    expect(screen.queryByText("Флоатеры")).toBeNull();
+    expect(screen.getAllByText(/Облигации/).length).toBeGreaterThan(0);
   });
 
-  it("старый бэк без флагов — вкладка видна", () => {
+  it("слой фиксов включён — ОФЗ и Аукцион в подменю", () => {
+    show({ fixed: true });
+    expect(screen.getByText("ОФЗ")).toBeTruthy();
+    expect(screen.getByText("Аукцион")).toBeTruthy();
+  });
+
+  it("слой выключен — вкладок фиксов нет, остальное на месте", () => {
+    show({ fixed: false });
+    expect(screen.queryByText("ОФЗ")).toBeNull();
+    expect(screen.queryByText("Аукцион")).toBeNull();
+    expect(screen.getByText("Монитор")).toBeTruthy();
+    expect(screen.getByText("Сделки")).toBeTruthy();
+  });
+
+  it("старый бэк без флагов — вкладки видны", () => {
     show(undefined);
-    expect(screen.getByText("Фиксы")).toBeTruthy();
+    expect(screen.getByText("ОФЗ")).toBeTruthy();
   });
 });
 
-// «Первичка» — общий путь двух разделов: анонс не знает своего класса. Тип на
-// нём не выводится из URL, иначе переход из Фиксов ронял бы меню в Флоатеры.
-describe("общий путь /primary", () => {
-  afterEach(() => sessionStorage.clear());
+describe("подменю по адресу", () => {
+  it.each(["/bonds", "/floaters", "/fixed", "/fixed/ofz", "/calc", "/calc/float", "/primary"])(
+    "%s — подменю облигаций", (path) => {
+      show({ fixed: true }, path);
+      expect(screen.getByText("Сделки")).toBeTruthy();
+    });
 
-  it("из Фиксов остаётся в Фиксах", () => {
-    show({ fixed: true }, "/fixed");     // раздел запомнился
-    cleanup();
-    show({ fixed: true }, "/primary");
-    expect(screen.queryByText("Сделки")).toBeNull();   // подменю флоатеров не всплыло
-    expect(screen.getByText("Первичка")).toBeTruthy();
-  });
-
-  it("из Флоатеров остаётся во Флоатерах", () => {
-    show({ fixed: true }, "/trades");
-    cleanup();
-    show({ fixed: true }, "/primary");
-    expect(screen.getByText("Сделки")).toBeTruthy();
-  });
-
-  it("холодный вход прямо на /primary — дефолт Флоатеры", () => {
-    show({ fixed: true }, "/primary");
-    expect(screen.getByText("Сделки")).toBeTruthy();
+  it("портфель — своё меню без подменю облигаций", () => {
+    show({ fixed: true }, "/portfolio");
+    expect(screen.queryByText("Сделки")).toBeNull();
   });
 });

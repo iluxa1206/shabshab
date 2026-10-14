@@ -10,7 +10,8 @@ import { PageStatusProvider } from "./pageStatus.jsx";
 import { applyVolume, FIXED_VOL_FIELDS } from "./vwap.js";
 import { useFixedFeed } from "./useFixedFeed.js";
 import { withFixedAliases, passesFixedDefaults, unifiedSortValue } from "./unifiedRows.js";
-import { UNIFIED_COLS } from "./components/unifiedCols.jsx";
+import { UNIFIED_COLS, UNIFIED_DEFAULT_COLS } from "./components/unifiedCols.jsx";
+import { usePageStatus } from "./pageStatus.jsx";
 import { useFixedCols } from "./components/fixed/FixedTable.jsx";
 import { DEFAULT_FIXED_CURRENCIES, fixedCurrency, isDefaultFixedCurrencySelection } from "./components/fixed/currency.js";
 import { sideProgress } from "./spreadProgress.js";
@@ -31,7 +32,6 @@ import CompareModule, { CMP_MAX } from "./components/CompareModule.jsx";
 import Drawer from "./components/Drawer.jsx";
 import StatusBar from "./components/StatusBar.jsx";
 import CurvesModule from "./components/CurvesModule.jsx";
-import FixedMonitor from "./components/fixed/FixedMonitor.jsx";
 import OfzDesk from "./components/fixed/OfzDesk.jsx";
 import AuctionDesk from "./components/fixed/AuctionDesk.jsx";
 import CalcModule from "./components/CalcModule.jsx";
@@ -92,6 +92,17 @@ const initialMeta = () => {
   }
 };
 
+const BASES_FLOATERS = ["KEYRATE", "RUONIA"];
+const BASES_FIXED = ["FIXED"];
+// Общий монитор живёт на трёх адресах: /bonds — всё, /floaters и /fixed — те же
+// строки с отобранным классом (старые закладки работают). Без редиректа:
+// эффект, синхронизирующий фильтры с query string, перебивает <Navigate>
+// (та же гонка, что у /blocks → TradesTape).
+const isUnifiedPath = (p) => p.startsWith("/bonds") || p.startsWith("/floaters")
+  || p === "/fixed" || p === "/fixed/";
+const classBases = (p) => (p.startsWith("/floaters") ? BASES_FLOATERS
+  : p === "/fixed" || p === "/fixed/" ? BASES_FIXED : null);
+
 function Dashboard() {
   const { user, onLogout } = useAuth();
   const [bonds, setBonds] = useState([]);
@@ -102,15 +113,27 @@ function Dashboard() {
   // ОБЩИЙ МОНИТОР облигаций (/bonds): к флоатерам добавляется вторая лента — фиксы.
   // Остальные маршруты (/floaters, /compare…) живут на одних флоатерах, как раньше.
   const pathname = useLocation().pathname;
-  const onUnified = pathname.startsWith("/bonds");
+  const onUnified = isUnifiedPath(pathname);
   // слой фиксов: флага нет (старый бэк) — считаем включённым
   const fixedOn = meta.features?.fixed !== false;
+  // переход /bonds → /fixed (или обратно) внутри открытого приложения: Dashboard
+  // не перемонтируется, поэтому отбор класса по пути применяем при СМЕНЕ адреса
+  const prevPath = useRef(pathname);
+  useEffect(() => {
+    if (prevPath.current === pathname) return;
+    prevPath.current = pathname;
+    const b = classBases(pathname);
+    if (b) setBasesSel(b);
+  }, [pathname]);
 
   // три независимые группы фильтров (AND-пересечение; пустая группа = все).
   // Стартовое значение — из URL (ссылка/F5), иначе из localStorage (последняя
   // сессия) для тех фильтров, которые раньше и так persist'ились.
   const [onlyWatch, setOnlyWatch] = useState(() => initialParams().get("watch") === "1");
-  const [basesSel, setBasesSel] = useState(() => initialParams().getAll("base"));    // KEYRATE / RUONIA
+  const [basesSel, setBasesSel] = useState(() => {
+    const fromUrl = initialParams().getAll("base");
+    return fromUrl.length ? fromUrl : (classBases(window.location.pathname.replace(/^\/app/, "")) || []);
+  });    // KEYRATE / RUONIA / FIXED
   const [ratingsSel, setRatingsSel] = useState(() => initialParams().getAll("rt")); // AAA / AA / A / BBB / BELOW / NR
   const [emittersSel, setEmittersSel] = useState(() => initialParams().getAll("em")); // имена эмитентов (мульти)
   const [twoSided, setTwoSided] = useState(() => initialParams().get("two") === "1");  // только двусторонние котировки
@@ -921,6 +944,13 @@ function Dashboard() {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }, [srcBonds]);
 
+  // валюты номинала, реально встречающиеся у фиксов (+ выбранные): чипы в фильтрах
+  const fixCurrencyList = useMemo(() => {
+    const all = new Set(["RUB", ...fixCurrencies]);
+    fixedRows.forEach((b) => all.add(fixedCurrency(b)));
+    return [...all].sort((a, b) => (a === "RUB" ? -1 : b === "RUB" ? 1 : a.localeCompare(b)));
+  }, [fixedRows, fixCurrencies]);
+
   const toggleIn = (setter) => (val) =>
     setter((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
 
@@ -983,11 +1013,6 @@ function Dashboard() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const onFloaters = pathname.startsWith("/floaters");
-  // МОНИТОР фиксов — та же витрина, и переключатель «Аналитика» у неё общий:
-  // состояние одно, вкладки рисуют каждая свою кросс-секцию
-  const onFixed = pathname.startsWith("/fixed");
-
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
   // поэтому в бейдж он попадает только когда СНЯТ (рынок показан целиком).
@@ -1009,7 +1034,7 @@ function Dashboard() {
   // Панель фильтров общая у МОНИТОРА и СРАВНЕНИЯ: состояние одно, значит
   // переключение вкладок не сбрасывает отбор. withCols=false прячет меню
   // столбцов — на СРАВНЕНИИ витрина своя.
-  const toolbar = (withCols) => (
+  const toolbar = (withCols, unified = false) => (
       <Toolbar
         onlyWatch={onlyWatch} setOnlyWatch={setOnlyWatch}
         basesSel={basesSel} toggleBase={toggleIn(setBasesSel)}
@@ -1032,16 +1057,49 @@ function Dashboard() {
         advMin={advMin} setAdvMin={setAdvMin} advMode={advMode} setAdvMode={setAdvMode}
         query={query} setQuery={setQuery} searchRef={searchRef}
         watchCount={watch.length}
-        shown={tableRows.length} total={bonds.length}
-        visibleCols={withCols ? visibleCols : null}
-        onToggleCol={toggleCol} onResetCols={resetCols} onMoveCol={moveCol}
+        shown={tableRows.length} total={srcBonds.length}
+        visibleCols={unified ? uCols.visibleCols : withCols ? visibleCols : null}
+        colsMeta={unified ? uCols.colsMeta : undefined}
+        onToggleCol={unified ? uCols.onToggleCol : toggleCol}
+        onResetCols={unified ? uCols.onResetCols : resetCols}
+        onMoveCol={unified ? uCols.onMoveCol : moveCol}
+        {...(unified ? {
+          showFixedBase: fixedOn,
+          // секция «ФИКСЫ» в окне фильтров: отсечки, которые действуют только на
+          // фиксы (у флоатеров свой набор, давно сложившийся)
+          currencies: fixCurrencyList, currenciesSel: fixCurrencies,
+          toggleCurrency: toggleIn(setFixCurrencies),
+          resetCurrencies: () => setFixCurrencies(DEFAULT_FIXED_CURRENCIES),
+          filtersExtra: (
+            <div className="fp-sec">
+              <div className="fp-head"><span className="fg-lbl">ТОЛЬКО ФИКСЫ</span></div>
+              <div className="fp-chips">
+                <button className={"chip-btn" + (hideStructured ? " on" : "")}
+                  aria-pressed={hideStructured}
+                  title={"Убрать структурные ноты и глубокий дисконт (купон ≤ 1 %, кроме ОФЗ): "
+                    + "их YTM-спред не про рынок ставок и забивает верх сортировки. Включено по умолчанию."}
+                  onClick={() => setHideStructured(!hideStructured)}>БЕЗ СТРУКТУРНЫХ</button>
+                <label className="fp-inline" title="Порог ликвидности для фиксов: средний дневной оборот за месяц, млн ₽. На флоатеры не действует.">
+                  <span className="fg-lbl">ADV ОТ, М₽</span>
+                  <input className="num-input" type="number" min="0" step="0.5"
+                    aria-label="Порог ADV для фиксов, млн ₽" value={fixAdvMin}
+                    onChange={(e) => setFixAdvMin(e.target.value)} />
+                </label>
+              </div>
+            </div>),
+        } : {})}
       />
   );
 
-  const floatersView = (
+  // ОБЩИЙ МОНИТОР. Аналитика у фиксов своя (FixedAnalytics), а у флоатеров — по
+  // спред-дюрации: смешивать их в одном графике нельзя, поэтому над общей
+  // таблицей — флоатерная (по строкам флоатеров), фиксовая — вторым шагом.
+  const unifiedView = (
     <>
-      {toolbar(true)}
-      {showAnalytics && <AnalyticsPanel rows={filtered} focus={anFocus} onFocus={setAnFocus} />}
+      {toolbar(true, true)}
+      {showAnalytics && <AnalyticsPanel rows={filtered.filter((b) => b.kind !== "fixed")}
+        focus={anFocus} onFocus={setAnFocus} />}
+      <UnifiedStatus rows={tableRows} />
       <BondTable
         rows={tableRows}
         status={status}
@@ -1054,12 +1112,15 @@ function Dashboard() {
         filtered={activeFilters > 0}
         onClearFilters={resetFilters}
         onRetry={loadBonds}
-        visibleCols={visibleCols}
-        onMoveCol={moveCol}
-        colWidths={colWidths}
-        onResizeCol={resizeCol}
-        onResetColWidth={resetColWidth}
+        visibleCols={uCols.visibleCols}
+        onMoveCol={uCols.onMoveCol}
+        colWidths={uCols.colWidths}
+        onResizeCol={uCols.onResizeCol}
+        onResetColWidth={uCols.onResetColWidth}
+        colsDef={UNIFIED_COLS}
+        defaultCols={UNIFIED_DEFAULT_COLS}
         colProgress={colProgress}
+        unified
       />
     </>
   );
@@ -1080,7 +1141,7 @@ function Dashboard() {
         onLogout={onLogout}
         onOpenSettings={() => setShowSettings(true)}
         features={meta.features}
-        extra={(onFloaters || onFixed) && (
+        extra={onUnified && (
           <button className={"seg-btn tool-btn" + (showAnalytics ? " active" : "")}
             onClick={() => { setShowAnalytics(!showAnalytics); setAnFocus(null); }}
             aria-pressed={showAnalytics}
@@ -1090,20 +1151,19 @@ function Dashboard() {
         )}
       />
       <Routes>
-        <Route path="/" element={<Navigate to="/floaters" replace />} />
-        <Route path="/floaters" element={floatersView} />
+        <Route path="/" element={<Navigate to="/bonds" replace />} />
+        <Route path="/bonds" element={unifiedView} />
+        <Route path="/floaters" element={unifiedView} />
         <Route path="/compare" element={compareView} />
         {/* Вкладка «Эмитенты» снята: агрегаты повторяли фильтр по эмитенту в
             «Мониторе», а разрез по медианам спреда даёт «Аналитика» (распределение
             spread по эмитентам). Старый путь ведёт в Монитор — на вкладку могли
             остаться закладки. */}
-        <Route path="/issuers" element={<Navigate to="/floaters" replace />} />
+        <Route path="/issuers" element={<Navigate to="/bonds" replace />} />
         <Route path="/reference" element={<Catalog user={user} />} />
         {/* слой фиксов выключен на бэке (FIXED_TAB=0) — старые закладки ведут
             в монитор флоатеров, а не в пустую витрину */}
-        <Route path="/fixed" element={fixedOn
-          ? <FixedMonitor onOpen={openDrawer} showAnalytics={showAnalytics} />
-          : <Navigate to="/floaters" replace />} />
+        <Route path="/fixed" element={fixedOn ? unifiedView : <Navigate to="/bonds" replace />} />
         {/* витрина ОФЗ — тот же слой фиксов, поэтому под тем же флагом */}
         <Route path="/fixed/ofz" element={fixedOn
           ? <OfzDesk onOpen={openDrawer} />
@@ -1133,7 +1193,7 @@ function Dashboard() {
           <Suspense fallback={<div className="cp-foot" style={{ padding: 16 }}>загрузка графика…</div>}>
             <ChartPage />
           </Suspense>} />
-        <Route path="*" element={<Navigate to="/floaters" replace />} />
+        <Route path="*" element={<Navigate to="/bonds" replace />} />
       </Routes>
       <Drawer isin={drawerIsin} kind={searchParams.get("k")} autoOrderbook={searchParams.get("ob") !== "0"}
         sigVol={Number(searchParams.get("sigvol")) || 0} sigSide={searchParams.get("sigside") || "ask"}
@@ -1142,7 +1202,7 @@ function Dashboard() {
         // уровни, набирающие ровно этот тикет по своей стороне
         volBid={volBid} volAsk={volAsk}
         onClose={closeDrawer} />
-      <StatusBar count={bonds.length} kpiBonds={tableRows} live={live} sources={meta.source_status}
+      <StatusBar count={srcBonds.length} kpiBonds={tableRows} live={live} sources={meta.source_status}
         theme={theme} onSetTheme={setTheme} meta={meta}
         onRefresh={() => { fetchMeta().then(setMeta).catch(() => {}); loadBonds(); }} />
       {showSettings && <AdminPanel user={user} onClose={() => setShowSettings(false)} />}
@@ -1150,6 +1210,18 @@ function Dashboard() {
     </div>
     </PageStatusProvider>
   );
+}
+
+// Итоги общего монитора в нижней полосе: сколько флоатеров и фиксов в выборке.
+// Отдельный компонент: usePageStatus работает только ВНУТРИ PageStatusProvider,
+// а Dashboard сам его и рисует.
+function UnifiedStatus({ rows }) {
+  const fix = rows.filter((b) => b.kind === "fixed").length;
+  usePageStatus([
+    { k: "ФЛТ", v: rows.length - fix, title: "флоатеров в выборке" },
+    { k: "ФИКС", v: fix, title: "фиксированных выпусков в выборке" },
+  ]);
+  return null;
 }
 
 // Тема из localStorage. Серая тема заменена на win (old internet) — у кого в

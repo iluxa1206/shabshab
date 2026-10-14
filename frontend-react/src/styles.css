@@ -13,6 +13,8 @@
   --hover: #f2f2f2;
   --inv-bg: #0a0a0a;
   --inv-fg: #ffffff;
+  --cls-float: #0b7f86;         /* класс: флоатер (бирюза) — не совпадает с --up/--down/--accent */
+  --cls-fixed: #b36a00;         /* класс: фикс (янтарь) */
   --up: #157a37;              /* cheap / gain */
   --down: #c0271f;            /* rich / loss */
   --accent: #3b5bd4;          /* доп. серия на графиках (напр. НРД Прил.3) */
@@ -45,6 +47,8 @@
   --hover: #141414;
   --inv-bg: #f2f2f2;
   --inv-fg: #000000;
+  --cls-float: #3fc8cf;
+  --cls-fixed: #e6a23c;
   --up: #4ecb76;
   --down: #ff6b6b;
   --accent: #6b9bff;          /* доп. серия на графиках (напр. НРД Прил.3) */
@@ -82,6 +86,8 @@
   --hover: #e4e4e4;
   --inv-bg: #000080;           /* выделение = классический navy */
   --inv-fg: #ffffff;
+  --cls-float: #006b70;
+  --cls-fixed: #8a5300;
   --up: #007a1f;               /* VGA green, дотянут до контраста на белом */
   --down: #cc0000;
   --accent: #000080;           /* navy: тайтлбары, активные кнопки, доп. серия */
@@ -3152,3 +3158,17 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 }
 .au-link:hover { color: var(--accent); }
 .au-empty { display: flex; align-items: center; gap: 12px; padding: 24px 0; }
+
+/* ── общий монитор облигаций (/bonds): различимость классов ── */
+.grid.uni td.cls-float { box-shadow: inset 3px 0 0 var(--cls-float); }
+.grid.uni td.cls-fixed { box-shadow: inset 3px 0 0 var(--cls-fixed); }
+.badge.FIXED { border-color: var(--cls-fixed); color: var(--cls-fixed); }
+/* YTM флоатера — модельная (форвард индекса): курсивом, как договорились в ТЗ */
+.ytm-model { font-style: italic; }
+/* пометка единицы в DUR у флоатера: там не дюрация, а срок */
+.dur-hz { margin-left: 3px; font-size: 9px; color: var(--mut-2); text-transform: uppercase; }
+/* строка «ADV» внутри секции фильтров фиксов */
+.fp-inline { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+/* меню столбцов: заголовки групп скрытых колонок */
+.colmenu-group-title { margin: 8px 0 2px; padding: 0 6px; font-size: 10px; letter-spacing: .1em;
+  color: var(--mut); text-transform: uppercase; border-top: 1px solid var(--line); padding-top: 6px; }

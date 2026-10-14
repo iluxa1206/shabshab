@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { IconGear } from "./icons.jsx";
 import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -16,8 +15,9 @@ import BrandBlobatar from "./Blobatar.jsx";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
-  { id: "floaters", label: "Флоатеры", home: "/floaters" },
-  { id: "fixed", label: "Фиксы", home: "/fixed" },
+  // Флоатеры и фиксы — один монитор (docs/unified_monitor_tz.md): класс выбирается
+  // фильтром БАЗА, а не отдельным разделом меню
+  { id: "bonds", label: "Облигации", home: "/bonds" },
   { id: "portfolio", label: "Портфель", home: "/portfolio" },
   { id: "curves", label: "Кривые", home: "/curves" },
   // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
@@ -30,12 +30,10 @@ const TYPES = [
 // кортеже, а не в параллельной карте по пути: переименование маршрута не
 // может молча оставить вкладку без него. Не понравится — убрать третий элемент.
 const SUBNAV = {
-  floaters: [["/floaters", "Монитор", emLaptop], ["/compare", "Сравнение", emScales],
-             ["/trades", "Сделки", emHands], ["/signals", "Сигналы", emSiren],
-             ["/payments", "Выплаты", emCalendar], ["/primary", "Первичка", emChick],
-             ["/calc/float", "Калькулятор", emAbacus]],
-  fixed: [["/fixed", "Монитор", emLaptop], ["/fixed/ofz", "ОФЗ", emColumns],
-          ["/fixed/auction", "Аукцион", emHammer], ["/primary", "Первичка", emChick],
+  bonds: [["/bonds", "Монитор", emLaptop], ["/compare", "Сравнение", emScales],
+          ["/trades", "Сделки", emHands], ["/signals", "Сигналы", emSiren],
+          ["/payments", "Выплаты", emCalendar], ["/primary", "Первичка", emChick],
+          ["/fixed/ofz", "ОФЗ", emColumns], ["/fixed/auction", "Аукцион", emHammer],
           ["/calc", "Калькулятор", emAbacus]],
   portfolio: [],
   curves: [],
@@ -43,44 +41,14 @@ const SUBNAV = {
   status: [],
 };
 
-// Пути, живущие СРАЗУ В ДВУХ разделах: анонс первички не знает своего класса
-// (в одной выгрузке и флоатеры, и фиксы), поэтому /primary висит в обоих меню.
-const SHARED_PATHS = ["/primary"];
-const TYPE_KEY = "desk.lastType";
-
 const typeFromPath = (p) =>
   p.startsWith("/portfolio") ? "portfolio"
-    : p.startsWith("/calc/float") ? "floaters"
-    : p.startsWith("/fixed") || p.startsWith("/calc") ? "fixed"
     : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
-    : p.startsWith("/status") ? "status" : "floaters";
+    : p.startsWith("/status") ? "status" : "bonds";
 
-// Раздел по пути. На ОБЩЕМ пути тип не выводится из URL — держим последний
-// явно выбранный, иначе клик «Первичка» из Фиксов перекидывал бы верхнее меню
-// на Флоатеры. sessionStorage — чтобы перезагрузка прямо на /primary тоже
-// возвращала в свой раздел (private mode может кидать — тогда дефолт).
-function useCurrentType(pathname) {
-  const shared = SHARED_PATHS.some((s) => pathname.startsWith(s));
-  const resolved = shared ? null : typeFromPath(pathname);
-  useEffect(() => {
-    if (resolved === "floaters" || resolved === "fixed") {
-      try { sessionStorage.setItem(TYPE_KEY, resolved); } catch { /* private mode */ }
-    }
-  }, [resolved]);
-  if (!shared) return resolved;
-  try {
-    return sessionStorage.getItem(TYPE_KEY) === "fixed" ? "fixed" : "floaters";
-  } catch {
-    return "floaters";
-  }
-}
-
-function TypeMenu({ type, isAdmin, features }) {
-  // Выключенный слой (services/feature_flags → /api/meta.features) исчезает из
-  // меню целиком: пустая витрина хуже отсутствующей. Флага нет — считаем, что
-  // слой включён, иначе старый бэк прятал бы рабочие вкладки.
+function TypeMenu({ type, isAdmin }) {
   const items = TYPES.filter((t) => (!t.admin || isAdmin)
-    && (t.id !== "fixed" || features?.fixed !== false));
+    );
   const cur = items.find((t) => t.id === type) || items[0];
   // счётчик свежих выпусков без подтверждённых параметров: значок висит на самой
   // кнопке меню, чтобы «надо чекнуть новые» было видно с любой вкладки
@@ -118,13 +86,14 @@ const tabCls = ({ isActive }) => "seg-btn" + (isActive ? " active" : "");
 // «Аналитика» флоатеров): панель фильтров ниже — про отбор строк, а окна поверх
 // таблицы — отдельный функционал, и им место в шапке рядом с навигацией.
 export default function Topbar({ user, onLogout, onOpenSettings, extra, features }) {
-  const type = useCurrentType(useLocation().pathname);
-  const sub = SUBNAV[type] || [];
+  const type = typeFromPath(useLocation().pathname);
+  // слой фиксов выключен на бэке — вкладки ОФЗ/Аукцион исчезают, а не ведут в пустоту
+  const sub = (SUBNAV[type] || []).filter(([to]) => features?.fixed !== false || !to.startsWith("/fixed"));
   return (
     <header className="menubar">
       <div className="brand-row">
         <BrandBlobatar />
-        <TypeMenu type={type} isAdmin={user?.role === "admin"} features={features} />
+        <TypeMenu type={type} isAdmin={user?.role === "admin"} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
             {sub.map(([to, label, emoji]) => (

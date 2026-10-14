@@ -81,6 +81,16 @@ const FIXED_PUT = {
   maturity_date: inYears(11), put_date: inYears(2),
 };
 
+// Структурная нота (купон ≤ 1 %, не ОФЗ): в общем мониторе скрыта по умолчанию.
+const FIXED_STRUCT = {
+  ...FIXED, isin: "RU000A100006", name: "СберИОС819", cls: "corp", coupon_pct: 0.01,
+  structured: true, ytm: 41.2,
+};
+// Неликвидный фикс (ADV 100 тыс. ₽ при пороге 1 млн): тоже скрыт по умолчанию.
+const FIXED_THIN = {
+  ...FIXED, isin: "RU000A100007", name: "Тонкий 1Р-01", cls: "corp", adv_1m_rub: 1e5, ytm: 17.7,
+};
+
 /** Ответ на запрос по URL. Неизвестное — пустой объект: тест про рендер, не про данные. */
 // Ответ карточки: минимальный, но со всеми обязательными узлами (reference,
 // market, valuation, cashflow) — без reference карточка падает на первом рендере.
@@ -115,7 +125,7 @@ function replyFor(url) {
   if (url.includes("/api/orderbook/depth/all")) return { depth: {} };
   if (url.includes("/api/fixed/quotes")) return { ts: null, n: 0, items: [] };
   if (url.includes("/api/fixed"))
-    return { items: [FIXED, FIXED_PUT], total: 2, calc_date: "2026-08-27" };
+    return { items: [FIXED, FIXED_PUT, FIXED_STRUCT, FIXED_THIN], total: 4, calc_date: "2026-08-27" };
   if (url.includes("/api/meta")) return { calc_date: "2026-08-27", rates_date: "2026-08-27",
                                            features: { fixed: FIXED_ON } };
   if (url.includes("/api/signals")) return [];
@@ -227,20 +237,23 @@ describe("монтирование приложения", () => {
     window.history.pushState({}, "", "/app/fixed");
     const errors = [];
     const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a.join(" ")));
-    const calls = stubNetwork();
+    stubNetwork();
 
     render(<App />);
 
-    await waitFor(() => expect(calls.some((u) => u.includes("/api/fixed"))).toBe(true));
+    // запрос списка фиксов не проверяем по calls: QueryClient один на файл, и
+    // список мог приехать в кэш от соседнего теста (общий монитор грузит его
+    // на любом адресе). Важно, что строка фикса дорисована.
     // имя ОФЗ рисуется без слова «ОФЗ» — его несёт синий бейдж класса
     expect(await screen.findByText(/26999/)).toBeTruthy();
-    // первичные метрики витрины — на месте (g-спред и доходность к погашению)
-    expect((await screen.findAllByText("25")).length).toBeGreaterThan(0);
+    // доходность к погашению — в общей колонке YTM (g-спред — спец-колонка фиксов,
+    // по умолчанию в меню, а не в таблице)
     expect((await screen.findAllByText("16,10")).length).toBeGreaterThan(0);
+    // класс виден: бейдж «ФИКС» в колонке базы
+    expect((await screen.findAllByText("ФИКС")).length).toBeGreaterThan(0);
 
-    // витрина фиксов: стакан впереди последней сделки, обе первичные метрики
-    // и watchlist — то же, что у монитора флоатеров
-    for (const th of ["BID", "ASK", "G-SPRD", "YTM", "ADV"]) {
+    // общий монитор: стакан впереди последней сделки, общие метрики и watchlist
+    for (const th of ["BID", "ASK", "SPREAD", "YTM", "ADV"]) {
       expect((await screen.findAllByText(th)).length).toBeGreaterThan(0);
     }
     // строк в витрине несколько — звёздочка watchlist есть у каждой
@@ -250,6 +263,45 @@ describe("монтирование приложения", () => {
     const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
     expect(fatal).toEqual([]);
     spy.mockRestore();
+    window.history.pushState({}, "", back);
+  });
+
+  it("общий монитор: оба класса в одной таблице, отсечки действуют только на фиксы", async () => {
+    const back = window.location.pathname + window.location.search;
+    window.history.pushState({}, "", "/app/bonds");
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a.join(" ")));
+    stubNetwork();
+    render(<App />);
+
+    // флоатер и фикс — в одной таблице
+    expect(await screen.findByText(/ТЕСТ 1Р-01/)).toBeTruthy();
+    expect(await screen.findByText(/26999/)).toBeTruthy();
+    // структурная нота и неликвид (ADV < 1 млн) скрыты по умолчанию — только у фиксов
+    expect(screen.queryByText(/СберИОС819/)).toBeNull();
+    expect(screen.queryByText(/Тонкий 1Р-01/)).toBeNull();
+    // у флоатера ADV не проверяется (порог относится к фиксам)
+    expect(screen.getByText(/ТЕСТ 3Р-03/)).toBeTruthy();
+    // оба класса различимы: бейдж ФИКС у фикса и базы КС/RU у флоатера
+    expect((await screen.findAllByText("ФИКС")).length).toBeGreaterThan(0);
+    // итоги по классам — в нижней полосе
+    expect(await screen.findByText("ФЛТ")).toBeTruthy();
+
+    const fatal = errors.filter((e) => /ReferenceError|is not defined|before initialization|Cannot read/.test(e));
+    expect(fatal).toEqual([]);
+    spy.mockRestore();
+    window.history.pushState({}, "", back);
+  });
+
+  it("общий монитор: структурные ноты возвращаются по ссылке, класс — по пути", async () => {
+    const back = window.location.pathname + window.location.search;
+    // nostr=0 в URL — фильтр «без структурных» выключен; /fixed — только фиксы
+    window.history.pushState({}, "", "/app/fixed?nostr=0");
+    stubNetwork();
+    render(<App />);
+    expect(await screen.findByText(/СберИОС819/)).toBeTruthy();
+    expect(await screen.findByText(/26999/)).toBeTruthy();
+    expect(screen.queryByText(/ТЕСТ 1Р-01/)).toBeNull();      // класс по пути: флоатеры скрыты
     window.history.pushState({}, "", back);
   });
 
@@ -292,7 +344,7 @@ describe("монтирование приложения", () => {
     // Значит и окно срока, и порядок строк обязаны мерить её, а не погашение —
     // ровно то же правило, что в мониторе флоатеров (src/horizon.js).
     const back = window.location.pathname + window.location.search;
-    window.history.pushState({}, "", "/app/fixed?fxmyt=3");   // до 3 лет
+    window.history.pushState({}, "", "/app/fixed?myt=3");   // до 3 лет
     stubNetwork();
     render(<App />);
     // бумага с офертой через 2 года остаётся, пятилетняя без оферты — нет
@@ -305,10 +357,10 @@ describe("монтирование приложения", () => {
     // Вид витрины должен переживать F5 и уезжать коллеге ссылкой: окно g-спреда
     // из query string обязано примениться ДО первой отрисовки таблицы.
     const back = window.location.pathname + window.location.search;
-    window.history.pushState({}, "", "/app/fixed?fxgf=500");   // g-спред от 500 бп
+    window.history.pushState({}, "", "/app/fixed?sf=500");   // spread от 500 бп
     stubNetwork();
     render(<App />);
-    // бумага витрины даёт 25 бп — под окно не попадает, таблица пуста
+    // у бумаги витрины Y-IDX нет — при заданной границе она скрыта, таблица пуста
     // (данные приезжают из кэша react-query или из сети — витрине всё равно)
     await waitFor(() => expect(screen.queryByText(/26999/)).toBeNull());
     expect(await screen.findByText(/Ничего не найдено по фильтру/)).toBeTruthy();
