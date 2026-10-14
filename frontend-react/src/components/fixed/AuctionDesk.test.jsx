@@ -92,12 +92,16 @@ const wrap = (node) => (
 );
 
 beforeEach(() => {
+  // Фикстуры — Q3 2026 с «сегодня» 15.09; компонент берёт текущий квартал из
+  // Date, поэтому без заморозки тест краснеет с началом нового квартала.
+  // Фейкаем ТОЛЬКО Date: таймеры нужны react-query.
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-09-15T12:00:00Z") });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     { width: 800, height: 240, top: 0, left: 0, right: 800, bottom: 240, x: 0, y: 0 });
   vi.stubGlobal("fetch", vi.fn(async (url) => ({ ok: true, status: 200, json: async () => route(url) })));
   try { localStorage.removeItem("auctionView"); } catch { /* jsdom */ }
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("смоук вкладки АУКЦИОН", () => {
   it("план/факт: KPI, корзины и оба графика", async () => {

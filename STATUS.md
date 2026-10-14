@@ -1,5 +1,26 @@
 # FLOATERS DESK — статус проекта
 
+## Обновление 14.10.2026 — единый монитор (этап A), защита деплоя, сторож Telegram
+
+- **Деплой только из чистого дерева:** `scripts/deploy.sh` отказывает при незакоммиченных
+  правках (в ветку пишут несколько сессий, чужая правка уезжала на прод без спроса).
+- **Единый монитор, бэкенд (этап A):** `kind` в строке/котировках/WS-патче; общий список
+  `/api/bonds?universe=1&kinds=floater,fixed`; фиксы в `/api/bonds/quotes` (число рядом с
+  ценой расчёта); эмитенты фиксов `services/emitters.py` (список ISS, 32 запроса, durable);
+  ступень рейтинга; флаг `structured` (купон ≤ 1 %, не ОФЗ); в BID/ASK фикса Y-IDX и
+  YTM. Фронт общего монитора (этап B) не начат: `/fixed` и `/api/fixed/*` живы. Детали,
+  решения и порядок — `docs/unified_monitor_tz.md`.
+- **Сторож Telegram (`api.main.telegram_watchdog`):** все прочие сторожа шлют тревоги через
+  Telegram, поэтому его падение 09–12.10 было немым. Теперь `services.telegram.channel_status`
+  (≥ 3 исчерпанных вызова подряд и 5 мин без успеха → `down`), поле `telegram` в
+  `/api/health` (`ok|down|off`) и внешняя тревога POST-ом на `ALERT_WEBHOOK_URL` (ntfy.sh/
+  топик или вебхук) раз в `STREAM_ALERT_REPEAT_MIN`. **`ALERT_WEBHOOK_URL` не задан** —
+  пока тревога только в логе и в `/api/health`; для внешнего пинга достаточно UptimeRobot
+  с ключевым словом `"telegram":"down"`.
+- **xray:** исправленный `xray_sub_update.py` (с откатом) на проде, cron
+  `/etc/cron.d/xray-sub-update` каждые 6 ч в :17, лог `/var/log/xray_sub_update.log`.
+- **Тесты:** `AuctionDesk` больше не зависит от даты (фиксируем `Date`); фронт 227/227.
+
 ## Обновление 12.10.2026 — сверка прода и инцидент Telegram
 
 **Прод = коммит `75c3a1c`** (ветка `floaters-desk-deploy`, 30.09). Сверено 12.10
@@ -119,7 +140,7 @@ frontend-тестов прошли локально, runtime-маркеры по
 Методика, ограничения и команда пересчёта: [отчёт](docs/primary_audit_2026-09-08.md).
 
 
-_Обновлено: 2026-10-12. Контекст для новых сессий: прочитай этот файл первым._
+_Обновлено: 2026-10-14. Контекст для новых сессий: прочитай этот файл первым._
 
 **Журнал багов и фиксов** — разделы «Изменения на проде ‹дата›», новые сверху.
 Свежая запись 13.09 находится в самом верху; исторические записи ниже. Каждый:
@@ -163,7 +184,7 @@ up -d --build` → Docker build-cache до потолка 4 ГБ → cron бэк
 пересборка вручную не нужна.
 
 **Инфра:** сервер НЕ выделенный — на нём уже стек `astra-prod` (`/root/catalog/`, сайт assetallocator.ru: Next.js+Postgres+**Caddy** на 80/443). Наш проект — отдельный compose-проект `floaters-prod`:
-- один контейнер `floaters` (uvicorn :8000), подключён к внешней docker-сети `astra-prod_default`, лимит `mem_limit: 768m`.
+- один контейнер `floaters` (uvicorn :8000), подключён к внешней docker-сети `astra-prod_default`, лимит `mem_limit: 1500m` (768m было до сентября; OOM 11.08 — см. «каветат OOM»).
 - Caddy (чужой, `/root/catalog/Caddyfile`) проксирует наш путь: `handle_path /desk/*` в блоке assetallocator.ru → `reverse_proxy floaters:8000`, TLS Let's Encrypt авто. WS (`/api/ws/market`) проксируется как wss.
 
 **Доступ:** `ssh root@161.104.17.23` по ключу `~/.ssh/id_ed25519` (уже установлен).
