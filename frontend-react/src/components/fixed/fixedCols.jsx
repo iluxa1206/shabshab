@@ -110,9 +110,12 @@ export const FIXED_COLS = [
            + "в млрд (размещено штук × номинал); свежие (≤30 дн) — зелёное имя",
     cell: (b) => <IssueCell b={b} key="issue_date" /> },
   { key: "issue_volume", label: "ОБЪЁМ", sub: "ВЫП., МЛРД", align: "num", w: 8,
-    title: "Объём выпуска в валюте номинала, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; "
-           + "у амортизируемых — по текущему номиналу, то есть объём в обращении",
-    cell: (b) => <td className="num" key="issue_volume">{fmt.bln(b.issue_volume) ?? <D />}</td> },
+    title: "Объём выпуска в РУБЛЯХ, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; у валютных "
+           + "пересчитан по курсу (исходная сумма — в подсказке ячейки); у амортизируемых — по "
+           + "текущему номиналу, то есть объём в обращении",
+    cell: (b) => <td className="num" key="issue_volume"
+      title={b.issue_volume_face != null ? `≈ ${fmt.bln(b.issue_volume_face)} млрд ${b.face_unit} по курсу` : undefined}>
+      {fmt.bln(b.issue_volume) ?? <D />}</td> },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
   { key: "ytm_bid", label: "BID", sub: "% / SPREAD / YTM", align: "num", sep: true, w: 9,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.y_idx_bid_bps} ytm={b.ytm_bid}

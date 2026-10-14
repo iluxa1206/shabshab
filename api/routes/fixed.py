@@ -13,7 +13,7 @@ from fastapi import APIRouter, Path, Query, HTTPException
 
 from services.market_data import market_cache, MarketDataService
 from services.exceptions import NotFoundException
-from services.currency import normalize_ccy
+from services.currency import normalize_ccy, to_rub
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -158,7 +158,13 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
             "adv_1m_rub": adv.get(u["isin"]),
             # размещено штук × номинал, в валюте номинала (тот же дневной батч,
             # что штуки для календаря выплат)
-            "issue_volume": issue_vol.get(u["isin"]),
+            # В РУБЛЯХ: колонка сортируется и сравнивается между классами, а сумма
+            # в валюте номинала занижала валютный выпуск в 12–84 раза (Роснефть
+            # 15 млрд CNY стояла рядом с 15 млрд ₽). Нативная сумма — рядом, в
+            # issue_volume_face (подсказка ячейки). Курса нет — None.
+            "issue_volume": to_rub(issue_vol.get(u["isin"]), u.get("faceunit")),
+            "issue_volume_face": (issue_vol.get(u["isin"])
+                                  if normalize_ccy(u.get("faceunit")) != "RUB" else None),
             # цена: из метрик (last→prev с флагом) иначе сырой board
             "last_price_pct": m.get("last", u.get("last") if u.get("last") is not None else u.get("prev")),
         }

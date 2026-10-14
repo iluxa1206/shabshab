@@ -20,3 +20,15 @@ def normalize_ccy(unit: Optional[str]) -> str:
 
 def is_ruble(unit: Optional[str]) -> bool:
     return normalize_ccy(unit) == RUB
+
+
+def to_rub(amount: Optional[float], unit: Optional[str]) -> Optional[float]:
+    """Сумма в валюте номинала → рубли по последнему известному курсу.
+    Рубль — как есть; курса нет — None (вместо суммы в чужой валюте)."""
+    if amount is None:
+        return None
+    if is_ruble(unit):
+        return amount
+    from services.fx import cached_rate
+    rate = cached_rate(normalize_ccy(unit))
+    return float(amount) * rate if rate else None

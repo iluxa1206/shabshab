@@ -317,7 +317,9 @@ class BondListItem(BaseModel):
     coupons_per_year: Optional[int] = None  # частота купона для подписи формулы (N/год)
     maturity_date: Optional[date]
     issue_date: Optional[date] = None      # дата размещения (реестр): свежие ≤30 дн подсвечены в мониторе
-    issue_volume: Optional[float] = None   # размещено штук × номинал, в валюте номинала (MOEX ISSUESIZEPLACED)
+    # размещено штук × номинал (MOEX ISSUESIZEPLACED), В РУБЛЯХ: у валютного номинала
+    # пересчитано по курсу, исходная сумма — в issue_volume_face (extra-поле фикса)
+    issue_volume: Optional[float] = None
     # валюта номинала, нормализованная (services.currency): RUB/USD/CNY/EUR…
     face_unit: Optional[str] = None
     next_coupon_date: Optional[date]

@@ -102,7 +102,9 @@ export function IssueCell({ b }) {
   return (
     <td className={"num" + (isFreshIssue(b.issue_date) ? " issue-fresh" : "")}>
       {fmt.date(b.issue_date) ?? <D />}
-      {vol != null && <span className="issue-vol" title={"объём выпуска, млрд " + (b.face_unit || "₽")}>{" (" + vol + ")"}</span>}
+      {vol != null && <span className="issue-vol" title={"объём выпуска, млрд ₽"
+        + (b.issue_volume_face != null ? ` (≈ ${fmt.bln(b.issue_volume_face)} млрд ${b.face_unit} по курсу)` : "")}>
+        {" (" + vol + ")"}</span>}
     </td>
   );
 }
@@ -281,9 +283,12 @@ export const COLS = [
            + "MOEX); свежие (≤30 дн) — зелёное имя",
     cell: (b) => <IssueCell b={b} key="issue_date" /> },
   { key: "issue_volume", label: "ОБЪЁМ", sub: "ВЫП., МЛРД", align: "num", w: 8,
-    title: "Объём выпуска в валюте номинала, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; "
-           + "у амортизируемых — по текущему номиналу, то есть объём в обращении",
-    cell: (b) => <td className="num" key="issue_volume">{fmt.bln(b.issue_volume) ?? <D />}</td> },
+    title: "Объём выпуска в РУБЛЯХ, млрд: размещено штук (MOEX ISSUESIZEPLACED) × номинал; у валютных "
+           + "пересчитан по курсу (исходная сумма — в подсказке ячейки); у амортизируемых — по "
+           + "текущему номиналу, то есть объём в обращении",
+    cell: (b) => <td className="num" key="issue_volume"
+      title={b.issue_volume_face != null ? `≈ ${fmt.bln(b.issue_volume_face)} млрд ${b.face_unit} по курсу` : undefined}>
+      {fmt.bln(b.issue_volume) ?? <D />}</td> },
   // ── НАША МОДЕЛЬ (стакан → последняя сделка → dirty → spread (первичная) → SM → DM → Z) ──
   // Верх стакана MOEX (board snapshot, TTL 120с — не WS-тик): цена и Y-IDX по ней
   // в ОДНОЙ ячейке (цена сверху, спред под ней) — две колонки вместо четырёх.

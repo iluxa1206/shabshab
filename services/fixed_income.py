@@ -783,9 +783,8 @@ def _rub_money(v: Optional[float], row: dict, ruble_face: bool) -> Optional[floa
         return None
     if ruble_face:
         return v
-    from services.fx import cached_rate
-    rate = cached_rate(row.get("faceunit"))
-    return float(v) * rate if rate else None
+    from services.currency import to_rub
+    return to_rub(v, row.get("faceunit"))
 
 
 def _accrued_face_ccy(row: dict, full: dict, calc_date: date) -> Optional[float]:
