@@ -2082,6 +2082,14 @@ _fx_heal_last = 0.0
 _fx_healed_at: Dict[str, float] = {}
 
 
+def _yidx_undefined(isin: str) -> bool:
+    """Y-IDX у бумаги не определён ПО СМЫСЛУ: валюта не рубль (база — RUONIA) или
+    бессрочная (рента). Такие стороны вечно «пустые» — это не прочерк-дефект."""
+    u = ((_last_ctx or {}).get("fixed_by") or {}).get(isin) or {}
+    face = (u.get("faceunit") or "RUB").upper()
+    return face not in ("", "RUB", "SUR", "RUR") or bool(u.get("perpetual"))
+
+
 def heal_fixed_blank_sides() -> int:
     """Поставить в очередь сторон фиксы, у которых есть цена стороны, а Y-IDX нет.
 
@@ -2097,7 +2105,7 @@ def heal_fixed_blank_sides() -> int:
     from services.market_data import market_cache
     n = 0
     for isin, row in (market_cache.get("fixed_metrics") or {}).items():
-        if isin not in _fixed_isins or isin in _fixed_sides_dirty:
+        if isin not in _fixed_isins or isin in _fixed_sides_dirty or _yidx_undefined(isin):
             continue
         if not any((row.get(s) or 0) > 0 and row.get(f"y_idx_{s}_bps") is None
                    for s in ("bid", "ask")):
@@ -2115,14 +2123,18 @@ def heal_fixed_blank_sides() -> int:
 def _blank_fixed_count() -> dict:
     """Фиксы: сторона с ценой, но без Y-IDX, — по причине. Ключи: total, queued
     (стоит в очереди, скоро будет), no_sched (расписания нет в контексте), no_ytm
-    (у строки вообще нет YTM — бессрочная/структурка/сбой расчёта), other."""
+    (у строки вообще нет YTM — структурка/сбой расчёта), other; by_design — валюта
+    не рубль или бессрочная: Y-IDX не определён, в total не входит."""
     from services.market_data import market_cache
     fm = market_cache.get("fixed_metrics") or {}
     full_by = ((_last_ctx or {}).get("full_by")) or {}
-    out = {"total": 0, "queued": 0, "no_sched": 0, "no_ytm": 0, "other": 0}
+    out = {"total": 0, "queued": 0, "no_sched": 0, "no_ytm": 0, "other": 0, "by_design": 0}
     for isin, row in fm.items():
         for side in ("bid", "ask"):
             if (row.get(side) or 0) <= 0 or row.get(f"y_idx_{side}_bps") is not None:
+                continue
+            if _yidx_undefined(isin):
+                out["by_design"] += 1       # валюта/бессрочная: Y-IDX не определён
                 continue
             out["total"] += 1
             if isin in _fixed_sides_dirty:
@@ -3198,9 +3210,9 @@ async def metrics_worker() -> None:
                 # считает, просто бумаг много».
                 _fb, _fl = _blank_fixed_count(), _fx_lat_summary()
                 logger.info("fixed engine: прочерков сторон %d (очередь %d · нет расписания %d · "
-                            "нет YTM %d · иное %d) · тик→патч %s · без патча %s",
+                            "нет YTM %d · иное %d; валюта/бессрочные %d) · тик→патч %s · без патча %s",
                             _fb["total"], _fb["queued"], _fb["no_sched"], _fb["no_ytm"],
-                            _fb["other"],
+                            _fb["other"], _fb["by_design"],
                             ("n=%d p50 %.1fс p95 %.1fс max %.1fс" % (
                                 _fl["n"], _fl["p50"], _fl["p95"], _fl["max"]) if _fl["n"] else "—"),
                             dict(_fx_nopatch) or "—")
