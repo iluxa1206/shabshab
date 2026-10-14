@@ -32,8 +32,11 @@ function reply(url) {
   if (url.includes("/api/trades/boards")) return { boards: [] };
   if (url.includes("/api/trades/flags")) return { trades: [] };
   if (url.includes("/api/trades")) {
-    return { trades: [TRADE], summary: SUMMARY, days: 1, has_more: false,
-             truncated: false, scope: "float" };
+    // как на бэке: part=rows — без итогов, part=summary — без строк
+    const part = new URL(url, "http://x").searchParams.get("part");
+    return { trades: part === "summary" ? [] : [TRADE],
+             summary: part === "rows" ? {} : SUMMARY,
+             days: 1, has_more: false, truncated: false, scope: "float" };
   }
   return {};
 }
@@ -93,5 +96,20 @@ describe("Вкладка СДЕЛКИ: биржевой оборот", () => {
     await waitFor(() => expect(strip.textContent).toContain("ОБОРОТ=12"));
     // формат — млн ₽ с русской запятой (fmt.mln)
     expect(strip.textContent).toContain("БИРЖА=46,3");
+  });
+});
+
+describe("Вкладка СДЕЛКИ: итоги отдельным запросом", () => {
+  it("строки и итоги идут двумя запросами; итоги дорисовываются из второго", async () => {
+    const calls = stubNetwork();
+    renderTape();
+
+    const strip = await screen.findByTestId("strip");
+    await waitFor(() => expect(strip.textContent).toContain("ОБОРОТ=12"));
+    const tape = calls.filter((u) => u.includes("/api/trades?"));
+    expect(tape.some((u) => u.includes("part=rows"))).toBe(true);
+    expect(tape.some((u) => u.includes("part=summary"))).toBe(true);
+    // ни один запрос ленты не просит «всё сразу»: страница не ждёт агрегата
+    expect(tape.every((u) => /part=(rows|summary)/.test(u))).toBe(true);
   });
 });

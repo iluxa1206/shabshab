@@ -336,7 +336,7 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
                                   spreadMin, spreadMax, ttmMin, ttmMax, rating,
                                   base, cls, hideSubord, hideAmort,
                                   beforeTs, beforeId, isins, maxValue, flagged,
-                                  dateFrom, dateTo, q } = {},
+                                  dateFrom, dateTo, q, part } = {},
                                 signal) => {
   const p = new URLSearchParams({ days, min_value: minValue, limit, scope });
   // произвольное окно календаря: заданное начало побеждает days на бэке
@@ -372,6 +372,9 @@ export const fetchMarketTape = ({ days = 1, minValue = 0, side, market, board,
   // текстовый поиск (имя/эмитент/ISIN) — серверный: иначе он видел бы только
   // загруженную страницу, а итоги считались бы по всему окну
   if (q) p.set("q", q);
+  // rows | summary: итоги по широкому окну на порядок тяжелее строк, поэтому
+  // лента просит их отдельным запросом и не ждёт агрегата (по умолчанию — всё)
+  if (part) p.set("part", part);
   return request(`/api/trades?${p}`, { signal });
 };
 

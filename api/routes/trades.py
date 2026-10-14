@@ -249,6 +249,10 @@ async def drop_flag(trade_id: int = Path(...), user: dict = Depends(require_user
     return {"ok": ok, "trade_id": trade_id, "flagged": False}
 
 
+async def _empty_rows() -> list:
+    return []
+
+
 @router.get("", tags=["Trades"])
 async def tape(
     days: int = Query(1, ge=1, le=400, description="окно в календарных днях назад"),
@@ -280,6 +284,9 @@ async def tape(
     before_id: Optional[int] = Query(None, description="курсор пагинации: её trade_id"),
     limit: int = Query(500, ge=1, le=20000),
     flagged: bool = Query(False, description="только отмеченные флажком сделки"),
+    part: str = Query("all", description="all | rows | summary — что считать. Итоги по широкому "
+                                         "окну тяжелее строк на порядок: фронт просит их отдельно, "
+                                         "чтобы страница не ждала агрегата"),
     user: dict = Depends(require_user),
 ):
     """{trades, summary} — лента рынка, новые сверху, с именем бумаги и эмитентом."""
@@ -289,6 +296,8 @@ async def tape(
         raise HTTPException(status_code=400, detail="market: bonds | ndm")
     if scope not in SCOPES:
         raise HTTPException(status_code=400, detail=f"scope: {' | '.join(SCOPES)}")
+    if part not in ("all", "rows", "summary"):
+        raise HTTPException(status_code=400, detail="part: all | rows | summary")
     isin = (isin or "").strip().upper() or None
     if isin and not _ISIN_RE.fullmatch(isin):
         raise HTTPException(status_code=400, detail="Некорректный ISIN")
@@ -386,14 +395,15 @@ async def tape(
                           min_value=min_value, side=side,
                           market=market, boards=board, isins=isins, limit=limit,
                           y_min=spread_min, y_max=spread_max, max_value=max_value,
-                          before_ts=before_ts, before_id=before_id),
+                          before_ts=before_ts, before_id=before_id)
+        if part != "summary" else _empty_rows(),
         # Итоги — по ВСЕМУ окну, поэтому считаются один раз, на первой странице:
         # догрузка следующей порции их не меняет, а стоит агрегат секунд.
         asyncio.to_thread(tape_svc.tape_stats, frm=frm, till=till,
                           min_value=min_value, side=side,
                           market=market, boards=board, isins=isins,
                           y_min=spread_min, y_max=spread_max, max_value=max_value)
-        if not before_ts else asyncio.sleep(0, result={}))
+        if not before_ts and part != "rows" else asyncio.sleep(0, result={}))
     # Оферты: дата и вид ближайшей — из метрик юниверса um (там же, откуда их
     # берёт МОНИТОР), call-опцион — из реестра. Маркеры p/c рядом с датой оферты.
     # Y-IDX приезжает готовым из архива (считает демон при приходе сделки, см.

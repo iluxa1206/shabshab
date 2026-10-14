@@ -443,6 +443,9 @@ export default function TradesTape() {
   // сужённой на этот выпуск. Дальше поле живёт своей жизнью, адрес не трогаем.
   const [q, setQ] = useState(() => sp.get("q") || "");
   const [data, setData] = useState(null);
+  // Итоги — отдельным запросом: агрегат по широкому окну тяжелее строк на порядок
+  const [sumData, setSumData] = useState(null);
+  const sumSig = useRef(null);
   const [dayData, setDayData] = useState(null);
   const [status, setStatus] = useState("loading");
   const [errMsg, setErrMsg] = useState("");
@@ -567,25 +570,40 @@ export default function TradesTape() {
     const ac = new AbortController();
     abort.current = ac;
     setStatus("loading");
+    const tapeArgs = {
+      ...win, minValue, side, market, issuer: emitters, isin: isinReq, scope,
+      limit: PAGE, spreadMin: num(spreadMin), spreadMax: num(spreadMax),
+      ttmMin: num(ttmMin), ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
+      hideSubord: hideSub, hideAmort, q: qText,
+      isins: onlyWatch ? watch : undefined,
+    };
     const req = daysView
       ? fetchBlockDays({ isin: isinReq, ...win, minValue: minValue || 1e6,
                          scope, issuer: emitters, ttmMin: num(ttmMin),
                          ttmMax: num(ttmMax), rating: ratings, q: qText,
                          limit: PAGE }, ac.signal)
         .then((d) => { setDayData(d); })
-      : fetchMarketTape({ ...win, minValue, side, market, issuer: emitters,
-                          isin: isinReq, scope, limit: PAGE, spreadMin: num(spreadMin),
-                          spreadMax: num(spreadMax), ttmMin: num(ttmMin),
-                          ttmMax: num(ttmMax), rating: ratings, base: bases, cls,
-                          hideSubord: hideSub, hideAmort, flagged: onlyFlagged,
-                          q: qText,
-                          isins: onlyWatch ? watch : undefined }, ac.signal)
+      : fetchMarketTape({ ...tapeArgs, flagged: onlyFlagged,
+                          part: onlyFlagged ? undefined : "rows" }, ac.signal)
         .then((d) => {
           setData(d); setPages([]); setMore(!!d.has_more);
           // список флагов приезжает вместе с лентой — держим множество в
           // синхроне, иначе отметка с другой машины видна только после F5
           if (d.flagged) setFlagIds(new Set((d.trades || []).map((t) => t.trade_id)));
         });
+    // итоги идут вторым запросом и дорисовываются, когда придут; у «флажков»
+    // и «по дням» отдельного агрегата нет — они приезжают в основном ответе
+    if (!daysView && !onlyFlagged) {
+      // фильтры сменились — старые итоги под новой лентой не оставляем; на
+      // живом такте (те же фильтры) прежние числа держим до свежих, без мигания
+      const sig = JSON.stringify(tapeArgs);
+      if (sumSig.current !== sig) { sumSig.current = sig; setSumData(null); }
+      fetchMarketTape({ ...tapeArgs, part: "summary" }, ac.signal)
+        .then((d) => setSumData(d.summary || null))
+        .catch(() => {});
+    } else {
+      setSumData(null);
+    }
     req.then(() => { setStatus("ready"); setLastAt(new Date()); })
       .catch((e) => { if (e.name !== "AbortError") { setErrMsg(e.message); setStatus("error"); } });
     return () => ac.abort();
@@ -614,7 +632,8 @@ export default function TradesTape() {
 
   // Итоги — всегда агрегат бэка: он посчитан по ВСЕМ сделкам окна под теми же
   // фильтрами (включая текстовый поиск), а не по срезанным лимитом строкам.
-  const sum = data?.summary || {};
+  const summary = sumData || data?.summary;
+  const sum = summary || {};
   const byM = sum.by_market || {};
 
   // Топ показываем ПОСЛЕДНИЙ ПОЛНЫЙ: как только лента сужена до одной бумаги,
@@ -622,9 +641,9 @@ export default function TradesTape() {
   // другую бумагу было нельзя.
   const [topList, setTopList] = useState([]);
   useEffect(() => {
-    const t = data?.summary?.top;
+    const t = summary?.top;
     if (!isinReq && t?.length) setTopList(t);
-  }, [data, isinReq]);
+  }, [summary, isinReq]);
 
   // Итоги «по дням» — тот же принцип, что и у ленты: серверный агрегат по
   // ВСЕМУ окну (лимит режет строки, но не итоги), и только текстовый поиск по
@@ -668,8 +687,8 @@ export default function TradesTape() {
       { k: "BUY", v: money(sum.buy_value), cls: "tape-buy", title: "млн ₽" },
       { k: "SELL", v: money(sum.sell_value), cls: "tape-sell", title: "млн ₽" },
       { k: "РПС", v: money(byM.ndm?.value), title: "оборот адресных режимов, млн ₽" },
-      { k: "ПОКАЗАНО", v: data?.summary?.n
-        ? `${fmt.num(allRows.length, 0)}/${fmt.num(data.summary.n, 0)}`
+      { k: "ПОКАЗАНО", v: summary?.n
+        ? `${fmt.num(allRows.length, 0)}/${fmt.num(summary.n, 0)}`
         : fmt.num(allRows.length, 0),
         title: "строк в таблице / всего под фильтром" },
       // opt — второстепенное: на узкой полосе прячется первым, чтобы часы и
