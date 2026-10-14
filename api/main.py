@@ -718,6 +718,12 @@ async def warmup_caches():
         from services import cbr
         from services.market_data import MarketDataService, market_cache
         from services.universe import compute_universe_metrics
+        # снимок прошлой сессии — в пустые витрины, до прогрева: первые минуты
+        # после деплоя иначе отдают строки без чисел (см. metrics_persist)
+        from services import metrics_persist
+        _n_early = await run_bg(metrics_persist.restore_early, market_cache)
+        if _n_early:
+            logger.info("ранний подъём снимка метрик: %d строк", _n_early)
         await run_bg(cbr.ks_history)                 # триггерит _refresh (сеть)
         progress.advance("warmup", detail="история RUONIA", force=True)
         await run_bg(cbr.ruonia_history)
@@ -1012,7 +1018,10 @@ async def spread_snapshotter():
     # хоть что-то» писал флоатеры и считал день закрытым — фиксы до 19:00 в
     # архив не попадали, а если вечерний такт не доживал до 19:00 (рестарт,
     # деплой), день фиксов пропадал совсем. Ждём каждый класс отдельно.
-    _kinds = {"floater": "universe_metrics", "fixed": "fixed_metrics"}
+    # у фиксов ждём ПРОГРЕВ (fixed_calc_date), а не просто непустую витрину:
+    # fixed_metrics теперь поднимается из снимка прошлой сессии при старте
+    # (metrics_persist.restore_early), и снимок из этих строк в архив не годится
+    _kinds = {"floater": "universe_metrics", "fixed": "fixed_calc_date"}
     _pending = set(_kinds)
     for _ in range(60):
         await asyncio.sleep(30)

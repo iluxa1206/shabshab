@@ -86,8 +86,7 @@ def save(*, calc_date: str, curves_fp: str, universe: dict, fixed: dict) -> int:
     return n
 
 
-def load(*, calc_date: str, curves_fp: str) -> Optional[dict]:
-    """Снимок с диска, если он про ЭТОТ день и ЭТУ кривую. Иначе None."""
+def _read() -> Optional[dict]:
     from services.paths import cache_path
     path = cache_path(_FILE)
     try:
@@ -99,6 +98,38 @@ def load(*, calc_date: str, curves_fp: str) -> Optional[dict]:
         logger.warning("снимок метрик не прочитан: %s", e)
         return None
     if not isinstance(d, dict) or d.get("v") != SNAPSHOT_VERSION:
+        return None
+    return d
+
+
+def restore_early(market_cache: dict) -> int:
+    """РАННИЙ ПОДЪЁМ ФИКСОВ: сразу при старте, до прогрева, в пустую витрину.
+
+    Замер 14.10.2026: после деплоя /api/fixed минуту-две отдавал строки без чисел
+    (прогрев фиксов идёт ~85 с — расписания, кривые), хотя снимок на диске был
+    моложе двух минут. Поздний подъём (universe_stream._restore_snapshot) ждёт
+    контекст дня и отпечаток кривых, поэтому к фиксам почти не доходил.
+
+    Здесь отпечаток кривых НЕ проверяем — берём возраст (MAX_AGE_SEC). Это можно,
+    потому что строки кладутся с _calc_ts=0: любой настоящий пересчёт (прогрев,
+    движок) перекрывает их целиком, а число на экране, чья цена ушла, фронт
+    гасит сам. Заполняем только ПУСТУЮ витрину — живую работу не трогаем.
+    Возвращает число поднятых строк."""
+    d = _read()
+    if not d or time.time() - float(d.get("ts") or 0) > MAX_AGE_SEC:
+        return 0
+    rows = d.get("fixed")
+    if not isinstance(rows, dict) or not rows or market_cache.get("fixed_metrics"):
+        return 0
+    market_cache["fixed_metrics"] = {i: {**r, "_calc_ts": 0.0} for i, r in rows.items()
+                                     if isinstance(r, dict)}
+    return len(market_cache["fixed_metrics"])
+
+
+def load(*, calc_date: str, curves_fp: str) -> Optional[dict]:
+    """Снимок с диска, если он про ЭТОТ день и ЭТУ кривую. Иначе None."""
+    d = _read()
+    if not d:
         return None
     if d.get("calc_date") != str(calc_date) or d.get("curves_fp") != str(curves_fp):
         return None

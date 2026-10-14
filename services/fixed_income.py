@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import json
 import time
 import logging
 from collections import OrderedDict
@@ -37,7 +36,6 @@ from core.valuation import (xirr, xnpv, settle_date, accrued_at, accrued_estimat
                             ruonia_rolling_yield_pct)
 from services.price_flags import price_is_stale
 from services.market_data import moex_client, MarketDataService, _moex_get, CALL_OFFER_SOURCE
-from services.paths import cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -1023,28 +1021,14 @@ async def compute_fixed_metrics_all(universe: List[dict], g_curve, calc_date: da
     return await run_heavy(_crunch)
 
 
-_YTM_HIST_FILE = cache_path("fixed_ytm_history.json")
-
-
 def apply_ytm_delta(metrics: Dict[str, dict], today_iso: str) -> None:
-    """Проставляет delta_ytm (изменение YTM к предыдущему торговому дню, п.п.) в
-    каждую метрику и сохраняет сегодняшний срез YTM на диск. Храним ~40 дней."""
-    try:
-        with open(_YTM_HIST_FILE, encoding="utf-8") as f:
-            hist = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        hist = {}
-    prev_days = sorted(d for d in hist if d < today_iso)
-    prev = hist.get(prev_days[-1], {}) if prev_days else {}
+    """Проставляет delta_ytm (изменение YTM к предыдущему полному дню, п.п.) в
+    каждую метрику. База — durable spread_daily (spread_history.previous_day_ytm):
+    прежний JSON-срез «последний прогрев дня» перезаписывался целиком, и пустой
+    прогрев ночного сбоя 13.10.2026 обнулил дельту у всех бумаг."""
+    from services.spread_history import previous_day_ytm
+    prev = previous_day_ytm(today_iso)
     for isin, m in metrics.items():
         y, p = m.get("ytm"), prev.get(isin)
         if y is not None and p is not None:
             m["delta_ytm"] = round(y - p, 2)
-    hist[today_iso] = {i: m["ytm"] for i, m in metrics.items() if m.get("ytm") is not None}
-    for d in sorted(hist)[:-40]:
-        hist.pop(d, None)
-    try:
-        with open(_YTM_HIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(hist, f)
-    except OSError as e:
-        logger.warning(f"ytm history save failed: {e}")

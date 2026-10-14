@@ -162,6 +162,51 @@ def previous_day_spreads(before=None) -> dict:
         return {}
 
 
+# День считается «полным», если в нём не меньше этой доли от самого плотного дня
+# недавнего окна. Выходные пишутся усечёнными срезами (732 против 1250 в будни),
+# а день сбоя — пустым или жалким: брать их базой сравнения нельзя.
+_FULL_DAY_SHARE = 0.5
+_FULL_DAY_WINDOW = 10
+_prev_ytm_cache: dict = {}
+
+
+def previous_day_ytm(before=None, kind: str = "fixed") -> dict:
+    """YTM по последнему ПОЛНОМУ дню строго раньше `before` — {isin: ytm}.
+
+    База дневной дельты YTM (колонка Δ YTM у фиксов). Раньше базой был JSON-срез
+    «последний прогрев дня» с перезаписью целиком: ночной сбой 13.10.2026 записал
+    в него пустой набор, и дельта пропала у всех бумаг сразу. Здесь — durable
+    spread_daily: день выбирается по полноте, а не «предыдущая дата», деградиро-
+    ванные снимки (snap_degraded) в базу не идут."""
+    d = str(before or _msk_date())
+    hit = _prev_ytm_cache.get((kind, d))
+    if hit:
+        return hit
+    try:
+        with _connect() as c:
+            days = c.execute(
+                "SELECT date, COUNT(*) FROM spread_daily WHERE kind=? AND date < ? "
+                "AND ytm IS NOT NULL AND COALESCE(src,'') != 'snap_degraded' "
+                "GROUP BY date ORDER BY date DESC LIMIT ?",
+                (kind, d, _FULL_DAY_WINDOW)).fetchall()
+            if not days:
+                return {}
+            top = max(n for _, n in days)
+            prev = next((day for day, n in days if n >= _FULL_DAY_SHARE * top), None)
+            if not prev:
+                return {}
+            out = {r[0]: r[1] for r in c.execute(
+                "SELECT isin, ytm FROM spread_daily WHERE kind=? AND date=? "
+                "AND ytm IS NOT NULL AND COALESCE(src,'') != 'snap_degraded'", (kind, prev))}
+    except Exception as e:
+        logger.warning("previous_day_ytm: %s", e)
+        return {}
+    if out:
+        _prev_ytm_cache.clear()          # один день в памяти: ключ меняется раз в сутки
+        _prev_ytm_cache[(kind, d)] = out
+    return out
+
+
 def drop_degraded(dates=None) -> int:
     """Сносит снимки, помеченные деградированными (src='snap_degraded').
 

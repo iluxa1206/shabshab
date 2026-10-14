@@ -27,7 +27,7 @@ import json
 import logging
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import date
 from typing import Dict, Optional
 
@@ -275,6 +275,14 @@ _sides_dirty: Dict[str, float] = {}
 # выкинуть работу, но и будит движок раньше общего 5-секундного такта.
 _fixed_sides_dirty: Dict[str, float] = {}
 _fixed_sides_wake = asyncio.Event()
+# НАБЛЮДАЕМОСТЬ ФИКСОВ (замер 14.10.2026: прочерк в BID/ASK фикса был виден на
+# экране, а в сводке движка — нет: счётчик «прочерков» считал только флоатеры).
+# Когда бумага встала в очередь сторон; сколько ждала до патча; и по каким
+# причинам ветка сторон НЕ дала патч — в минутной сводке.
+_fixed_t0: Dict[str, float] = {}
+_fx_lat: list = []                      # секунды «тик → патч» за минуту
+_fx_nopatch: Counter = Counter()        # причина → сколько раз за минуту
+_FX_LAT_CAP = 5000
 _FIXED_SIDES_COALESCE_SEC = float(os.getenv("FIXED_SIDES_COALESCE_SEC", "0.25"))
 _FIXED_SIDES_BATCH_MAX = int(os.getenv("FIXED_SIDES_BATCH", "80"))
 _FIXED_SIDES_BUDGET_SEC = float(os.getenv("FIXED_SIDES_BUDGET_SEC", "0.6"))
@@ -341,6 +349,7 @@ def _queue_sides(isin: str, prio: float = _SIDES_PRIO_LIVE) -> None:
     if cur is None or prio < cur:
         queue[isin] = prio
     if isin in _fixed_isins:
+        _fixed_t0.setdefault(isin, time.monotonic())
         _fixed_sides_wake.set()
 
 
@@ -728,6 +737,7 @@ def stats() -> dict:
             # посчитано, а прочерки на экране — законные (дефолтные выпуски).
             "flows": len(_flow_cache), "flow_items": _flow_cache_items(),
             "blank_sides": _blank_sides_count(),
+            "fixed_blank": _blank_fixed_count(),
             "ctx_no_accrued": sum(1 for c in _eval_ctx.values()
                                   if c.get("accrued_missing")),
             # контексты на ПУСТОМ расписании: считают по сгенерированной сетке
@@ -1909,6 +1919,9 @@ def recrunch_sides(isins: list, board: dict, deadline: Optional[float] = None,
             if patch:
                 out[isin] = patch
             continue
+        if fixed_ctx is not None and isin in _fixed_isins:
+            _fx_nopatch["not_in_ctx"] += 1      # фикс есть в пуле, а в контексте дня нет
+            continue
         row = um.get(isin)
         if not row or isin not in _eval_ctx:
             continue
@@ -1966,6 +1979,7 @@ def _recrunch_fixed_sides(isin: str, ctx: dict, book: dict) -> Optional[dict]:
     u = (ctx.get("fixed_by") or {}).get(isin)
     full = (ctx.get("full_by") or {}).get(isin) or {}
     if not previous or not u or not full.get("coupons"):
+        _fx_nopatch["no_previous" if not previous else "no_sched"] += 1
         return None
     snap = (ctx.get("board") or {}).get(isin, {}) or {}
     row = dict(u)
@@ -2054,6 +2068,39 @@ def _blank_sides_count() -> int:
             if (row.get(side) or 0) > 0 and row.get("yoi_" + side) is None:
                 n += 1
     return n
+
+
+def _blank_fixed_count() -> dict:
+    """Фиксы: сторона с ценой, но без Y-IDX, — по причине. Ключи: total, queued
+    (стоит в очереди, скоро будет), no_sched (расписания нет в контексте), no_ytm
+    (у строки вообще нет YTM — бессрочная/структурка/сбой расчёта), other."""
+    from services.market_data import market_cache
+    fm = market_cache.get("fixed_metrics") or {}
+    full_by = ((_last_ctx or {}).get("full_by")) or {}
+    out = {"total": 0, "queued": 0, "no_sched": 0, "no_ytm": 0, "other": 0}
+    for isin, row in fm.items():
+        for side in ("bid", "ask"):
+            if (row.get(side) or 0) <= 0 or row.get(f"y_idx_{side}_bps") is not None:
+                continue
+            out["total"] += 1
+            if isin in _fixed_sides_dirty:
+                out["queued"] += 1
+            elif not (full_by.get(isin) or {}).get("coupons"):
+                out["no_sched"] += 1
+            elif row.get("ytm") is None:
+                out["no_ytm"] += 1
+            else:
+                out["other"] += 1
+    return out
+
+
+def _fx_lat_summary() -> dict:
+    """Задержка «котировка → патч сторон» фиксов за минуту, секунды."""
+    v = sorted(_fx_lat)
+    if not v:
+        return {"n": 0}
+    return {"n": len(v), "p50": round(v[len(v) // 2], 2),
+            "p95": round(v[min(len(v) - 1, int(0.95 * len(v)))], 2), "max": round(v[-1], 2)}
 
 
 def _market_cache_um() -> dict:
@@ -2803,6 +2850,11 @@ def merge_fixed_metrics(market_cache: dict, fm: Dict[str, dict], since: float) -
     out: Dict[str, dict] = {}
     for isin, row in fm.items():
         prev = prev_all.get(isin) or {}
+        if prev.get("_calc_ts") == 0.0:
+            # строка из раннего подъёма снимка (metrics_persist.restore_early):
+            # прогрев заменяет её ЦЕЛИКОМ, иначе числа сторон прежней сессии легли
+            # бы под свежие bid/ask — «новая цена, старый спред»
+            prev = {}
         if float(prev.get("_calc_ts") or 0.0) >= since:
             kept += 1
             r = {**row, **prev}
@@ -3102,7 +3154,18 @@ async def metrics_worker() -> None:
                 # ТЕМП — НАРУЖУ. Те же числа, что в сводке, нужны на вкладке
                 # СТАТУС: «медленно грузится» иначе не отличить от «движок
                 # считает, просто бумаг много».
+                _fb, _fl = _blank_fixed_count(), _fx_lat_summary()
+                logger.info("fixed engine: прочерков сторон %d (очередь %d · нет расписания %d · "
+                            "нет YTM %d · иное %d) · тик→патч %s · без патча %s",
+                            _fb["total"], _fb["queued"], _fb["no_sched"], _fb["no_ytm"],
+                            _fb["other"],
+                            ("n=%d p50 %.1fс p95 %.1fс max %.1fс" % (
+                                _fl["n"], _fl["p50"], _fl["p95"], _fl["max"]) if _fl["n"] else "—"),
+                            dict(_fx_nopatch) or "—")
+                _fx_lat.clear()
+                _fx_nopatch.clear()
                 globals()["_last_rate"] = {
+                    "fixed_blank": _fb, "fixed_lat": _fl,
                     "rows_per_min": done_since_log,
                     "row_ms": round(full_ms / max(1, done_since_log)),
                     "sides_per_min": sides_since_log,
@@ -3191,6 +3254,14 @@ async def metrics_worker() -> None:
                 sides_ms += _took_fx
                 for _i in _pend_fx:
                     _queue_sides(_i, prio_fx.get(_i, _SIDES_PRIO_WAVE))
+                _now_m = time.monotonic()
+                _pend_set = set(_pend_fx)
+                for _i in take_fx:
+                    if _i in _pend_set:
+                        continue                # вернулась в очередь — ждёт дальше
+                    _t_q = _fixed_t0.pop(_i, None)
+                    if _t_q is not None and _i in fxrows and len(_fx_lat) < _FX_LAT_CAP:
+                        _fx_lat.append(_now_m - _t_q)
                 if fxrows:
                     _n_fx = len(fxrows)
                     sides_since_log += _n_fx
