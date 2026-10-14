@@ -20,6 +20,16 @@ HEALTH_URL=https://assetallocator.ru/desk/api/health
 
 cd "$(dirname "$0")/.."
 
+# Выкатывается рабочее дерево целиком, а в него пишут несколько сессий сразу:
+# чужая незакоммиченная правка уехала бы на прод без спроса. Деплой — только
+# закоммиченного состояния (игнорируемые git файлы вроде bondsearch_*.xlsx едут).
+if [ -n "$(git status --porcelain)" ]; then
+  echo "!!! рабочее дерево не чистое — закоммить или убери правки:" >&2
+  git status --short >&2
+  exit 1
+fi
+echo ">>> деплой коммита $(git rev-parse --short HEAD)"
+
 BIND="${DEPLOY_SSH_BIND:-}"
 SSH_OPTS="-o BatchMode=yes"
 CURL_OPTS=()
@@ -50,6 +60,9 @@ rsync -az --delete \
   --exclude 'backups' \
   --exclude '*.xlsm' \
   --exclude '*.pyc' \
+  --exclude 'output' \
+  --exclude 'outputs' \
+  --exclude '.codex_tasks' \
   -e "ssh $SSH_OPTS" \
   ./ "$SERVER:$REMOTE/"
 

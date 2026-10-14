@@ -31,3 +31,7 @@ RC_F*.xlsx
 datasets/
 # локальные копии прод-базы (scripts/pull_backup.sh) — сотни МБ
 backups/
+# локальные выгрузки и задачи других агентов — не код, на прод не едут
+output/
+outputs/
+.codex_tasks/
