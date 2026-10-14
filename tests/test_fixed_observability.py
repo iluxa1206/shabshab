@@ -41,3 +41,20 @@ def test_queue_records_first_enqueue_time(monkeypatch):
     t = us._fixed_t0["X"]
     us._queue_sides("X")                       # повтор не сдвигает момент постановки
     assert us._fixed_t0["X"] == t
+
+
+def test_heal_queues_blank_sides_with_retry_pause(monkeypatch):
+    monkeypatch.setitem(market_cache, "fixed_metrics", {
+        "A": {"bid": 99.0, "y_idx_bid_bps": None},      # цена есть, числа нет → лечим
+        "B": {"bid": 99.0, "y_idx_bid_bps": -5},        # посчитано
+        "C": {"bid": 99.0, "y_idx_bid_bps": None},      # не в пуле стрима
+    })
+    monkeypatch.setattr(us, "_fixed_isins", {"A", "B"})
+    monkeypatch.setattr(us, "_fixed_sides_dirty", {})
+    monkeypatch.setattr(us, "_fixed_t0", {})
+    monkeypatch.setattr(us, "_fx_healed_at", {})
+    monkeypatch.setattr(us, "_fx_heal_last", 0.0)
+    assert us.heal_fixed_blank_sides() == 1 and "A" in us._fixed_sides_dirty
+    us._fixed_sides_dirty.clear()
+    monkeypatch.setattr(us, "_fx_heal_last", 0.0)       # заход разрешён, пауза бумаги — нет
+    assert us.heal_fixed_blank_sides() == 0

@@ -2070,6 +2070,48 @@ def _blank_sides_count() -> int:
     return n
 
 
+# ЛЕЧЕНИЕ ПРОЧЕРКОВ СТОРОН ФИКСОВ (замер 14.10.2026, строка «fixed engine»: после
+# деплоя ~330 сторон держали цену без Y-IDX, «без патча» пусто). Очередь сторон
+# фикса питают только события стакана; бумага с тихой книгой события не даёт,
+# и волна возврата заказа (queue_sides_wave) фиксы пропускает. Число стороны у
+# такой бумаги не появлялось до следующего движения заявки — у неликвида часами.
+_FX_HEAL_EVERY_SEC = float(os.getenv("FIXED_HEAL_EVERY_SEC", "15"))
+_FX_HEAL_RETRY_SEC = float(os.getenv("FIXED_HEAL_RETRY_SEC", "600"))
+_FX_HEAL_BATCH = int(os.getenv("FIXED_HEAL_BATCH", "80"))
+_fx_heal_last = 0.0
+_fx_healed_at: Dict[str, float] = {}
+
+
+def heal_fixed_blank_sides() -> int:
+    """Поставить в очередь сторон фиксы, у которых есть цена стороны, а Y-IDX нет.
+
+    Раз в _FX_HEAL_EVERY_SEC и не больше _FX_HEAL_BATCH за заход (приоритет
+    волны: живое движение книги идёт впереди). Одну бумагу повторно — не раньше
+    _FX_HEAL_RETRY_SEC: у бессрочных Y-IDX не определён вовсе, и без паузы они
+    крутились бы в очереди каждый заход."""
+    global _fx_heal_last
+    now = time.monotonic()
+    if now - _fx_heal_last < _FX_HEAL_EVERY_SEC:
+        return 0
+    _fx_heal_last = now
+    from services.market_data import market_cache
+    n = 0
+    for isin, row in (market_cache.get("fixed_metrics") or {}).items():
+        if isin not in _fixed_isins or isin in _fixed_sides_dirty:
+            continue
+        if not any((row.get(s) or 0) > 0 and row.get(f"y_idx_{s}_bps") is None
+                   for s in ("bid", "ask")):
+            continue
+        if now - _fx_healed_at.get(isin, -1e9) < _FX_HEAL_RETRY_SEC:
+            continue
+        _fx_healed_at[isin] = now
+        _queue_sides(isin, _SIDES_PRIO_WAVE)
+        n += 1
+        if n >= _FX_HEAL_BATCH:
+            break
+    return n
+
+
 def _blank_fixed_count() -> dict:
     """Фиксы: сторона с ценой, но без Y-IDX, — по причине. Ключи: total, queued
     (стоит в очереди, скоро будет), no_sched (расписания нет в контексте), no_ytm
@@ -3242,6 +3284,7 @@ async def metrics_worker() -> None:
             # ФИКСЫ: отдельная очередь без зависимости от scope флоатерных
             # колонок. Точные расчёты цен используют LRU fixed_income; бюджет
             # короткий, чтобы шквал стакана не задерживал полный пересчёт.
+            heal_fixed_blank_sides()
             if _fixed_sides_dirty:
                 take_fx, prio_fx = _take_fixed_sides_batch()
                 await _ensure_full_by(ctx, take_fx)    # см. докстринг
