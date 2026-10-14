@@ -35,6 +35,7 @@ import httpx
 from core.forwards import add_months
 from core.valuation import (xirr, xnpv, settle_date, accrued_at, accrued_estimate,
                             ruonia_rolling_yield_pct)
+from services.price_flags import price_is_stale
 from services.market_data import moex_client, MarketDataService, _moex_get, CALL_OFFER_SOURCE
 from services.paths import cache_path
 
@@ -846,6 +847,17 @@ def fixed_side_metrics(row: dict, full: dict, g_curve, calc_date: date,
 _WAP_COVER_MIN = 0.7
 
 
+def _traded_today(row: dict) -> Optional[bool]:
+    """Был ли сегодня оборот по бумаге: биржевой VALTODAY строки или свой счёт
+    по тикам Alor. None — оборот неизвестен (поле не пришло), правило молчит."""
+    from services import live_quotes
+    own = (live_quotes.get(row.get("isin")) or {}).get("val_today") or 0.0
+    val = row.get("val_today")
+    if val is None and not own:
+        return None
+    return (val or 0.0) > 0 or own > 0
+
+
 def pick_wap(row: dict) -> Optional[float]:
     """Средневзвешенная цена дня: свой тиковый VWAP, если он покрывает оборот,
     иначе биржевой WAPRICE из снапшота."""
@@ -900,7 +912,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
     else:
         px = row.get("last") if row.get("last") is not None else row.get("prev")
         out = {"last": px, "prev": row.get("prev"),
-               "price_stale": row.get("last") is None and row.get("prev") is not None}
+               "price_stale": price_is_stale(row.get("last"), row.get("prev"),
+                                             _traded_today(row))}
     _static_flags(out, row, full, calc_date)
     # НКД в валюте номинала: у валютной бумаги биржевой — в рублях
     accrued = _accrued_face_ccy(row, full, calc_date)

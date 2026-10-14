@@ -11,6 +11,7 @@ import time
 from datetime import date
 from typing import Dict, List, Optional
 
+from services.price_flags import price_is_stale
 from services.market_data import MarketDataService
 from services.bonds import (
     create_bond_ref_data, build_ref_external, next_coupon_after,
@@ -79,6 +80,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
                 bid: Optional[float] = None, ask: Optional[float] = None,
                 accrued_date: Optional[str] = None,
                 wap: Optional[float] = None,
+                traded_today: Optional[bool] = None,
                 flows_cache: Optional[dict] = None) -> dict:
     """Полный набор наших метрик по одной бумаге юниверса: dirty/SM/discDM/
     z_model/carry/refix/next_coupon/offer-метрики. Источники цен/НКД собирает
@@ -118,7 +120,7 @@ def enrich_bond(u: dict, ref, full: dict, *, last: Optional[float],
     # отображаемая цена: реальная (live/сделка) или prev-close как fallback (нет
     # сделок сегодня / бумага не в Alor-потоке) → строка не пустует, но помечена
     px_display = last if last is not None else prev
-    price_stale = last is None and prev is not None
+    price_stale = price_is_stale(last, prev, traded_today)
 
     curve = ruonia_curve if base == "RUONIA" else keyrate_curve
     dirty = dm = disc_dm = z_model = yoi = ytm = base_ytm = None
@@ -374,6 +376,9 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
             # чтение live_quotes после enrich подменяло её свежим тиком, и
             # сверка вырождалась в сравнение цены с самой собой.
             _wap = _lv.get("vwap_pct") or snap.get("waprice")
+            # был ли сегодня оборот: известно, только если борд-снимок знает бумагу
+            _traded = ((snap.get("vol") or 0) > 0 or (_lv.get("val_today") or 0) > 0) \
+                if snap else None
             out[isin] = enrich_bond(
                 u, ref, full,
                 flows_cache=(flows_by.setdefault(isin, {})
@@ -382,7 +387,7 @@ async def compute_universe_metrics(uni: list, isins: list, cache_path: str,
                 accrued=snap.get("accrued"), prev_date=snap.get("prev_date"),
                 accrued_date=snap.get("accrued_date"),
                 bid=snap.get("bid"), ask=snap.get("ask"),
-                wap=_wap,
+                wap=_wap, traded_today=_traded,
                 ruonia_curve=ruonia_curve, keyrate_curve=keyrate_curve,
                 exp_ks=exp_ks, exp_ru=exp_ru, g_curve=g_curve, calc_date=calc_date)
             if on_ctx is not None:
