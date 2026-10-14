@@ -137,7 +137,14 @@ async def main() -> None:
             row = dict(u)
             acc = accrued_at(full["coupons"], settle)
             if acc is None:
-                acc = accrued_estimate(full["coupons"], settle)
+                # accrued_estimate ждёт кортежи (начало, конец, сумма), не словари
+                try:
+                    per = [(date.fromisoformat(c["start"]), date.fromisoformat(c["end"]),
+                            c.get("value")) for c in full["coupons"]
+                           if c.get("start") and c.get("end")]
+                    acc = accrued_estimate(per, settle)
+                except Exception:
+                    acc = None
             row["accrued"] = float(acc) if acc is not None else float(u.get("accrued") or 0.0)
             try:
                 m = fi.compute_fixed_row(row, full, g, calc, price_override=float(price))
