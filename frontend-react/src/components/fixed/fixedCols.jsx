@@ -1,6 +1,7 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
 import { D, IsinCopy, Quote, IssueCell, isFreshIssue, isShortBond } from "../BondTable.jsx";
 import { yidxUndefinedReason } from "./currency.js";
+import { ytmGuardNote } from "./ytmGuard.js";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
 // key — ключ сортировки и видимости, w — ширина в ch по МАКСИМУМУ формата,
@@ -150,9 +151,12 @@ export const FIXED_COLS = [
       {fmt.mln1(b.adv_1m_rub) ?? <D />}</td> },
   // ── доходности ──
   { key: "ytm", label: "YTM", sub: "К ПОГАШ. %", align: "num", grp: true, w: 9,
-    cell: (b) => <td className={"num" + ms(b)} key="ytm"
-      title="эффективная доходность к погашению (к оферте, если поток обрезан на ней), % годовых">
-      {fmt.pct(b.ytm) ?? <D />}</td> },
+    cell: (b) => {
+      const g = b.ytm == null ? ytmGuardNote(b.ytm_guard) : null;
+      return <td className={"num" + ms(b)} key="ytm"
+        title={g || "эффективная доходность к погашению (к оферте, если поток обрезан на ней), % годовых"}>
+        {g ? <span className="q-na">н/о</span> : fmt.pct(b.ytm) ?? <D />}</td>;
+    } },
   { key: "delta_ytm", label: "Δ YTM", sub: "D/D пп", align: "num", w: 8,
     cell: (b) => <td className="num" style={b.delta_ytm == null ? undefined : dmColor(-b.delta_ytm)}
       key="delta_ytm">{b.delta_ytm == null ? <D /> : fmt.signed(b.delta_ytm)}</td> },

@@ -141,6 +141,39 @@ def _index_yield_pct(ru_curve, row: dict, calc_date: date,
         return None
 
 
+# ГАРД НА МУСОРНУЮ YTM (замер на проде 14.10.2026, 1524 бумаги). Дистресс-доходность
+# настоящая: СамолетP11 342 %, P13 257 %, БалтЛиз 60–85 % — цена 55–80 % и срок до
+# оферты/погашения в месяцах, это рыночная информация, её режет только граница
+# «числа вообще не бывает» (как 150 % у флоатеров, которая и резала Самолёт P14).
+# Мусор — другое:
+#  - вне [−50 %; 1000 %]: вырожденный поток (дюрация ≈ 0 у срока в днях при цене
+#    далеко от номинала, либо 854 042 % у СберCIB642, −99,87 % при дюрации 53);
+#  - купон ≤ 1 % у не-ОФЗ (структурные ноты СберИОС/CIB, ГПБ004Р) и YTM < 0: цена
+#    выше номинала, а погашение у ноты привязано к индексу, не к 100 %, —
+#    «доходность к номиналу» здесь не определена (43 из 56 отброшенных);
+#  - глубже −5 % у обычной бумаги: корпоративный долг так не торгуется. Это цена
+#    выше суммы платежей у бумаги без сделок (ДОМ.РФ Б-6 −44 %, ТбанкБ11 −41 %,
+#    Роснфт1P1 −17 %: ADV 0, цена из prev-close) либо неполный график.
+_YTM_MIN_PCT, _YTM_MAX_PCT = -50.0, 1000.0
+_YTM_DEEP_NEG_PCT = -5.0
+_STRUCTURED_MAX_CPN = 1.0
+
+
+def ytm_guard(ytm_pct: Optional[float], row: dict) -> Optional[str]:
+    """Причина, по которой YTM не показываем, или None."""
+    if ytm_pct is None:
+        return None
+    if ytm_pct < _YTM_MIN_PCT or ytm_pct > _YTM_MAX_PCT:
+        return "range"
+    cpn = row.get("coupon_pct")
+    if (ytm_pct < 0 and cpn is not None and cpn <= _STRUCTURED_MAX_CPN
+            and row.get("cls") != "ofz"):
+        return "structured"
+    if ytm_pct < _YTM_DEEP_NEG_PCT:
+        return "negative"
+    return None
+
+
 def _metrics_at_price(row: dict, schedule: dict, price_pct: float, accrued: float,
                       calc_date: date, g_curve, exchange_face, ru_curve=None) -> dict:
     """Точные метрики уровня цены с LRU базовой математики.
@@ -165,6 +198,15 @@ def _metrics_at_price(row: dict, schedule: dict, price_pct: float, accrued: floa
 
     # Не отдаём служебные неокруглённые значения в API/внутренние строки.
     out = {k: v for k, v in base.items() if not k.startswith("_")}
+    why = ytm_guard(out.get("ytm_pct"), row)
+    if why:
+        # число вырожденное: ни доходности, ни спредов от неё (КБД/RUONIA); при
+        # диапазоне и дюрации с выпуклостью — они считались из того же корня
+        out.update({"ytm_pct": None, "g_spread_bps": None, "ytm_guard": why,
+                    "yield_over_index_bps": None, "index_yield_pct": None})
+        if why == "range":
+            out.update({"mod_dur": None, "mac_dur": None, "dv01": None, "convexity": None})
+        return out
     y = base.get("_ytm_raw")
     mod_dur = base.get("_mod_dur_raw")
     if (y is not None and mod_dur is not None and g_curve is not None
@@ -947,6 +989,7 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         "yield_over_index_bps": m.get("yield_over_index_bps"),
         "index_yield_pct": m.get("index_yield_pct"),
         "put_date": m.get("put_date"), "coupon_assumed_from": m.get("coupon_assumed_from"),
+        "ytm_guard": m.get("ytm_guard"),
         # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
         # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
         # флоатеров, чтобы арифметика книги на фронте была одна на две витрины
@@ -986,7 +1029,8 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
             out[f"y_idx_{side}_bps"] = m_side.get("y_idx_bps")
 
     # z-спред над КБД ОФЗ (дискретный, метод НРД) — по тем же потокам
-    if ruble_face and g_curve is not None and getattr(g_curve, "ok", lambda: False)() and m.get("dirty"):
+    if (ruble_face and g_curve is not None and getattr(g_curve, "ok", lambda: False)()
+            and m.get("dirty") and not m.get("ytm_guard")):
         try:
             out["z_spread_bps"] = _z_spread_at_price(
                 row, full, px, accrued, calc_date, g_curve,
@@ -1044,5 +1088,8 @@ def apply_ytm_delta(metrics: Dict[str, dict], today_iso: str) -> None:
     prev = previous_day_ytm(today_iso)
     for isin, m in metrics.items():
         y, p = m.get("ytm"), prev.get(isin)
+        # вчерашнее мусорное число (вырожденный поток) базой дельты не берём
+        if p is not None and not (_YTM_MIN_PCT <= p <= _YTM_MAX_PCT):
+            continue
         if y is not None and p is not None:
             m["delta_ytm"] = round(y - p, 2)

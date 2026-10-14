@@ -796,6 +796,8 @@ _FIXED_PATCH_FIELDS = (
     "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
     "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
     "delta_to_prev_close", "val_today", "wap_pct", "price_stale",
+    # почему YTM не показана (fixed_income.ytm_guard): подсказка ячейки
+    "ytm_guard",
     # Y-IDX к роллированию RUONIA — имена как у флоатеров (общий контракт
     # витрины, docs/unified_monitor_tz.md)
     "yield_over_index_bps", "index_yield_pct",

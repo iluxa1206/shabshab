@@ -21,7 +21,7 @@ router = APIRouter()
 _ISIN_RE = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
 
 # поля метрик, доливаемые в строку из market_cache['fixed_metrics']
-_METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "delta_ytm", "cur_yield",
+_METRIC_KEYS = ("last", "prev", "price_stale", "dirty", "ytm", "ytm_guard", "delta_ytm", "cur_yield",
                 "g_spread_bps", "z_spread_bps", "mod_dur", "mac_dur", "convexity",
                 "dv01", "put_date", "issue_date",
                 # Y-IDX к роллированию RUONIA и база — имена как у флоатеров

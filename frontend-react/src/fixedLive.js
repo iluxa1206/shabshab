@@ -12,7 +12,7 @@ const PATCH_METRIC_KEYS = [
   "ytm", "ytm_bid", "ytm_ask", "ytm_wap", "cur_yield",
   "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
   "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
-  "delta_to_prev_close", "price_stale",
+  "delta_to_prev_close", "price_stale", "ytm_guard",
   // Y-IDX к роллированию RUONIA — имена как у флоатеров
   "yield_over_index_bps", "index_yield_pct", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
   // средневзвес едет ВМЕСТЕ со своим спредом: пара «цена → спред» обязана быть

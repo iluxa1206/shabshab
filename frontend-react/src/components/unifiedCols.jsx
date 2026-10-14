@@ -3,6 +3,7 @@ import { COLS as FLOATER_COLS, D } from "./BondTable.jsx";
 import { FIXED_COLS } from "./fixed/fixedCols.jsx";
 import { durValue } from "../unifiedRows.js";
 import { fixedCurrency } from "./fixed/currency.js";
+import { ytmGuardNote } from "./fixed/ytmGuard.js";
 
 // КОЛОНКИ ОБЩЕГО МОНИТОРА ОБЛИГАЦИЙ (docs/unified_monitor_tz.md, этап B).
 //
@@ -91,11 +92,12 @@ const YTM = {
          + "Флоатер — модельная доходность: купоны по форварду индекса (курсивом).",
   cell: (b) => {
     const v = b.kind === "fixed" ? b.ytm : b.yield_xirr_pct;
+    const g = v == null && b.kind === "fixed" ? ytmGuardNote(b.ytm_guard) : null;
     return (
       <td className={"num" + (b._mstale ? " mstale" : "") + (b.kind === "fixed" ? "" : " ytm-model")}
         key="yield_xirr_pct"
-        title={b.kind === "fixed" ? undefined : "модельная: купоны плавающей ставки по форварду индекса"}>
-        {v == null ? <D /> : fmt.pct(v)}
+        title={g || (b.kind === "fixed" ? undefined : "модельная: купоны плавающей ставки по форварду индекса")}>
+        {g ? <span className="q-na">н/о</span> : v == null ? <D /> : fmt.pct(v)}
       </td>
     );
   },
