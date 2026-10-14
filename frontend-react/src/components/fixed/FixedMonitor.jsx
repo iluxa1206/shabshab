@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { connectMarketWs, fetchDepth, fetchFixed, fetchFixedQuotes } from "../../api.js";
+import { fetchDepth } from "../../api.js";
+import { useFixedFeed } from "../../useFixedFeed.js";
 import { fmt, ratingMatches, ratingOptions, yearsToIso } from "../../format.js";
 import { filterBonds } from "../../search.js";
 import { filterByAdv } from "../../tableRows.js";
@@ -27,14 +28,6 @@ const FILTER_KEYS = ["fxq", "fxw", "fxrt", "fxem", "fxcls", "fxnosub", "fxnoam",
 // Суборды/перпы — по имени выпуска, тот же паттерн, что у флоатеров (App.jsx)
 // и у скринера (services/screener_core.py::_SUBORD_RE).
 const SUBORD_RE = /СУБ|SUB|ПЕРП|PERP|(?<![A-ZА-Я0-9])[TТ]1(?![0-9])/i;
-const QUOTES_POLL_MS = 5000;
-// Коалесцируем push'и: в ликвидной сессии их сотни в секунду, а перерисовывать
-// таблицу чаще, чем видит глаз, незачем (тот же такт, что у монитора флоатеров).
-const WS_FLUSH_MS = 400;
-// Сколько бумага считается «живой» после последнего пуша. Замолчала (стрим лёг,
-// упёрлись в лимит подписок, торгов нет) — строка снова живёт снапшотом
-// котировок, иначе в ней навсегда застыли бы последние цифры стрима.
-const LIVE_FRESH_MS = 15000;
 
 const initialParams = () => new URLSearchParams(window.location.search);
 const ls = (k, d = "") => localStorage.getItem(k) ?? d;
@@ -51,131 +44,9 @@ const quantile = (a, p) => {
   return s[Math.min(s.length - 1, Math.floor(p * s.length))];
 };
 
-// Метрики фикса, которые движок пересчитывает по цене и шлёт патчем. Явный
-// null в патче СТИРАЕТ число (сторона ушла из книги, контекст остыл) — поэтому
-// копируем по наличию ключа, а не по «не пусто».
-const PATCH_METRIC_KEYS = [
-  "ytm", "ytm_bid", "ytm_ask", "ytm_wap", "cur_yield",
-  "g_spread_bps", "g_spread_bid_bps", "g_spread_ask_bps", "g_spread_wap_bps",
-  "z_spread_bps", "dirty", "mod_dur", "mac_dur", "convexity", "dv01",
-  "delta_to_prev_close", "price_stale",
-  // Y-IDX к роллированию RUONIA — имена как у флоатеров
-  "yield_over_index_bps", "index_yield_pct", "y_idx_bid_bps", "y_idx_ask_bps", "y_idx_wap_bps",
-  // средневзвес едет ВМЕСТЕ со своим спредом: пара «цена → спред» обязана быть
-  // из одного расчёта, иначе в строке окажется спред по другой цене
-  "wap_pct",
-];
-
-/** Новая цена в строку вместе с гашением того, что от неё производно: цена
- *  приезжает тиком, а метрики считает бэк своим тактом, и без гашения строка
- *  показывала бы свежую цену со спредом от прежней. full=true — цена стороны
- *  (полный снимок верха стакана: пусто значит «стороны нет»). */
-export function applyPrice(row, field, px, derived, full = false) {
-  // Пусто в НЕсторонней цене — это «новости нет» (снапшот не знает цены), а не
-  // «цены не стало»: затирать ею цену строки значит выбросить prev-close,
-  // которым живёт неликвид. У сторон стакана наоборот — снимок полный.
-  const next = full ? (px ?? null) : px;
-  if (next == null && !full) return;
-  if (next === row[field]) return;
-  row[field] = next;
-  for (const k of derived) row[k] = null;
-}
-
-/** Наложение патча стрима на прежнее наложение той же бумаги. */
-export function applyPatch(cur, q) {
-  const n = { ...(cur || {}), _live: true };
-  // СМЕНУ цены судим ПРОТИВ прежнего наложения: котировка Alor — полный снимок
-  // верха стакана и приходит с каждым тиком, в том числе когда bid/ask/last не
-  // сдвинулись (изменился объём стороны, повторный принт по той же цене).
-  // Бэк по такой котировке ничего не пересчитывает (universe_stream._on_quote
-  // ставит в очередь только СМЕНУ цены), и гашение «на всякий случай»
-  // оставляло прочерк в спредах сторон и звёздочку на строке до следующей
-  // настоящей сделки — то есть, у неликвида, до конца дня.
-  const bidMoved = "bid" in q && cur && (q.bid ?? null) !== (cur.bid ?? null);
-  const askMoved = "ask" in q && cur && (q.ask ?? null) !== (cur.ask ?? null);
-  const lastMoved = q.last_price_pct != null && cur && q.last_price_pct !== cur.last_price_pct;
-  if ("bid" in q) n.bid = q.bid ?? null;
-  if ("ask" in q) n.ask = q.ask ?? null;
-  if (q.vwap_pct != null) n.wap_pct = q.vwap_pct;
-  // оборот назад не откатываем: патч может прийти от сокета, чей дневной
-  // агрегат ещё догоняется архивом
-  if (q.val_today != null && !(n.val_today > q.val_today)) n.val_today = q.val_today;
-  // цена сделки: null в патче значит «сделок сегодня не было», а не «цены
-  // больше нет» — строка остаётся на прежней (см. applyPrice)
-  if (q.last_price_pct != null) n.last_price_pct = q.last_price_pct;
-  if (q.metrics) {
-    for (const k of PATCH_METRIC_KEYS) if (k in q) n[k] = q[k];
-    n._mstale = false;
-  } else {
-    // патч без метрик — цены новее производных: гасим то, что от них зависит,
-    // но только у СДВИНУВШЕЙСЯ цены (см. выше)
-    if (bidMoved) { n.g_spread_bid_bps = null; n.ytm_bid = null; n.y_idx_bid_bps = null; }
-    if (askMoved) { n.g_spread_ask_bps = null; n.ytm_ask = null; n.y_idx_ask_bps = null; }
-    if (lastMoved) n._mstale = true;
-  }
-  return n;
-}
-
-/** Числа набора на объём из ответа котировок (плоские ключи vol_bid_px/…) — в
- *  поля строки витрины. Пусто значит «движок ещё не посчитал»: прежнее число не
- *  трогаем, его гасит перезагрузка списка при смене размера. */
-export function applyVolQuote(row, it) {
-  for (const side of ["bid", "ask"]) {
-    const px = it[`vol_${side}_px`], g = it[`vol_${side}_g`], y = it[`vol_${side}_ytm`];
-    const yi = it[`vol_${side}_y`];
-    if (px != null) row[`vol_${side}_price_pct`] = px;
-    if (g != null) row[`g_spread_vol_${side}_bps`] = g;
-    if (y != null) row[`ytm_vol_${side}`] = y;
-    if (yi != null) row[`y_idx_vol_${side}_bps`] = yi;
-  }
-}
-
-// Цена наложения → её производные в строке списка. Список несёт числа к ТОЙ
-// цене, по которой считал движок (fixed_metrics хранит last/bid/ask расчёта).
-const LIVE_DERIVED = [
-  ["bid", ["g_spread_bid_bps", "ytm_bid", "y_idx_bid_bps"]],
-  ["ask", ["g_spread_ask_bps", "ytm_ask", "y_idx_ask_bps"]],
-];
-const LAST_DERIVED = ["ytm", "g_spread_bps", "z_spread_bps", "dirty", "cur_yield",
-                      "mod_dur", "mac_dur", "convexity", "dv01", "yield_over_index_bps"];
-
-/** Наложение стрима поверх строки списка. Если наложение принесло цену, но не
- *  принесло числа к ней (первый патч бумаги — котировка, а не метрики), а цена
- *  списка другая — число списка посчитано к прежней цене и в строку не идёт:
- *  то же правило, что applyPatch применяет между двумя патчами. */
-export function mergeLive(row, live) {
-  const out = { ...row, ...live };
-  for (const [px, derived] of LIVE_DERIVED) {
-    if (!(px in live)) continue;
-    if ((live[px] ?? null) !== (row[px] ?? null)) {
-      for (const k of derived) if (!(k in live)) out[k] = null;
-    } else {
-      // ТА ЖЕ ЦЕНА, ЧТО В СПИСКЕ: число списка посчитано ровно к ней. Прочерк
-      // наложения (цена сдвинулась, патч движка ещё не дошёл или потерялся)
-      // закрываем числом списка — он обновляется раз в минуту из fixed_metrics.
-      for (const k of derived) if (out[k] == null && row[k] != null) out[k] = row[k];
-    }
-  }
-  if (live.last_price_pct != null) {
-    if (live.last_price_pct !== row.last_price_pct) {
-      if (!("ytm" in live) && !("_mstale" in live)) out._mstale = true;
-    } else if (live._mstale) {
-      // звёздочка снята: список уже несёт числа к этой цене
-      for (const k of LAST_DERIVED) if (row[k] != null) out[k] = row[k];
-      out._mstale = false;
-    }
-  }
-  return out;
-}
-
-/** Поверхностное сравнение строк: одинаковый набор ключей и значений. */
-function sameRow(a, b) {
-  if (!a || !b) return false;
-  const ka = Object.keys(a);
-  if (ka.length !== Object.keys(b).length) return false;
-  for (const k of ka) if (a[k] !== b[k]) return false;
-  return true;
-}
+// Правила слияния живых данных живут в fixedLive.js; реэкспорт — для тестов и
+// внешних потребителей, импортировавших их отсюда.
+export { applyPatch, applyPrice, applyVolQuote, mergeLive } from "../../fixedLive.js";
 
 export default function FixedMonitor({ onOpen, showAnalytics }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -304,21 +175,7 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   useEffect(() => { localStorage.setItem("watch_fx", JSON.stringify(watch)); }, [watch]);
 
   // ── данные ──
-  // метрики (YTM/спреды/дюрация) — свой цикл прогрева на бэке, тянем реже;
-  // цены и стакан — тактом 5 с отдельной лёгкой ручкой
-  const listQ = useQuery({
-    // размеры тикета — часть ключа: сменил объём, значит нужны другие цены
-    // наборов (их считает движок, ручка только выбирает нужный размер)
-    queryKey: ["fixed", volBid, volAsk],
-    queryFn: () => fetchFixed({ volBid, volAsk }),
-    staleTime: 30_000, refetchInterval: 60_000, placeholderData: (prev) => prev,
-  });
-  // размер тикета — часть ключа: числа набора от прошлого размера относятся к
-  // прошлому фильтру
-  const quotesQ = useQuery({
-    queryKey: ["fixed-quotes", volBid, volAsk],
-    queryFn: () => fetchFixedQuotes(volBid, volAsk),
-    refetchInterval: QUOTES_POLL_MS, staleTime: QUOTES_POLL_MS });
+  const { bonds, listQ, quotesQ } = useFixedFeed({ volBid, volAsk });
 
   // Лестницы стаканов — только когда фильтр по объёму включён: ответ тяжёлый
   // (весь рынок × 20 уровней), а без фильтра он не нужен. Бэк держит их
@@ -330,113 +187,8 @@ export default function FixedMonitor({ onOpen, showAnalytics }) {
   });
   const depth = depthQ.data?.items;
 
-  // ЖИВОЙ ПОТОК. Пул котировок и стаканов Alor покрывает и фиксы
-  // (services/universe_stream), движок пересчитывает по цене YTM и g-спред и
-  // шлёт их патчем — /reprice с фронта не нужен. Wildcard-подписка: живой должна
-  // быть вся таблица, а не только избранное.
-  //
-  // Копим не сырые патчи, а НАЛОЖЕНИЕ на строку: у цены и её производных разный
-  // темп (цена — каждый тик, метрики — тактом движка), и правила их слияния
-  // применяются один раз здесь, а не при каждом рендере таблицы.
-  const [overlay, setOverlay] = useState({});
-  const bufRef = useRef({});
-  const wsRef = useRef(null);
-  const tsRef = useRef({});      // isin → monotonic-ish время последнего пуша
-  const flushRef = useRef(null);
-  // wildcard-подписка несёт ВЕСЬ пул, включая флоатеров: чужие патчи молча
-  // отбрасываем, иначе каждый их флеш заставлял бы витрину пересобирать свои
-  // семь сотен строк ради бумаг, которых в ней нет
-  const mineRef = useRef(new Set());
-  useEffect(() => {
-    mineRef.current = new Set((listQ.data?.items || []).map((b) => b.isin));
-  }, [listQ.data]);
-  useEffect(() => {
-    // Статус соединения показывает общий индикатор нижней полосы (его держит
-    // сокет дашборда) — второй раз о том же не сообщаем.
-    const conn = connectMarketWs(() => [], () => {}, (isin, data) => {
-      const buf = bufRef.current;
-      const prev = buf[isin];
-      buf[isin] = prev ? { ...prev, ...data, metrics: prev.metrics || data.metrics } : data;
-      if (flushRef.current) return;
-      flushRef.current = setTimeout(() => {
-        flushRef.current = null;
-        const batch = bufRef.current;
-        bufRef.current = {};
-        // время последнего пуша держим ОТДЕЛЬНО от данных строки: иначе
-        // каждый повтор той же котировки менял бы строку и заставлял таблицу
-        // перерисовывать бумагу, в которой ничего не произошло
-        const now = Date.now();
-        const mine = mineRef.current;
-        // фильтруем на ФЛЕШЕ, а не на приёме: подписка отдаёт снапшот всего
-        // рынка сразу, и на первых миллисекундах список фиксов ещё грузится —
-        // пустой набор значит «не знаем, чьё», и мы берём всё
-        const own = Object.entries(batch).filter(([isin]) => !mine.size || mine.has(isin));
-        if (!own.length) return;
-        for (const [isin] of own) tsRef.current[isin] = now;
-        setOverlay((prev) => {
-          const out = { ...prev };
-          for (const [isin, q] of own) out[isin] = applyPatch(out[isin], q);
-          return out;
-        });
-      }, WS_FLUSH_MS);
-    });
-    wsRef.current = conn;
-    return () => {
-      wsRef.current = null;
-      if (flushRef.current) { clearTimeout(flushRef.current); flushRef.current = null; }
-      conn.close();
-    };
-  }, []);
-
-  // Размеры тикета — в движок тем же сокетом: он считает цену набора и спред по
-  // ней только по размерам, которые кто-то смотрит, и помнит их с TTL.
-  useEffect(() => {
-    wsRef.current?.setVolSizes([volBid, volAsk].filter((v) => v > 0));
-  }, [volBid, volAsk]);
-
-  // Ссылки НЕизменившихся строк держим стабильными: таблица пересобирается на
-  // каждом такте котировок, а memo(BondRow) снимает ре-рендер тех ~700 строк,
-  // в которых ничего не поменялось (то же, что точечное клонирование у
-  // монитора флоатеров).
-  const rowRef = useRef(new Map());
-  const bonds = useMemo(() => {
-    const q = new Map((quotesQ.data?.items || []).map((it) => [it.isin, it]));
-    const kept = new Map();
-    const rows = (listQ.data?.items || []).map((b) => {
-      // Общие имена полей витрины: поиск, фильтр эмитента и таблица написаны
-      // под строку флоатера (short_name / emitter_name / is_ofz).
-      const row = { ...b, short_name: b.name, emitter_name: b.issuer, is_ofz: b.cls === "ofz" };
-      const live = overlay[b.isin];
-      const fresh = live && Date.now() - (tsRef.current[b.isin] || 0) < LIVE_FRESH_MS;
-      // Бумага на стриме цены из снапшота не берёт: push свежее, снапшот
-      // откатил бы строку назад (то же правило, что у флоатеров, quotesMerge).
-      const qi = q.get(b.isin);
-      // ЧИСЛА НАБОРА НА ОБЪЁМ — метрика движка, а не цена: у бумаги НА СТРИМЕ
-      // их патч не несёт (см. applyPatch), а список витрины обновляется раз в
-      // минуту — без этого прочерк в колонках бида и оффера жил всё это время.
-      if (qi) applyVolQuote(row, qi);
-      const it = fresh ? null : qi;
-      if (it) {
-        applyPrice(row, "last_price_pct", it.last, LAST_DERIVED);
-        applyPrice(row, "bid", it.bid, LIVE_DERIVED[0][1], true);
-        applyPrice(row, "ask", it.ask, LIVE_DERIVED[1][1], true);
-        applyPrice(row, "wap_pct", it.wap, ["g_spread_wap_bps", "ytm_wap", "y_idx_wap_bps"]);
-        if (it.vol != null) row.val_today = it.vol;
-      }
-      // Стрим замолчал — наложение выбрасываем целиком: его метрики посчитаны
-      // по ЕГО ценам, а в строке теперь цены снапшота, и смешивать их значит
-      // повторить ровно тот рассинхрон «свежая цена, старое число», от которого
-      // гасятся производные выше. Движок пишет свои числа и в fixed_metrics,
-      // поэтому они вернутся ближайшим обновлением списка.
-      const next = fresh ? mergeLive(row, live) : row;
-      const prev = rowRef.current.get(b.isin);
-      const out = sameRow(prev, next) ? prev : next;
-      kept.set(b.isin, out);
-      return out;
-    });
-    rowRef.current = kept;
-    return rows;
-  }, [listQ.data, quotesQ.data, overlay]);
+  // Живая лента фиксов (список, котировки, сокет, наложение) — в useFixedFeed:
+  // те же правила слияния обслуживают и общий монитор облигаций.
 
   const issuers = useMemo(() => {
     const m = new Map();
