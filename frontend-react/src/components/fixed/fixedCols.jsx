@@ -113,11 +113,11 @@ export const FIXED_COLS = [
            + "у амортизируемых — по текущему номиналу, то есть объём в обращении",
     cell: (b) => <td className="num" key="issue_volume">{fmt.bln(b.issue_volume) ?? <D />}</td> },
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
-  { key: "ytm_bid", label: "BID", sub: "% / YTM", align: "num", sep: true, w: 9,
-    cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.ytm_bid} subKind="pct"
+  { key: "ytm_bid", label: "BID", sub: "% / SPREAD / YTM", align: "num", sep: true, w: 9,
+    cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.y_idx_bid_bps} ytm={b.ytm_bid}
       vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
-  { key: "ytm_ask", label: "ASK", sub: "% / YTM", align: "num", w: 9,
-    cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.ytm_ask} subKind="pct"
+  { key: "ytm_ask", label: "ASK", sub: "% / SPREAD / YTM", align: "num", w: 9,
+    cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.y_idx_ask_bps} ytm={b.ytm_ask}
       vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"

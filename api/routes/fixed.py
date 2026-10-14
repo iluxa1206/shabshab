@@ -88,6 +88,24 @@ async def get_fixed(
             "calc_date": market_cache.get("fixed_calc_date") or date.today().isoformat()}
 
 
+# синтетический эмитент Минфина — тот же, что у ОФЗ-флоатеров в реестре
+# (services.instruments_registry._OFZ_EMITTER_ID): MOEX у ОФЗ EMITTER_ID не даёт
+_OFZ_EMITTER = (-1, "Минфин России")
+_STRUCTURED_MAX_CPN = 1.0
+
+
+def _registry_emitter_names() -> dict:
+    """{emitter_id: имя} из реестра (кэш по отметке базы)."""
+    from services import instruments_registry as reg
+    try:
+        rows = reg.universe_rows(only_floaters=False, only_priceable=False)
+    except Exception as e:
+        logger.warning("registry emitter names failed: %s", e)
+        return {}
+    return {r["emitter_id"]: r["emitter_name"] for r in rows
+            if r.get("emitter_id") and r.get("emitter_name")}
+
+
 async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
     """Строки витрины фиксов — общие для /api/fixed и общего списка
     /api/bonds?kinds=…,fixed (docs/unified_monitor_tz.md, A3)."""
@@ -103,8 +121,12 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
     try:
         from services import ratings_br
         ea = ratings_br.ea_map([u["isin"] for u in uni])
+        # ступень худшего рейтинга (AA-) — тот же вид, что у флоатеров в реестре:
+        # чипы фильтра режут по грейду, меню ступеней — по точному значению
+        steps = {i: r["rating"] for i, r in
+                 ratings_br.ratings_map([u["isin"] for u in uni]).items() if r.get("rating")}
     except Exception:
-        ea = {}
+        ea, steps = {}, {}
     # средний дневной оборот за месяц — из архива часовых баров (кэш в памяти на
     # 15 мин, SQLite синхронный → в поток). Зовём БЕЗ kind, тем же ключом, что и
     # /api/bonds: в bar_hourly у бумаги свой kind, поэтому ответ по всему рынку
@@ -117,12 +139,27 @@ async def fixed_rows(vol_bid=None, vol_ask=None) -> list:
         logger.warning("fixed adv_map failed: %s", e)
         adv = {}
     issue_vol = await MarketDataService.fetch_issue_volumes()
+    from services import emitters
+    canon = _registry_emitter_names()
     items = []
     for u in uni:
         m = metrics.get(u["isin"], {})
+        eid, _title = (_OFZ_EMITTER if u.get("cls") == "ofz"
+                       else (emitters.emitter_of(u["isin"]) or (None, None)))
+        cpn = u.get("coupon_pct")
         item = {
             "isin": u["isin"], "kind": "fixed", "secid": u.get("secid"), "name": u.get("name"),
-            "issuer": u.get("issuer"), "rating": rmap.get(u["isin"]),
+            "issuer": u.get("issuer"),
+            "rating": (None if u.get("cls") == "ofz" else steps.get(u["isin"])) or rmap.get(u["isin"]),
+            # MOEX EMITTER_ID — общий ключ эмитента с флоатерами; имя — реестра
+            # по тому же id (у флоатеров оно короткое), иначе прежнее из имени
+            "emitter_id": eid,
+            "emitter_name": canon.get(eid) or (_OFZ_EMITTER[1] if eid == _OFZ_EMITTER[0]
+                                               else u.get("issuer")),
+            # около-нулевой купон: структурные ноты (ИОС, CIB, ВТБС…) и глубокий
+            # дисконт (Пересвет, младшие транши СФО). YTM-спред тут не про рынок
+            # ставок — в общем мониторе по умолчанию скрыты фильтром.
+            "structured": cpn is not None and cpn <= _STRUCTURED_MAX_CPN and u.get("cls") != "ofz",
             "ratings_ea": ea.get(u["isin"]),
             "cls": u.get("cls"), "maturity_date": u.get("maturity_date"),
             # бессрочная: даты погашения нет (maturity_date=None), YTM — рента

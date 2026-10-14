@@ -8,6 +8,7 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     time: datetime
+    telegram: str = "off"          # off | ok | down (services.telegram.channel_status)
 
 class MetaResponse(BaseModel):
     calc_date: date
@@ -400,6 +401,9 @@ class BondListItem(BaseModel):
     # has_amort — в графике MOEX больше одного транша погашения номинала.
     is_ofz: bool = False
     has_amort: bool = False
+    # фикс с купоном ≤ 1 %: структурная нота или глубокий дисконт — YTM-спред не
+    # про рынок ставок (api/routes/fixed.py); у флоатеров всегда False
+    structured: bool = False
     sm_to_offer_bps: Optional[int] = None          # simple margin к оферте (yield-to-put)
     disc_margin_to_offer_bps: Optional[int] = None # discount margin к оферте
 

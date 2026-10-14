@@ -117,6 +117,10 @@ export function applyVolume(b, ladder, volBid, volAsk, mode = "and", fields = FL
     // здесь честнее чужого числа.
     ...(fields.bidStale && wantBid ? { [fields.bidStale]: null } : null),
     ...(fields.askStale && wantAsk ? { [fields.askStale]: null } : null),
+    ...(fields.bidSpread2 && wantBid
+      ? { [fields.bidSpread2]: okBid ? (b[fields.volBidSpread2] ?? null) : null } : null),
+    ...(fields.askSpread2 && wantAsk
+      ? { [fields.askSpread2]: okAsk ? (b[fields.volAskSpread2] ?? null) : null } : null),
   };
 }
 
@@ -129,4 +133,7 @@ export const FIXED_VOL_FIELDS = {
   bidSpread: "ytm_bid", askSpread: "ytm_ask",
   volBidPx: "vol_bid_price_pct", volAskPx: "vol_ask_price_pct",
   volBidSpread: "ytm_vol_bid", volAskSpread: "ytm_vol_ask",
+  // под ценой стороны у фикса и Y-IDX, и YTM — оба обязаны относиться к цене набора
+  bidSpread2: "y_idx_bid_bps", askSpread2: "y_idx_ask_bps",
+  volBidSpread2: "y_idx_vol_bid_bps", volAskSpread2: "y_idx_vol_ask_bps",
 };

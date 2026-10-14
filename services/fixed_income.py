@@ -743,6 +743,10 @@ async def fetch_fixed_universe() -> List[dict]:
                   key=lambda r: max(adv.get(r["isin"], 0.0), r.get("val_today") or 0.0),
                   reverse=True)[:_CORP_CAP]
     rows = ofz + linked + corp
+    # EMITTER_ID для фильтра «все бумаги эмитента» в общем мониторе (карта всего
+    # рынка, durable; сеть — раз в сутки или на свежий выпуск)
+    from services import emitters
+    await emitters.ensure([r["isin"] for r in rows if r["cls"] != "ofz"])
     _uni_mem["rows"] = rows
     _uni_mem["ts"] = now
     return rows

@@ -155,7 +155,7 @@ async def _universe_bonds(extra_list, cache, limit, offset,
 # (g_spread_*, ytm_bid/ask/wap, mod_dur, dv01, face_unit…) едет своими именами.
 # `dirty` НЕ переименовываем: у фикса он в валюте номинала, а dirty_price_rub
 # флоатера — в рублях.
-_FIXED_RENAME = {"name": "short_name", "issuer": "emitter_name",
+_FIXED_RENAME = {"name": "short_name",
                  "bid": "bid_price_pct", "ask": "ask_price_pct",
                  "wap_pct": "wap_price_pct", "ytm": "yield_xirr_pct",
                  "coupon_pct": "current_coupon_pct", "put_date": "offer_date"}
@@ -168,6 +168,7 @@ def _fixed_list_item(d: dict) -> BondListItem:
     row.update(
         kind="fixed", base_rate_type="FIXED",
         short_name=d.get("name") or d["isin"],
+        emitter_name=d.get("emitter_name") or d.get("issuer"),
         formula=f"фикс {cpn:g}%" if cpn is not None else "фикс",
         spread_issue_bps=0, next_coupon_date=None,
         dirty_price_rub=None, dm_bps=None,

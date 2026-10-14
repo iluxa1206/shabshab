@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyVolume, vwapFor } from "./vwap.js";
+import { applyVolume, vwapFor, FIXED_VOL_FIELDS } from "./vwap.js";
 
 // Лестница: цена% и количество бумаг. Номинал 1000 ₽, НКД 0 — деньги уровня
 // считаются как qty × номинал × цена/100.
@@ -50,3 +50,27 @@ describe("фильтр по объёму", () => {
     expect(v.partial).toBe(false);
   });
 });
+
+describe("фильтр по объёму у фикса: спред и YTM под ценой набора", () => {
+  const fx = {
+    isin: "RU000A10FIX1", face_value_rub: 1000, accrued_rub: 0,
+    bid: 99.62, ask: 100.10, ytm_bid: 15.1, ytm_ask: 14.9,
+    y_idx_bid_bps: 120, y_idx_ask_bps: 100,
+  };
+
+  it("оба числа берутся с бэкенда для цены набора", () => {
+    const got = applyVolume({ ...fx, vol_bid_price_pct: 99.2, ytm_vol_bid: 15.6,
+                              y_idx_vol_bid_bps: 170 }, ladder, 5_000_000, 0, "and",
+                            FIXED_VOL_FIELDS);
+    expect(got.bid).toBe(99.2);
+    expect(got.ytm_bid).toBe(15.6);
+    expect(got.y_idx_bid_bps).toBe(170);
+  });
+
+  it("спред верха стакана под ценой набора не остаётся", () => {
+    const got = applyVolume(fx, ladder, 5_000_000, 0, "and", FIXED_VOL_FIELDS);
+    expect(got.y_idx_bid_bps).toBe(null);
+    expect(got.y_idx_ask_bps).toBe(100);       // нефильтруемая сторона не тронута
+  });
+});
+

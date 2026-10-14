@@ -174,3 +174,119 @@ def test_floater_and_unknown_quote_kind(monkeypatch):
                   um={"L": {"yoi": 210, "last": 100.0}})
     assert got["L"]["kind"] == "floater"
     assert "kind" not in got["Z"]             # вне обоих универсов — класс не знаем
+
+
+# ── A5: эмитенты, флаг «структурная», A6: ступень рейтинга ────────────────────
+
+class _FakeResp:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"securities": {"data": self._rows}}
+
+
+class _FakeClient:
+    def __init__(self, pages):
+        self.pages, self.calls = pages, 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, timeout=None):
+        page = self.pages[self.calls] if self.calls < len(self.pages) else []
+        self.calls += 1
+        return _FakeResp(page)
+
+
+def _emitters(monkeypatch, tmp_path, doc, pages):
+    import services.emitters as em
+    import services.market_data as md
+    monkeypatch.setattr(em.paths, "cache_path", lambda n: str(tmp_path / n))
+    monkeypatch.setattr(em, "_mem", {"doc": doc})
+    client = _FakeClient(pages)
+    monkeypatch.setattr(md, "moex_client", lambda **k: client)
+    return em, client
+
+
+def test_emitters_refresh_on_missing_isin(monkeypatch, tmp_path):
+    import time
+    em, client = _emitters(monkeypatch, tmp_path,
+                           {"ts": time.time() - 7 * 3600, "map": {"A": [1, "x"]}},
+                           [[["A", 1, "x"], ["B", 2, "y"]]])
+    asyncio.run(em.ensure(["A", "B"]))
+    assert em.emitter_of("B") == [2, "y"]
+    assert (tmp_path / "emitters.json").exists()
+
+
+def test_emitters_fresh_map_no_network(monkeypatch, tmp_path):
+    import time
+    em, client = _emitters(monkeypatch, tmp_path,
+                           {"ts": time.time() - 3600, "map": {"A": [1, "x"]}}, [])
+    asyncio.run(em.ensure(["A", "NEW"]))       # свежий выпуск, но 6 ч не прошло
+    assert client.calls == 0
+
+
+def test_emitters_short_answer_keeps_map(monkeypatch, tmp_path):
+    em, client = _emitters(monkeypatch, tmp_path,
+                           {"ts": 0, "map": {f"I{i}": [i, "t"] for i in range(10)}},
+                           [[["I0", 0, "t"]]])
+    asyncio.run(em.ensure(["I0"]))
+    assert len(em._doc()["map"]) == 10 and em._doc()["ts"] == 0
+
+
+def _fixed_rows(monkeypatch, uni, steps=None, emit=None, canon=None):
+    import api.routes.fixed as fx
+    import services.market_data as md
+    from services import bars, ratings, ratings_br, emitters
+    md.market_cache["fixed_universe"] = uni
+    md.market_cache["fixed_metrics"] = {}
+    monkeypatch.setattr(ratings, "bucket_map_fixed",
+                        lambda items: {i: ("AAA" if c == "ofz" else "AA") for i, c in items})
+    monkeypatch.setattr(ratings_br, "ea_map", lambda isins: {})
+    monkeypatch.setattr(ratings_br, "ratings_map",
+                        lambda isins: {i: {"rating": r} for i, r in (steps or {}).items()})
+    monkeypatch.setattr(bars, "adv_map", lambda *a, **k: {})
+
+    async def no_vol(*a, **k):
+        return {}
+    monkeypatch.setattr(md.MarketDataService, "fetch_issue_volumes", no_vol)
+    monkeypatch.setattr(emitters, "emitter_of", lambda i: (emit or {}).get(i))
+    monkeypatch.setattr(fx, "_registry_emitter_names", lambda: canon or {})
+    try:
+        return {r["isin"]: r for r in asyncio.run(fx.fixed_rows())}
+    finally:
+        md.market_cache.pop("fixed_universe", None)
+        md.market_cache.pop("fixed_metrics", None)
+
+
+def test_fixed_rows_emitter_structured_rating(monkeypatch):
+    uni = [{"isin": "OFZ1", "name": "ОФЗ 26238", "issuer": "ОФЗ", "cls": "ofz", "coupon_pct": 0.5},
+           {"isin": "IOS1", "name": "СберИОС819", "issuer": "СберИОС", "cls": "corp",
+            "coupon_pct": 0.01},
+           {"isin": "RZD1", "name": "РЖД 1Р-05R", "issuer": "РЖД", "cls": "corp",
+            "coupon_pct": 15.5}]
+    got = _fixed_rows(monkeypatch, uni, steps={"RZD1": "AA+", "OFZ1": "AA"},
+                      emit={"IOS1": [484, "ПАО Сбербанк"], "RZD1": [712, "ОАО РЖД"]},
+                      canon={712: "РЖД БО"})
+    # ОФЗ: синтетический эмитент реестра, AAA правилом, низкий купон ≠ структурная
+    assert got["OFZ1"]["emitter_id"] == -1 and got["OFZ1"]["emitter_name"] == "Минфин России"
+    assert got["OFZ1"]["rating"] == "AAA" and got["OFZ1"]["structured"] is False
+    # имя эмитента — реестра по id; ступень рейтинга вместо грейда
+    assert got["RZD1"]["emitter_id"] == 712 and got["RZD1"]["emitter_name"] == "РЖД БО"
+    assert got["RZD1"]["rating"] == "AA+" and got["RZD1"]["structured"] is False
+    # нет эмитента в реестре — прежнее короткое имя; ступени нет — грейд
+    assert got["IOS1"]["emitter_id"] == 484 and got["IOS1"]["emitter_name"] == "СберИОС"
+    assert got["IOS1"]["rating"] == "AA" and got["IOS1"]["structured"] is True
+
+
+def test_list_item_carries_structured_and_emitter():
+    it = _fixed_list_item({**FIXED_ROW, "emitter_id": 712, "emitter_name": "РЖД БО",
+                           "structured": True})
+    assert it.emitter_id == 712 and it.emitter_name == "РЖД БО" and it.structured is True

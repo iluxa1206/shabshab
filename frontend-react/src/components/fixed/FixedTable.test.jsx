@@ -135,3 +135,15 @@ describe("купон, продлённый до погашения", () => {
     expect(cells[1].querySelector(".mat-offer").textContent).toContain("21.10.2026");
   });
 });
+
+describe("сторона стакана фикса", () => {
+  it("под ценой BID — спред Y-IDX, ниже YTM к той же цене", () => {
+    const rows = [{ isin: "RU000A10RZD1", name: "РЖД 1Р-05R", cls: "corp", bid: 99.62,
+                    y_idx_bid_bps: 155, ytm_bid: 15.1 }];
+    const { container } = render(<Host storageKey="t_side" rows={rows} />);
+    const cell = container.querySelector("td.q-bid");
+    expect(cell.querySelector(".q-px").textContent).toContain("99");
+    expect(cell.querySelector(".q-sp").textContent).toContain("155");
+    expect(cell.querySelector(".q-ytm").textContent).toContain("15");
+  });
+});
