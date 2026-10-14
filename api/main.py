@@ -1338,6 +1338,54 @@ async def disk_watchdog(period_sec: int = DISK_WATCH_PERIOD_SEC):
         await asyncio.sleep(period_sec)
 
 
+_tg_down_alerted: dict = {}
+
+
+async def _post_external_alert(text: str) -> bool:
+    """Тревога МИМО Telegram: ALERT_WEBHOOK_URL (ntfy.sh/топик, Slack-совместимый
+    вебхук и т.п.) принимает POST текстом. Не задан — только лог и /api/health."""
+    url = (os.getenv("ALERT_WEBHOOK_URL") or "").strip()
+    if not url:
+        return False
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(url, content=text.encode("utf-8"),
+                             headers={"Title": "Floaters Desk", "Content-Type": "text/plain; charset=utf-8"})
+        return r.status_code < 400
+    except Exception as e:
+        logger.warning("external alert failed: %s", e)
+        return False
+
+
+async def telegram_watchdog(period_sec: int = 60):
+    """Сторож канала Telegram. Все остальные сторожа шлют тревоги ЧЕРЕЗ него,
+    поэтому его падение (прокси выведен из подписки, 09–12.10.2026) длилось три
+    дня незамеченным. Здесь тревога идёт внешним каналом и в /api/health."""
+    from services import telegram
+    await asyncio.sleep(180)
+    while True:
+        try:
+            st = telegram.channel_status()
+            if st["state"] == "down":
+                msg = (f"Telegram недоступен {st['down_sec'] // 60} мин: сигналы и "
+                       f"тревоги не доставляются. Проверь прокси tgproxy / подписку.")
+                logger.error("TELEGRAM: %s", msg)
+                now = time.monotonic()
+                if now - _tg_down_alerted.get("t", float("-inf")) >= STREAM_ALERT_REPEAT_MIN * 60:
+                    if await _post_external_alert("🛑 " + msg):
+                        _tg_down_alerted["t"] = now
+            elif _tg_down_alerted:
+                _tg_down_alerted.clear()
+                logger.warning("TELEGRAM: канал восстановился")
+                await _post_external_alert("✅ Telegram снова доступен")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("telegram watchdog error: %s", e)
+        await asyncio.sleep(period_sec)
+
+
 ARCHIVE_VACUUM_MIN_ROWS = int(os.getenv("ARCHIVE_VACUUM_MIN_ROWS", "200000"))
 
 
@@ -1542,6 +1590,8 @@ async def lifespan(app: FastAPI):
     _daemon("trades-pool", trades_stream_pool)
     _daemon("metrics-engine", metrics_worker)
     _daemon("loop-lag-watchdog", loop_lag_watchdog)
+    # канал Telegram: внешняя тревога мимо него самого (ALERT_WEBHOOK_URL)
+    _daemon("telegram-watchdog", telegram_watchdog)
     # тихий отказ стримов выглядит как «рынок спокоен» — сторож делает его громким
     _daemon("stream-watchdog", stream_watchdog)
     # место на диске и свежесть копий: оба отказа тихие, см. disk_watchdog

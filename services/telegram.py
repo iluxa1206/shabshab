@@ -10,6 +10,7 @@ Bot API в прокси — биржевой трафик (Alor/MOEX/ЦБ) ид�
 import asyncio
 import logging
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -63,6 +64,36 @@ async def aclose() -> None:
     _clients.clear()
 
 
+# Состояние канала для сторожа и /api/health: ТЕЛЕГРАМ НЕ МОЖЕТ СООБЩИТЬ О СВОЕЙ
+# ЖЕ ПОЛОМКЕ, поэтому о ней нужен внешний путь (api.main.telegram_watchdog).
+# Успех — любой ответ Bot API (в т.ч. ok=false: канал жив, ошибка прикладная);
+# отказ — исчерпанные ретраи по сети.
+_STARTED = time.time()
+_state = {"last_ok": 0.0, "last_fail": 0.0, "fails": 0}
+
+
+def _mark(ok: bool) -> None:
+    if ok:
+        _state["last_ok"], _state["fails"] = time.time(), 0
+    else:
+        _state["last_fail"] = time.time()
+        _state["fails"] += 1
+
+
+def channel_status(now: Optional[float] = None) -> dict:
+    """{state: off|ok|down, down_sec}. down — подряд ≥3 отказа и ни одного
+    успеха дольше DOWN_AFTER_SEC (с рестарта процесса, если успехов не было)."""
+    now = now or time.time()
+    if not enabled():
+        return {"state": "off", "down_sec": 0}
+    since_ok = now - max(_state["last_ok"], _STARTED)
+    if _state["fails"] >= 3 and since_ok >= DOWN_AFTER_SEC:
+        return {"state": "down", "down_sec": int(since_ok)}
+    return {"state": "ok", "down_sec": 0}
+
+
+DOWN_AFTER_SEC = float(os.getenv("TG_DOWN_AFTER_SEC", "300"))
+
 # Описание последней ошибки Bot API: вызывающему нужен не факт неудачи, а её
 # причина (конфликт вебхука лечится, сетевой сбой — нет).
 last_error: dict = {"method": None, "description": None}
@@ -91,6 +122,7 @@ async def call(method: str, payload: Optional[dict] = None,
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             body = r.json()
+            _mark(True)
             if not body.get("ok"):
                 desc = body.get("description") or ""
                 logger.warning("tg %s error: %s", method, desc)
@@ -112,6 +144,7 @@ async def call(method: str, payload: Optional[dict] = None,
         except httpx.HTTPError as e:
             logger.warning("tg %s http error (attempt %d): %s", method, attempt + 1, e)
             await asyncio.sleep(1.5 * (attempt + 1))
+    _mark(False)
     return None
 
 
