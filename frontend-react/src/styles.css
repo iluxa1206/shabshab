@@ -3179,3 +3179,5 @@ tr:hover .tape-links, .tape-links:focus-within { opacity: 1; }
 .grid td.ccy { font-size: 11px; color: var(--mut); letter-spacing: .04em; }
 .grid td.ccy-fx { color: var(--fg); font-weight: 600; }
 .ccy-n { font-size: 10px; color: var(--mut); font-weight: 400; }
+/* «н/о» — число по смыслу не определено (валюта, бессрочная); не прочерк-дефект */
+.q-na { color: var(--mut); font-weight: 400; font-size: 10px; letter-spacing: .03em; cursor: help; }

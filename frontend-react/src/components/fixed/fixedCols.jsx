@@ -1,5 +1,6 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
 import { D, IsinCopy, Quote, IssueCell, isFreshIssue, isShortBond } from "../BondTable.jsx";
+import { yidxUndefinedReason } from "./currency.js";
 
 // Колонки МОНИТОРА ФИКСОВ. Формат тот же, что у флоатеров (см. BondTable.COLS):
 // key — ключ сортировки и видимости, w — ширина в ch по МАКСИМУМУ формата,
@@ -115,10 +116,10 @@ export const FIXED_COLS = [
   // ── рынок: стакан впереди последней сделки (торгуют по нему) ──
   { key: "ytm_bid", label: "BID", sub: "% / SPREAD / YTM", align: "num", sep: true, w: 9,
     cell: (b) => <Quote key="bid" side="bid" px={b.bid} spread={b.y_idx_bid_bps} ytm={b.ytm_bid}
-      vwap={b._vwap_bid} title={qTitle(b, "bid")} /> },
+      vwap={b._vwap_bid} title={qTitle(b, "bid")} na={yidxUndefinedReason(b)} /> },
   { key: "ytm_ask", label: "ASK", sub: "% / SPREAD / YTM", align: "num", w: 9,
     cell: (b) => <Quote key="ask" side="ask" px={b.ask} spread={b.y_idx_ask_bps} ytm={b.ytm_ask}
-      vwap={b._vwap_ask} title={qTitle(b, "ask")} /> },
+      vwap={b._vwap_ask} title={qTitle(b, "ask")} na={yidxUndefinedReason(b)} /> },
   { key: "last_price_pct", label: "PRICE", sub: "CLN %", align: "num", grp: true, w: 7,
     cell: (b) => <td className={"num px-last" + (b.price_stale ? " px-stale" : "")} key="last_price_pct"
       title={b.price_stale ? "пред. закрытие MOEX — сделок сегодня не было" : undefined}>
@@ -159,8 +160,12 @@ export const FIXED_COLS = [
   // классы сравнимы между собой (docs/unified_monitor_tz.md). G/Z — к КБД.
   { key: "yield_over_index_bps", label: "SPREAD", sub: "IRR−RUONIA", align: "num", grp: true, w: 9,
     title: "YTM − доходность роллирования RUONIA до того же горизонта, б.п. — база та же, что у флоатеров",
-    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.yield_over_index_bps)}
-      key="yield_over_index_bps">{fmt.bps(b.yield_over_index_bps) ?? <D />}</td> },
+    cell: (b) => {
+      const na = b.yield_over_index_bps == null ? yidxUndefinedReason(b) : null;
+      return <td className={"num" + ms(b)} style={dmColor(b.yield_over_index_bps)}
+        key="yield_over_index_bps" title={na || undefined}>
+        {na ? <span className="q-na">н/о</span> : fmt.bps(b.yield_over_index_bps) ?? <D />}</td>;
+    } },
   { key: "g_spread_bps", label: "G-SPRD", sub: "vs КБД", align: "num", w: 8,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.g_spread_bps)} key="g_spread_bps">
       {fmt.bps(b.g_spread_bps) ?? <D />}</td> },

@@ -49,7 +49,7 @@ export function wapSpread(b) {
 // subKind — что писать ПОД ценой: "bps" (спред, по умолчанию) или "pct"
 // (доходность). У фиксов вторая строка ячейки — YTM по этой же цене: знака у
 // неё нет, поэтому ни цвета, ни отклонения от семидневки там не рисуем.
-export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "bps", oos, ytm }) {
+export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "bps", oos, ytm, na }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
   const cls = side === "bid" ? " q-bid" : side === "ask" ? " q-ask" : "";
@@ -78,7 +78,8 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
            style={shown == null ? undefined : dmColor(shown)}
            title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
                                 : "спред к прежней цене — пересчитывается") : undefined}>
-        {shown == null ? (oos ? <Oos /> : <D />) : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
+        {shown == null ? (na ? <span className="q-na" title={na}>н/о</span> : oos ? <Oos /> : <D />)
+          : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
         {/* фикс: YTM по этой же цене в той же строке — «спред / ytm» */}
         {ytm !== undefined && (
           <span className="q-ytm" title="доходность к погашению по этой цене">

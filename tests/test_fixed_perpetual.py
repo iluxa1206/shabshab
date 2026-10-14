@@ -184,6 +184,13 @@ def _nornik_row(**kw):
     return row
 
 
+@pytest.fixture(autouse=True)
+def _no_fx(monkeypatch):
+    """Курс из файла кэша на диске — не фикстура: тесты о нём не знают."""
+    from services import fx
+    monkeypatch.setattr(fx, "cached_rate", lambda ccy: None)
+
+
 def test_currency_accrued_comes_from_schedule_in_face_ccy():
     out = fi.compute_fixed_row(_nornik_row(), NORNIK, None, CD)
     settle = settle_date(CD)
@@ -194,8 +201,22 @@ def test_currency_accrued_comes_from_schedule_in_face_ccy():
     ref = ((1014.0 / out["dirty"]) ** (365.0 / days) - 1) * 100
     assert out["ytm"] == pytest.approx(ref, abs=0.01)
     assert out["ytm"] > 0                                        # было −99.99
-    # рублёвый НКД в денежные поля объёма не просачивается
+    # рублёвый НКД в денежные поля объёма не просачивается; курса нет — денег нет
     assert out["accrued_rub"] is None and out["face_value_rub"] is None
+
+
+def test_currency_money_converted_by_rate(monkeypatch):
+    """Есть курс — номинал и НКД в рублях: фильтр объёма по стакану работает."""
+    from services import fx
+    monkeypatch.setattr(fx, "cached_rate", lambda ccy: 80.0 if ccy == "USD" else None)
+    out = fi.compute_fixed_row(_nornik_row(), NORNIK, None, CD)
+    settle = settle_date(CD)
+    acc_usd = 14.0 * (settle - date(2026, 4, 27)).days / (date(2026, 10, 27) - date(2026, 4, 27)).days
+    assert out["face_value_rub"] == pytest.approx(1000.0 * 80.0)
+    assert out["accrued_rub"] == pytest.approx(acc_usd * 80.0)
+    # рублёвая бумага курс не трогает
+    rub = fi.compute_fixed_row(_nornik_row(faceunit="SUR", accrued=12.34), NORNIK, None, CD)
+    assert rub["face_value_rub"] == pytest.approx(1000.0) and rub["accrued_rub"] == pytest.approx(12.34)
 
 
 def test_ruble_bond_keeps_exchange_accrued():

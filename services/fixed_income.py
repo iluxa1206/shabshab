@@ -777,6 +777,17 @@ def _ruble_face(row: dict) -> bool:
     return is_ruble(row.get("faceunit"))
 
 
+def _rub_money(v: Optional[float], row: dict, ruble_face: bool) -> Optional[float]:
+    """Сумма в валюте номинала → рубли по последнему известному курсу."""
+    if v is None:
+        return None
+    if ruble_face:
+        return v
+    from services.fx import cached_rate
+    rate = cached_rate(row.get("faceunit"))
+    return float(v) * rate if rate else None
+
+
 def _accrued_face_ccy(row: dict, full: dict, calc_date: date) -> Optional[float]:
     """НКД на дату поставки В ВАЛЮТЕ НОМИНАЛА — той же, что поток и цена в %.
 
@@ -940,11 +951,14 @@ def compute_fixed_row(row: dict, full: dict, g_curve, calc_date: date,
         # номинал на дату поставки и НКД — из них считаются ДЕНЬГИ уровня стакана
         # (фильтр по объёму: qty × (номинал × цена% + НКД)); имена те же, что у
         # флоатеров, чтобы арифметика книги на фронте была одна на две витрины
-        # Фильтр объёма задан в рублях. Для валютного номинала не подменяем
-        # номинальные деньги рублями без FX-конверсии: такой фильтр выключит
-        # строку, а не нарисует ложный объём.
-        "face_value_rub": m.get("face_current") if ruble_face else None,
-        "accrued_rub": row.get("accrued") if ruble_face else None,
+        # Фильтр объёма задан в рублях. У валютного номинала деньги — номинал и
+        # НКД в валюте × курс (тот же расчёт, что у тика: trades_stream._tick_value);
+        # курса нет — None: фильтр выключит строку, а не нарисует ложный объём.
+        "face_value_rub": _rub_money(m.get("face_current"), row, ruble_face),
+        # у валютной бумаги row["accrued"] — биржевой, УЖЕ в рублях и не наш НКД
+        # (см. _accrued_face_ccy); берём НКД по графику в валюте номинала × курс
+        "accrued_rub": (row.get("accrued") if ruble_face
+                        else _rub_money(accrued, row, ruble_face)),
     })
     # МЕТРИКИ ПО ДРУГИМ ЦЕНАМ той же бумаги: средневзвес дня и стороны стакана.
     # Средневзвес — база аналитики: last price это ОДНА сделка, в неликвиде

@@ -3,7 +3,9 @@ from datetime import date
 from services import fixed_income as fi
 
 
-def test_currency_fixed_is_in_universe_and_ruble_curve_is_not_applied():
+def test_currency_fixed_is_in_universe_and_ruble_curve_is_not_applied(monkeypatch):
+    from services import fx
+    monkeypatch.setattr(fx, "cached_rate", lambda ccy: None)   # курс — не предмет теста
     row = {"isin": "RU000A1USD01", "secid": "USD01", "coupon_pct": 7.0,
            "maturity_date": "2030-01-01", "faceunit": "USD"}
     assert fi._is_fixed(row, "TQCB", set()) is True

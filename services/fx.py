@@ -44,6 +44,33 @@ _tom_last: dict = {"ts": 0.0, "rates": None, "upd": None}
 _TOM_STALE_OK = 900.0  # сек
 
 
+_disk_mem: dict = {"ts": 0.0, "data": None}
+
+
+def cached_rate(ccy: Optional[str]) -> Optional[float]:
+    """Последний известный курс ₽ за единицу валюты — СИНХРОННО и без сети.
+
+    Нужен расчётам, которые идут в чистых функциях (деньги уровня стакана у
+    валютного номинала): get_fx() — корутина с сетью. Берёт срез из памяти
+    (его обновляют стрим тиков и ручки), иначе из файла на диске (кэш минуты).
+    Нет курса — None: вызывающий оставляет «рублей» пустым, а не угадывает."""
+    from services.currency import normalize_ccy
+    u = normalize_ccy(ccy)
+    if u == "RUB":
+        return 1.0
+    data = _mem["data"]
+    if not data:
+        now = time.monotonic()
+        if now - _disk_mem["ts"] > 60.0:
+            _disk_mem.update({"ts": now, "data": _load_disk()})
+        data = _disk_mem["data"]
+    r = ((data or {}).get("rates") or {}).get(u)
+    try:
+        return float(r) if r and float(r) > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _load_disk() -> Optional[dict]:
     try:
         with open(FX_CACHE_FILE, "r", encoding="utf-8") as f:

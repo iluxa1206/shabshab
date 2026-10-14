@@ -136,6 +136,25 @@ describe("купон, продлённый до погашения", () => {
   });
 });
 
+describe("валютные и бессрочные: спред «не определён»", () => {
+  it("USD-фикс: в BID «н/о» с причиной и YTM рядом, в SPREAD «н/о»", () => {
+    const rows = [{ isin: "RU000A10A802", name: "РФ ЗО 42 Д", cls: "corp", face_unit: "USD",
+                    bid: 68.7, ask: 69.0, ytm_bid: 9.75, ytm: 9.8 }];
+    const { container } = render(<Host storageKey="t_na" rows={rows} />);
+    const bid = container.querySelector("td.q-bid");
+    expect(bid.querySelector(".q-na").textContent).toBe("н/о");
+    expect(bid.querySelector(".q-na").getAttribute("title")).toMatch(/RUONIA/);
+    expect(bid.querySelector(".q-ytm").textContent).toContain("9");
+    expect(container.querySelector("tbody").textContent).toContain("н/о");
+  });
+  it("рублёвый фикс без спреда — прочерк, не «н/о»", () => {
+    const rows = [{ isin: "RU000A10RZD1", name: "РЖД", cls: "corp", face_unit: "RUB",
+                    bid: 99.62, ytm_bid: 15.1 }];
+    const { container } = render(<Host storageKey="t_na2" rows={rows} />);
+    expect(container.querySelector("td.q-bid .q-na")).toBeNull();
+  });
+});
+
 describe("сторона стакана фикса", () => {
   it("под ценой BID — одна строка «спред / YTM» к той же цене", () => {
     const rows = [{ isin: "RU000A10RZD1", name: "РЖД 1Р-05R", cls: "corp", bid: 99.62,
