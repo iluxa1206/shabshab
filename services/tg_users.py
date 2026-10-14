@@ -27,10 +27,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def legacy_email(tg_user_id: int) -> str:
-    return f"{LEGACY_PREFIX}{tg_user_id}"
-
-
 def get(tg_user_id: int) -> Optional[dict]:
     with _connect() as c:
         r = c.execute("SELECT * FROM tg_users WHERE tg_user_id=?",
@@ -82,12 +78,6 @@ def list_all() -> List[dict]:
             "CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, "
             "created_at DESC").fetchall()
     return [dict(r) for r in rows]
-
-
-def pending_count() -> int:
-    with _connect() as c:
-        return c.execute("SELECT COUNT(*) FROM tg_users "
-                         "WHERE status='pending'").fetchone()[0]
 
 
 def approve(tg_user_id: int, email: str, by: str) -> Optional[dict]:

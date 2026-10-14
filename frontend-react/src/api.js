@@ -210,23 +210,17 @@ export const fetchKsPath = (series = "ks") => request(`/api/curves/ks-path?serie
 // и наш расчётный на тех же ставках — сверка нашей механики с эталоном.
 export const fetchRuoniaIndex = (days = 400) => request(`/api/curves/ruonia-index?days=${days}`);
 
-export function fetchBonds({ withVal, universe, extra, volBid, volAsk, cols, signal }) {
-  let url;
-  if (universe) {
-    url = `/api/bonds?universe=true&limit=2000`;
-    // ВИДИМЫЕ КОЛОНКИ — бэку: движок не тратит такт на спреды сторон, когда их
-    // колонки выключены (см. universe_stream.register_metric_scope)
-    if (cols?.length) url += `&cols=${encodeURIComponent(cols.join(","))}`;
-    // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
-    if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
-    // размеры тикета — чтобы бэк посчитал Y-IDX цены набора ПО МЕТОДИКЕ
-    // (в браузере это считалось наклоном от якоря, см. vwap.js)
-    if (volBid > 0) url += `&vol_bid=${volBid}`;
-    if (volAsk > 0) url += `&vol_ask=${volAsk}`;
-  } else {
-    url = `/api/bonds?with_market=true&with_valuation=${withVal}&limit=500`;
-    if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
-  }
+export function fetchBonds({ extra, volBid, volAsk, cols, signal }) {
+  let url = `/api/bonds?universe=true&limit=2000`;
+  // ВИДИМЫЕ КОЛОНКИ — бэку: движок не тратит такт на спреды сторон, когда их
+  // колонки выключены (см. universe_stream.register_metric_scope)
+  if (cols?.length) url += `&cols=${encodeURIComponent(cols.join(","))}`;
+  // watchlist (extra) обогащается live-ценой/dirty/DM/купоном на бэке
+  if (extra && extra.length) url += `&extra=${encodeURIComponent(extra.join(","))}`;
+  // размеры тикета — чтобы бэк посчитал Y-IDX цены набора ПО МЕТОДИКЕ
+  // (в браузере это считалось наклоном от якоря, см. vwap.js)
+  if (volBid > 0) url += `&vol_bid=${volBid}`;
+  if (volAsk > 0) url += `&vol_ask=${volAsk}`;
   return request(url, { signal });
 }
 

@@ -20,6 +20,13 @@
 - **xray:** исправленный `xray_sub_update.py` (с откатом) на проде, cron
   `/etc/cron.d/xray-sub-update` каждые 6 ч в :17, лог `/var/log/xray_sub_update.log`.
 - **Тесты:** `AuctionDesk` больше не зависит от даты (фиксируем `Date`); фронт 227/227.
+- **Чистка (14.10):** `/api/bonds` — один режим, весь юниверс; старая ветка без `universe`
+  (isins.txt + отдельный `calculate_valuation_metrics`) удалена. Параметры `universe`,
+  `with_market`, `with_valuation`, `fields` убраны; появился `only=<ISIN>` — строка одной
+  бумаги (страница графика раньше не получала рейтинг и эмитента из-за старой ветки).
+  Удалены заглушка `/api/bonds/filters`, дубль `/api/bonds/search` (поиск —
+  `/api/signals/search`), модуль `services/benchmarks.py` (остаток «Фондов») и 15 функций без
+  вызовов. `isins_cache.json`/`get_local_bond_cache` НЕ тронуты: им пользуются ~20 мест.
 
 ## Обновление 12.10.2026 — сверка прода и инцидент Telegram
 

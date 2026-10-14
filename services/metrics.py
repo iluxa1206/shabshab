@@ -124,17 +124,6 @@ def carry_bps(coupon_yield_pct: Optional[float], base_rate_pct: Optional[float])
     return round((coupon_yield_pct - base_rate_pct) * 100)
 
 
-def breakeven_base_pct(coupon_yield_pct: Optional[float], base_rate_pct: Optional[float],
-                       spread_issue_bps: Optional[int]) -> Optional[float]:
-    """Уровень базовой ставки, ниже которого купон флоатера после рефиксинга
-    станет меньше текущей купонной доходности (carry-эдж исчезает):
-    купон(B) = B + spread < coupon_yield  ⇔  B < coupon_yield − spread.
-    Показывает, сколько «пространства снижения КС» есть до потери привлекательности."""
-    if coupon_yield_pct is None:
-        return None
-    return round(coupon_yield_pct - (spread_issue_bps or 0) / 100.0, 2)
-
-
 def face_on_date(face_value: float, amorts, start: date, calc_date: date) -> float:
     """Номинал, действовавший на дату start ≤ calc_date: остаток на calc_date +
     амортизации, выплаченные в (start, calc_date]. Нужен, чтобы ставку купона
@@ -205,12 +194,3 @@ def carry_refix_block(coupons, amorts, face_value: float, price_pct: Optional[fl
     }
 
 
-def rank_pct(value: Optional[float], peers: list) -> Optional[int]:
-    """Перцентиль value среди peers (доля peers со значением ≤ value), 0..100.
-    Для z-спреда внутри рейтингового бакета: высокий перцентиль = бумага дороже
-    отдаёт спред, чем группа (потенциально дёшево/rich-cheap-скрин)."""
-    vals = [v for v in peers if v is not None]
-    if value is None or len(vals) < 3:
-        return None
-    below = sum(1 for v in vals if v <= value)
-    return round(100 * below / len(vals))

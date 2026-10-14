@@ -336,7 +336,7 @@ function Dashboard() {
     try {
       // visibleCols едут на бэк: движок пропускает счёт того, чего никто не
       // видит (спреды сторон). См. universe_stream.register_metric_scope.
-      const r = await fetchBonds({ universe: true, extra: watch, volBid, volAsk,
+      const r = await fetchBonds({ extra: watch, volBid, volAsk,
                                   cols: visibleColsRef.current,
                                   signal: ctrl.signal });
       const items = r.items || [];

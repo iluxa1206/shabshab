@@ -164,7 +164,7 @@ export default function CalcModule({ initialKind = "fixed" }) {
   const fixedQ = useQuery({ queryKey: ["fixed"], queryFn: fetchFixed,
     staleTime: 60000, enabled: !isFloat });
   const floatQ = useQuery({ queryKey: ["calc-floaters"],
-    queryFn: ({ signal }) => fetchBonds({ universe: true, signal }),
+    queryFn: ({ signal }) => fetchBonds({ signal }),
     staleTime: 60000, enabled: isFloat });
   const uniQ = isFloat ? floatQ : fixedQ;
   const all = uniQ.data?.items || [];

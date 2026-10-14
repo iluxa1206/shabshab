@@ -20,7 +20,7 @@ import httpx
 # Клиент MOEX — только через фабрику: она одна знает про MOEX_PROXY
 from services.market_data import moex_client
 
-from services.market_data import MarketDataService, _moex_get
+from services.market_data import _moex_get
 
 from services.paths import cache_path as _cache_path
 CLASS_CACHE_FILE = _cache_path("instrument_class_cache.json")
@@ -136,32 +136,3 @@ def _classify_one(isin: str, sec: Optional[dict], desc: Optional[dict],
     return "unknown"
 
 
-async def classify(isins: List[str]) -> Dict[str, dict]:
-    """{isin: {'cls', 'label', 'ccy', 'name', 'sec'}} — класс + справочник MOEX."""
-    if not isins:
-        return {}
-    from services import instruments_registry
-    sec_map, desc_map, uni = await asyncio.gather(
-        MarketDataService.fetch_moex_securities(isins),
-        _fetch_descriptions(isins),
-        instruments_registry.fetch_floater_universe(),
-    )
-    floater_isins = {u.get("isin") for u in (uni or []) if u.get("isin")}
-    out: Dict[str, dict] = {}
-    for isin in isins:
-        sec = sec_map.get(isin)
-        desc = desc_map.get(isin)
-        cls = _classify_one(isin, sec, desc, floater_isins)
-        ccy = ((sec or {}).get("face_unit") or "RUB").upper()
-        if ccy in ("CNH",):
-            ccy = "CNY"
-        elif ccy in ("SUR",):
-            ccy = "RUB"
-        out[isin] = {
-            "cls": cls,
-            "label": CLASS_LABELS.get(cls, cls),
-            "ccy": ccy,
-            "name": (sec or {}).get("name") or (desc or {}).get("shortname") or isin,
-            "sec": sec or {},
-        }
-    return out

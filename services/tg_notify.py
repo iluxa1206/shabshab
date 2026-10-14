@@ -455,18 +455,6 @@ def _match_parts(m: dict, kind: str, side: Optional[str] = None,
             " · ".join(b for b in foot if b))
 
 
-def _fmt_match(m: dict, kind: str, side: Optional[str] = None,
-               icons: Optional[dict] = None, with_foot: bool = True) -> str:
-    """Запись без стакана — сделки идут пачкой, книгу к ним не прикладываем.
-
-    with_foot=False, когда время уезжает в подпись сообщения (одна сделка на
-    сообщение): дважды его печатать незачем."""
-    head, px, details, foot = _match_parts(m, kind, side, icons)
-    top = "\n".join(p for p in (head, px) if p)
-    parts = [top, details] + ([foot] if with_foot else [])
-    return "\n\n".join(p for p in parts if p)
-
-
 # Сколько уровней стакана прикладывать к заявке. Четыре — компромисс: экран
 # телефона, а глубже верха книги сигнал всё равно не про что.
 BOOK_LEVELS = int(os.getenv("TG_BOOK_LEVELS", "4"))

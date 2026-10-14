@@ -661,24 +661,6 @@ def last_trade_day(isin: str) -> Optional[str]:
     return r[0][:10] if r and r[0] else None
 
 
-def count_trades(isin: str, frm: Optional[str] = None, min_value: float = 0,
-                 side: Optional[str] = None) -> int:
-    """Сколько сделок подходит под фильтр — чтобы клиент видел усечение лимитом."""
-    q = "SELECT COUNT(*) FROM trade_tick WHERE isin=?"
-    args: list = [isin]
-    if frm:
-        q += " AND ts >= ?"
-        args.append(frm)
-    if min_value:
-        q += " AND value >= ?"
-        args.append(min_value)
-    if side in ("buy", "sell"):
-        q += " AND side = ?"
-        args.append(side)
-    with _connect() as c:
-        return int(c.execute(q, args).fetchone()[0])
-
-
 def _tape_where(frm: Optional[str], till: Optional[str], min_value: float,
                 side: Optional[str], isins: Optional[list[str]]) -> tuple[str, list]:
     """Общий WHERE ленты рынка — чтобы строки и агрегат считались по одному фильтру."""

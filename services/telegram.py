@@ -169,15 +169,6 @@ async def send_message(chat_id: int, text: str, *,
     return await call("sendMessage", payload)
 
 
-async def send_photo(chat_id: int, png: bytes, caption: str = "", *,
-                     parse_mode: Optional[str] = "HTML") -> Optional[dict]:
-    payload = {"chat_id": chat_id, "caption": caption}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    return await call("sendPhoto", payload,
-                      files={"photo": ("orderbook.png", png, "image/png")})
-
-
 async def send_media_group(chat_id: int, items: list, *,
                            parse_mode: Optional[str] = "HTML",
                            disable_notification: bool = False) -> Optional[dict]:
@@ -209,7 +200,3 @@ async def send_media_group(chat_id: int, items: list, *,
     return await call("sendMediaGroup", payload, files=files, timeout=90.0)
 
 
-async def set_webhook(url: str, secret_token: str) -> Optional[dict]:
-    return await call("setWebhook", {
-        "url": url, "secret_token": secret_token,
-        "allowed_updates": ["message"], "drop_pending_updates": True})

@@ -7,22 +7,20 @@ from typing import Optional, Literal, Dict
 from fastapi import APIRouter, Query, Path, HTTPException
 
 from api.schemas import (
-    BondListItem, BondListResponse, BondFiltersResponse,
+    BondListItem, BondListResponse,
     BondDetailsResponse, CashflowResponse,
     RepriceResponse, BondAuditResponse, CouponDaysResponse,
     PaymentsCalendarResponse,
 )
 from services.market_data import MarketDataService
 from services.bonds import (
-    create_bond_ref_data, build_ref_external, external_formula, next_coupon_after,
+    create_bond_ref_data, external_formula,
     coupons_per_year as _coupons_per_year,
 )
-from services.valuation import calculate_valuation_metrics
 from services.exceptions import NotFoundException
 from services import instruments_registry
 from services import live_quotes
 from services.paths import cache_path as _cache_path
-from core.cashflow import read_isins_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -262,166 +260,39 @@ def _vol_fields(mx: dict, vol_bid: Optional[float], vol_ask: Optional[float]) ->
 async def get_bonds(
     limit: int = Query(50, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    with_market: bool = Query(True),
-    with_valuation: bool = Query(False),
-    universe: bool = Query(False, description="Весь юниверс флоатеров из реестра"),
-    kinds: str = Query("floater", description="С universe: классы через запятую — floater,fixed"),
-    only: Optional[str] = Query(None, description="С universe: только эта бумага (ISIN)"),
+    kinds: str = Query("floater", description="Классы через запятую — floater,fixed"),
+    only: Optional[str] = Query(None, description="Только эта бумага (ISIN)"),
     extra: Optional[str] = Query(None, description="Доп. ISIN'ы (через запятую) — любые бумаги вне списка"),
-    fields: Optional[str] = Query(None),
     vol_bid: Optional[float] = Query(None, description="Тикет на биде, ₽ — вернуть цену набора и её Y-IDX"),
     vol_ask: Optional[float] = Query(None, description="Тикет на оффере, ₽"),
     cols: Optional[str] = Query(None, description="Видимые колонки через запятую — "
                                                   "движок не считает то, чего никто не видит")
 ):
-    base_dir = get_base_dir()
-    isins_path = os.path.join(base_dir, "isins.txt")
-    cache_path = _cache_path("isins_cache.json")
-
-    try:
-        isins = read_isins_from_file(isins_path)
-    except Exception:
-        isins = []
-
+    """Список облигаций витрины. Единственный режим — весь юниверс из реестра;
+    прежняя ветка без universe (isins.txt + отдельный расчёт через
+    calculate_valuation_metrics) удалена 14.10.2026: вызывающих не осталось, а
+    путь расчёта дублировал движок и не заполнял рейтинг/эмитента."""
+    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
     extra_list = [x.strip().upper() for x in (extra.split(",") if extra else []) if x.strip()]
     extra_list = [x for x in extra_list if _ISIN_RE.fullmatch(x)]  # мусор молча отбрасываем
-    cache = MarketDataService.get_local_bond_cache(cache_path)
-
-    if universe:
-        # размеры тикета регистрируем В ДВИЖКЕ: он посчитает Y-IDX цены набора в
-        # своём такте по методике, а ручка только выберет нужный размер. Считать
-        # здесь нельзя — это 13 мс на бумагу, то есть секунды на весь универс.
-        if vol_bid or vol_ask:
-            from services.universe_stream import register_vol_sizes
-            register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
-        # ВИДИМЫЕ КОЛОНКИ — туда же и по той же причине: спреды сторон считает
-        # отдельная очередь, и при выключенных колонках она забирала такт у
-        # того, что на экране действительно есть.
-        if cols:
-            from services.universe_stream import register_metric_scope
-            register_metric_scope([c.strip() for c in cols.split(",") if c.strip()])
-        kind_set = {k.strip() for k in kinds.split(",") if k.strip()}
-        only_isin = only.strip().upper() if only else None
-        if only_isin and not _ISIN_RE.fullmatch(only_isin):
-            only_isin = "-"            # мусор не должен превращаться в «весь рынок»
-        return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask,
-                                     kind_set, only_isin)
-
-    # добавленные пользователем бумаги (watchlist) — в начало, чтобы были видны
-    base_set = set(isins)
-    all_isins = [e for e in extra_list if e not in base_set] + isins
-
-    total = len(all_isins)
-    paginated_isins = all_isins[offset:offset + limit]
-
-    external = [i for i in paginated_isins if i not in cache]
-
-    market_prices = {}
-    prev_close_prices = {}
-    ruonia_curve = keyrate_curve = calc_date = rates_date = None
-    moex_snapshot = {}
-    moex_ref = {}
-    schedules = {}
-
-    if with_market or with_valuation:
-        market_prices = await MarketDataService.fetch_last_prices(paginated_isins)
-        moex_snapshot = await MarketDataService.fetch_moex_snapshot(paginated_isins)
-        prev_close_prices = {i: v["prev"] for i, v in moex_snapshot.items() if v.get("prev") is not None}
-        ruonia_curve, keyrate_curve, calc_date, rates_date = await MarketDataService.get_curves()
-
-    if with_valuation:
-        schedules = await MarketDataService.fetch_coupon_schedules(paginated_isins)
-
-    if external:
-        moex_ref = await MarketDataService.fetch_moex_securities(external)
-
-    if not calc_date:
-        calc_date = rates_date or date.today()
-
-    items = []
-
-    for isin in paginated_isins:
-        data = cache.get(isin)
-        if data:
-            ref_obj = create_bond_ref_data(data, isin)
-            short_name = data.get("SHORTNAME", "")
-            formula = data.get("FORMULA", "")
-        else:
-            # внешняя бумага: справочник MOEX + база/спред из Cbonds-справки
-            ref_obj = build_ref_external(isin, moex_ref.get(isin, {}))
-            short_name = (moex_ref.get(isin) or {}).get("name") or isin
-            formula = external_formula(ref_obj)
-
-        last_price_pct = prev_close_pct = dirty_price_rub = dm_bps = delta_to_prev_close = None
-        yield_xirr_pct = index_yield_pct = None
-
-        if with_market:
-            last_price_pct = market_prices.get(isin)
-            prev_close_pct = prev_close_prices.get(isin) or (moex_ref.get(isin) or {}).get("prev")
-            if last_price_pct is not None and prev_close_pct is not None:
-                delta_to_prev_close = round(last_price_pct - float(prev_close_pct), 4)
-
-        if with_valuation and last_price_pct is not None and (ruonia_curve or keyrate_curve) and ref_obj.base in ("RUONIA", "KEYRATE"):
-            curve = ruonia_curve if ref_obj.base == "RUONIA" else keyrate_curve
-            try:
-                metrics = calculate_valuation_metrics(
-                    ref_obj, last_price_pct, curve, calc_date,
-                    accrued_override=moex_snapshot.get(isin, {}).get("accrued"),
-                    periods=schedules.get(isin),
-                    ruonia_curve=ruonia_curve,
-                )
-                dirty_price_rub = metrics.get("dirty_price_rub")
-                dm_bps = metrics.get("dm_bps")
-                yield_xirr_pct = metrics.get("yield_xirr_pct")
-                index_yield_pct = metrics.get("index_yield_pct")
-            except Exception:
-                pass
-
-        items.append(
-            BondListItem(
-                isin=isin,
-                short_name=short_name,
-                base_rate_type=ref_obj.base,
-                face_index=ref_obj.face_index,
-                formula=formula,
-                spread_issue_bps=ref_obj.spread_issue_bps,
-                coupons_per_year=_coupons_per_year(ref_obj.coupon_period_days,
-                                                   ref_obj.coupons_per_year),
-                maturity_date=ref_obj.maturity_date,
-                next_coupon_date=next_coupon_after(ref_obj, calc_date),
-                last_price_pct=last_price_pct,
-                dirty_price_rub=dirty_price_rub,
-                dm_bps=dm_bps,
-                delta_to_prev_close=delta_to_prev_close,
-                yield_xirr_pct=yield_xirr_pct,
-                index_yield_pct=index_yield_pct,
-            )
-        )
-
-    return BondListResponse(items=items, total=total, limit=limit, offset=offset)
-
-
-@router.get("/search", tags=["Bonds"])
-async def search_bonds(q: str = Query(..., min_length=2)):
-    """Поиск облигаций на MOEX по названию/ISIN для добавления в список."""
-    return {"items": await MarketDataService.search_bonds(q)}
-
-
-@router.get("/filters", response_model=BondFiltersResponse, tags=["Bonds"])
-async def get_bond_filters():
-    cache = MarketDataService.get_local_bond_cache(_cache_path("isins_cache.json"))
-    
-    bases = set()
-    for isin, data in cache.items():
-        ref = create_bond_ref_data(data, isin)
-        bases.add(ref.base)
-        
-    return BondFiltersResponse(
-        issuers=["MOEX Issuers"], # Placeholder, would extract from actual data if available
-        classes=["Floater"],
-        base_rates=sorted(list(bases - {"UNKNOWN"})),
-        maturities=["1Y", "3Y", "5Y", "10Y"] # Placeholder, can be generated dynamically
-    )
+    # размеры тикета регистрируем В ДВИЖКЕ: он посчитает Y-IDX цены набора в
+    # своём такте по методике, а ручка только выберет нужный размер. Считать
+    # здесь нельзя — это 13 мс на бумагу, то есть секунды на весь универс.
+    if vol_bid or vol_ask:
+        from services.universe_stream import register_vol_sizes
+        register_vol_sizes([v for v in (vol_bid, vol_ask) if v])
+    # ВИДИМЫЕ КОЛОНКИ — туда же и по той же причине: спреды сторон считает
+    # отдельная очередь, и при выключенных колонках она забирала такт у того,
+    # что на экране действительно есть.
+    if cols:
+        from services.universe_stream import register_metric_scope
+        register_metric_scope([c.strip() for c in cols.split(",") if c.strip()])
+    kind_set = {k.strip() for k in kinds.split(",") if k.strip()}
+    only_isin = only.strip().upper() if only else None
+    if only_isin and not _ISIN_RE.fullmatch(only_isin):
+        only_isin = "-"            # мусор не должен превращаться в «весь рынок»
+    return await _universe_bonds(extra_list, cache, limit, offset, vol_bid, vol_ask,
+                                 kind_set, only_isin)
 
 
 # ВАЖНО: до /{isin}, иначе "calendar" матчится как ISIN-путь

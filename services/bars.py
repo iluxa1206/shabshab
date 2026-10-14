@@ -698,12 +698,6 @@ def read_bars(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
     return [dict(r) for r in reversed(rows)]
 
 
-def last_bar_ts(isin: str) -> Optional[str]:
-    with _connect() as c:
-        r = c.execute("SELECT MAX(ts) t FROM bar_hourly WHERE isin=?", (isin,)).fetchone()
-    return r["t"] if r and r["t"] else None
-
-
 # ── Дневная свёртка (bar_daily) ────────────────────────────────────────────
 # Цена и спред каждого ЧАСА уже посчитаны и проштампованы metrics_ver, поэтому
 # день — чистая агрегация: ни сети, ни солвера. Считается один раз и лежит в

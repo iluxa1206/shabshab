@@ -98,10 +98,6 @@ def set_done(key: str, done: int, detail: Optional[str] = None,
           (done, detail, _now(), key))
 
 
-def set_total(key: str, total: int) -> None:
-    _exec("UPDATE job_progress SET total=?, updated_at=? WHERE key=?", (total, _now(), key))
-
-
 def finish(key: str, detail: Optional[str] = None, error: Optional[str] = None) -> None:
     """Закрыть задачу: state=done либо failed (при error).
 

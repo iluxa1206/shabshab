@@ -12,7 +12,7 @@
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List
 
 from services.portfolio_db import _connect, _lock
 
@@ -85,5 +85,3 @@ def muted_set(chat_id: int) -> set:
         return set()
 
 
-def is_muted(chat_id: int, isin: Optional[str]) -> bool:
-    return bool(isin) and (isin or "").strip().upper() in muted_set(chat_id)

@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import date, timedelta
+from datetime import date
 import pandas as pd
 
 
@@ -53,14 +53,6 @@ def get_local_excel_db(base_dir: str) -> dict[str, dict]:
         isin = row["ISIN"]
         result[isin] = row.to_dict()
     return result
-
-
-def adjust_following(d: date) -> date:
-    if d.weekday() == 5:
-        return d + timedelta(days=2)
-    if d.weekday() == 6:
-        return d + timedelta(days=1)
-    return d
 
 
 def parse_base_and_spread(formula: str, base_rate: str | None) -> tuple[str | None, int]:
