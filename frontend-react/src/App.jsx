@@ -7,7 +7,12 @@ import { mergeStreamedQuote, quoteChanges, QUOTE_METRIC_FIELDS,
   streamMetricPatch, wapMetricPatch, applyWapQuote } from "./quotesMerge.js";
 import { sortRows, filterByAdv, filterBySpread } from "./tableRows.js";
 import { PageStatusProvider } from "./pageStatus.jsx";
-import { applyVolume } from "./vwap.js";
+import { applyVolume, FIXED_VOL_FIELDS } from "./vwap.js";
+import { useFixedFeed } from "./useFixedFeed.js";
+import { withFixedAliases, passesFixedDefaults, unifiedSortValue } from "./unifiedRows.js";
+import { UNIFIED_COLS } from "./components/unifiedCols.jsx";
+import { useFixedCols } from "./components/fixed/FixedTable.jsx";
+import { DEFAULT_FIXED_CURRENCIES, fixedCurrency, isDefaultFixedCurrencySelection } from "./components/fixed/currency.js";
 import { sideProgress } from "./spreadProgress.js";
 import { filterBonds } from "./search.js";
 import { horizonDate } from "./horizon.js";
@@ -50,7 +55,7 @@ const ChartPage = lazy(() => import("./components/ChartPage.jsx"));
 // (?base=RUONIA&rt=AAA&rt=AA), чтобы не ломаться на именах эмитентов с запятыми.
 // vol/mf/mt — старые ключи (единый объём, даты погашения), держим в списке,
 // чтобы вычищать их из старых ссылок
-const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "advf", "advm", "nosub", "noam", "nodead", "cls"];
+const FILTER_KEYS = ["q", "watch", "base", "rt", "em", "two", "vol", "vb", "va", "vm", "mf", "mt", "myf", "myt", "sf", "st", "advf", "advm", "nosub", "noam", "nodead", "cls", "nostr", "fadv", "fccy"];
 // Субординация — по имени бумаги: отдельного признака нет ни у MOEX, ни у
 // corpbonds, а маркер в short_name — устойчивая конвенция («ВТБСУБ1-12»,
 // «ВТБСУБТ1Р2»). Ловим и добавочный капитал (Т1/T1, перп).
@@ -94,6 +99,12 @@ function Dashboard() {
   const [errMsg, setErrMsg] = useState("");
   const [meta, setMeta] = useState(initialMeta);
   const [live, setLive] = useState(false);
+  // ОБЩИЙ МОНИТОР облигаций (/bonds): к флоатерам добавляется вторая лента — фиксы.
+  // Остальные маршруты (/floaters, /compare…) живут на одних флоатерах, как раньше.
+  const pathname = useLocation().pathname;
+  const onUnified = pathname.startsWith("/bonds");
+  // слой фиксов: флага нет (старый бэк) — считаем включённым
+  const fixedOn = meta.features?.fixed !== false;
 
   // три независимые группы фильтров (AND-пересечение; пустая группа = все).
   // Стартовое значение — из URL (ссылка/F5), иначе из localStorage (последняя
@@ -130,6 +141,28 @@ function Dashboard() {
   // класс эмитента: OFZ (суверен Минфина) / CORP (всё остальное, включая субфеды).
   // Пустой список = оба, как и у прочих групп-мультивыборов.
   const [clsSel, setClsSel] = useState(() => initialParams().getAll("cls"));
+  // ДЕФОЛТНЫЕ ОТСЕЧКИ ФИКСОВ в общем мониторе (решения 14.10.2026): без
+  // структурных нот, ликвидность ADV от 1 млн ₽, валюта номинала — RUB. На
+  // флоатеры не действуют; живут в URL/localStorage со своими ключами.
+  const [hideStructured, setHideStructured] = useState(() => {
+    const p = initialParams();
+    if (p.has("nostr")) return p.get("nostr") === "1";
+    const v = localStorage.getItem("hideStructured_u");
+    return v === null ? true : v === "1";
+  });
+  const [fixAdvMin, setFixAdvMin] = useState(() => {
+    const p = initialParams();
+    if (p.has("fadv")) return p.get("fadv");
+    return localStorage.getItem("fixAdvMin_u") ?? "1";
+  });
+  const [fixCurrencies, setFixCurrencies] = useState(() => {
+    const p = initialParams();
+    if (p.has("fccy")) return p.getAll("fccy");
+    try {
+      const s = JSON.parse(localStorage.getItem("currencies_u") || "null");
+      return Array.isArray(s) && s.length ? s : DEFAULT_FIXED_CURRENCIES;
+    } catch { return DEFAULT_FIXED_CURRENCIES; }
+  });
   // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка стороны
   // пересчитывается в VWAP на этот объём по лестнице стакана
   const [volBid, setVolBid] = useState(() => Number(initialParams().get("vb"))
@@ -195,6 +228,9 @@ function Dashboard() {
   });
   const lastTriggerRef = useRef(null);
   const searchRef = useRef(null);
+  // раскладка колонок ОБЩЕГО монитора — отдельно от флоатерной (cols/colw), чтобы
+  // перестановки здесь не ломали привычный монитор флоатеров и наоборот
+  const uCols = useFixedCols({ storageKey: "u", colsDef: UNIFIED_COLS });
 
   // «/» — фокус в поиск (терминальная привычка). Игнорируем, когда юзер уже
   // печатает в каком-нибудь поле, иначе слэш не набрать.
@@ -228,6 +264,11 @@ function Dashboard() {
       if (hideAmort) next.set("noam", "1");
       if (hideDead) next.set("nodead", "1");
       clsSel.forEach((v) => next.append("cls", v));
+      if (onUnified) {
+        if (hideStructured) next.set("nostr", "1");
+        if (fixAdvMin !== "1") next.set("fadv", fixAdvMin);
+        if (!isDefaultFixedCurrencySelection(fixCurrencies)) fixCurrencies.forEach((v) => next.append("fccy", v));
+      }
       if (volBid) next.set("vb", String(volBid));
       if (volAsk) next.set("va", String(volAsk));
       if (volMode === "or" && (volBid || volAsk)) next.set("vm", "or");
@@ -240,10 +281,24 @@ function Dashboard() {
       return next;
     }, { replace: true });
   }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, hideDead, clsSel,
+      onUnified, hideStructured, fixAdvMin, fixCurrencies,
       volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
+  useEffect(() => { localStorage.setItem("hideStructured_u", hideStructured ? "1" : "0"); }, [hideStructured]);
+  useEffect(() => { localStorage.setItem("fixAdvMin_u", fixAdvMin); }, [fixAdvMin]);
+  useEffect(() => { localStorage.setItem("currencies_u", JSON.stringify(fixCurrencies)); }, [fixCurrencies]);
+  // Избранное фиксов жило отдельно (watch_fx): при первом заходе на общий монитор
+  // вливаем его в общий watchlist, один раз
+  useEffect(() => {
+    if (!onUnified || localStorage.getItem("watch_fx_merged") === "1") return;
+    try {
+      const fx = JSON.parse(localStorage.getItem("watch_fx") || "[]");
+      if (Array.isArray(fx) && fx.length) setWatch((w) => [...new Set([...w, ...fx])]);
+    } catch { /* битое хранилище — пропускаем */ }
+    localStorage.setItem("watch_fx_merged", "1");
+  }, [onUnified]);
   useEffect(() => { localStorage.setItem("hideNeverTraded", hideDead ? "1" : "0"); }, [hideDead]);
   useEffect(() => { localStorage.setItem("volBidRub", String(volBid)); }, [volBid]);
   useEffect(() => { localStorage.setItem("volAskRub", String(volAsk)); }, [volAsk]);
@@ -324,6 +379,20 @@ function Dashboard() {
   // ОДИН раз здесь — дальше обе стороны видят одно и то же число.
   const volSize = (v) => (v > 0 ? Math.round(v) : 0);
   paramsRef.current = { watch, volBid: volSize(volBid), volAsk: volSize(volAsk) };
+
+  // ВТОРАЯ ЛЕНТА — фиксы. Только на общем мониторе: на /floaters и остальных
+  // маршрутах хук ничего не грузит и не слушает. Строки приходят в нативном
+  // виде /api/fixed (правила живого слияния написаны под него), а общий
+  // конвейер фильтров получает их через withFixedAliases.
+  const fixedFeed = useFixedFeed({
+    volBid: volSize(volBid), volAsk: volSize(volAsk), enabled: onUnified && fixedOn });
+  const fixedRows = useMemo(
+    () => (onUnified ? (fixedFeed.bonds || []).map(withFixedAliases) : []),
+    [onUnified, fixedFeed.bonds]);
+  // все бумаги, видимые текущему маршруту: на общем мониторе — оба класса
+  const srcBonds = useMemo(
+    () => (onUnified && fixedRows.length ? bonds.concat(fixedRows) : bonds),
+    [onUnified, bonds, fixedRows]);
 
   const loadBonds = useCallback(async () => {
     // размеры тикета едут в запрос: Y-IDX цены набора считает БЭКЕНД по
@@ -730,10 +799,10 @@ function Dashboard() {
   // Ступени рейтинга, реально встречающиеся в юниверсе (AA+, AA−, …) — меню «▾»
   // рядом с чипами грейдов. Считаем ДО фильтров: список не должен схлопываться
   // от собственного выбора.
-  const ratingOpts = useMemo(() => ratingOptions(bonds.map((b) => b.rating)), [bonds]);
+  const ratingOpts = useMemo(() => ratingOptions(srcBonds.map((b) => b.rating)), [srcBonds]);
 
   const filtered = useMemo(() => {
-    let rows = bonds.slice();
+    let rows = srcBonds.slice();
     if (onlyWatch) rows = rows.filter((b) => watch.includes(b.isin));
     if (basesSel.length) rows = rows.filter((b) => basesSel.includes(b.base_rate_type));
     // правило бакетов — общее (format.ratingMatches): чип «BB↓» и корзины
@@ -748,6 +817,12 @@ function Dashboard() {
     if (hideDead) rows = rows.filter((b) => b.never_traded !== true);
     // ОФЗ / КОРП: класс считает бэк (is_ofz), фронт только сопоставляет выбор
     if (clsSel.length) rows = rows.filter((b) => clsSel.includes(b.is_ofz ? "OFZ" : "CORP"));
+    // общий монитор: структурные ноты / порог ADV / валюта — только для фиксов
+    if (onUnified) {
+      const fixedDefaults = {
+        hideStructured, advMinRub: (parseFloat(fixAdvMin) || 0) * 1e6, currencies: fixCurrencies };
+      rows = rows.filter((b) => passesFixedDefaults(b, fixedDefaults));
+    }
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
     // (только бид или только оффер) торговать нечем — прячем целиком.
     // Окно срока в ЛЕТ до ГОРИЗОНТА ПРАЙСИНГА — той даты, к которой посчитаны
@@ -773,7 +848,8 @@ function Dashboard() {
     // достаточно одной (не набравшая гаснет в прочерк). Чип BID×OFFER применяется
     // следующим и может дополнительно потребовать обе стороны.
     if (volOn && depth) {
-      rows = rows.map((b) => applyVolume(b, depth[b.isin], volBid, volAsk, volMode)).filter(Boolean);
+      rows = rows.map((b) => applyVolume(b, depth[b.isin], volBid, volAsk, volMode,
+        b.kind === "fixed" ? FIXED_VOL_FIELDS : undefined)).filter(Boolean);
     }
     if (twoSided) rows = rows.filter((b) => b.bid_price_pct != null && b.ask_price_pct != null);
     // окно спреда Y-IDX, bps — считается ПОСЛЕ фильтра по объёму: там спред
@@ -800,8 +876,10 @@ function Dashboard() {
     // спорил сам с собой: бумага с офертой через 2,7 года стояла в хвосте среди
     // одиннадцатилетних, хотя её метрики посчитаны к оферте.
     return sortRows(rows, key, dir, sortMemo.current,
-                    (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
-  }, [bonds, onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, hideDead, clsSel, twoSided,
+                    onUnified ? (r) => unifiedSortValue(r, key)
+                              : (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
+  }, [srcBonds, onUnified, hideStructured, fixAdvMin, fixCurrencies,
+      onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, hideDead, clsSel, twoSided,
       query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode,
       volOn, volBid, volAsk, volMode, depth]);
 
@@ -835,13 +913,13 @@ function Dashboard() {
   // список эмитентов (имя + число бумаг) для фильтра/агрегатов — по всему юниверсу
   const issuers = useMemo(() => {
     const m = new Map();
-    for (const b of bonds) {
+    for (const b of srcBonds) {
       if (!b.emitter_name) continue;
       m.set(b.emitter_name, (m.get(b.emitter_name) || 0) + 1);
     }
     return [...m.entries()].map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [bonds]);
+  }, [srcBonds]);
 
   const toggleIn = (setter) => (val) =>
     setter((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
@@ -905,13 +983,10 @@ function Dashboard() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const pathname = useLocation().pathname;
   const onFloaters = pathname.startsWith("/floaters");
   // МОНИТОР фиксов — та же витрина, и переключатель «Аналитика» у неё общий:
   // состояние одно, вкладки рисуют каждая свою кросс-секцию
   const onFixed = pathname.startsWith("/fixed");
-  // слой фиксов: флага нет (старый бэк) — считаем включённым
-  const fixedOn = meta.features?.fixed !== false;
 
   // сколько фильтров активно (для бейджа на кнопке ФИЛЬТРЫ и пустого состояния таблицы)
   // Считаем ОТКЛОНЕНИЯ от дефолтного вида: «без субордов» включён по умолчанию,
@@ -920,12 +995,15 @@ function Dashboard() {
     + (emittersSel.length ? 1 : 0) + (twoSided ? 1 : 0) + (hideSub ? 0 : 1) + (query !== "" ? 1 : 0)
     + (hideAmort ? 1 : 0) + (hideDead ? 1 : 0) + (clsSel.length ? 1 : 0)
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
-    + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0);
+    + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0)
+    + (onUnified ? (hideStructured ? 0 : 1) + (fixAdvMin !== "1" ? 1 : 0)
+      + (isDefaultFixedCurrencySelection(fixCurrencies) ? 0 : 1) : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
     setTwoSided(false); setHideSub(true); setHideAmort(false); setHideDead(false); setClsSel([]);
     setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
     setSpreadFrom(""); setSpreadTo(""); setAdvMin("");
+    setHideStructured(true); setFixAdvMin("1"); setFixCurrencies(DEFAULT_FIXED_CURRENCIES);
   }, []);
 
   // Панель фильтров общая у МОНИТОРА и СРАВНЕНИЯ: состояние одно, значит

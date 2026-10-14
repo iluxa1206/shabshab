@@ -11,7 +11,7 @@ export default function FiltersMenu({
   issuers, emittersSel, toggleEmitter, clearEmitters,
   hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
   currencies, currenciesSel, toggleCurrency, resetCurrencies,
-  activeCount, extra,
+  activeCount, extra, showFixedBase,
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -55,6 +55,11 @@ export default function FiltersMenu({
                 onClick={() => toggleBase("KEYRATE")}>КС</button>
               <button className={"chip-btn" + (basesSel.includes("RUONIA") ? " on" : "")}
                 onClick={() => toggleBase("RUONIA")}>RUONIA</button>
+              {/* общий монитор: фиксы — третий «класс базы» (нет плавающей ставки) */}
+              {showFixedBase && <button className={"chip-btn" + (basesSel.includes("FIXED") ? " on" : "")}
+                aria-pressed={basesSel.includes("FIXED")}
+                title="Облигации с фиксированным купоном (ОФЗ-ПД и корпораты)"
+                onClick={() => toggleBase("FIXED")}>ФИКС</button>}
             </div>
           </div>}
 

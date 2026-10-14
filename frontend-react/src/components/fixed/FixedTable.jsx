@@ -40,10 +40,12 @@ export function fixedColsDef(extraCols) {
  * Возвращает объект с именами пропсов Toolbar/ColumnsMenu и FixedTable, чтобы
  * хост раздавал его спредом.
  */
-export function useFixedCols({ storageKey = "fx", extraCols } = {}) {
-  const colsDef = useMemo(() => fixedColsDef(extraCols), [extraCols]);
+export function useFixedCols({ storageKey = "fx", extraCols, colsDef: colsOverride } = {}) {
+  // colsOverride — полный набор колонок хоста (общий монитор облигаций), минуя FIXED_COLS
+  const colsDef = useMemo(() => colsOverride || fixedColsDef(extraCols), [colsOverride, extraCols]);
   const defaultCols = useMemo(() => colsDef.map((c) => c.key), [colsDef]);
-  const colsMeta = useMemo(() => colsDef.map(({ key, label, sub }) => ({ key, label, sub })), [colsDef]);
+  const colsMeta = useMemo(() => colsDef.map(({ key, label, sub, only }) => (
+    { key, label, sub, ...(colsOverride ? { group: only || "common" } : {}) })), [colsDef, colsOverride]);
   const kCols = `cols_${storageKey}`, kWidths = `colw_${storageKey}`, kKnown = `cols_known_${storageKey}`;
 
   const [visibleCols, setVisibleCols] = useState(() => {

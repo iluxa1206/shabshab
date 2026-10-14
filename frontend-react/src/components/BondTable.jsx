@@ -381,7 +381,8 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
     prev.current = b.last_price_pct;
   }, [b.last_price_pct, reduce]);
 
-  const open = (e) => onOpen(b.isin, e.currentTarget, kind);
+  // таблица смешанная (общий монитор) — класс бумаги несёт сама строка
+  const open = (e) => onOpen(b.isin, e.currentTarget, kind ?? b.kind);
   const toggleStar = (e) => { e.stopPropagation(); onToggleStar(b.isin); };
 
   return (
@@ -417,7 +418,7 @@ const BondRow = memo(function BondRow({ b, onOpen, starred, onToggleStar, cols, 
 // colsDef/defaultCols — витрина, для которой рисуем таблицу. По умолчанию
 // флоатерная (COLS): у МОНИТОРА фиксов свой набор колонок того же формата
 // (components/fixed/fixedCols.jsx), всё остальное поведение общее.
-export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth, colsDef = COLS, defaultCols = DEFAULT_COLS, rowKind, colProgress }) {
+export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, watch = [], onToggleStar, filtered, onClearFilters, onRetry, visibleCols, onMoveCol, colWidths = {}, onResizeCol, onResetColWidth, colsDef = COLS, defaultCols = DEFAULT_COLS, rowKind, colProgress, unified = false }) {
   // ПОРЯДОК КОЛОНОК = порядок visibleCols (его задаёт пользователь перетаскиванием),
   // а не порядок объявления colsDef. useMemo — стабильная ссылка для memo(BondRow).
   const cols = useMemo(() => {
@@ -455,7 +456,7 @@ export default function BondTable({ rows, status, errMsg, sort, onSort, onOpen, 
 
   return (
     <section className="table-wrap">
-      <table className="grid packed cols-fixed">
+      <table className={"grid packed cols-fixed" + (unified ? " uni" : "")}>
         <colgroup>
           <col className="col-star" />
           {/* натянутая мышью ширина (px) перебивает дефолтную из COLS.w */}

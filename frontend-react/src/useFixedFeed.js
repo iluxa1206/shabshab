@@ -120,7 +120,8 @@ export function useFixedFeed({ volBid = 0, volAsk = 0, enabled = true } = {}) {
     const rows = (listQ.data?.items || []).map((b) => {
       // Общие имена полей витрины: поиск, фильтр эмитента и таблица написаны
       // под строку флоатера (short_name / emitter_name / is_ofz).
-      const row = { ...b, short_name: b.name, emitter_name: b.issuer, is_ofz: b.cls === "ofz" };
+      const row = { ...b, kind: "fixed", short_name: b.name, emitter_name: b.issuer,
+                    is_ofz: b.cls === "ofz" };
       const live = overlay[b.isin];
       const fresh = live && Date.now() - (tsRef.current[b.isin] || 0) < LIVE_FRESH_MS;
       // Бумага на стриме цены из снапшота не берёт: push свежее, снапшот

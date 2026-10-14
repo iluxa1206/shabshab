@@ -27,23 +27,18 @@ export default function ColumnsMenu({ visibleCols, onToggle, onReset, onMove, me
     ...visibleCols.map((k) => meta.get(k)).filter(Boolean),
     ...metaDef.filter((c) => !set.has(c.key)),
   ];
+  // Общий монитор облигаций: у колонок есть group. Видимые идут как раньше (их
+  // порядок — пользовательский), а СКРЫТЫЕ раскладываются под заголовки групп —
+  // иначе десяток спец-колонок двух классов сливался бы в одну простыню.
+  const grouped = metaDef.some((c) => c.group);
+  const GROUP_TITLE = { common: "ОБЩИЕ", floater: "ТОЛЬКО ФЛОАТЕРЫ", fixed: "ТОЛЬКО ФИКСЫ" };
+  const visibleItems = grouped ? items.filter((c) => set.has(c.key)) : items;
+  const hiddenGroups = grouped
+    ? ["common", "floater", "fixed"].map((g) => [g, items.filter((c) => !set.has(c.key) && (c.group || "common") === g)])
+        .filter(([, list]) => list.length)
+    : [];
 
-  return (
-    <div className="colmenu" ref={ref}>
-      <button className={"chip-btn" + (open ? " on" : "")} onClick={() => setOpen((v) => !v)}
-        aria-haspopup="true" aria-expanded={open} aria-label="Столбцы"
-        title="Показать/скрыть столбцы">
-        <IconColumns size={13} />
-      </button>
-      {open && (
-        <div className="colmenu-pop" role="menu">
-          <div className="colmenu-head">
-            <span>СТОЛБЦЫ</span>
-            <button className="colmenu-reset" onClick={onReset}>сброс</button>
-          </div>
-          <div className="colmenu-hint">перетащи за ⠿ или жми ↑↓, чтобы поменять порядок</div>
-          <div className="colmenu-list">
-            {items.map((c) => {
+  const renderItem = (c) => {
               const on = set.has(c.key);
               return (
                 <div key={c.key}
@@ -75,7 +70,34 @@ export default function ColumnsMenu({ visibleCols, onToggle, onReset, onMove, me
                   )}
                 </div>
               );
-            })}
+  };
+
+  return (
+    <div className="colmenu" ref={ref}>
+      <button className={"chip-btn" + (open ? " on" : "")} onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true" aria-expanded={open} aria-label="Столбцы"
+        title="Показать/скрыть столбцы">
+        <IconColumns size={13} />
+      </button>
+      {open && (
+        <div className="colmenu-pop" role="menu">
+          <div className="colmenu-head">
+            <span>СТОЛБЦЫ</span>
+            <button className="colmenu-reset" onClick={onReset}>сброс</button>
+          </div>
+          <div className="colmenu-hint">перетащи за ⠿ или жми ↑↓, чтобы поменять порядок</div>
+          <div className="colmenu-list">
+            {grouped ? (
+              <>
+                {visibleItems.map(renderItem)}
+                {hiddenGroups.map(([g, list]) => (
+                  <div key={g} className="colmenu-group">
+                    <div className="colmenu-group-title">{GROUP_TITLE[g]}</div>
+                    {list.map(renderItem)}
+                  </div>
+                ))}
+              </>
+            ) : items.map(renderItem)}
           </div>
         </div>
       )}

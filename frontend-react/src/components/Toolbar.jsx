@@ -21,6 +21,8 @@ export default function Toolbar({
   // дал ему обработчики.
   spreadLabel = "spread", spreadTitle,
   ytmFrom, setYtmFrom, ytmTo, setYtmTo,
+  // общий монитор облигаций: чип «ФИКС» в базе и секция фильтров хоста
+  showFixedBase, filtersExtra,
 }) {
   const volTitle = "Размер тикета по сторонам, млн ₽: заполненная сторона пересчитывается "
     + "в средневзвешенную цену набора этой суммы по лестнице стакана (деньги грязные: "
@@ -83,6 +85,7 @@ export default function Toolbar({
           currencies={currencies} currenciesSel={currenciesSel}
           toggleCurrency={toggleCurrency} resetCurrencies={resetCurrencies}
           activeCount={activeFilters}
+          showFixedBase={showFixedBase} extra={filtersExtra}
         />
         <button className="chip-btn reset-btn" disabled={!activeFilters} onClick={onResetFilters}
           aria-label="Сбросить все фильтры"
