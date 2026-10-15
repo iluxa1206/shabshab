@@ -414,6 +414,30 @@ def _one_horizon(rows, lo: float, hi: float) -> list[dict]:
     return out
 
 
+def _fixed_daily_rows(cutoff: str) -> list:
+    """Дневной Y-IDX ФИКСОВ из spread_daily — для агрегатов динамики и разброса.
+
+    bar_daily у фиксов не годится: у них свёртка хранит g-спред под именами y_idx_*.
+    spread_daily несёт честный Y-IDX фикса (живой снапшот + бэкфилл по RUONIA на
+    день). База чуть другая, чем у флоатеров (там средневзвес дня из баров, тут
+    цена вечернего снапшота/закрытия) — для медианы бакета разница единицы б.п.;
+    деградированные снапшоты (snap_degraded) не берём. Колонки — как у bar_daily."""
+    from services.portfolio_db import _connect
+    with _connect() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT isin, date, y_idx, y_idx_alt, horizon, alt_horizon FROM spread_daily "
+            "WHERE kind='fixed' AND y_idx IS NOT NULL AND date >= ? "
+            "AND COALESCE(src,'') != 'snap_degraded' ORDER BY date", (cutoff,)).fetchall()]
+
+
+def _merge_daily(floater_rows: list, fixed_rows: list) -> list:
+    """Флоатеры (bar_daily) + фиксы (spread_daily) в одну ленту по возрастанию даты —
+    _one_horizon требует порядка. Ключи: isin, date, y_idx, y_idx_alt, horizon, alt_horizon."""
+    rows = [dict(r) for r in floater_rows] + [dict(r) for r in fixed_rows]
+    rows.sort(key=lambda r: r["date"])
+    return rows
+
+
 class YidxAggBody(BaseModel):
     days: int = Field(91, ge=7, le=400)
     by: str = "rating"
@@ -421,6 +445,9 @@ class YidxAggBody(BaseModel):
     # агрегируем только по ним — график согласован с остальной аналитикой.
     # None/пусто — весь юниверс.
     isins: Optional[list[str]] = None
+    # включать ли рублёвые/любые фиксы (spread_daily.y_idx); по умолчанию да —
+    # общий монитор держит один Y-IDX на оба класса
+    with_fixed: bool = True
 
 
 @router.post("/aggregate/yidx", tags=["History"])
@@ -469,6 +496,9 @@ async def yidx_aggregate(body: YidxAggBody):
                 "AND metrics_ver = ? ORDER BY date", (cutoff, _BV)).fetchall()
 
     rows = await asyncio.to_thread(_read_daily)
+    if body.with_fixed:
+        fx_rows = await asyncio.to_thread(_fixed_daily_rows, cutoff)
+        rows = _merge_daily(rows, fx_rows)
     lo, hi = _YIDX_BAND
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
@@ -484,6 +514,13 @@ async def yidx_aggregate(body: YidxAggBody):
 
     uni = {u["isin"]: u for u in await asyncio.to_thread(instruments_registry.universe_rows)}
     from services.ratings import rating_to_bucket
+    # фиксы вне реестра: рейтинг/эмитент из универса фиксов (общий построитель
+    # подписей сигналов и алертов)
+    if body.with_fixed:
+        from services.bond_labels import labels_all
+        for i, lb in (await asyncio.to_thread(labels_all)).items():
+            if i not in uni and lb.get("base") == "FIXED":
+                uni[i] = {"isin": i, "rating": lb.get("rating"), "emitter_name": lb.get("emitter")}
 
     def key_of(isin: str):
         u = uni.get(isin)
@@ -543,6 +580,7 @@ async def yidx_aggregate(body: YidxAggBody):
 class YidxDispersionBody(BaseModel):
     days: int = Field(91, ge=7, le=400)
     isins: Optional[list[str]] = None
+    with_fixed: bool = True
 
 
 @router.post("/dispersion/yidx", tags=["History"])
@@ -564,6 +602,8 @@ async def yidx_dispersion(body: YidxDispersionBody):
                 "AND metrics_ver = ? ORDER BY date", (cutoff, _BV)).fetchall()
 
     rows = await asyncio.to_thread(_read_daily)
+    if body.with_fixed:
+        rows = _merge_daily(rows, await asyncio.to_thread(_fixed_daily_rows, cutoff))
     want = {i.strip().upper() for i in body.isins if _ISIN_RE.fullmatch(i.strip().upper())} \
         if body.isins else None
     rows = [r for r in rows if want is None or r["isin"] in want]

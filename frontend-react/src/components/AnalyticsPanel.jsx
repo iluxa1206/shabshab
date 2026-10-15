@@ -653,8 +653,8 @@ const YH_H = 220;
 // Живёт в App: по нему же фильтруется таблица под панелью; повторный клик
 // снимает фильтр и таблица возвращается к прежнему набору.
 export default function AnalyticsPanel({ rows, allRows, focus = null, onFocus }) {
-  // rows — флоатеры (динамика и разброс идут из истории флоатеров); allRows —
-  // обе стороны для двух верхних графиков (по умолчанию то же, что rows)
+  // allRows — оба класса для всех четырёх графиков (динамика и разброс берут фиксов
+  // из spread_daily, флоатеров из bar_daily); без allRows — rows как есть
   const top = allRows || rows;
   const [metric, setMetric] = useState("r");
   const M = METRICS[metric];
@@ -746,11 +746,11 @@ export default function AnalyticsPanel({ rows, allRows, focus = null, onFocus })
         <RatingLegend />
       </AnCard>
 
-      {rows.length > 0 && <>
+      {top.length > 0 && <>
       <AnCard title="spread ДИНАМИКА" ctl={<>{periodCtl()}{aggCtl}</>} {...fullBtn("hist")}
         hint={byIss ? "спред по средневзвесу дня · медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
                     : "спред по средневзвесу дня · медиана по рейтинг-бакетам · клик по линии = фильтр"}>
-        <YidxHistory groupBy={groupBy} rows={rows} period={period} height={yhH}
+        <YidxHistory groupBy={groupBy} rows={top} period={period} height={yhH}
           focus={focus} onPick={byIss ? pickIssuer : pickRating} full={full === "hist"} />
       </AnCard>
 
@@ -759,8 +759,8 @@ export default function AnalyticsPanel({ rows, allRows, focus = null, onFocus })
           ? "тот же набор бумаг, что в верхней витрине · период задаётся в графике «spread Динамика» · полоса = p25–p75 · линия = медиана"
           : "тот же набор бумаг, что в верхней витрине · столбец = число выпусков в диапазоне spread · пунктир = медиана"}>
         {dispView === "history" ? <>
-          <DispersionHistory rows={rows} period={period} height={dispH} full={full === "disp"} />
-        </> : <SpreadHistogram rows={rows} height={dispH} full={full === "disp"} />}
+          <DispersionHistory rows={top} period={period} height={dispH} full={full === "disp"} />
+        </> : <SpreadHistogram rows={top} height={dispH} full={full === "disp"} />}
       </AnCard>
       </>}
     </section>

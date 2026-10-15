@@ -28,13 +28,13 @@ describe("smoke аналитики: панели монтируются в об�
     fireEvent.click(button);
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
-  it("R-spread / G-spread переключает два верхних графика, фиксы только в allRows", () => {
+  it("R-spread / G-spread переключает два верхних графика; фиксы идут через allRows", () => {
     const fixed = rows.map((b) => ({ ...b, isin: "F" + b.isin, kind: "fixed", y_idx_wap_bps: null,
                                      yield_over_index_bps: null }));
     const view = render(<AnalyticsPanel rows={[]} allRows={fixed} onFocus={() => {}} />);
     const q = within(view.container);
-    // флоатеров нет — динамики и разброса нет, верхние графики на месте
-    expect(q.queryByText(/ДИНАМИКА/)).toBeNull();
+    // флоатеров нет, но фиксы есть — динамика и разброс тоже на месте
+    expect(q.getByText(/ДИНАМИКА/)).toBeTruthy();
     expect(q.getByText(/spread vs СРОК/)).toBeTruthy();
     fireEvent.click(q.getAllByText("G-spread")[0]);
     expect(q.getByText(/g-spread vs СРОК/)).toBeTruthy();
