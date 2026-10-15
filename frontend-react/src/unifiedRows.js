@@ -63,10 +63,17 @@ export function unifiedSortValue(b, key) {
  *    структурной ноты не про рынок ставок и забивает верх сортировки;
  *  - advMinRub: порог ADV, ₽; бумага без посчитанного ADV при заданном
  *    пороге скрыта (как у общего фильтра ADV — неликвид не пролезает);
- *  - currencies: пустой массив = все валюты.
+ *  - currencies: пустой массив = все валюты (в разделе «fx» — все нерублёвые);
+ *  - ccyMode: «rub» | «fx» — раздел меню по валюте номинала.
  */
-export function passesFixedDefaults(b, { hideStructured, advMinRub, currencies }) {
-  if (currencies?.length && !currencies.includes(fixedCurrency(b))) return false;
+export function passesFixedDefaults(b, { hideStructured, advMinRub, currencies, ccyMode }) {
+  const c = fixedCurrency(b);
+  if (ccyMode) {
+    // раздел меню: «rub» — только рубли, «fx» — только нерублёвые (из них выбранные
+    // чипами, пусто = все)
+    if (ccyMode === "rub" ? c !== "RUB" : c === "RUB") return false;
+    if (ccyMode === "fx" && currencies?.length && !currencies.includes(c)) return false;
+  } else if (currencies?.length && !currencies.includes(c)) return false;
   if (b.kind !== "fixed") return true;
   if (hideStructured && b.structured) return false;
   if (advMinRub > 0 && !((b.adv_1m_rub ?? -1) >= advMinRub)) return false;

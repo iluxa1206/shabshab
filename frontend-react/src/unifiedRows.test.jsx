@@ -88,6 +88,19 @@ describe("дефолтные отсечки фиксов", () => {
     expect(passesFixedDefaults({ ...FX, adv_1m_rub: 1e6 }, D)).toBe(true);
     expect(passesFixedDefaults({ ...FX, adv_1m_rub: undefined }, { ...D, advMinRub: 0 })).toBe(true);
   });
+  it("разделы меню: «rub» — только рубли, «fx» — только нерублёвые из выбранных", () => {
+    const usd = { ...FX, face_unit: "USD" }, cny = { ...FX, face_unit: "CNY" };
+    const rub = { ...D, currencies: [] };
+    expect(passesFixedDefaults(FX, { ...rub, ccyMode: "rub" })).toBe(true);
+    expect(passesFixedDefaults(usd, { ...rub, ccyMode: "rub" })).toBe(false);
+    expect(passesFixedDefaults({ ...FL, face_unit: "USD" }, { ...rub, ccyMode: "rub" })).toBe(false);
+    expect(passesFixedDefaults(FX, { ...rub, ccyMode: "fx" })).toBe(false);
+    expect(passesFixedDefaults(usd, { ...rub, ccyMode: "fx" })).toBe(true);        // пусто = все валютные
+    expect(passesFixedDefaults(usd, { ...rub, ccyMode: "fx", currencies: ["CNY"] })).toBe(false);
+    expect(passesFixedDefaults(cny, { ...rub, ccyMode: "fx", currencies: ["CNY"] })).toBe(true);
+    // отсечки фиксов (ADV) действуют и в разделе «Валютные»
+    expect(passesFixedDefaults({ ...usd, adv_1m_rub: 5e5 }, { ...D, currencies: [], ccyMode: "fx" })).toBe(false);
+  });
   it("валюта: по умолчанию только RUB, пустой набор — все", () => {
     const usd = { ...FX, face_unit: "USD" };
     expect(passesFixedDefaults(usd, D)).toBe(false);

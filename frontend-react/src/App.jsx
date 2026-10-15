@@ -14,7 +14,7 @@ import { UNIFIED_COLS, UNIFIED_DEFAULT_COLS } from "./components/unifiedCols.jsx
 import FixedAnalytics from "./components/FixedAnalytics.jsx";
 import { usePageStatus } from "./pageStatus.jsx";
 import { useFixedCols } from "./components/fixed/FixedTable.jsx";
-import { DEFAULT_FIXED_CURRENCIES, fixedCurrency, isDefaultFixedCurrencySelection } from "./components/fixed/currency.js";
+import { fixedCurrency } from "./components/fixed/currency.js";
 import { sideProgress } from "./spreadProgress.js";
 import { filterBonds } from "./search.js";
 import { horizonDate } from "./horizon.js";
@@ -99,8 +99,12 @@ const BASES_FIXED = ["FIXED"];
 // строки с отобранным классом (старые закладки работают). Без редиректа:
 // эффект, синхронизирующий фильтры с query string, перебивает <Navigate>
 // (та же гонка, что у /blocks → TradesTape).
+// Валютные бумаги — отдельный раздел меню (/fx, /fx/compare): тот же монитор и то
+// же Сравнение, но по бумагам с НЕрублёвым номиналом; рублёвый раздел их не
+// показывает вовсе. Разные метрики: у валютных нет Y-IDX (база RUONIA рублёвая).
+const isFxPath = (p) => p === "/fx" || p.startsWith("/fx/");
 const isUnifiedPath = (p) => p.startsWith("/bonds") || p.startsWith("/floaters")
-  || p === "/fixed" || p === "/fixed/" || p.startsWith("/compare");
+  || p === "/fixed" || p === "/fixed/" || p.startsWith("/compare") || isFxPath(p);
 const classBases = (p) => (p.startsWith("/floaters") ? BASES_FLOATERS
   : p === "/fixed" || p === "/fixed/" ? BASES_FIXED : null);
 
@@ -115,6 +119,8 @@ function Dashboard() {
   // Остальные маршруты (/floaters, /compare…) живут на одних флоатерах, как раньше.
   const pathname = useLocation().pathname;
   const onUnified = isUnifiedPath(pathname);
+  // раздел меню по валюте номинала: "fx" — только нерублёвые, "rub" — только рубли
+  const ccyMode = isFxPath(pathname) ? "fx" : "rub";
   // слой фиксов: флага нет (старый бэк) — считаем включённым
   const fixedOn = meta.features?.fixed !== false;
   // переход /bonds → /fixed (или обратно) внутри открытого приложения: Dashboard
@@ -179,13 +185,15 @@ function Dashboard() {
     if (p.has("fadv")) return p.get("fadv");
     return localStorage.getItem("fixAdvMin_u") ?? "1";
   });
-  const [fixCurrencies, setFixCurrencies] = useState(() => {
+  // выбор валют в разделе «Валютные» (пусто = все нерублёвые). В рублёвом разделе
+  // выбора нет: там рубль всегда и только он
+  const [fxCcySel, setFxCcySel] = useState(() => {
     const p = initialParams();
-    if (p.has("fccy")) return p.getAll("fccy");
+    if (p.has("fccy")) return p.getAll("fccy").filter((c) => c !== "RUB");
     try {
-      const s = JSON.parse(localStorage.getItem("currencies_u") || "null");
-      return Array.isArray(s) && s.length ? s : DEFAULT_FIXED_CURRENCIES;
-    } catch { return DEFAULT_FIXED_CURRENCIES; }
+      const s = JSON.parse(localStorage.getItem("currencies_fx_u") || "null");
+      return Array.isArray(s) ? s.filter((c) => c !== "RUB") : [];
+    } catch { return []; }
   });
   // размеры тикета по сторонам, ₽ (0 = сторона не фильтруется): котировка стороны
   // пересчитывается в VWAP на этот объём по лестнице стакана
@@ -292,7 +300,7 @@ function Dashboard() {
       if (onUnified) {
         if (hideStructured) next.set("nostr", "1");
         if (fixAdvMin !== "1") next.set("fadv", fixAdvMin);
-        if (!isDefaultFixedCurrencySelection(fixCurrencies)) fixCurrencies.forEach((v) => next.append("fccy", v));
+        if (ccyMode === "fx") fxCcySel.forEach((v) => next.append("fccy", v));
       }
       if (volBid) next.set("vb", String(volBid));
       if (volAsk) next.set("va", String(volAsk));
@@ -306,14 +314,14 @@ function Dashboard() {
       return next;
     }, { replace: true });
   }, [query, onlyWatch, basesSel, ratingsSel, emittersSel, twoSided, hideSub, hideAmort, hideDead, clsSel,
-      onUnified, hideStructured, fixAdvMin, fixCurrencies,
+      onUnified, hideStructured, fixAdvMin, ccyMode, fxCcySel,
       volBid, volAsk, volMode, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode, setSearchParams]);
 
   useEffect(() => { localStorage.setItem("hideSubord", hideSub ? "1" : "0"); }, [hideSub]);
   useEffect(() => { localStorage.setItem("hideAmort", hideAmort ? "1" : "0"); }, [hideAmort]);
   useEffect(() => { localStorage.setItem("hideStructured_u", hideStructured ? "1" : "0"); }, [hideStructured]);
   useEffect(() => { localStorage.setItem("fixAdvMin_u", fixAdvMin); }, [fixAdvMin]);
-  useEffect(() => { localStorage.setItem("currencies_u", JSON.stringify(fixCurrencies)); }, [fixCurrencies]);
+  useEffect(() => { localStorage.setItem("currencies_fx_u", JSON.stringify(fxCcySel)); }, [fxCcySel]);
   // Избранное фиксов жило отдельно (watch_fx): при первом заходе на общий монитор
   // вливаем его в общий watchlist, один раз
   useEffect(() => {
@@ -848,7 +856,8 @@ function Dashboard() {
     // общий монитор: структурные ноты / порог ADV / валюта — только для фиксов
     if (onUnified) {
       const fixedDefaults = {
-        hideStructured, advMinRub: (parseFloat(fixAdvMin) || 0) * 1e6, currencies: fixCurrencies };
+        hideStructured, advMinRub: (parseFloat(fixAdvMin) || 0) * 1e6,
+        currencies: fxCcySel, ccyMode };
       rows = rows.filter((b) => passesFixedDefaults(b, fixedDefaults));
     }
     // двусторонняя котировка: обе стороны стакана на месте. Односторонний рынок
@@ -906,7 +915,7 @@ function Dashboard() {
     return sortRows(rows, key, dir, sortMemo.current,
                     onUnified ? (r) => unifiedSortValue(r, key)
                               : (r) => (key === "maturity_date" ? hzDate(r) : r[key]));
-  }, [srcBonds, onUnified, hideStructured, fixAdvMin, fixCurrencies,
+  }, [srcBonds, onUnified, hideStructured, fixAdvMin, ccyMode, fxCcySel,
       onlyWatch, basesSel, ratingsSel, emittersSel, hideSub, hideAmort, hideDead, clsSel, twoSided,
       query, sort, watch, matFrom, matTo, spreadFrom, spreadTo, advMin, advMode,
       volOn, volBid, volAsk, volMode, depth]);
@@ -956,10 +965,12 @@ function Dashboard() {
     srcBonds.forEach((b) => { const c = fixedCurrency(b); m[c] = (m[c] || 0) + 1; });
     return m;
   }, [srcBonds]);
+  // чипы — только нерублёвые валюты (раздел «Валютные»); по числу бумаг
   const fixCurrencyList = useMemo(() => {
-    const all = new Set(["RUB", ...fixCurrencies, ...Object.keys(currencyCounts)]);
-    return [...all].sort((a, b) => (a === "RUB" ? -1 : b === "RUB" ? 1 : a.localeCompare(b)));
-  }, [currencyCounts, fixCurrencies]);
+    const all = new Set([...fxCcySel, ...Object.keys(currencyCounts)]);
+    all.delete("RUB");
+    return [...all].sort((a, b) => (currencyCounts[b] || 0) - (currencyCounts[a] || 0) || a.localeCompare(b));
+  }, [currencyCounts, fxCcySel]);
 
   const toggleIn = (setter) => (val) =>
     setter((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
@@ -1032,13 +1043,13 @@ function Dashboard() {
     + (volBid > 0 || volAsk > 0 ? 1 : 0) + (matFrom !== "" ? 1 : 0) + (matTo !== "" ? 1 : 0)
     + (spreadFrom !== "" ? 1 : 0) + (spreadTo !== "" ? 1 : 0) + (advMin !== "" ? 1 : 0)
     + (onUnified ? (hideStructured ? 0 : 1) + (fixAdvMin !== "1" ? 1 : 0)
-      + (isDefaultFixedCurrencySelection(fixCurrencies) ? 0 : 1) : 0);
+      + (ccyMode === "fx" && fxCcySel.length ? 1 : 0) : 0);
   const resetFilters = useCallback(() => {
     setOnlyWatch(false); setBasesSel([]); setRatingsSel([]); setEmittersSel([]);
     setTwoSided(false); setHideSub(true); setHideAmort(false); setHideDead(false); setClsSel([]);
     setQuery(""); setVolBid(0); setVolAsk(0); setMatFrom(""); setMatTo("");
     setSpreadFrom(""); setSpreadTo(""); setAdvMin("");
-    setHideStructured(true); setFixAdvMin("1"); setFixCurrencies(DEFAULT_FIXED_CURRENCIES);
+    setHideStructured(true); setFixAdvMin("1"); setFxCcySel([]);
   }, []);
 
   // Панель фильтров общая у МОНИТОРА и СРАВНЕНИЯ: состояние одно, значит
@@ -1077,9 +1088,13 @@ function Dashboard() {
           showFixedBase: fixedOn,
           // секция «ФИКСЫ» в окне фильтров: отсечки, которые действуют только на
           // фиксы (у флоатеров свой набор, давно сложившийся)
-          currencies: fixCurrencyList, currenciesSel: fixCurrencies, currencyCounts,
-          toggleCurrency: toggleIn(setFixCurrencies),
-          resetCurrencies: () => setFixCurrencies(DEFAULT_FIXED_CURRENCIES),
+          // чипы валют — только в разделе «Валютные»; в рублёвом их нет
+          ...(ccyMode === "fx" ? {
+            currencies: fixCurrencyList, currenciesSel: fxCcySel, currencyCounts,
+            toggleCurrency: toggleIn(setFxCcySel),
+            resetCurrencies: () => setFxCcySel([]),
+            currencyResetLabel: "ВСЕ ВАЛЮТЫ",
+          } : {}),
           filtersExtra: (
             <div className="fp-sec">
               <div className="fp-head"><span className="fg-lbl">ТОЛЬКО ФИКСЫ</span></div>
@@ -1169,6 +1184,8 @@ function Dashboard() {
         <Route path="/bonds" element={unifiedView} />
         <Route path="/floaters" element={unifiedView} />
         <Route path="/compare" element={compareView} />
+        <Route path="/fx" element={unifiedView} />
+        <Route path="/fx/compare" element={compareView} />
         {/* Вкладка «Эмитенты» снята: агрегаты повторяли фильтр по эмитенту в
             «Мониторе», а разрез по медианам спреда даёт «Аналитика» (распределение
             spread по эмитентам). Старый путь ведёт в Монитор — на вкладку могли

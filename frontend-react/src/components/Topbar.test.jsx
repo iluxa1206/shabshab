@@ -1,5 +1,5 @@
 /**
- * Меню: один раздел «Облигации» (флоатеры и фиксы — общий монитор).
+ * Меню: «Рубли» (флоатеры и фиксы — общий монитор) и «Валютные».
  *
  * Слой фиксов гасится переменной окружения на бэке (services/feature_flags) и
  * приезжает во фронт в /api/meta.features. Выключенный слой не должен смотреть
@@ -33,7 +33,8 @@ describe("раздел «Облигации»", () => {
     show({ fixed: true });
     expect(screen.queryByText("Фиксы")).toBeNull();
     expect(screen.queryByText("Флоатеры")).toBeNull();
-    expect(screen.getAllByText(/Облигации/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Рубли").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^Облигации/)).toBeNull();
   });
 
   it("слой фиксов включён — ОФЗ и Аукцион в подменю", () => {
@@ -53,6 +54,18 @@ describe("раздел «Облигации»", () => {
   it("старый бэк без флагов — вкладки видны", () => {
     show(undefined);
     expect(screen.getByText("ОФЗ")).toBeTruthy();
+  });
+});
+
+describe("раздел «Валютные»", () => {
+  it("в выпадающем меню отдельным пунктом", () => {
+    show({ fixed: true });
+    expect(screen.getByText("Валютные")).toBeTruthy();
+  });
+
+  it("слой выключен — пункта «Валютные» нет", () => {
+    show({ fixed: false });
+    expect(screen.queryByText("Валютные")).toBeNull();
   });
 });
 

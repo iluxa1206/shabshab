@@ -10,7 +10,7 @@ export default function FiltersMenu({
   basesSel, toggleBase, clearBases,
   issuers, emittersSel, toggleEmitter, clearEmitters,
   hideSub, setHideSub, hideAmort, setHideAmort, hideDead, setHideDead, clsSel, toggleCls,
-  currencies, currenciesSel, currencyCounts, toggleCurrency, resetCurrencies,
+  currencies, currenciesSel, currencyCounts, toggleCurrency, resetCurrencies, currencyResetLabel,
   activeCount, extra, showFixedBase,
 }) {
   const [open, setOpen] = useState(false);
@@ -102,8 +102,8 @@ export default function FiltersMenu({
             <div className="fp-head">
               <span className="fg-lbl">ВАЛЮТА НОМИНАЛА</span>
               {resetCurrencies && <button className="issuer-clear" onClick={resetCurrencies}
-                disabled={currenciesSel?.length === 1 && currenciesSel[0] === "RUB"}>
-                RUB по умолчанию
+                disabled={!currenciesSel?.length}>
+                {currencyResetLabel || "ВСЕ ВАЛЮТЫ"}
               </button>}
             </div>
             <div className="fp-chips" title="Валюта номинала выпуска, не валюта расчётов торгов.">

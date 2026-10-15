@@ -15,9 +15,12 @@ import BrandBlobatar from "./Blobatar.jsx";
 
 // Тип облигаций (первая кнопка меню) + суб-навигация под выбранный тип
 const TYPES = [
-  // Флоатеры и фиксы — один монитор (docs/unified_monitor_tz.md): класс выбирается
-  // фильтром БАЗА, а не отдельным разделом меню
-  { id: "bonds", label: "Облигации", home: "/bonds" },
+  // «Рубли» — рублёвые облигации, флоатеры и фиксы одним монитором
+  // (docs/unified_monitor_tz.md): класс выбирается фильтром БАЗА
+  { id: "bonds", label: "Рубли", home: "/bonds" },
+  // Валютные (номинал не в рублях): те же монитор и сравнение, отдельный раздел —
+  // у них нет Y-IDX (база RUONIA рублёвая), метрики другие
+  { id: "fx", label: "Валютные", home: "/fx", needsFixed: true },
   { id: "portfolio", label: "Портфель", home: "/portfolio" },
   { id: "curves", label: "Кривые", home: "/curves" },
   // «Справочник» (правка параметров реестра + импорт xlsx) — только админам
@@ -35,6 +38,7 @@ const SUBNAV = {
           ["/payments", "Выплаты", emCalendar], ["/primary", "Первичка", emChick],
           ["/fixed/ofz", "ОФЗ", emColumns], ["/fixed/auction", "Аукцион", emHammer],
           ["/calc", "Калькулятор", emAbacus]],
+  fx: [["/fx", "Монитор", emLaptop], ["/fx/compare", "Сравнение", emScales]],
   portfolio: [],
   curves: [],
   reference: [],
@@ -42,13 +46,13 @@ const SUBNAV = {
 };
 
 const typeFromPath = (p) =>
-  p.startsWith("/portfolio") ? "portfolio"
+  p === "/fx" || p.startsWith("/fx/") ? "fx"
+    : p.startsWith("/portfolio") ? "portfolio"
     : p.startsWith("/curves") ? "curves" : p.startsWith("/reference") ? "reference"
     : p.startsWith("/status") ? "status" : "bonds";
 
-function TypeMenu({ type, isAdmin }) {
-  const items = TYPES.filter((t) => (!t.admin || isAdmin)
-    );
+function TypeMenu({ type, isAdmin, fixedOn = true }) {
+  const items = TYPES.filter((t) => (!t.admin || isAdmin) && (!t.needsFixed || fixedOn));
   const cur = items.find((t) => t.id === type) || items[0];
   // счётчик свежих выпусков без подтверждённых параметров: значок висит на самой
   // кнопке меню, чтобы «надо чекнуть новые» было видно с любой вкладки
@@ -93,7 +97,7 @@ export default function Topbar({ user, onLogout, onOpenSettings, extra, features
     <header className="menubar">
       <div className="brand-row">
         <BrandBlobatar />
-        <TypeMenu type={type} isAdmin={user?.role === "admin"} />
+        <TypeMenu type={type} isAdmin={user?.role === "admin"} fixedOn={features?.fixed !== false} />
         {sub.length > 0 && (
           <span className="seg module-seg" role="tablist" aria-label="Раздел">
             {sub.map(([to, label, emoji]) => (
