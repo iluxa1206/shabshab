@@ -62,3 +62,23 @@ def test_heal_queues_blank_sides_with_retry_pause(monkeypatch):
     us._fixed_sides_dirty.clear()
     monkeypatch.setattr(us, "_fx_heal_last", 0.0)       # заход разрешён, пауза бумаги — нет
     assert us.heal_fixed_blank_sides() == 0
+
+
+def test_read_bars_hides_legacy_g_close_for_fixed(tmp_path, monkeypatch):
+    """y_close_bps фиксов до 16.10 — g-спред под именем Y-IDX: наружу не отдаём."""
+    import importlib
+    monkeypatch.setenv("PORTFOLIO_DB", str(tmp_path / "p.db"))
+    from services import portfolio_db as pdb
+    importlib.reload(pdb)
+    pdb.init_db()
+    from services import bars
+    importlib.reload(bars)
+    with pdb._connect() as c:
+        c.executemany(
+            "INSERT INTO bar_hourly(isin,ts,kind,y_idx_bps,y_close_bps) VALUES(?,?,?,?,?)",
+            [("F", "2026-10-14 12:00", "fixed", 90.0, 120.0),
+             ("F", "2026-10-16 12:00", "fixed", 90.0, 95.0),
+             ("L", "2026-10-14 12:00", "floater", 50.0, 55.0)])
+    f = {r["ts"]: r["y_close_bps"] for r in bars.read_bars("F")}
+    assert f["2026-10-14 12:00"] is None and f["2026-10-16 12:00"] == 95.0
+    assert bars.read_bars("L")[0]["y_close_bps"] == 55.0        # флоатер не тронут

@@ -261,7 +261,7 @@ const HORIZONS = [
 // Значение точки под выбранный горизонт. Точка знает, к чему посчитано её
 // основное число, поэтому «к погашению» — это либо основное, либо альтернативное.
 function atHorizon(p, hz) {
-  const main = p?.y_idx_bps != null ? p.y_idx_bps : p?.g_spread_bps;
+  const main = p?.y_idx_bps ?? null;       // G-спред в линию Y-IDX не подмешиваем
   if (hz === "auto" || main == null) return main;
   const isMat = (p.horizon || "maturity") === "maturity";
   const want = hz === "maturity";
@@ -271,15 +271,14 @@ function atHorizon(p, hz) {
 // Есть ли у бумаги вообще второй горизонт (иначе свитчер прятать)
 const hasAltHorizon = (rows) => !!rows?.some((b) => b.y_idx_alt_bps != null);
 
-// Метрика спреда зависит от типа бумаги: у флоатера Y-IDX, у фикса G-спред.
-// Бар несёт оба поля, заполнено то, что считается для этой бумаги.
+// Метрика спреда одна на оба класса — Y-IDX (у фикса он считается нашей моделью
+// к RUONIA, как у флоатера). Раньше тип метрики угадывали по барам («y_idx пуст
+// во всех барах — значит фикс, G-спред»): с 12.10 у фиксов бары несут и Y-IDX,
+// угадайка выбирала флоатерный путь и запросы шли с kind=floater.
 const barSpread = (b, hz = "auto") => atHorizon(b, hz);
-const spreadKindOf = (bars) =>
-  (bars?.some((b) => b.y_idx_bps != null) ? "y" : bars?.some((b) => b.g_spread_bps != null) ? "g" : "y");
-const SPREAD_LABEL = { y: "spread", g: "G-спред" };
+const SPREAD_LABEL = "spread";
 // спред по цене самой сделки (бэк считает его тем же reprice, что уровни стакана)
-const tradeSpread = (t) => (t?.y_idx_bps != null ? t.y_idx_bps
-  : t?.g_spread_bps != null ? t.g_spread_bps : null);
+const tradeSpread = (t) => (t?.y_idx_bps != null ? t.y_idx_bps : null);
 
 // Спред по ценам бара (бэкенд считает его тем же reprice, что и по vwap).
 // Спред обратен цене, поэтому «максимум спреда» — это y по МИНИМАЛЬНОЙ цене:
@@ -664,11 +663,15 @@ export default function ChartPage() {
   // дрейнить ради него тиковый архив Alor заново незачем: refresh=false на
   // повторных заходах снимает лишний сетевой вызов на каждой итерации.
   const pollingRef = useRef(false);
+  // КЛАСС БУМАГИ — из строки списка (kind), а не из баров: все запросы ниже идут с
+  // ним. Пока строка не пришла, запросы ждут: kind=floater по фиксу даёт 404
+  const bondKind = qRow.data?.kind === "fixed" ? "fixed" : "floater";
+  const rowReady = qRow.isFetched;
   const qBars = useQuery({
-    queryKey: ["hbars", isin, layerDays],
-    queryFn: () => fetchHourlyBars(isin, { days: layerDays,
+    queryKey: ["hbars", isin, layerDays, bondKind],
+    queryFn: () => fetchHourlyBars(isin, { days: layerDays, kind: bondKind,
                                            refresh: !pollingRef.current }),
-    enabled: barsOn,
+    enabled: barsOn && rowReady,
     staleTime: 300_000,
     // Живой такт идёт с refresh=true (pollingRef поднимается только опросом
     // досчёта спреда): бэк доливает текущий час инлайн, а не ждёт демона в HH:07.
@@ -680,21 +683,18 @@ export default function ChartPage() {
   // запроса на бэке идут под одним замком по ISIN — и слой сделок ЖДАЛ конца
   // второго, уже лишнего, дрейна. Порог берём в ключ, но старые точки держим на
   // экране (placeholderData), чтобы переключение «крупнее, млн ₽» не мигало.
-  // Тип метрики спреда узнаём по самим барам: страница открывается по ISIN и
-  // обслуживает и флоатеры (Y-IDX), и фиксы (G-спред) — у фикса y_idx пуст во
-  // всех барах, и панель молча оставалась пустой.
-  const sKind = spreadKindOf(qBars.data?.bars);
-  const sLabel = SPREAD_LABEL[sKind];
+  // Метрика спреда одна — Y-IDX (см. SPREAD_LABEL); класс бумаги — bondKind выше.
+  const sLabel = SPREAD_LABEL;
   const keepPrev = (prev) => prev;
   const qTrades = useQuery({
-    queryKey: ["big-trades", isin, layerDays, bigMln, sKind],
+    queryKey: ["big-trades", isin, layerDays, bigMln, bondKind],
     // order=value: с сортировкой по времени лимит срезал дальнюю половину окна
     // и маркеры обрывались на середине графика без всякого следа
     queryFn: () => fetchTrades(isin, { days: Math.min(layerDays, 400),
                                        minValue: bigMln * 1e6, limit: 400,
                                        order: "value", refresh: !barsOn,
-                                       kind: sKind === "g" ? "fixed" : "floater" }),
-    enabled: on("big"),
+                                       kind: bondKind }),
+    enabled: on("big") && rowReady,
     staleTime: 300_000,
     refetchInterval: liveInterval(LAYERS_POLL_MS),
     refetchIntervalInBackground: false,
@@ -715,10 +715,10 @@ export default function ChartPage() {
   });
 
   const qSpread = useQuery({
-    queryKey: ["spread-hist", isin, sKind, from || "all"],
-    queryFn: () => fetchSpreadHistory(isin, { kind: sKind === "g" ? "fixed" : "floater",
+    queryKey: ["spread-hist", isin, bondKind, from || "all"],
+    queryFn: () => fetchSpreadHistory(isin, { kind: bondKind,
                                               from: from || isoBack(400), days: 400 }),
-    enabled: spreadOn,
+    enabled: spreadOn && rowReady,
     staleTime: 300_000,
     // Дневная серия спреда: точка сегодняшнего дня — candle-оценка живой
     // моделью, её и обновляем; прошлое лежит в spread_daily и не пересчитывается.
@@ -780,7 +780,7 @@ export default function ChartPage() {
     const dayVal = new Map(candles.map((c) => [c.t.slice(0, 10), (c.v || 0) * 1000 * (c.c || 100) / 100]));
     const daily = (qSpread.data?.points || [])
       .map((p) => ({ time: p.date,
-                     value: sKind === "g" ? p.g_spread_bps : atHorizon(p, hz),
+                     value: atHorizon(p, hz),
                      px: p.price ?? null, src: "daily",
                      thin: (dayVal.get(p.date) ?? Infinity) < Y_OHLC_MIN_DAY_VALUE }))
       .filter((p) => p.value != null);
@@ -801,7 +801,7 @@ export default function ChartPage() {
     if (bars.length < 2) return daily;
     if (daily.length > 4 && bars.length < daily.length * SPREAD_BARS_MIN_COVER) return daily;
     return bars;
-  }, [spreadPaneOn, layerPts, qSpread.data, smode, sKind, tf, from, candles, hz]);
+  }, [spreadPaneOn, layerPts, qSpread.data, smode, tf, from, candles, hz]);
 
   // Свитчер горизонта показываем только там, где есть что переключать:
   // у бумаги без оферт второго горизонта не существует.
@@ -1505,7 +1505,7 @@ export default function ChartPage() {
               странице, поэтому график под ним остаётся на месте */}
           <button type="button" className="cp-btn cp-reset cp-ob"
             title="Карточка выпуска: стакан, параметры, купоны"
-            onClick={() => setParam({ isin, k: sKind === "g" ? "fixed" : null })}>
+            onClick={() => setParam({ isin, k: bondKind === "fixed" ? "fixed" : null })}>
             Стакан
           </button>
         </div>

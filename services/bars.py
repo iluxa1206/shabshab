@@ -312,8 +312,9 @@ async def build_bars(isin: str, days: int = 30, kind: str = "floater",
             # vwap-спред — переключатель менял подпись, а линия оставалась той
             # же. Считаем одну доп. цену вместо четырёх; o/h/l больше не нужны.
             o, h, l, cl = (c.get("open"), c.get("high"), c.get("low"), c.get("close"))
-            spread_key = "g_spread_bps" if kind == "fixed" else "y_idx_bps"
-            y_close = _metrics(cl).get(spread_key) if cl is not None else None
+            # Y-IDX у обоих классов (у фикса — нашей моделью к RUONIA). До 16.10.2026
+            # у фиксов тут лежал g-спред; старые бары см. _FIXED_YCLOSE_FROM
+            y_close = _metrics(cl).get("y_idx_bps") if cl is not None else None
             bar = {
                 "isin": isin, "ts": ts, "kind": kind,
                 "open": o, "high": h, "low": l, "close": cl,
@@ -680,6 +681,13 @@ async def ensure_bars(isin: str, days: int = 30, kind: str = "floater",
     return n
 
 
+# Спред ПО ЗАКРЫТИЮ (y_close_bps) у фиксов до этой даты — g-спред, а не Y-IDX: имя
+# колонки то же, метрика другая. Старые бары не пересчитывали (это миллионы
+# строк), поэтому отдаём их без y_close — график откатывается на vwap-спред, а не
+# рисует g-спред в линии Y-IDX.
+_FIXED_YCLOSE_FROM = "2026-10-16"
+
+
 def read_bars(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
               limit: int = 5000) -> list[dict]:
     """Бары по возрастанию времени. frm/till — 'YYYY-MM-DD' либо полный ts."""
@@ -695,7 +703,11 @@ def read_bars(isin: str, frm: Optional[str] = None, till: Optional[str] = None,
     args.append(limit)
     with _connect() as c:
         rows = c.execute(q, args).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    out = [dict(r) for r in reversed(rows)]
+    for r in out:
+        if r.get("kind") == "fixed" and str(r.get("ts") or "") < _FIXED_YCLOSE_FROM:
+            r["y_close_bps"] = None
+    return out
 
 
 # ── Дневная свёртка (bar_daily) ────────────────────────────────────────────
