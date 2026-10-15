@@ -12,6 +12,7 @@ def _setup(monkeypatch):
         "E": {"bid": 0, "ask": 0, "y_idx_bid_bps": None, "ytm": 12.0},      # стороны нет
         "F": {"bid": 70.0, "y_idx_bid_bps": None, "ytm": 9.0},              # USD
         "P": {"bid": 60.0, "y_idx_bid_bps": None, "ytm": 15.0},             # бессрочная
+        "G": {"bid": 120.0, "y_idx_bid_bps": None, "ytm": None, "ytm_guard": "structured"},
     }
     monkeypatch.setitem(market_cache, "fixed_metrics", fm)
     monkeypatch.setattr(us, "_last_ctx", {
@@ -25,7 +26,7 @@ def test_blank_fixed_reasons(monkeypatch):
     r = us._blank_fixed_count()
     # A.ask — в очереди; B.bid — иное (YTM есть, расписание есть, не в очереди);
     # C.bid — нет YTM; D.bid — нет расписания; E — стороны нет, не считаем
-    assert r == {"total": 4, "queued": 1, "no_sched": 1, "no_ytm": 1, "other": 1, "by_design": 2}
+    assert r == {"total": 4, "queued": 1, "no_sched": 1, "no_ytm": 1, "other": 1, "by_design": 3}
 
 
 def test_latency_summary(monkeypatch):

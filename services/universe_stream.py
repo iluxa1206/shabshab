@@ -2107,7 +2107,9 @@ def heal_fixed_blank_sides() -> int:
     from services.market_data import market_cache
     n = 0
     for isin, row in (market_cache.get("fixed_metrics") or {}).items():
-        if isin not in _fixed_isins or isin in _fixed_sides_dirty or _yidx_undefined(isin):
+        # ytm_guard: YTM вырождена (fixed_income.ytm_guard) — стороны пусты по смыслу
+        if (isin not in _fixed_isins or isin in _fixed_sides_dirty or row.get("ytm_guard")
+                or _yidx_undefined(isin)):
             continue
         if not any((row.get(s) or 0) > 0 and row.get(f"y_idx_{s}_bps") is None
                    for s in ("bid", "ask")):
@@ -2135,8 +2137,8 @@ def _blank_fixed_count() -> dict:
         for side in ("bid", "ask"):
             if (row.get(side) or 0) <= 0 or row.get(f"y_idx_{side}_bps") is not None:
                 continue
-            if _yidx_undefined(isin):
-                out["by_design"] += 1       # валюта/бессрочная: Y-IDX не определён
+            if row.get("ytm_guard") or _yidx_undefined(isin):
+                out["by_design"] += 1       # валюта/бессрочная/вырожденная YTM: «н/о»
                 continue
             out["total"] += 1
             if isin in _fixed_sides_dirty:
