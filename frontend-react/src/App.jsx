@@ -11,7 +11,6 @@ import { applyVolume, FIXED_VOL_FIELDS } from "./vwap.js";
 import { useFixedFeed } from "./useFixedFeed.js";
 import { withFixedAliases, passesFixedDefaults, unifiedSortValue } from "./unifiedRows.js";
 import { UNIFIED_COLS, UNIFIED_DEFAULT_COLS } from "./components/unifiedCols.jsx";
-import FixedAnalytics from "./components/FixedAnalytics.jsx";
 import { usePageStatus } from "./pageStatus.jsx";
 import { useFixedCols } from "./components/fixed/FixedTable.jsx";
 import { fixedCurrency } from "./components/fixed/currency.js";
@@ -1114,18 +1113,15 @@ function Dashboard() {
       />
   );
 
-  // ОБЩИЙ МОНИТОР. Аналитика у классов своя: у флоатеров — Y-IDX по спред-
-  // дюрации, у фиксов — g-спред по сроку (FixedAnalytics). Смешивать их в одном
-  // графике нельзя (разные метрики на одной оси), поэтому над таблицей панель
-  // каждого класса, который есть в выборке, — раздельно.
+  // ОБЩИЙ МОНИТОР. Одна панель аналитики: R-spread (Y-IDX) у обоих классов в
+  // двух верхних графиках, свитчер R/G переключает их на g-спред фиксов; динамика
+  // и разброс идут из истории флоатеров (rows).
   const filteredFloaters = useMemo(() => filtered.filter((b) => b.kind !== "fixed"), [filtered]);
-  const filteredFixed = useMemo(() => filtered.filter((b) => b.kind === "fixed"), [filtered]);
   const unifiedView = (
     <>
       {toolbar(true, true)}
-      {showAnalytics && filteredFloaters.length > 0 && (
-        <AnalyticsPanel rows={filteredFloaters} focus={anFocus} onFocus={setAnFocus} />)}
-      {showAnalytics && filteredFixed.length > 0 && <FixedAnalytics rows={filteredFixed} />}
+      {showAnalytics && filtered.length > 0 && (
+        <AnalyticsPanel rows={filteredFloaters} allRows={filtered} focus={anFocus} onFocus={setAnFocus} />)}
       <UnifiedStatus rows={tableRows} />
       <BondTable
         rows={tableRows}

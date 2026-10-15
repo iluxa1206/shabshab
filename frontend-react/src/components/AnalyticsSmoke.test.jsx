@@ -28,6 +28,18 @@ describe("smoke аналитики: панели монтируются в об�
     fireEvent.click(button);
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
+  it("R-spread / G-spread переключает два верхних графика, фиксы только в allRows", () => {
+    const fixed = rows.map((b) => ({ ...b, isin: "F" + b.isin, kind: "fixed", y_idx_wap_bps: null,
+                                     yield_over_index_bps: null }));
+    const view = render(<AnalyticsPanel rows={[]} allRows={fixed} onFocus={() => {}} />);
+    const q = within(view.container);
+    // флоатеров нет — динамики и разброса нет, верхние графики на месте
+    expect(q.queryByText(/ДИНАМИКА/)).toBeNull();
+    expect(q.getByText(/spread vs СРОК/)).toBeTruthy();
+    fireEvent.click(q.getAllByText("G-spread")[0]);
+    expect(q.getByText(/g-spread vs СРОК/)).toBeTruthy();
+    expect(q.getAllByText(/g-spread по РЕЙТИНГ-БАКЕТАМ/).length).toBeGreaterThan(0);
+  });
   it("панель фиксов рисуется и переживает свитчер ЭМИТЕНТ", () => {
     render(<FixedAnalytics rows={rows} />);
     fireEvent.click(screen.getAllByText("Эмитент")[0]);

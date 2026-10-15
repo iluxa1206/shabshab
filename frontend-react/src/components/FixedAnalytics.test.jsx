@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import FixedAnalytics, { maturityBuckets } from "./FixedAnalytics.jsx";
+import FixedAnalytics from "./FixedAnalytics.jsx";
 
 const inYears = (y) => {
   const d = new Date();
@@ -39,15 +39,5 @@ describe("аналитика фиксов", () => {
     render(<FixedAnalytics rows={[WITH_PUT, PLAIN]} />);
     expect(screen.getByText(/G-СПРЕД vs СРОК/)).toBeTruthy();
     expect(screen.queryByText(/G-СПРЕД vs ДЮРАЦИЯ/)).toBeNull();
-  });
-
-  it("профиль срочности кладёт бумагу по ОФЕРТЕ, а не по погашению", () => {
-    const byLabel = Object.fromEntries(
-      maturityBuckets([WITH_PUT, PLAIN]).map((b) => [b.lbl, b.n]));
-    // оферта через год → корзина «0.5–1» либо «1–2» (округление дня в дату),
-    // но точно не в дальней, куда её клало погашение
-    expect(byLabel["0.5–1"] + byLabel["1–2"]).toBe(1);
-    // соседняя бумага без оферты остаётся семилетней
-    expect(byLabel["5+"]).toBe(1);
   });
 });

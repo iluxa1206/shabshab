@@ -36,6 +36,13 @@ const yval = (b) => {
   return direct != null ? direct : inBand(b.yield_over_index_bps);
 };
 
+// G-спред (к КБД ОФЗ) — есть у рублёвых фиксов; тот же приём: средневзвес дня,
+// фолбэк на спред цены сделки, бэнд против мусора неликвида.
+const inBandG = (v) => (v != null && v < 3000 && v > -500 ? v : null);
+const gval = (b) => inBandG(b.g_spread_wap_bps) ?? inBandG(b.g_spread_bps);
+const METRICS = { r: { val: yval, axis: "spread, bps", name: "spread" },
+                  g: { val: gval, axis: "g-spread, bps", name: "g-spread" } };
+
 // ключ эмитента (имя первично, id — фолбэк) и группировка строк по эмитенту
 const emKey = (b) => b.emitter_name || (b.emitter_id ? `#${b.emitter_id}` : null);
 const byIssuer = (rows) => {
@@ -119,9 +126,9 @@ const padFull = (pad, full) => (full ? {
 // глаз нельзя.
 // focus: активный фильтр {type,key} — попавшие под него точки ярче, прочие гаснут;
 // клик по точке ставит/снимает фильтр по эмитенту
-function ScatterYidx({ rows, focus, onPick, height, full, labels, byIss }) {
+function ScatterYidx({ rows, focus, onPick, height, full, labels, byIss, val = yval, axis = "spread, bps" }) {
   const pts = rows
-    .map((b) => ({ b, z: yval(b) }))
+    .map((b) => ({ b, z: val(b) }))
     .map(({ b, z }) => ({ b, z, yrs: horizonYears(b) }))
     // срок строго положительный: бумага с прошедшей датой (стейл в справочнике)
     // иначе уехала бы за левый край области, где ось начинается с нуля
@@ -165,7 +172,7 @@ function ScatterYidx({ rows, focus, onPick, height, full, labels, byIss }) {
             ))}
             <text x={P.l} y={H - 4} className="an-axis-lbl" textAnchor="start">срок, лет →</text>
             <text x={P.l - 38} y={P.t + 4} className="an-axis-lbl"
-              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>spread, bps</text>
+              transform={`rotate(-90 ${P.l - 38} ${P.t + 4})`}>{axis}</text>
           </>
         );
       }}
@@ -252,36 +259,36 @@ function IssuerDetail({ rows, issuer, onClear }) {
 }
 
 // ── Распределение Y-IDX по рейтинг-бакетам (p25–медиана–p75) ──
-function RatingDist({ rows, focus, onPick, rowH, full }) {
+function RatingDist({ rows, focus, onPick, rowH, full, val = yval }) {
   const entries = useMemo(() => {
     const g = {};
     for (const b of rows) {
-      const z = yval(b);
+      const z = val(b);
       if (z == null) continue;
       (g[norm(b.rating)] ||= []).push(z);
     }
     return BUCKETS.filter((k) => g[k]?.length).map((k) => ({ key: k, label: k, arr: g[k], color: BCOLOR[k] }));
-  }, [rows]);
+  }, [rows, val]);
   return <BoxRows entries={entries} label="распределение spread по рейтингам"
     kind="rating" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
 }
 
 // ── Распределение Y-IDX по эмитентам (сорт по медиане, топ-N) ──
 const ISSUER_CAP = 22;
-function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH, full }) {
+function IssuerDist({ rows, focus, onPick, cap = ISSUER_CAP, rowH, full, val = yval }) {
   const { entries, note } = useMemo(() => {
     // одиночные эмитенты тоже в списке: точка-медиана без полосы p25–p75
     // (раньше скрывались правилом ≥2 бумаг — watchlist из одиночек давал пустую панель)
     const arr = [];
     for (const [k, bonds] of byIssuer(rows)) {
-      const zs = bonds.map(yval).filter((v) => v != null);
+      const zs = bonds.map(val).filter((v) => v != null);
       if (!zs.length) continue;
       arr.push({ key: String(k), label: trunc(String(k)), arr: zs, color: BCOLOR[modalBucket(bonds)], md: median(zs) });
     }
     arr.sort((a, b) => b.md - a.md);
     const note = arr.length > cap ? `+${arr.length - cap} эмитентов ниже по spread скрыто` : null;
     return { entries: arr.slice(0, cap), note };
-  }, [rows, cap]);
+  }, [rows, cap, val]);
   if (!entries.length) return <div className="an-empty">нет эмитентов с валидным spread</div>;
   return <BoxRows entries={entries} note={note} label="распределение spread по эмитентам"
     kind="issuer" focus={focus} onPick={onPick} rowH={rowH} full={full} />;
@@ -594,6 +601,19 @@ function AggToggle({ value, onChange }) {
   );
 }
 
+// Метрика первых двух графиков: R-spread (Y-IDX к RUONIA, оба класса) / G-spread
+// (к КБД ОФЗ, только фиксы). Свитчер вместо отдельной панели G-графиков.
+function MetricToggle({ value, onChange }) {
+  return (
+    <span className="an-toggle" role="group" aria-label="метрика спреда">
+      {[["r", "R-spread"], ["g", "G-spread"]].map(([v, l]) => (
+        <button key={v} type="button" className={"an-tgl-btn" + (value === v ? " on" : "")}
+          aria-pressed={value === v} onClick={() => onChange(v)}>{l}</button>
+      ))}
+    </span>
+  );
+}
+
 // Карточка графика: заголовок с контролами (переключатели живут ЗДЕСЬ, а не в
 // потоке тела — там float перекрывался позиционированным .cf-box и клики по
 // кнопкам периода не доходили) + кнопка «на весь экран».
@@ -632,7 +652,12 @@ const YH_H = 220;
 // focus/onFocus — активный фильтр аналитики {type:"issuer"|"rating", key}.
 // Живёт в App: по нему же фильтруется таблица под панелью; повторный клик
 // снимает фильтр и таблица возвращается к прежнему набору.
-export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
+export default function AnalyticsPanel({ rows, allRows, focus = null, onFocus }) {
+  // rows — флоатеры (динамика и разброс идут из истории флоатеров); allRows —
+  // обе стороны для двух верхних графиков (по умолчанию то же, что rows)
+  const top = allRows || rows;
+  const [metric, setMetric] = useState("r");
+  const M = METRICS[metric];
   const [groupBy, setGroupBy] = useState("rating");
   const [period, setPeriod] = useState(91);
   const [dispView, setDispView] = useState("history");
@@ -666,8 +691,8 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
   // 3 рейтинг-бакета висели полоской вверху пустого экрана), эмитентов
   // показываем столько, сколько влезает при комфортной высоте строки
   const distN = Math.max(1, byIss
-    ? Math.min(new Set(rows.map(emKey).filter(Boolean)).size, 40)
-    : new Set(rows.map((b) => norm(b.rating))).size);
+    ? Math.min(new Set(top.map(emKey).filter(Boolean)).size, 40)
+    : new Set(top.map((b) => norm(b.rating))).size);
   const distRowH = full === "dist"
     ? Math.max(24, Math.min(120, Math.floor((vh - 200) / distN)))
     : undefined;
@@ -700,25 +725,28 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
 
   return (
     <section className={"analytics" + (full ? " has-full" : "")}>
-      <AnCard title="spread vs СРОК" ctl={<>{lblCtl}{aggCtl}</>} {...fullBtn("scatter")}
+      <AnCard title={M.name + " vs СРОК"} ctl={<>{lblCtl}<MetricToggle value={metric} onChange={setMetric} />{aggCtl}</>}
+        {...fullBtn("scatter")}
         hint={"спред по средневзвесу дня · срок до погашения (или оферты, если прайсим к ней) · точка = выпуск · цвет = "
               + (byIss ? "эмитент" : "рейтинг") + " · клик = фильтр по эмитенту"}>
-        <ScatterYidx rows={rows} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"}
-          labels={labels && full === "scatter"} byIss={byIss} />
-        {focus?.type === "issuer" && <IssuerDetail rows={rows} issuer={focus.key} onClear={() => set(null)} />}
-        {byIss ? <IssuerLegend rows={rows} keyFn={emKey} /> : <RatingLegend />}
+        <ScatterYidx rows={top} focus={focus} onPick={pickIssuer} height={scH} full={full === "scatter"}
+          labels={labels && full === "scatter"} byIss={byIss} val={M.val} axis={M.axis} />
+        {focus?.type === "issuer" && <IssuerDetail rows={top} issuer={focus.key} onClear={() => set(null)} />}
+        {byIss ? <IssuerLegend rows={top} keyFn={emKey} /> : <RatingLegend />}
       </AnCard>
 
-      <AnCard title={byIss ? "spread по ЭМИТЕНТАМ" : "spread по РЕЙТИНГ-БАКЕТАМ"} ctl={aggCtl} {...fullBtn("dist")}
+      <AnCard title={M.name + (byIss ? " по ЭМИТЕНТАМ" : " по РЕЙТИНГ-БАКЕТАМ")}
+        ctl={<><MetricToggle value={metric} onChange={setMetric} />{aggCtl}</>} {...fullBtn("dist")}
         hint="спред по средневзвесу дня · линия p25–p75 · точка = медиана · (n) · клик = фильтр">
         {byIss
-          ? <IssuerDist rows={rows} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH}
-              full={full === "dist"} />
-          : <RatingDist rows={rows} focus={focus} onPick={pickRating} rowH={distRowH}
-              full={full === "dist"} />}
+          ? <IssuerDist rows={top} focus={focus} onPick={pickIssuer} cap={distCap} rowH={distRowH}
+              full={full === "dist"} val={M.val} />
+          : <RatingDist rows={top} focus={focus} onPick={pickRating} rowH={distRowH}
+              full={full === "dist"} val={M.val} />}
         <RatingLegend />
       </AnCard>
 
+      {rows.length > 0 && <>
       <AnCard title="spread ДИНАМИКА" ctl={<>{periodCtl()}{aggCtl}</>} {...fullBtn("hist")}
         hint={byIss ? "спред по средневзвесу дня · медиана по топ-эмитентам · пунктир = рынок · клик по линии = фильтр"
                     : "спред по средневзвесу дня · медиана по рейтинг-бакетам · клик по линии = фильтр"}>
@@ -734,6 +762,7 @@ export default function AnalyticsPanel({ rows, focus = null, onFocus }) {
           <DispersionHistory rows={rows} period={period} height={dispH} full={full === "disp"} />
         </> : <SpreadHistogram rows={rows} height={dispH} full={full === "disp"} />}
       </AnCard>
+      </>}
     </section>
   );
 }

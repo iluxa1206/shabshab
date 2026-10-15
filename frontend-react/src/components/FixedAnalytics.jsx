@@ -8,7 +8,7 @@ import AnHint from "./AnHint.jsx";
 import IssuerLegend, { OTHER_COLOR, issuerColors } from "./IssuerLegend.jsx";
 
 // Аналитика фиксов — зеркало AnalyticsPanel флоатеров: g-спред vs СРОК,
-// распределение g-спреда, профиль срочности.
+// распределение g-спреда (профиль срочности снят 15.10.2026).
 //
 // Срок везде считает horizon.js — до той даты, к которой посчитаны метрики
 // строки (у фикса поток обрывается на оферте, дальше купоны неизвестны). Своя
@@ -189,66 +189,6 @@ function IssuerDist({ rows }) {
   return <BoxRows entries={entries} note={note} label="распределение g-спреда по эмитентам" />;
 }
 
-const MAT_BINS = [
-  { lbl: "0–0.5", lo: 0, hi: 0.5 }, { lbl: "0.5–1", lo: 0.5, hi: 1 },
-  { lbl: "1–2", lo: 1, hi: 2 }, { lbl: "2–3", lo: 2, hi: 3 },
-  { lbl: "3–5", lo: 3, hi: 5 }, { lbl: "5+", lo: 5, hi: 1e9 },
-];
-
-/**
- * Раскладка бумаг по корзинам СРОКА (см. horizon.js): у фикса с офертой это
- * срок до неё — деньги вернутся тогда, а не в дату погашения. Считать здесь
- * годы до maturity_date, как было раньше, значило бы класть годовую по факту
- * бумагу в корзину «5–10».
- *
- * Вынесено из компонента, потому что сам график в тестах не измеряется:
- * проверять раскладку удобнее на числах.
- */
-export function maturityBuckets(rows, today = new Date()) {
-  const yrs = (rows || []).map((b) => horizonYears(b, today))
-    .filter((v) => v != null && v > 0);
-  return MAT_BINS.map((bin) => ({
-    lbl: bin.lbl, n: yrs.filter((v) => v >= bin.lo && v < bin.hi).length,
-  }));
-}
-
-// ── Гистограмма срочности (лет до горизонта) ──
-function MaturityProfile({ rows }) {
-  const bins = MAT_BINS;
-  // МСК-дата (UTC+3)
-  const today = new Date(Date.now() + 3 * 3600 * 1000);
-  const buckets = maturityBuckets(rows, today);
-  if (!buckets.some((b) => b.n)) return <div className="an-empty">нет дат погашения</div>;
-  const counts = buckets.map((b) => b.n);
-  const cmax = Math.max(...counts, 1);
-  const PAD = { l: 30, r: 10, t: 10, b: 24 };
-  return (
-    <MeasuredSvg height={150} label="профиль срочности">
-      {({ W, H, bind }) => {
-        const bw = (W - PAD.l - PAD.r) / bins.length;
-        const sh = linearScale([0, cmax], [0, H - PAD.t - PAD.b]);
-        return (
-          <>
-            {bins.map((bin, i) => {
-              const h = sh(counts[i]);
-              const x = PAD.l + i * bw + bw * 0.15;
-              return (
-                <g key={bin.lbl}>
-                  <rect x={x} y={H - PAD.b - h} width={bw * 0.7} height={h} className="an-bar"
-                    {...bind(x + bw * 0.35, H - PAD.b - h, `погашение через ${bin.lbl}\n${counts[i]} ${plu(counts[i])}`)} />
-                  {counts[i] > 0 && <text x={x + bw * 0.35} y={H - PAD.b - h - 3} className="an-axis" textAnchor="middle">{counts[i]}</text>}
-                </g>
-              );
-            })}
-            <XTicks ticks={bins.map((bin, i) => ({ x: PAD.l + i * bw + bw * 0.5, label: bin.lbl }))}
-              y={H - PAD.b + 14} textClass="an-axis" />
-          </>
-        );
-      }}
-    </MeasuredSvg>
-  );
-}
-
 function RatingLegend() {
   return (
     <div className="an-legend">
@@ -297,10 +237,6 @@ export default function FixedAnalytics({ rows }) {
         </div>
         {byIss ? <IssuerDist rows={rows} /> : <RatingDist rows={rows} />}
         <RatingLegend />
-      </div>
-      <div className="an-card">
-        <div className="an-title">ПРОФИЛЬ СРОЧНОСТИ <AnHint text={"лет до погашения · бар = число бумаг"} /></div>
-        <MaturityProfile rows={rows} />
       </div>
     </section>
   );
