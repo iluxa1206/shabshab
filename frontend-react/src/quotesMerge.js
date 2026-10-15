@@ -208,7 +208,7 @@ export function applySideQuote(b, n, side, px, hasKey) {
 
 /** Поля патча движка, посчитанные ПО ЦЕНЕ СДЕЛКИ. */
 export const STREAM_LEVEL_KEYS = [
-  "yield_over_index_bps", "y_idx_oos", "dm_bps", "disc_margin_bps", "z_model_bps",
+  "yield_over_index_bps", "y_idx_oos", "z_model_bps",
   "yield_xirr_pct", "index_yield_pct", "dirty_price_rub",
   "delta_to_prev_close", "preferred_horizon", "spread_dur_yrs",
 ];

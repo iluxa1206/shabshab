@@ -1517,8 +1517,6 @@ export default function ChartPage() {
           {stat(vHz.key === "maturity" ? "spread" : "spread (к оферте)",
             v?.yield_over_index_bps != null
               ? <span style={cSp}>{v.yield_over_index_bps} bps</span> : null, "hi")}
-          {stat("DM", v?.disc_margin_bps != null ? v.disc_margin_bps + " bps" : null)}
-          {stat("SM", v?.sm_bps != null ? v.sm_bps + " bps" : null)}
           {stat("спред-дюр.", f?.spread_duration_yrs != null ? fmt.yrs(f.spread_duration_yrs) : null)}
           {stat("погашение", r?.maturity_date ? fmt.date(r.maturity_date) : null)}
           {stat("расчёт", m?.calc_date ? fmt.date(m.calc_date) : null)}

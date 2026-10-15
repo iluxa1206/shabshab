@@ -49,14 +49,6 @@ export function wapSpread(b) {
 // subKind — что писать ПОД ценой: "bps" (спред, по умолчанию) или "pct"
 // (доходность). У фиксов вторая строка ячейки — YTM по этой же цене: знака у
 // неё нет, поэтому ни цвета, ни отклонения от семидневки там не рисуем.
-// «н/о» — число по смыслу не определено (валюта, бессрочная, вырожденная YTM).
-// Причина — в title И в aria-label: подсказка td не доходит до скринридера и
-// тача, а без причины «н/о» читается как поломка.
-export function NA({ why }) {
-  return <span className="q-na" title={why || undefined} aria-label={why || "не определено"}
-    role="img">н/о</span>;
-}
-
 export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "bps", oos, ytm, na }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
@@ -86,12 +78,13 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
            style={shown == null ? undefined : dmColor(shown)}
            title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
                                 : "спред к прежней цене — пересчитывается") : undefined}>
-        {shown == null ? (na ? <NA why={na} /> : oos ? <Oos /> : <D />)
+        {shown == null ? (na ? null : oos ? <Oos /> : <D />)
           : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
         {/* фикс: YTM по этой же цене в той же строке — «спред / ytm» */}
         {ytm !== undefined && (
           <span className="q-ytm" title="доходность к погашению по этой цене">
-            {" / "}{ytm == null ? <D /> : fmt.pct(ytm)}</span>
+            {/* спред «не определён» (na) пуст — разделитель не нужен: остаётся один YTM */}
+            {shown == null && na ? "" : " / "}{ytm == null ? <D /> : fmt.pct(ytm)}</span>
         )}
         {dev != null && (
           <span className="q-sp-dev"
@@ -356,16 +349,8 @@ export const COLS = [
       title={b._yoi_stale ? "спред к прежней цене сделки — пересчитывается"
         : b.never_traded ? "спред к цене размещения — сделок на бирже не было ни разу" : undefined}>
       <Chip value={b.yield_over_index_bps} oos={b.y_idx_oos} /></td> },
-  // Маржи в ВИТРИНЕ выключены (services/universe.MARGINS_IN_UNIVERSE): каждая
-  // это солвер, а DM вдобавок пересобирает поток — 78–92 % расчёта бумаги ради
-  // колонки, по которой не торгуют. Первичная метрика здесь Y-IDX; маржи живут
-  // в карточке, калькуляторе и ленте. Вернуть в витрину: VALUATION_MARGINS=1.
-  { key: "dm_bps", label: "SM", sub: "MODEL", align: "num", grp: true, w: 7,
-    title: "Simple margin. В витрине выключен ради скорости — число есть в карточке бумаги",
-    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.dm_bps)} key="sm_bps">{fmt.bps(b.dm_bps) ?? <D />}</td> },
-  { key: "disc_margin_bps", label: "DM", sub: "MODEL", align: "num", w: 7,
-    title: "Discount margin. В витрине выключен ради скорости — число есть в карточке бумаги",
-    cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.disc_margin_bps)} key="disc_margin_bps">{fmt.bps(b.disc_margin_bps) ?? <D />}</td> },
+  // SM/DM сняты с фронта и поставлены на паузу на бэке (valuation.MARGINS_PAUSED,
+  // 15.10.2026): первичная метрика — Y-IDX, маржи были пустой колонкой.
   { key: "z_model_bps", label: "OUR Z", sub: "vs КБД", align: "num", w: 7,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.z_model_bps)} key="z_model_bps">{fmt.bps(b.z_model_bps) ?? <D />}</td> },
   { key: "yield_xirr_pct", label: "YTM", sub: "БОНД %", align: "num", w: 7,

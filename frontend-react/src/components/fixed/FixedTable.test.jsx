@@ -136,22 +136,24 @@ describe("купон, продлённый до погашения", () => {
   });
 });
 
-describe("валютные и бессрочные: спред «не определён»", () => {
-  it("USD-фикс: в BID «н/о» с причиной и YTM рядом, в SPREAD «н/о»", () => {
+describe("валютные и бессрочные: спред «не определён» — пусто", () => {
+  it("USD-фикс: в BID вместо спреда пусто, YTM рядом без разделителя; «н/о» и прочерка нет", () => {
     const rows = [{ isin: "RU000A10A802", name: "РФ ЗО 42 Д", cls: "corp", face_unit: "USD",
                     bid: 68.7, ask: 69.0, ytm_bid: 9.75, ytm: 9.8 }];
     const { container } = render(<Host storageKey="t_na" rows={rows} />);
-    const bid = container.querySelector("td.q-bid");
-    expect(bid.querySelector(".q-na").textContent).toBe("н/о");
-    expect(bid.querySelector(".q-na").getAttribute("title")).toMatch(/RUONIA/);
-    expect(bid.querySelector(".q-ytm").textContent).toContain("9");
-    expect(container.querySelector("tbody").textContent).toContain("н/о");
+    const sp = container.querySelector("td.q-bid .q-sp");
+    expect(sp.textContent).toContain("9");
+    expect(sp.textContent).not.toContain("/");
+    expect(sp.textContent).not.toContain("—");
+    expect(container.querySelector("tbody").textContent).not.toContain("н/о");
   });
-  it("рублёвый фикс без спреда — прочерк, не «н/о»", () => {
+  it("рублёвый фикс без спреда — прочерк и «/»: там «нет данных», а не «не бывает»", () => {
     const rows = [{ isin: "RU000A10RZD1", name: "РЖД", cls: "corp", face_unit: "RUB",
                     bid: 99.62, ytm_bid: 15.1 }];
     const { container } = render(<Host storageKey="t_na2" rows={rows} />);
-    expect(container.querySelector("td.q-bid .q-na")).toBeNull();
+    const sp = container.querySelector("td.q-bid .q-sp");
+    expect(sp.textContent).toContain("—");
+    expect(sp.textContent).toContain("/");
   });
 });
 

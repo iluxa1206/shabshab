@@ -51,3 +51,16 @@ def test_absurd_alt_price_is_none(ruonia_curve, calc_date):
     """Битая alt-цена (dirty > Σ будущих потоков) — None, как и для mid."""
     m = _metrics(ruonia_curve, calc_date, 100.0, alt_prices=[400.0])
     assert m["y_idx_by_price"][400.0] is None
+
+
+def test_margins_paused_drops_sm_dm_keeps_yidx_and_status(ruonia_curve, calc_date, monkeypatch):
+    """Пауза SM/DM: маржи пусты, Y-IDX считается, статус успешный (SM не ждём)."""
+    import services.valuation as v
+    monkeypatch.setattr(v, "MARGINS_PAUSED", True)
+    m = _metrics(ruonia_curve, calc_date, 100.0)
+    assert m["sm_bps"] is None and m["disc_margin_bps"] is None
+    assert m["yield_over_index_bps"] is not None
+    assert m["pricing_status"] == "SUCCESS"
+    monkeypatch.setattr(v, "MARGINS_PAUSED", False)
+    on = _metrics(ruonia_curve, calc_date, 100.0)
+    assert on["sm_bps"] is not None and on["yield_over_index_bps"] == m["yield_over_index_bps"]

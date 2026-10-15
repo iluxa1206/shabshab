@@ -1124,9 +1124,7 @@ export default function TradesTape() {
                         <td key={c.key}
                           className={`col-${c.key} `
                             + (c.align === "left" ? "left" : c.align === "num" ? "num" : "")}
-                          style={c.key === "yidx" && r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}
-                          title={c.key === "yidx" && r.dm_bps != null
-                            ? `DM ${fmt.num(r.dm_bps, 0)} бп` : undefined}>
+                          style={c.key === "yidx" && r.y_idx_bps != null ? dmColor(r.y_idx_bps) : undefined}>
                           {cell[c.key]}
                         </td>
                       ))}

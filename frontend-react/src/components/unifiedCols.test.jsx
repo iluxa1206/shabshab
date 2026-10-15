@@ -60,9 +60,9 @@ describe("колонки общего монитора", () => {
     const g = UNIFIED_COLS.find((c) => c.key === "g_spread_bps");
     expect(cells([g], FLOATER)[0].textContent).toBe("");
     expect(cells([g], FIXED)[0].textContent).not.toBe("");
-    const dm = UNIFIED_COLS.find((c) => c.key === "disc_margin_bps");
-    expect(cells([dm], FIXED)[0].textContent).toBe("");
-    expect(cells([dm], FLOATER)[0].textContent).not.toBe("");
+    const z = UNIFIED_COLS.find((c) => c.key === "z_model_bps");
+    expect(cells([z], FIXED)[0].textContent).toBe("");
+    expect(cells([z], FLOATER)[0].textContent).not.toBe("");
   });
 
   it("BID у фикса: цена, Y-IDX и YTM по этой цене", () => {

@@ -538,8 +538,6 @@ function Dashboard() {
             return {
               ...b, _mstale: false,
               dirty_price_rub: r.dirty_price_rub ?? b.dirty_price_rub,
-              dm_bps: r.dm_bps ?? b.dm_bps,
-              disc_margin_bps: r.disc_margin_bps ?? b.disc_margin_bps,
               z_model_bps: r.z_model_bps ?? b.z_model_bps,
               yield_over_index_bps: r.yield_over_index_bps ?? b.yield_over_index_bps,
               yield_xirr_pct: r.yield_xirr_pct ?? b.yield_xirr_pct,

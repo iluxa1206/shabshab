@@ -16,8 +16,16 @@ from core.valuation import (
 )
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# ПАУЗА SM/DM (решение владельца 15.10.2026): первичная метрика — Y-IDX, а Simple/
+# Discount Margin были пустой колонкой витрины и 78–92 % счёта бумаги (каждая —
+# солвер, DM ещё и пересобирает поток). Колонки сняты с фронта, расчёт отключён
+# везде, где зовётся calculate_valuation_metrics. Вернуть: MARGINS_PAUSED=0
+# (и VALUATION_MARGINS=1 для витрины, ORDERBOOK_LEVEL_DM=1 для лестницы стакана).
+MARGINS_PAUSED = (os.getenv("MARGINS_PAUSED", "1") or "").strip().lower() not in ("0", "false", "no")
 
 
 def _fp_seq(items) -> int:
@@ -188,6 +196,9 @@ def calculate_valuation_metrics(
               стакана нужен в подсказке уровня.
     Returns a dictionary suitable for formatting by Pydantic.
     """
+    if MARGINS_PAUSED:
+        with_margins = alt_dm = False
+
     # Бумага гасится не позже даты расчётов T+1: покупателю не достаётся ни одного
     # платежа (весь поток ex) — метрики бессмысленны, а стейл prev-цена давала
     # мусорные отрицательные SM (Магнит4P06 за 2 дня до погашения: SM −330).
@@ -856,7 +867,7 @@ def calculate_valuation_metrics(
     # Y-IDX пуст, а статус «успех» — противоречие: так выглядела недоступная
     # RUONIA-кривая (база сравнения), и потребитель считал число просто
     # отсутствующим, а не сбойным. Первичная метрика решает статус наравне с SM.
-    _ok = sm_bps is not None and yield_over_index_bps is not None
+    _ok = (sm_bps is not None or not with_margins) and yield_over_index_bps is not None
     status = "SUCCESS" if _ok else ("PRICE_IMPLAUSIBLE" if price_implausible else "DM_FAILED")
     if _sanity:
         status = "SANITY_FLAG"

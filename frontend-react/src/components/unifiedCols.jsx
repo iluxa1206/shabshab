@@ -1,5 +1,5 @@
 import { fmt } from "../format.js";
-import { COLS as FLOATER_COLS, D, NA } from "./BondTable.jsx";
+import { COLS as FLOATER_COLS, D } from "./BondTable.jsx";
 import { FIXED_COLS } from "./fixed/fixedCols.jsx";
 import { durValue } from "../unifiedRows.js";
 import { fixedCurrency } from "./fixed/currency.js";
@@ -97,7 +97,7 @@ const YTM = {
       <td className={"num" + (b._mstale ? " mstale" : "") + (b.kind === "fixed" ? "" : " ytm-model")}
         key="yield_xirr_pct"
         title={g || (b.kind === "fixed" ? undefined : "модельная: купоны плавающей ставки по форварду индекса")}>
-        {g ? <NA why={g} /> : v == null ? <D /> : fmt.pct(v)}
+        {g ? "" : v == null ? <D /> : fmt.pct(v)}
       </td>
     );
   },
@@ -121,8 +121,8 @@ const COMMON = [
   FL.issue_date, FL.issue_volume,
 ].filter(Boolean);
 
-// Только флоатеры: маржа выпуска, дата купона, SM/DM/Z, база-индекс.
-const FLOATER_ONLY = ["spread_issue_bps", "next_coupon_date", "dm_bps", "disc_margin_bps",
+// Только флоатеры: маржа выпуска, дата купона, Z, база-индекс.
+const FLOATER_ONLY = ["spread_issue_bps", "next_coupon_date",
                       "z_model_bps", "index_yield_pct"].map((k) => onlyFor("floater", FL[k]));
 // Только фиксы: то, чего нет у флоатера.
 const FIXED_ONLY = ["delta_ytm", "cur_yield", "g_spread_bps", "z_spread_bps", "convexity", "dv01"]

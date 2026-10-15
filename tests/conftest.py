@@ -7,6 +7,10 @@
 """
 import os
 import sys
+
+# SM/DM на проде на паузе (services.valuation.MARGINS_PAUSED), а регрессия их
+# математики остаётся: тесты считают маржи, как раньше
+os.environ.setdefault("MARGINS_PAUSED", "0")
 from datetime import date, timedelta
 
 import pytest

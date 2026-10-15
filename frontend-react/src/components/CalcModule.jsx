@@ -53,8 +53,6 @@ export const AXES = {
     modes: {
       yidx: { label: "spread", axis: "spread, bps", val: (b) => (okG(b.yield_over_index_bps) ? b.yield_over_index_bps : null),
               custom: (m) => m?.y_idx_bps, fmt: (v) => "spread: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
-      sm: { label: "SM", axis: "SM, bps", val: (b) => (okG(b.dm_bps) ? b.dm_bps : null),
-            custom: (m) => m?.sm_bps, fmt: (v) => "SM: " + Math.round(v) + " bps", tick: (v) => Math.round(v) },
     },
   },
 };
@@ -133,8 +131,6 @@ const METRICS = {
   ],
   float: [
     ["y_idx_bps", "spread", "bps", (v) => fmt.bps(v), spreadStyle],
-    ["sm_bps", "SM", "bps", (v) => fmt.bps(v), spreadStyle],
-    ["dm_bps", "DM", "bps", (v) => fmt.bps(v), spreadStyle],
     ["yield_xirr_pct", "YTM МОДЕЛЬ", "%", (v) => fmt.pct(v)],
     ["index_yield_pct", "ДОХ. ИНДЕКСА", "%", (v) => fmt.pct(v)],
     ["accrued_rub", "НКД", "₽", (v) => fmt.num(v, 2)],
@@ -351,7 +347,7 @@ export default function CalcModule({ initialKind = "fixed" }) {
                 <tr>
                   <th className="left">ВЫПУСК</th><th className="num">ЦЕНА</th>
                   {isFloat
-                    ? <><th className="num">spread</th><th className="num">SM</th></>
+                    ? <th className="num">spread</th>
                     : <><th className="num">YTM</th><th className="num">G-СПРЕД</th><th className="num">ДЮР</th><th className="num">КУПОН</th></>}
                   <th className="num">ПОГАШЕНИЕ</th><th className="num">РЕЙТИНГ</th>
                 </tr>
@@ -365,8 +361,6 @@ export default function CalcModule({ initialKind = "fixed" }) {
                       <>
                         <td className="num" style={spreadStyle(b.yield_over_index_bps)}>
                           {b.yield_over_index_bps == null ? <D /> : fmt.bps(b.yield_over_index_bps)}</td>
-                        <td className="num" style={spreadStyle(b.dm_bps)}>
-                          {b.dm_bps == null ? <D /> : fmt.bps(b.dm_bps)}</td>
                       </>
                     ) : (
                       <>
@@ -390,8 +384,6 @@ export default function CalcModule({ initialKind = "fixed" }) {
                       <>
                         <td className="num" style={spreadStyle(m.y_idx_bps)}>
                           {m.y_idx_bps == null ? <D /> : fmt.bps(m.y_idx_bps)}</td>
-                        <td className="num" style={spreadStyle(m.sm_bps)}>
-                          {m.sm_bps == null ? <D /> : fmt.bps(m.sm_bps)}</td>
                       </>
                     ) : (
                       <>

@@ -52,7 +52,7 @@ function Level({ lvl, side, face, isFixed, fill }) {
         </>
       ) : (
         <>
-          <td style={dmColor(lvl.y_idx_bps)} title={lvl.dm_bps != null ? `DM ${fmt.bps(lvl.dm_bps)} bps` : undefined}>
+          <td style={dmColor(lvl.y_idx_bps)}>
             {fmt.bps(lvl.y_idx_bps) ?? "—"}
           </td>
           <td className="ob-ytm">{fmt.pct(lvl.yield_pct) ?? "—"}</td>
