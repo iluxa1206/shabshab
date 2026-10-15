@@ -164,6 +164,18 @@
 - Выплаты (`PaymentsCalendar` — только универс флоатеров).
 - `SignalsBell`/`SignalsWatcher` всегда открывают флоатерную карточку — передавать kind.
 
+## Этап D — валюта, аналитика, график (15.10.2026)
+
+- Меню делит монитор по валюте номинала: «Рубли» (`/bonds`, `/floaters`, `/fixed`,
+  `/compare`) и «Валютные» (`/fx`, `/fx/compare`). Фильтр `passesFixedDefaults(..., ccyMode)`.
+- У валютных и бессрочных Y-IDX не определён (база RUONIA рублёвая) — пустая ячейка;
+  вырожденная YTM (`ytm_guard`: range/structured/negative) — тоже пусто.
+- SM/DM на паузе (`valuation.MARGINS_PAUSED`) и сняты с фронта; первичная метрика — Y-IDX.
+- Аналитика: свитчер R-spread / G-spread в двух верхних графиках, оба класса в R.
+- График карточки фикса — Y-IDX; `kind` из строки списка.
+- Спред сделки (`trade_yidx`) считается и рублёвым фиксам; подписи бумаг для сигналов и
+  алертов — `bond_labels.labels_all` (реестр + универс фиксов).
+
 ## Чем ловить регрессию
 
 `tests/test_fixed_stream.py`, `tests/test_fixed_wap_base.py`,
