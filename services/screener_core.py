@@ -389,8 +389,9 @@ def block_matches(trade: dict, meta: dict, params: dict,
         return False
     lo, hi = params.get("spread_min"), params.get("spread_max")
     if lo is not None or hi is not None:
-        # Спред считается только флоатерам и только сделкам крупнее
-        # BLOCK_YIDX_MIN_RUB: непосчитанный спред — это НЕ «подходит».
+        # Спред считается флоатерам и рублёвым фиксам и только сделкам крупнее
+        # BLOCK_YIDX_MIN_RUB: непосчитанный спред (валютные, бессрочные, вне
+        # универсов) — это НЕ «подходит».
         val = trade.get("y_idx_bps")
         if val is None:
             return False

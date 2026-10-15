@@ -52,18 +52,8 @@ def _labels() -> dict:
     """isin → {name, emitter, base, rating}. Реестр знает флоатеры, кэш ФИКСОВ —
     остальное; лента шире обоих (весь рынок облигаций), поэтому неизвестные
     бумаги остаются с именем из справочника MOEX (см. ниже) или голым ISIN."""
-    from services import instruments_registry as reg
-    from services.market_data import market_cache
-
-    out = dict(reg.labels_map())
-    for u in (market_cache.get("fixed_universe") or []):
-        cur = out.get(u["isin"]) or {}
-        out[u["isin"]] = {"name": cur.get("name") or u.get("name") or u["isin"],
-                          "emitter": cur.get("emitter") or u.get("issuer"),
-                          "base": cur.get("base") or "FIXED",
-                          "rating": cur.get("rating"),
-                          "maturity": cur.get("maturity") or u.get("maturity_date")}
-    return out
+    from services.bond_labels import labels_all
+    return labels_all()
 
 
 # Охват ленты. Флоатер отличаем по базе купона (KEYRATE/RUONIA) — тем же

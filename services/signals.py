@@ -245,8 +245,8 @@ def _with_maturity(rows: List[dict]) -> List[dict]:
     if not rows:
         return rows
     try:
-        from services import instruments_registry as reg
-        labels = reg.labels_map(sorted({r["isin"] for r in rows}))
+        from services.bond_labels import labels_all
+        labels = labels_all(sorted({r["isin"] for r in rows}))
     except Exception:
         return rows
     from services.market_data import MarketDataService, market_cache
@@ -666,7 +666,8 @@ def preview_block(params: dict, limit: int = 20) -> dict:
             # «от 50» проходит block_matches, и предвыборка не должна отрезать
             # её раньше
             (day, money_floor(p["min_value_rub"]))).fetchall()]
-    labels = reg.labels_map()
+    from services.bond_labels import labels_all
+    labels = labels_all()
     today = date.today()
     # горизонт прайсинга — из живых метрик: срок ленты считается по той же
     # методике, что окно срока в мониторе (screener_core.block_meta)

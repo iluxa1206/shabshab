@@ -19,8 +19,10 @@ price_new_trades), а не при чтении ленты. Замер на пр�
 что у спреда часовых баров (см. [[hourly-bars-archive]]). Честный as-of движок
 дневной и слишком дорогой для ленты. Для сделок текущей сессии расхождения нет.
 
-Считаем только по флоатерам: у фикса аналог — g-спред, другая шкала, в одной
-колонке их мешать нельзя.
+Считаем флоатерам и фиксам (рублёвый номинал, не бессрочные): первичная
+метрика Y-IDX у обоих классов одна — доходность над RUONIA (см. [[yidx-primary]],
+unified_monitor_tz), и в одной колонке они сравнимы. Раньше фикс считался
+g-спредом — другой шкалой, и колонку им не заполняли.
 """
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ import logging
 import os
 import time
 from typing import Iterable, Optional
+
+from services.bond_labels import labels_all, pricing_kind
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +73,7 @@ def drop_ctx_cache(isin: Optional[str] = None) -> None:
         _ctx_cache.clear()
 
 
-async def _metrics_fn(isin: str):
+async def _metrics_fn(isin: str, kind: str = "floater"):
     """metrics_fn(price) для выпуска или None, если посчитать нечем."""
     hit = _ctx_cache.get(isin)
     now = time.monotonic()
@@ -78,7 +82,7 @@ async def _metrics_fn(isin: str):
         return hit[1]
     from services.orderbook_svc import build_metrics_fn
     try:
-        fn, _cd, _face = await build_metrics_fn(isin, "floater")
+        fn, _cd, _face = await build_metrics_fn(isin, kind)
     except Exception as e:                     # нет в реестре, нет кривой, экзотика
         logger.debug("y-idx ленты: %s пропущен (%s)", isin, e)
         fn = None
@@ -102,8 +106,7 @@ async def enrich(rows: list[dict], labels: Optional[dict] = None,
     if not rows:
         return 0
     if labels is None:
-        from services import instruments_registry as reg
-        labels = await asyncio.to_thread(reg.labels_map)
+        labels = await asyncio.to_thread(labels_all)
 
     # порядок выпусков — по первому появлению в ленте: обрезание потолком
     # оставляет верх экрана (самое свежее), а не случайную часть
@@ -112,7 +115,7 @@ async def enrich(rows: list[dict], labels: Optional[dict] = None,
         isin = r.get("isin")
         if not isin or isin in order:
             continue
-        if (labels.get(isin) or {}).get("base") not in _FLOAT_BASES:
+        if pricing_kind(isin, labels) is None:
             continue
         order.append(isin)
     if not order:
@@ -123,7 +126,7 @@ async def enrich(rows: list[dict], labels: Optional[dict] = None,
 
     fns = {}
     for isin in order:                       # последовательно: контексты делят
-        fns[isin] = await _metrics_fn(isin)  # общие тёплые кэши, гонка их не ускорит
+        fns[isin] = await _metrics_fn(isin, pricing_kind(isin, labels))  # тёплые кэши
 
     def _calc() -> int:
         n = 0
@@ -158,9 +161,9 @@ async def enrich(rows: list[dict], labels: Optional[dict] = None,
     return done
 
 
-async def for_price(isin: str, price: float) -> Optional[float]:
+async def for_price(isin: str, price: float, kind: str = "floater") -> Optional[float]:
     """Y-IDX одной цены (алерты о крупных сделках). None — если считать нечем."""
-    fn = await _metrics_fn(isin)
+    fn = await _metrics_fn(isin, kind)
     if fn is None or price is None:
         return None
     try:
@@ -175,13 +178,13 @@ async def for_price(isin: str, price: float) -> Optional[float]:
 async def for_rows(rows: Iterable[dict]) -> int:
     """Обогащение произвольного списка сделок (алерты): считает по одной, зато
     без потолка выпусков — сделок в очереди звонка единицы."""
-    from services import instruments_registry as reg
-    labels = await asyncio.to_thread(reg.labels_map)
+    labels = await asyncio.to_thread(labels_all)
     n = 0
     for r in rows:
-        if (labels.get(r.get("isin")) or {}).get("base") not in _FLOAT_BASES:
+        kind = pricing_kind(r.get("isin"), labels)
+        if kind is None:
             continue
-        y = await for_price(r["isin"], r.get("price"))
+        y = await for_price(r["isin"], r.get("price"), kind)
         if y is not None:
             r["y_idx_bps"] = y
             n += 1

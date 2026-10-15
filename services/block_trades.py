@@ -669,14 +669,15 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
     rows = await run_bg(unpriced, batch)
     if not rows:
         return 0
-    from services import instruments_registry as reg
     from services import trade_yidx
+    from services.bond_labels import labels_all, pricing_kind
 
-    labels = await run_bg(reg.labels_map)
+    # флоатеры И рублёвые фиксы: Y-IDX у них одной шкалы (trade_yidx); прочее
+    # (валютные, бессрочные, вне универсов) закрываем прочерком сразу
+    labels = await run_bg(labels_all)
     floats, others = [], []
     for r in rows:
-        (floats if (labels.get(r["isin"]) or {}).get("base") in _FLOAT_BASES
-         else others).append(r)
+        (floats if pricing_kind(r["isin"], labels) else others).append(r)
 
     done = 0
     # строки приходят из двух таблиц (ISS и тики Alor) — метки пишем каждой в свою
@@ -693,8 +694,12 @@ async def price_new_trades(limit: int = 120, batch: int = 2000) -> int:
         done += await run_bg(
             _by_table, others, lambda r: (None, None, r["trade_id"], r["isin"]))
     if floats:
-        floats = floats[:limit]
-        await trade_yidx.enrich(floats, labels, max_isins=limit)
+        # потолок на такт — отдельно по классам: ОФЗ-ПД и корпфиксы дают сделок
+        # на порядок больше флоатеров, и общий лимит съедал бы их очередь
+        fl = [r for r in floats if pricing_kind(r["isin"], labels) == "floater"][:limit]
+        fx = [r for r in floats if pricing_kind(r["isin"], labels) == "fixed"][:limit * 2]
+        floats = fl + fx
+        await trade_yidx.enrich(floats, labels, max_isins=limit * 3)
         done += await run_bg(
             _by_table, floats,
             lambda r: (r.get("y_idx_bps"), r.get("dm_bps"), r["trade_id"], r["isin"]))
@@ -1518,7 +1523,8 @@ async def _notify_blocks() -> int:
     if not rows:
         return 0
 
-    labels = await run_bg(reg.labels_map)
+    from services.bond_labels import labels_all
+    labels = await run_bg(labels_all)
     names = {v["isin"]: v.get("name") for v in _secmap["map"].values() if v.get("isin")}
     # Время события — В UTC С ТАЙМЗОНОЙ, как у событий стакана (services/signals).
     # Раньше блоки писались строкой МСК без зоны, и лента, сортированная строкой,
