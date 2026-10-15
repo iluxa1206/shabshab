@@ -1,5 +1,5 @@
 import { fmt, dmColor, ratingColor, yearsTo, stripOfz } from "../../format.js";
-import { D, IsinCopy, Quote, IssueCell, isFreshIssue, isShortBond } from "../BondTable.jsx";
+import { D, IsinCopy, NA, Quote, IssueCell, isFreshIssue, isShortBond } from "../BondTable.jsx";
 import { yidxUndefinedReason } from "./currency.js";
 import { ytmGuardNote } from "./ytmGuard.js";
 
@@ -155,7 +155,7 @@ export const FIXED_COLS = [
       const g = b.ytm == null ? ytmGuardNote(b.ytm_guard) : null;
       return <td className={"num" + ms(b)} key="ytm"
         title={g || "эффективная доходность к погашению (к оферте, если поток обрезан на ней), % годовых"}>
-        {g ? <span className="q-na">н/о</span> : fmt.pct(b.ytm) ?? <D />}</td>;
+        {g ? <NA why={g} /> : fmt.pct(b.ytm) ?? <D />}</td>;
     } },
   { key: "delta_ytm", label: "Δ YTM", sub: "D/D пп", align: "num", w: 8,
     cell: (b) => <td className="num" style={b.delta_ytm == null ? undefined : dmColor(-b.delta_ytm)}
@@ -171,7 +171,7 @@ export const FIXED_COLS = [
       const na = b.yield_over_index_bps == null ? yidxUndefinedReason(b) : null;
       return <td className={"num" + ms(b)} style={dmColor(b.yield_over_index_bps)}
         key="yield_over_index_bps" title={na || undefined}>
-        {na ? <span className="q-na">н/о</span> : fmt.bps(b.yield_over_index_bps) ?? <D />}</td>;
+        {na ? <NA why={na} /> : fmt.bps(b.yield_over_index_bps) ?? <D />}</td>;
     } },
   { key: "g_spread_bps", label: "G-SPRD", sub: "vs КБД", align: "num", w: 8,
     cell: (b) => <td className={"num" + ms(b)} style={dmColor(b.g_spread_bps)} key="g_spread_bps">

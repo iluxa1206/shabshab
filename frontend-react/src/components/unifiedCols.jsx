@@ -1,5 +1,5 @@
 import { fmt } from "../format.js";
-import { COLS as FLOATER_COLS, D } from "./BondTable.jsx";
+import { COLS as FLOATER_COLS, D, NA } from "./BondTable.jsx";
 import { FIXED_COLS } from "./fixed/fixedCols.jsx";
 import { durValue } from "../unifiedRows.js";
 import { fixedCurrency } from "./fixed/currency.js";
@@ -97,7 +97,7 @@ const YTM = {
       <td className={"num" + (b._mstale ? " mstale" : "") + (b.kind === "fixed" ? "" : " ytm-model")}
         key="yield_xirr_pct"
         title={g || (b.kind === "fixed" ? undefined : "модельная: купоны плавающей ставки по форварду индекса")}>
-        {g ? <span className="q-na">н/о</span> : v == null ? <D /> : fmt.pct(v)}
+        {g ? <NA why={g} /> : v == null ? <D /> : fmt.pct(v)}
       </td>
     );
   },

@@ -49,6 +49,14 @@ export function wapSpread(b) {
 // subKind — что писать ПОД ценой: "bps" (спред, по умолчанию) или "pct"
 // (доходность). У фиксов вторая строка ячейки — YTM по этой же цене: знака у
 // неё нет, поэтому ни цвета, ни отклонения от семидневки там не рисуем.
+// «н/о» — число по смыслу не определено (валюта, бессрочная, вырожденная YTM).
+// Причина — в title И в aria-label: подсказка td не доходит до скринридера и
+// тача, а без причины «н/о» читается как поломка.
+export function NA({ why }) {
+  return <span className="q-na" title={why || undefined} aria-label={why || "не определено"}
+    role="img">н/о</span>;
+}
+
 export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "bps", oos, ytm, na }) {
   // фон стороны: бид зелёным, оффер красным, почти прозрачно, чтобы не спорить
   // с цветом спреда под ценой. Средневзвес — ничья цена, фон нейтральный
@@ -78,7 +86,7 @@ export function Quote({ px, spread, stale, title, vwap, side, base7, subKind = "
            style={shown == null ? undefined : dmColor(shown)}
            title={old ? (pctSub ? "доходность к прежней цене — пересчитывается"
                                 : "спред к прежней цене — пересчитывается") : undefined}>
-        {shown == null ? (na ? <span className="q-na" title={na}>н/о</span> : oos ? <Oos /> : <D />)
+        {shown == null ? (na ? <NA why={na} /> : oos ? <Oos /> : <D />)
           : pctSub ? fmt.pct(shown) : fmt.bps(shown)}
         {/* фикс: YTM по этой же цене в той же строке — «спред / ytm» */}
         {ytm !== undefined && (
